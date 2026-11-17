@@ -31,7 +31,7 @@ cat <<'EOF'
 sg-tightener installed.
 
 To activate the venv in your current shell:
-  source sg-tightener/.venv/bin/activate
+  source .venv/bin/activate
 
 Then run the tools, e.g.:
   python sg_tightener.py analyse --region us-east-1 --log-group <name>

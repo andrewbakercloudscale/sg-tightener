@@ -22,7 +22,10 @@
         "organizations:ListOrganizationalUnitsForParent",
         "organizations:DescribeOrganization",
         "sts:GetCallerIdentity",
-        "sts:AssumeRole"
+        "sts:AssumeRole",
+        "ec2:DescribeVpcEndpoints",
+        "transfer:ListServers",
+        "transfer:DescribeServer"
       ],
       "Resource": "*"
     },
