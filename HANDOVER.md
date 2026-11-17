@@ -3,6 +3,22 @@
 Written 2026-11-17 at the end of the session that moved sg-tightener into its
 own repository. Start the next session in this folder.
 
+## Status update (2026-11-17, second session)
+
+- **Goal A (testing): done.** pytest, `tests/unit` + `tests/integration` (moto),
+  `tests/fixtures/flowgen.py` (synthetic flow logs + `FakeLogs` Insights
+  emulator). 170 passing, 1 xfail. Risks 1 to 5 below are fixed and tested;
+  see CHANGELOG.
+- **New finding, not fixed:** `approved.json` has source IPs only, so `plan`
+  grants every observed source inside a rule to every group, not only the
+  sources that reached that group's interfaces on that port. Pinned by
+  `test_a_group_only_gets_sources_that_reached_it` (xfail, strict). Fix needs
+  analyse to record (src, dst, port) and plan to map dst IPs to groups.
+- **Goal B changed by the owner:** no standalone viewer. `sg_viz.py` keeps
+  `export` and `overlay` (data only). The picture goes into the
+  aws-org-level-risk-framework-reporting console as a new "Access Graph"
+  report (network + IAM, N hops from a selected account).
+
 ---
 
 ## 1. Where things are

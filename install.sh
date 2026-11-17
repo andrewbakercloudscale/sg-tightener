@@ -39,5 +39,5 @@ Then run the tools, e.g.:
   python sg_tightener.py apply   --plan plan.json
 
 Run the test suite at any time:
-  python sg_tightener_test.py
+  pip install -r requirements-dev.txt && python -m pytest
 EOF

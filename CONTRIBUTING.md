@@ -8,13 +8,17 @@ is correctness first.
 ```bash
 ./install.sh
 source .venv/bin/activate
-python sg_tightener_test.py
+pip install -r requirements-dev.txt
+python -m pytest
 ```
 
 ## Rules for changes
 
 - **Tests run offline.** No test may need AWS credentials or network access.
-  Mock boto3 with `unittest.mock`.
+  Unit tests live in `tests/unit/`. End-to-end tests in `tests/integration/`
+  run against moto (EC2, S3, STS, Organizations); Logs Insights is answered by
+  `FakeLogs` in `tests/fixtures/flowgen.py`, which also generates synthetic
+  flow logs for any topology.
 - **Every bug fix gets a test that fails without the fix.**
 - **Safety properties are not negotiable:** `plan` never writes; `apply` checks
   the snapshot hash and writes a manifest; `sg_extend` never revokes; nothing

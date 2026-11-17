@@ -45,9 +45,12 @@ Build replacement rules. Reads AWS, writes nothing to it.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--plan` | required | The reviewed `plan.json` |
+| `--region` | from the plan | Only for plans written before the region was recorded. If given for a newer plan it must match, or `apply` refuses |
 | `--yes` | off | Skip the typed `yes` confirmation |
 
-Region comes from `AWS_REGION` or `AWS_DEFAULT_REGION` and must be set.
+The region is read from the plan; `AWS_REGION` is ignored for plans that record one.
+The manifest is rewritten after every successful AWS call, so it always lists
+exactly what was changed.
 Writes `manifest-<YYYYMMDDTHHMMSSZ>.json` in the current directory.
 
 ### `revert`
@@ -139,10 +142,35 @@ CRITICAL finding exists.
 
 ---
 
-## `sg_tightener_test.py`
+## `sg_viz.py`
+
+Read-only. Writes one JSON file (`sg-tightener.viz/v1`) for drawing a region's
+traffic: every connection (source, destination interface, port, protocol)
+with accepted and rejected totals, the security-group rules that allow it,
+and per-bucket counts for a timeline.
 
 ```bash
-python sg_tightener_test.py
+python sg_viz.py export  --region eu-west-1 --log-group vpc-flow-logs --days 7 \
+                         [--bucket 3600] [--plan plan.json] [--out viz-data.json]
+python sg_viz.py overlay --data viz-data.json --plan plan.json
 ```
 
-Runs the whole suite offline. Exit code `0` on success.
+| Flag | Default | Meaning |
+|---|---|---|
+| `--days` / `--hours` | 7 days | Window, ending now |
+| `--bucket` | 1h up to 7 days, 6h up to 31, then 1 day | Seconds per timeline bucket |
+| `--log-group` / `--s3-bucket` `--s3-prefix` | | Where the flow logs are |
+| `--plan` | | Mark every observed accepted connection the plan would stop (`plan_impact: blocked`) |
+
+Large windows are split under the Logs Insights 10,000-row limit, as in `analyse`.
+
+---
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+Runs the whole suite offline (unit tests and moto integration tests). Exit code `0` on success.

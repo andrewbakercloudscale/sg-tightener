@@ -4,20 +4,15 @@ Describes a small estate (interfaces, security groups, the clients that talk
 to them and when) and turns it into flow-log records, formatted lines in any
 log format, S3 objects and Logs Insights answers. Everything is deterministic
 for a given seed, and nothing touches AWS.
-
-    python -m tests.fixtures.flowgen --write-sample   # rebuild viewer/sample-data.json
 """
 
 from __future__ import annotations
 
-import argparse
 import dataclasses
 import datetime as dt
 import gzip
-import json
 import random
 import re
-from pathlib import Path
 from typing import Iterable, Sequence
 
 from sg_tightener import DEFAULT_LOG_FORMAT_FIELDS, RECOMMENDED_LOG_FORMAT, parse_log_format
@@ -309,7 +304,7 @@ def sample_window() -> tuple[dt.datetime, dt.datetime]:
 
 
 def build_sample() -> dict:
-    """The viewer's demo data: 30 days of traffic, with a plan overlay.
+    """Demo viz-data: 30 days of traffic, with a plan overlay.
 
     The plan comes from an approved list built over the last 14 days only,
     so the quarter-end batch job (day 9 of 30) is not in it: the overlay
@@ -338,22 +333,6 @@ def build_sample() -> dict:
     plan = sg_tightener.build_plan(topo.groups, approved, region=topo.region)
     plan["generated_at"] = end.isoformat()
     return sg_viz.apply_plan_overlay(data, plan, plan_name="sample plan (14-day approved list)")
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--write-sample", action="store_true", help="rebuild viewer/sample-data.json")
-    args = p.parse_args(argv)
-    if args.write_sample:
-        path = Path(__file__).resolve().parents[2] / "viewer" / "sample-data.json"
-        data = build_sample()
-        path.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-        print(f"wrote {path} ({len(data['connections'])} connections, {len(data['flows'])} flows)")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
 
 
 __all__ = [

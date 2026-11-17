@@ -48,7 +48,8 @@ The `/24` cut-off is configurable with `--prefix-threshold`.
 | [`sg_compact.py`](sg_compact.py) | Merge narrow CIDRs into wider ones to get back under the rule limit | `apply` and `revert` only |
 | [`sg_ou_report.py`](sg_ou_report.py) | Rank every account in an AWS Organization by permissive SG and NACL rules | No |
 | [`sg_transfer_audit.py`](sg_transfer_audit.py) | Find AWS Transfer Family servers (SFTP/FTPS/FTP/AS2) open to the internet | No |
-| [`sg_tightener_test.py`](sg_tightener_test.py) | Offline test suite, no AWS credentials needed | No |
+| [`sg_viz.py`](sg_viz.py) | Export who talked to what, accepted or rejected, per time bucket, with the rule that allowed it and what a plan would block | No |
+| [`tests/`](tests) | Offline test suite (unit + moto integration), no AWS credentials needed | No |
 
 ---
 
@@ -59,7 +60,8 @@ git clone https://github.com/andrewbakercloudscale/sg-tightener.git
 cd sg-tightener
 ./install.sh
 source .venv/bin/activate
-python sg_tightener_test.py          # all tests should pass
+pip install -r requirements-dev.txt
+python -m pytest                     # all tests should pass
 ```
 
 Requires Python 3.9 or later and AWS credentials with the permissions in
@@ -113,7 +115,7 @@ missing. Read [the runbook](docs/runbook.md) before applying to production.
 
 ## Contributing
 
-Bug reports and pull requests are welcome. Run `python sg_tightener_test.py`
+Bug reports and pull requests are welcome. Run `python -m pytest`
 before opening a PR; CI runs the same suite on Python 3.9 to 3.12. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
 

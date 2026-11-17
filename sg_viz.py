@@ -4,26 +4,21 @@
 Read-only. Builds one JSON file describing a region's traffic over a time
 window (who talked to which interface, on which port, accepted or
 rejected, per time bucket), the interfaces and security groups involved,
-and which rule allowed each connection. A local web viewer draws it as a
-timeline, a connection map and a table. Load a plan.json on top and every
-observed connection the plan would cut off is highlighted before anyone
-runs ``apply``.
+and which rule allowed each connection. Add a plan.json on top and every
+observed connection the plan would cut off is marked before anyone runs
+``apply``. The file is plain JSON for any viewer or report to draw.
 
 Modes:
   export   Read flow logs (CloudWatch Logs or S3), network interfaces and
            security groups and write viz-data.json. Only Describe*, Logs
            Insights and S3 Get/List calls are made.
   overlay  Add a plan's impact to an existing viz-data.json.
-  serve    Run the viewer on http://127.0.0.1 (loopback only). It opens
-           exported files, the built-in sample, or runs an export with
-           your local AWS credentials. Nothing is sent anywhere else.
 
 Usage:
   sg_viz.py export  --region <r> [--days 7 | --hours 24] [--bucket 3600]
                     (--log-group <name> | --s3-bucket <b> [--s3-prefix <p>])
                     [--plan plan.json] [--out viz-data.json]
   sg_viz.py overlay --data viz-data.json --plan plan.json [--out <file>]
-  sg_viz.py serve   [--port 8765] [--data viz-data.json] [--open]
 """
 
 from __future__ import annotations
@@ -34,10 +29,6 @@ import ipaddress
 import json
 import logging
 import sys
-import threading
-import webbrowser
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -54,12 +45,8 @@ from sg_tightener import (
 LOG = logging.getLogger("sg_viz")
 
 SCHEMA = "sg-tightener.viz/v1"
-VIEWER_DIR = Path(__file__).resolve().parent / "viewer"
 PROTO_NAMES = {"6": "tcp", "17": "udp", "1": "icmp", "58": "icmpv6"}
 PROTO_NUMBERS = {v: k for k, v in PROTO_NAMES.items()}
-MAX_BODY = 64 * 1024 * 1024
-LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
-DEFAULT_PORT = 8765
 
 
 # --------------------------------------------------------------------------- #
@@ -532,240 +519,6 @@ def _merge_flows(flows: list[dict]) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
-# Local web server
-# --------------------------------------------------------------------------- #
-
-class VizServer(ThreadingHTTPServer):
-    daemon_threads = True
-
-    def __init__(self, port: int, data: dict | None = None):
-        super().__init__(("127.0.0.1", port), VizHandler)
-        self.data = data
-        self.export_lock = threading.Lock()
-
-
-class VizHandler(BaseHTTPRequestHandler):
-    """Serves the viewer and a small JSON API to this machine only.
-
-    The server holds your AWS credentials, so a web page open in the same
-    browser must not be able to drive it:
-      * it listens on 127.0.0.1 only;
-      * a Host header that is not a loopback name is refused (DNS rebinding);
-      * POSTs need ``X-SG-Viz: 1`` and a JSON body, which a foreign page
-        cannot send without a CORS preflight that is never granted;
-      * an Origin header, when present, must be this server's own.
-    """
-
-    server: VizServer
-    server_version = "sg_viz"
-    sys_version = ""
-
-    def log_message(self, fmt, *args):  # quieter than the default
-        LOG.debug("%s - %s", self.address_string(), fmt % args)
-
-    # -- guards ------------------------------------------------------------ #
-
-    def _host_ok(self) -> bool:
-        host = (self.headers.get("Host") or "").strip().lower()
-        name = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]")[0] + "]"
-        return name in LOOPBACK_HOSTS
-
-    def _origin_ok(self) -> bool:
-        origin = self.headers.get("Origin")
-        if origin is None:
-            return True
-        port = self.server.server_address[1]
-        return origin in {f"http://127.0.0.1:{port}", f"http://localhost:{port}", f"http://[::1]:{port}"}
-
-    def _send(self, status: int, body: bytes, ctype: str, *, cache: bool = False) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("X-Frame-Options", "DENY")
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-        )
-        if not cache:
-            self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
-
-    def _json(self, status: int, payload) -> None:
-        self._send(status, json.dumps(payload).encode("utf-8"), "application/json")
-
-    def _error(self, status: int, message: str) -> None:
-        self._json(status, {"error": message})
-
-    # -- routes ------------------------------------------------------------ #
-
-    def do_GET(self):  # noqa: N802
-        if not self._host_ok():
-            return self._error(HTTPStatus.MISDIRECTED_REQUEST, "this server only answers to 127.0.0.1")
-        path = self.path.split("?", 1)[0]
-        if path in ("/", "/index.html"):
-            return self._file(VIEWER_DIR / "index.html", "text/html; charset=utf-8")
-        if path == "/sample-data.json":
-            return self._file(VIEWER_DIR / "sample-data.json", "application/json")
-        if path == "/api/health":
-            return self._json(200, {"server": "sg_viz", "schema": SCHEMA,
-                                    "aws": sg_tightener.boto3 is not None,
-                                    "data": self.server.data is not None})
-        if path == "/api/data":
-            if self.server.data is None:
-                return self._error(404, "no data file was given to serve")
-            return self._json(200, self.server.data)
-        if path == "/api/profiles":
-            return self._json(200, {"profiles": _profiles()})
-        return self._error(404, "not found")
-
-    do_HEAD = do_GET
-
-    def do_POST(self):  # noqa: N802
-        if not self._host_ok():
-            return self._error(HTTPStatus.MISDIRECTED_REQUEST, "this server only answers to 127.0.0.1")
-        if self.headers.get("X-SG-Viz") != "1" or not self._origin_ok():
-            return self._error(403, "cross-site request refused")
-        if not (self.headers.get("Content-Type") or "").startswith("application/json"):
-            return self._error(415, "send application/json")
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            length = -1
-        if not 0 < length <= MAX_BODY:
-            return self._error(413, "request body missing or too large")
-        try:
-            body = json.loads(self.rfile.read(length))
-        except ValueError:
-            return self._error(400, "body is not JSON")
-        if not isinstance(body, dict):
-            return self._error(400, "body must be a JSON object")
-
-        path = self.path.split("?", 1)[0]
-        if path == "/api/overlay":
-            return self._overlay(body)
-        if path == "/api/export":
-            return self._export(body)
-        return self._error(404, "not found")
-
-    def _file(self, path: Path, ctype: str) -> None:
-        try:
-            body = path.read_bytes()
-        except OSError:
-            return self._error(404, f"{path.name} is missing")
-        self._send(200, body, ctype)
-
-    def _overlay(self, body: dict) -> None:
-        data, plan = body.get("data"), body.get("plan")
-        if not isinstance(data, dict) or data.get("schema") != SCHEMA:
-            return self._error(400, f"data is not a {SCHEMA} file")
-        if not isinstance(plan, dict) or not str(plan.get("schema", "")).startswith("sg-tightener.plan/"):
-            return self._error(400, "plan is not an sg-tightener plan.json")
-        name = str(body.get("plan_name") or "plan.json")[:200]
-        try:
-            return self._json(200, apply_plan_overlay(data, plan, name))
-        except (KeyError, TypeError, ValueError) as exc:
-            return self._error(400, f"could not overlay this plan: {exc}")
-
-    def _export(self, body: dict) -> None:
-        try:
-            req = parse_export_request(body)
-        except ValueError as exc:
-            return self._error(400, str(exc))
-        if sg_tightener.boto3 is None:
-            return self._error(500, "boto3 is not installed in this Python")
-        if not self.server.export_lock.acquire(blocking=False):
-            return self._error(409, "an export is already running")
-        try:
-            if req.pop("profile"):
-                sg_tightener.boto3.setup_default_session(profile_name=body["profile"])
-            else:
-                sg_tightener.boto3.setup_default_session()
-            data = export(**req)
-        except Exception as exc:  # noqa: BLE001 — every failure goes back to the page
-            LOG.warning("export failed: %s", exc)
-            return self._error(502, f"{type(exc).__name__}: {exc}")
-        finally:
-            self.server.export_lock.release()
-        self.server.data = data
-        return self._json(200, data)
-
-
-def _profiles() -> list[str]:
-    if sg_tightener.boto3 is None:
-        return []
-    try:
-        return sorted(sg_tightener.boto3.session.Session().available_profiles)
-    except Exception:  # noqa: BLE001 — a broken config file just means no list
-        return []
-
-
-def parse_export_request(body: dict) -> dict:
-    """Validate the viewer's export form. Raises ValueError with a message for the page."""
-    import re
-
-    region = str(body.get("region") or "")
-    if not re.fullmatch(r"[a-z]{2}(-[a-z]+)+-\d", region):
-        raise ValueError("region looks wrong (e.g. eu-west-1)")
-    profile = body.get("profile") or None
-    if profile is not None and (not isinstance(profile, str) or not re.fullmatch(r"[\w+=,.@/-]{1,128}", profile)):
-        raise ValueError("profile name looks wrong")
-    try:
-        hours = int(body.get("hours") or 24)
-    except (TypeError, ValueError):
-        raise ValueError("hours must be a whole number")
-    if not 1 <= hours <= 24 * 90:
-        raise ValueError("hours must be between 1 and 2160 (90 days)")
-    bucket = body.get("bucket_seconds")
-    if bucket not in (None, "", 0):
-        try:
-            bucket = int(bucket)
-        except (TypeError, ValueError):
-            raise ValueError("bucket must be a number of seconds")
-        if bucket < 60 or bucket % 60:
-            raise ValueError("bucket must be a whole number of minutes")
-    else:
-        bucket = None
-    log_group = (body.get("log_group") or "").strip() or None
-    s3_bucket = (body.get("s3_bucket") or "").strip() or None
-    if bool(log_group) == bool(s3_bucket):
-        raise ValueError("give either a log group or an S3 bucket")
-    if log_group and not re.fullmatch(r"[\w./#-]{1,512}", log_group):
-        raise ValueError("log group name looks wrong")
-    if s3_bucket and not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", s3_bucket):
-        raise ValueError("S3 bucket name looks wrong")
-    end = dt.datetime.now(dt.timezone.utc).replace(second=0, microsecond=0)
-    return {
-        "profile": profile,
-        "region": region,
-        "start": end - dt.timedelta(hours=hours),
-        "end": end,
-        "bucket_seconds": bucket,
-        "log_group": log_group,
-        "s3_bucket": s3_bucket,
-        "s3_prefix": (body.get("s3_prefix") or "").strip() or None,
-    }
-
-
-def serve(port: int, data: dict | None = None, open_browser: bool = False) -> None:
-    server = VizServer(port, data)
-    url = f"http://127.0.0.1:{server.server_address[1]}/"
-    print(f"sg_viz viewer on {url}  (loopback only; Ctrl-C to stop)", flush=True)
-    if open_browser:
-        webbrowser.open(url)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
-
-
-# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 
@@ -799,11 +552,6 @@ def _build_parser() -> argparse.ArgumentParser:
     o.add_argument("--data", required=True)
     o.add_argument("--plan", required=True)
     o.add_argument("--out", help="default: overwrite --data")
-
-    s = sub.add_parser("serve", help="run the viewer on 127.0.0.1")
-    s.add_argument("--port", type=int, default=DEFAULT_PORT)
-    s.add_argument("--data", help="viz-data.json to show on open")
-    s.add_argument("--open", action="store_true", help="open the browser")
     return p
 
 
@@ -826,7 +574,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.plan:
             data = apply_plan_overlay(data, _load_json(args.plan), Path(args.plan).name)
         _write_json(args.out, data)
-        LOG.info("wrote %s; view it with: python sg_viz.py serve --data %s --open", args.out, args.out)
+        LOG.info("wrote %s", args.out)
         return 0
 
     if args.mode == "overlay":
@@ -836,10 +584,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         LOG.info("%d observed connection(s) would be blocked by %s", plan["blocked_connections"], args.plan)
         for w in plan["warnings"]:
             LOG.warning("%s", w)
-        return 0
-
-    if args.mode == "serve":
-        serve(args.port, _load_json(args.data) if args.data else None, args.open)
         return 0
     return 2
 

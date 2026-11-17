@@ -39,6 +39,7 @@ Written by `plan` and `sg_compact plan`, read by `apply`.
 {
   "schema": "sg-tightener.plan/v1",
   "generated_at": "2026-11-17T09:05:00+00:00",
+  "region": "eu-west-1",
   "max_rules": 60,
   "tolerance": 0.3,
   "prefix_threshold": 24,
@@ -55,6 +56,7 @@ Written by `plan` and `sg_compact plan`, read by `apply`.
         { "IpProtocol": "tcp", "FromPort": 5432, "ToPort": 5432,
           "IpRanges": [{ "CidrIp": "10.4.0.0/16" }] }
       ],
+      "restore": [ … the revoked rules with their descriptions … ],
       "removed_without_evidence": [],
       "authorise": [
         { "IpProtocol": "tcp", "FromPort": 5432, "ToPort": 5432,
@@ -72,6 +74,8 @@ Written by `plan` and `sg_compact plan`, read by `apply`.
 | `snapshot_hash` | SHA-256 of every group's rules in the region when the plan was made. `apply` refuses if it no longer matches. Do not edit |
 | `budget` | Rules available for replacements: `max_rules` minus the rules being kept |
 | `revoke` / `authorise` | Passed unchanged to `RevokeSecurityGroupIngress` / `AuthorizeSecurityGroupIngress` |
+| `region` | Where the plan was built. `apply` runs there and refuses a different `--region` |
+| `restore` | What `revert` puts back: the revoked rules with their original descriptions |
 | `removed_without_evidence` | Eligible rules with no observed traffic: revoked, nothing authorised in their place |
 | `port_merge_flagged` | Several eligible port ranges on the same protocol could be merged |
 
@@ -93,14 +97,17 @@ Written by `apply` (`manifest-<ts>.json`) and `sg_compact apply`
   "schema": "sg-tightener.manifest/v1",
   "applied_at": "2026-11-17T10:00:00+00:00",
   "region": "eu-west-1",
+  "complete": true,
   "groups": [
     { "group_id": "sg-0abc1234", "revoked": [ … ], "authorised": [ … ] }
   ]
 }
 ```
 
-A partial manifest is written when `apply` stops on an error, and reverts only
-what was done.
+The manifest is rewritten after each successful AWS call and records only calls
+that succeeded. When `apply` stops on an error, or is killed, `complete` is
+`false` and `revert` undoes exactly what was done (for example a revoke whose
+authorise then failed).
 
 `sg_extend` writes `sg_extend-manifest-<ts>.json` (`sg-extend.manifest/v1`) listing the rules it added
 per group. It is a record for the next tightening cycle, not an input to

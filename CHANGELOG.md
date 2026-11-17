@@ -17,6 +17,34 @@
 - `iam-policy.json` gains `transfer:ListServers`, `transfer:DescribeServer`
   and `ec2:DescribeVpcEndpoints`, which `sg_transfer_audit` needs.
 - New documentation under `docs/`, CI on Python 3.9 to 3.12.
+- **Fix (safety):** a Logs Insights answer stops at 10,000 rows without saying
+  so; `analyse` and `sg_extend` took it as the whole answer and the plan then
+  revoked access for every source cut off. A full answer is now discarded and
+  the window split in half until each part fits; a one-minute window that is
+  still full is refused.
+- **Fix:** a failed or cancelled Insights query is an error, not an empty
+  result, and `analyse` no longer polls with no pause.
+- **Fix:** `plan` records its region and `apply` runs there. Before, `apply`
+  used `AWS_REGION`, so a plan applied with the wrong one failed confusingly.
+  A `--region` that disagrees with the plan is refused.
+- **Fix:** the `apply` manifest recorded a whole group as done even when the
+  authorise after a successful revoke failed, and was written only at the end.
+  It now records each call as it succeeds. `revert` restores rule
+  descriptions, exits non-zero when a call fails, and catches connection
+  errors as well as API errors.
+- **Fix:** `sg_diagnose --hours 2` read 24 hours; the window is now exact.
+- **Fix:** `sg_extend` read every flow log as the default format. With a custom
+  format its rules were built from the wrong columns, and behind a transit
+  gateway from the next-hop address. It now runs the flow-log preflight and
+  parses with the configured format, preferring `pkt-srcaddr`.
+- **New:** `sg_viz.py export` / `overlay`: one JSON file of who talked to what,
+  accepted or rejected, over time, the rule that allowed each connection, and
+  which connections a plan would block.
+- **Tests:** pytest, split into `tests/unit` and `tests/integration` (moto),
+  with a synthetic flow-log generator. 170 tests.
+- **Known gap, pinned by an xfail test:** `approved.json` holds source IPs
+  only, so each group's rule is rebuilt from every observed source inside it,
+  not only the sources that reached that group.
 
 ## History before the move
 
