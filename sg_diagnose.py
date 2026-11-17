@@ -33,6 +33,7 @@ from sg_tightener import (
     _analyse_from_s3,
     _client,
     _list_security_groups,
+    preflight_flow_logs,
     rule_is_eligible,
     RFC1918_BLOCKS,
 )
@@ -82,8 +83,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         out_path=args.approved,
         accepted_only=False,  # we want REJECTs
     )
+    check = preflight_flow_logs(cfg)
     rejected = (
-        _analyse_from_cloudwatch(cfg) if args.log_group else _analyse_from_s3(cfg)
+        _analyse_from_cloudwatch(cfg, check.fields)
+        if args.log_group
+        else _analyse_from_s3(cfg, check.fields)
     )
     LOG.info("observed %d rejected source IPs", len(rejected))
 

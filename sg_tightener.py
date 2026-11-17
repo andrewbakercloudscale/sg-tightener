@@ -606,12 +606,14 @@ def _analyse_from_s3(cfg: AnalyseConfig, fields: list[str]) -> list[str]:
     return list(ips)
 
 
-def run_analyse(cfg: AnalyseConfig) -> dict:
-    if not cfg.log_group and not cfg.s3_bucket:
-        raise ValueError("either --log-group or --s3-bucket is required")
+def preflight_flow_logs(cfg: AnalyseConfig) -> FlowLogCheck:
+    """Verify the flow logs feeding cfg's destination and return the check.
 
-    # Preflight: verify the flow logs feeding this destination can actually
-    # answer "who talks to these instances" before writing any approved list.
+    Logs every warning, and raises RuntimeError on a configuration that
+    cannot answer the question (REJECT-only capture, no action or source
+    field, mixed formats). Shared by ``analyse`` and ``sg_diagnose`` so both
+    parse records with the configured log format rather than assuming one.
+    """
     matched = _describe_matching_flow_logs(cfg.region, cfg.log_group, cfg.s3_bucket)
     if matched is None:
         check = FlowLogCheck(
@@ -640,6 +642,16 @@ def run_analyse(cfg: AnalyseConfig) -> dict:
             "flow-log configuration cannot support this analysis: "
             + "; ".join(check.errors)
         )
+    return check
+
+
+def run_analyse(cfg: AnalyseConfig) -> dict:
+    if not cfg.log_group and not cfg.s3_bucket:
+        raise ValueError("either --log-group or --s3-bucket is required")
+
+    # Preflight: verify the flow logs feeding this destination can actually
+    # answer "who talks to these instances" before writing any approved list.
+    check = preflight_flow_logs(cfg)
 
     if cfg.log_group:
         ips = _analyse_from_cloudwatch(cfg, check.fields)

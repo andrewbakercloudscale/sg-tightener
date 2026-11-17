@@ -887,6 +887,31 @@ class TestCloudwatchQueryBuilder(unittest.TestCase):
         self.assertIn('filter action = "REJECT"', query)
 
 
+class TestSgDiagnoseWiring(unittest.TestCase):
+    """sg_diagnose must parse with the preflighted log format.
+
+    Regression: when analyse gained flow-log preflight, the readers took a
+    ``fields`` argument and sg_diagnose kept calling them with one, so every
+    run died with a TypeError before reading a single record.
+    """
+
+    def test_diagnose_passes_preflight_fields_to_reader(self):
+        from unittest import mock
+        import sg_diagnose
+        from sg_tightener import FlowLogCheck
+
+        custom = ["version", "srcaddr", "dstaddr", "action", "pkt-srcaddr"]
+        check = FlowLogCheck(fields=custom, warnings=[], errors=[], verified=True)
+        with mock.patch.object(sg_diagnose, "preflight_flow_logs", return_value=check), \
+             mock.patch.object(sg_diagnose, "_analyse_from_cloudwatch", return_value=[]) as reader, \
+             mock.patch.object(sg_diagnose, "_list_security_groups", return_value=[]):
+            rc = sg_diagnose.main(["--region", "us-east-1", "--log-group", "lg"])
+        self.assertEqual(rc, 0)
+        cfg, fields = reader.call_args.args
+        self.assertEqual(fields, custom)
+        self.assertFalse(cfg.accepted_only)
+
+
 if __name__ == "__main__":
     runner = unittest.TextTestRunner(verbosity=2)
     suite = unittest.TestLoader().loadTestsFromModule(sys.modules[__name__])
