@@ -33,7 +33,7 @@ Usage:
   sg_tightener.py plan     --region <r> --approved approved.json
                            [--max-rules 60] [--tolerance 0.30]
                            [--prefix-threshold 24] [--out plan.json]
-  sg_tightener.py apply    --plan plan.json [--yes]
+  sg_tightener.py apply    --plan plan.json [--region <r>] [--yes]
   sg_tightener.py revert   --manifest manifest-<ts>.json [--yes]
 """
 
@@ -50,7 +50,8 @@ import logging
 import os
 import re
 import sys
-from typing import Iterable, Sequence
+import time
+from typing import Callable, Iterable, Iterator, Sequence
 
 try:
     import boto3
@@ -73,6 +74,10 @@ DEFAULT_PREFIX_THRESHOLD = 24
 DEFAULT_TOLERANCE = 0.30
 DEFAULT_MAX_RULES = 60
 DEFAULT_DAYS = 90
+
+# CloudWatch Logs Insights returns at most this many rows per query. A query
+# that returns exactly this many has been cut off; see run_insights_query.
+INSIGHTS_ROW_LIMIT = 10000
 
 
 # --------------------------------------------------------------------------- #
@@ -361,9 +366,21 @@ class FlowLogCheck:
     verified: bool           # True when a matching flow-log config was found
 
 
-def check_flow_log_config(flow_logs: list[dict], accepted_only: bool = True) -> FlowLogCheck:
+def check_flow_log_config(
+    flow_logs: list[dict],
+    accepted_only: bool = True,
+    traffic: str | None = None,
+) -> FlowLogCheck:
     """Evaluates the describe_flow_logs entries that feed the analysis
-    destination and returns the parse field order plus warnings/errors."""
+    destination and returns the parse field order plus warnings/errors.
+
+    ``traffic`` is what the caller needs: "ACCEPT", "REJECT" or "ALL". It
+    defaults from ``accepted_only``. For "ALL" (the viewer export) a flow log
+    that captures only one side is a warning, not an error: half the picture
+    is still worth showing, as long as the reader is told.
+    """
+    if traffic is None:
+        traffic = "ACCEPT" if accepted_only else "REJECT"
     warnings: list[str] = []
     errors: list[str] = []
 
@@ -392,10 +409,12 @@ def check_flow_log_config(flow_logs: list[dict], accepted_only: bool = True) -> 
         if fl.get("DeliverLogsErrorMessage"):
             warnings.append(f"flow log {flid} reports a delivery error: {fl['DeliverLogsErrorMessage']}")
         ttype = fl.get("TrafficType", "")
-        if accepted_only and ttype == "REJECT":
+        if traffic == "ACCEPT" and ttype == "REJECT":
             errors.append(f"flow log {flid} captures REJECT traffic only — an accepted-traffic analysis would observe nothing")
-        if not accepted_only and ttype == "ACCEPT":
+        if traffic == "REJECT" and ttype == "ACCEPT":
             errors.append(f"flow log {flid} captures ACCEPT traffic only — a rejected-traffic analysis would observe nothing")
+        if traffic == "ALL" and ttype in ("ACCEPT", "REJECT"):
+            warnings.append(f"flow log {flid} captures {ttype} traffic only — the other side will be missing from the picture")
 
     formats = {fl.get("LogFormat") or "" for fl in flow_logs}
     if len(formats) > 1:
@@ -479,6 +498,14 @@ class AnalyseConfig:
     s3_prefix: str | None
     out_path: str
     accepted_only: bool = True
+    # When set, the window is this many hours and ``days`` is ignored.
+    hours: int | None = None
+    traffic: str | None = None  # "ACCEPT" | "REJECT" | "ALL"; default from accepted_only
+
+    def window(self, now: dt.datetime | None = None) -> tuple[dt.datetime, dt.datetime]:
+        end = now or dt.datetime.now(dt.timezone.utc)
+        span = dt.timedelta(hours=self.hours) if self.hours else dt.timedelta(days=self.days)
+        return end - span, end
 
 
 def build_cloudwatch_query(fields: list[str], accepted_only: bool = True) -> tuple[str, str]:
@@ -495,7 +522,7 @@ def build_cloudwatch_query(fields: list[str], accepted_only: bool = True) -> tup
             "fields srcAddr, action | "
             f"filter action = \"{wanted_action}\" | "
             "stats count() by srcAddr | "
-            "limit 10000"
+            f"limit {INSIGHTS_ROW_LIMIT}"
         )
         return query, "srcAddr"
 
@@ -509,35 +536,229 @@ def build_cloudwatch_query(fields: list[str], accepted_only: bool = True) -> tup
     )
     if "flow-direction" in idx:
         query += f"filter f{idx['flow-direction']} = \"ingress\" | "
-    query += f"stats count() by {src} | limit 10000"
+    query += f"stats count() by {src} | limit {INSIGHTS_ROW_LIMIT}"
     return query, src
 
 
-def _analyse_from_cloudwatch(cfg: AnalyseConfig, fields: list[str]) -> list[str]:
-    logs = _client("logs", cfg.region)
-    end = dt.datetime.now(dt.timezone.utc)
-    start = end - dt.timedelta(days=cfg.days)
-    query, src_field = build_cloudwatch_query(fields, cfg.accepted_only)
-    start_resp = logs.start_query(
-        logGroupName=cfg.log_group,
+# Field names Logs Insights discovers on its own for DEFAULT-format flow logs.
+_DISCOVERED_FIELD = {
+    "version": "version", "account-id": "accountId", "interface-id": "interfaceId",
+    "srcaddr": "srcAddr", "dstaddr": "dstAddr", "srcport": "srcPort",
+    "dstport": "dstPort", "protocol": "protocol", "packets": "packets",
+    "bytes": "bytes", "start": "start", "end": "end", "action": "action",
+    "log-status": "logStatus",
+}
+
+# Logical record keys (as flow_records names them) -> flow-log fields, best first.
+_LOGICAL_FIELDS = {
+    "src": ("pkt-srcaddr", "srcaddr"),
+    "dst": ("pkt-dstaddr", "dstaddr"),
+    "srcport": ("srcport",),
+    "dstport": ("dstport",),
+    "protocol": ("protocol",),
+    "action": ("action",),
+    "packets": ("packets",),
+    "bytes": ("bytes",),
+    "interface": ("interface-id",),
+}
+
+
+def build_flow_stats_query(
+    fields: list[str],
+    *,
+    by: Sequence[str],
+    action: str | None = None,
+    ingress_only: bool = True,
+    bin_seconds: int | None = None,
+) -> tuple[str, dict[str, str]]:
+    """Logs Insights ``stats`` query over flow-log records, grouped by
+    logical keys (``src``, ``dst``, ``dstport``, ``protocol``, ``action`` ...).
+
+    Returns (query, columns) where ``columns`` maps each logical key, plus
+    ``records``, ``packets``, ``bytes`` and ``bucket`` (when binned), to the
+    name the result rows carry. Like build_cloudwatch_query, the query reads
+    discovered field names for the default format and splits @message
+    positionally for any custom one, and prefers pkt-srcaddr/pkt-dstaddr.
+    """
+    default = list(fields) == DEFAULT_LOG_FORMAT_FIELDS
+    idx = {f: i for i, f in enumerate(fields)}
+
+    def ref(logical: str) -> str:
+        for name in _LOGICAL_FIELDS[logical]:
+            if name in idx:
+                return _DISCOVERED_FIELD[name] if default else f"f{idx[name]}"
+        raise ValueError(f"flow-log format has no field for {logical!r}")
+
+    if default:
+        query = "fields @timestamp"
+    else:
+        pattern = " ".join("*" for _ in fields)
+        aliases = ", ".join(f"f{i}" for i in range(len(fields)))
+        query = f"fields @message | parse @message \"{pattern}\" as {aliases}"
+    if action:
+        query += f" | filter {ref('action')} = \"{action}\""
+    if ingress_only and "flow-direction" in idx and not default:
+        query += f" | filter f{idx['flow-direction']} = \"ingress\""
+
+    columns = {key: ref(key) for key in by}
+    group = [columns[key] for key in by]
+    stats = ["count(*) as records"]
+    columns["records"] = "records"
+    for metric in ("packets", "bytes"):
+        if any(n in idx for n in _LOGICAL_FIELDS[metric]):
+            stats.append(f"sum({ref(metric)}) as {metric}_sum")
+            columns[metric] = f"{metric}_sum"
+    if bin_seconds:
+        group.append(f"bin({int(bin_seconds)}s)")
+        columns["bucket"] = f"bin({int(bin_seconds)}s)"
+    query += f" | stats {', '.join(stats)} by {', '.join(group)} | limit {INSIGHTS_ROW_LIMIT}"
+    return query, columns
+
+
+def run_insights_query(
+    logs,
+    log_group: str,
+    query: str,
+    start: dt.datetime,
+    end: dt.datetime,
+    *,
+    limit: int | None = None,
+    min_window: dt.timedelta = dt.timedelta(minutes=1),
+    poll_seconds: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[dict[str, str]]:
+    """Run a Logs Insights query over [start, end] and return every row.
+
+    Insights stops at ``limit`` rows without saying so. Returning that
+    partial answer is how an approved list silently loses sources and the
+    plan then revokes their access. So a result that reaches the limit is
+    thrown away and the window is split in half, recursively, until every
+    part fits. The caller merges the parts: every query used here is a
+    ``stats ... by`` whose rows can be combined across windows.
+
+    Raises RuntimeError when the query fails, or when a window of
+    ``min_window`` still reaches the limit (refuse rather than truncate).
+    Rows are returned as {field: value} dicts.
+    """
+    limit = INSIGHTS_ROW_LIMIT if limit is None else limit
+    resp = logs.start_query(
+        logGroupName=log_group,
         startTime=int(start.timestamp()),
         endTime=int(end.timestamp()),
         queryString=query,
     )
-    qid = start_resp["queryId"]
+    qid = resp["queryId"]
     while True:
         result = logs.get_query_results(queryId=qid)
-        if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
+        status = result.get("status")
+        if status in ("Complete", "Failed", "Cancelled", "Timeout"):
             break
-    rows = result.get("results", []) if result["status"] == "Complete" else []
+        sleep(poll_seconds)
+    if status != "Complete":
+        raise RuntimeError(
+            f"Logs Insights query on {log_group} ended with status {status} "
+            f"for {start.isoformat()} to {end.isoformat()} — refusing to "
+            "continue with a partial view"
+        )
+    rows = result.get("results", [])
+    if len(rows) < limit:
+        return [{c["field"]: c.get("value", "") for c in row} for row in rows]
+
+    if end - start <= min_window:
+        raise RuntimeError(
+            f"Logs Insights returned {len(rows)} rows (its limit) even for the "
+            f"{int((end - start).total_seconds())}s window starting "
+            f"{start.isoformat()}; the answer would be truncated. Narrow the "
+            "query (fewer interfaces, a smaller --days) rather than act on it."
+        )
+    mid = start + (end - start) / 2
+    # Insights takes whole seconds; keep the halves from overlapping.
+    mid = mid.replace(microsecond=0)
+    LOG.info(
+        "Logs Insights hit its %d-row limit for %s to %s; splitting the window",
+        limit, start.isoformat(), end.isoformat(),
+    )
+    first = run_insights_query(logs, log_group, query, start, mid, limit=limit,
+                               min_window=min_window, poll_seconds=poll_seconds, sleep=sleep)
+    second = run_insights_query(logs, log_group, query, mid + dt.timedelta(seconds=1), end,
+                                limit=limit, min_window=min_window,
+                                poll_seconds=poll_seconds, sleep=sleep)
+    return first + second
+
+
+def _analyse_from_cloudwatch(cfg: AnalyseConfig, fields: list[str]) -> list[str]:
+    logs = _client("logs", cfg.region)
+    start, end = cfg.window()
+    query, src_field = build_cloudwatch_query(fields, cfg.accepted_only)
+    rows = run_insights_query(logs, cfg.log_group, query, start, end)
     # '-' is the flow-log placeholder for "not applicable" (e.g. pkt-srcaddr
     # on records where it could not be computed) — never a real source.
-    return [
-        c["value"]
+    return sorted({
+        row[src_field]
         for row in rows
-        for c in row
-        if c["field"] == src_field and c["value"] != "-"
-    ]
+        if row.get(src_field) and row[src_field] != "-"
+    })
+
+
+def _int_or_none(value: str | None) -> int | None:
+    try:
+        return int(value) if value not in (None, "-") else None
+    except ValueError:
+        return None
+
+
+def flow_records(lines: Iterable[str], fields: list[str]) -> Iterator[dict]:
+    """Parse space-separated flow-log records laid out per ``fields``.
+
+    Yields one dict per record with: src, dst, srcport, dstport, protocol
+    (IANA number as a string), action, packets, bytes, start, end,
+    direction (None when the format has no flow-direction) and interface.
+
+    ``src``/``dst`` prefer pkt-srcaddr/pkt-dstaddr (the ORIGINAL addresses)
+    over srcaddr/dstaddr, which for traffic through a transit gateway or NAT
+    gateway interface hold the intermediate hop's address. A "-" packet
+    address falls back to the interface address. Header rows, short lines,
+    and records with no action or no source (NODATA/SKIPDATA) are skipped.
+    """
+    idx = {f: i for i, f in enumerate(fields)}
+    action_i = idx.get("action")
+    if action_i is None or ("srcaddr" not in idx and "pkt-srcaddr" not in idx):
+        return
+    n = len(fields)
+
+    def pick(parts: list[str], *names: str) -> str | None:
+        for name in names:
+            i = idx.get(name)
+            if i is not None and parts[i] != "-":
+                return parts[i]
+        return None
+
+    for line in lines:
+        parts = line.split()
+        if len(parts) < n:
+            continue
+        action = parts[action_i]
+        # Also skips each file's header row: its 'action' column holds the
+        # literal field name.
+        if action not in ("ACCEPT", "REJECT"):
+            continue
+        src = pick(parts, "pkt-srcaddr", "srcaddr")
+        if src is None:
+            continue
+        yield {
+            "src": src,
+            "dst": pick(parts, "pkt-dstaddr", "dstaddr"),
+            "srcport": _int_or_none(pick(parts, "srcport")),
+            "dstport": _int_or_none(pick(parts, "dstport")),
+            "protocol": pick(parts, "protocol"),
+            "action": action,
+            "packets": _int_or_none(pick(parts, "packets")) or 0,
+            "bytes": _int_or_none(pick(parts, "bytes")) or 0,
+            "start": _int_or_none(pick(parts, "start")),
+            "end": _int_or_none(pick(parts, "end")),
+            "direction": pick(parts, "flow-direction"),
+            "interface": pick(parts, "interface-id"),
+        }
 
 
 def ips_from_flow_log_lines(lines: Iterable[str], fields: list[str], accepted_only: bool = True) -> set[str]:
@@ -545,65 +766,63 @@ def ips_from_flow_log_lines(lines: Iterable[str], fields: list[str], accepted_on
     records laid out per ``fields``. Prefers pkt-srcaddr (the ORIGINAL
     source) over srcaddr, which for traffic through a transit gateway or
     NAT gateway interface contains the intermediate hop's address."""
-    idx = {f: i for i, f in enumerate(fields)}
-    src_i = idx.get("pkt-srcaddr", idx.get("srcaddr"))
-    fallback_i = idx.get("srcaddr")
-    action_i = idx.get("action")
-    dir_i = idx.get("flow-direction")
-    if src_i is None or action_i is None:
-        return set()
     wanted_action = "ACCEPT" if accepted_only else "REJECT"
-    n = len(fields)
-    ips: set[str] = set()
-    for line in lines:
-        parts = line.split()
-        # Also skips each file's header row: its 'action' column holds the
-        # literal field name, which never equals the wanted action.
-        if len(parts) < n:
-            continue
-        if parts[action_i] != wanted_action:
-            continue
-        if dir_i is not None and parts[dir_i] == "egress":
-            continue
-        src = parts[src_i]
-        if src == "-" and fallback_i is not None:
-            src = parts[fallback_i]
-        if src != "-":
-            ips.add(src)
-    return ips
+    return {
+        r["src"]
+        for r in flow_records(lines, fields)
+        if r["action"] == wanted_action and r["direction"] != "egress"
+    }
 
 
-def _analyse_from_s3(cfg: AnalyseConfig, fields: list[str]) -> list[str]:
-    if not cfg.s3_bucket:
-        return []
-    s3 = _client("s3")
-    end = dt.datetime.now(dt.timezone.utc)
-    start = end - dt.timedelta(days=cfg.days)
-    prefix = (cfg.s3_prefix or "").rstrip("/")
-    ips: set[str] = set()
+def iter_s3_flow_log_lines(
+    s3,
+    bucket: str,
+    prefix: str | None,
+    start: dt.datetime,
+    end: dt.datetime,
+) -> Iterator[tuple[dict, list[str]]]:
+    """Yield (object summary, lines) for every flow-log object in the window.
+
+    Objects are selected by LastModified. ``.gz`` objects are decompressed.
+    An object that cannot be read is logged and skipped; if more than 10% of
+    the objects in the window fail, RuntimeError is raised after the last
+    one, so nobody acts on a partial view.
+    """
+    prefix = (prefix or "").rstrip("/")
     total = 0
     failed = 0
     paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=cfg.s3_bucket, Prefix=prefix):
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             if obj["LastModified"] < start or obj["LastModified"] > end:
                 continue
             total += 1
             try:
-                body = s3.get_object(Bucket=cfg.s3_bucket, Key=obj["Key"])["Body"].read()
+                body = s3.get_object(Bucket=bucket, Key=obj["Key"])["Body"].read()
                 if obj["Key"].endswith(".gz"):
                     body = gzip.decompress(body)
                 lines = body.decode("utf-8", errors="ignore").splitlines()
-                ips |= ips_from_flow_log_lines(lines, fields, cfg.accepted_only)
-            except Exception as exc:  # noqa: BLE001 — broad on purpose, see below
+            except Exception as exc:  # noqa: BLE001 — broad on purpose, see docstring
                 failed += 1
-                LOG.warning("failed to read s3://%s/%s: %s", cfg.s3_bucket, obj["Key"], exc)
+                LOG.warning("failed to read s3://%s/%s: %s", bucket, obj["Key"], exc)
+                continue
+            yield obj, lines
     if total and failed / total > 0.10:
         raise RuntimeError(
             f"S3 flow-log read failure ratio {failed}/{total} exceeds 10% — refusing "
-            "to emit a partial approved list. Check IAM and bucket policies."
+            "to act on a partial view. Check IAM and bucket policies."
         )
-    return list(ips)
+
+
+def _analyse_from_s3(cfg: AnalyseConfig, fields: list[str]) -> list[str]:
+    if not cfg.s3_bucket:
+        return []
+    s3 = _client("s3", cfg.region)
+    start, end = cfg.window()
+    ips: set[str] = set()
+    for _obj, lines in iter_s3_flow_log_lines(s3, cfg.s3_bucket, cfg.s3_prefix, start, end):
+        ips |= ips_from_flow_log_lines(lines, fields, cfg.accepted_only)
+    return sorted(ips)
 
 
 def preflight_flow_logs(cfg: AnalyseConfig) -> FlowLogCheck:
@@ -631,7 +850,7 @@ def preflight_flow_logs(cfg: AnalyseConfig) -> FlowLogCheck:
             verified=False,
         )
     else:
-        check = check_flow_log_config(matched, cfg.accepted_only)
+        check = check_flow_log_config(matched, cfg.accepted_only, traffic=cfg.traffic)
 
     for warning in check.warnings:
         LOG.warning("flow-log config: %s", warning)
@@ -764,6 +983,7 @@ def build_plan(
     max_rules: int = DEFAULT_MAX_RULES,
     tolerance: float = DEFAULT_TOLERANCE,
     prefix_threshold: int = DEFAULT_PREFIX_THRESHOLD,
+    region: str | None = None,
 ) -> dict:
     """Plan replacements for every eligible rule, scoped to that rule.
 
@@ -863,6 +1083,7 @@ def build_plan(
                 port_merge_flagged = True
 
         revoke_perms = []
+        restore_perms = []
         for (proto, from_p, to_p), rules in revokes_per_proto_port.items():
             revoke_perms.append({
                 "IpProtocol": proto,
@@ -870,12 +1091,24 @@ def build_plan(
                 "ToPort": to_p,
                 "IpRanges": [{"CidrIp": r["cidr"]} for r in rules],
             })
+            # What revert puts back: the same rules with their descriptions,
+            # so a round trip leaves the group exactly as it was.
+            restore_perms.append({
+                "IpProtocol": proto,
+                "FromPort": from_p,
+                "ToPort": to_p,
+                "IpRanges": [
+                    {"CidrIp": r["cidr"], **({"Description": r["description"]} if r.get("description") else {})}
+                    for r in rules
+                ],
+            })
 
         plan_groups.append({
             "group_id": sg["GroupId"],
             "group_name": sg.get("GroupName"),
             "vpc_id": sg.get("VpcId"),
             "revoke": revoke_perms,
+            "restore": restore_perms,
             "authorise": authorise_perms,
             "removed_without_evidence": removed,
             "port_merge_flagged": port_merge_flagged,
@@ -891,6 +1124,7 @@ def build_plan(
     plan = {
         "schema": "sg-tightener.plan/v1",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "region": region,
         "max_rules": max_rules,
         "tolerance": tolerance,
         "prefix_threshold": prefix_threshold,
@@ -910,7 +1144,48 @@ def _current_snapshot_hash(region: str) -> str:
     return state_hash(snapshot)
 
 
+def resolve_apply_region(plan: dict, cli_region: str | None, env: dict | None = None) -> str:
+    """The region a plan is applied in.
+
+    A plan records the region it was built from, and that is the only region
+    whose snapshot hash it can match, so it wins. ``--region`` that disagrees
+    is refused rather than silently ignored. Plans written before the region
+    was recorded fall back to ``--region``, then AWS_REGION /
+    AWS_DEFAULT_REGION.
+    """
+    env = os.environ if env is None else env
+    planned = plan.get("region")
+    if planned:
+        if cli_region and cli_region != planned:
+            raise SystemExit(
+                f"plan was built in {planned} but --region is {cli_region}; "
+                "a plan only applies in the region it was built from"
+            )
+        return planned
+    region = cli_region or env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION")
+    if not region:
+        raise SystemExit(
+            "this plan does not record its region (it predates that field); "
+            "pass --region or re-run plan"
+        )
+    LOG.warning("plan does not record its region; applying in %s", region)
+    return region
+
+
+def _write_json(path: str, payload: dict) -> None:
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+
+
 def apply_plan(plan: dict, region: str, *, manifest_path: str) -> None:
+    """Apply ``plan`` group by group, recording each call that succeeded.
+
+    The manifest is rewritten after every successful AWS call, so it always
+    describes exactly what was changed: if a revoke fails nothing is
+    recorded for that group, and if the authorise after a successful revoke
+    fails only the revoke is. ``revert`` then undoes that and nothing more,
+    even if the process is killed part way.
+    """
     current = _current_snapshot_hash(region)
     if current != plan["snapshot_hash"]:
         raise RuntimeError(
@@ -923,39 +1198,37 @@ def apply_plan(plan: dict, region: str, *, manifest_path: str) -> None:
         "schema": "sg-tightener.manifest/v1",
         "applied_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "region": region,
+        "complete": False,
         "groups": [],
     }
+    aws_errors: tuple = (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError)
     for grp in plan["groups"]:
         gid = grp["group_id"]
-        # Revoke first — but record the original perms so revert can replay them.
-        manifest_grp = {
-            "group_id": gid,
-            "revoked": grp["revoke"],
-            "authorised": grp["authorise"],
-        }
+        manifest_grp: dict = {"group_id": gid, "revoked": [], "authorised": []}
         try:
             if grp["revoke"]:
-                ec2.revoke_security_group_ingress(
-                    GroupId=gid, IpPermissions=grp["revoke"]
-                )
+                ec2.revoke_security_group_ingress(GroupId=gid, IpPermissions=grp["revoke"])
+                # Record the rules as they were, descriptions included.
+                manifest_grp["revoked"] = grp.get("restore") or grp["revoke"]
+                if manifest_grp not in manifest["groups"]:
+                    manifest["groups"].append(manifest_grp)
+                _write_json(manifest_path, manifest)
             if grp["authorise"]:
-                ec2.authorize_security_group_ingress(
-                    GroupId=gid, IpPermissions=grp["authorise"]
-                )
-        except botocore.exceptions.ClientError as exc:
-            # Save what we did so far and bail loudly. No partial silent state.
-            manifest["groups"].append(manifest_grp)
-            with open(manifest_path, "w", encoding="utf-8") as fh:
-                json.dump(manifest, fh, indent=2)
+                ec2.authorize_security_group_ingress(GroupId=gid, IpPermissions=grp["authorise"])
+                manifest_grp["authorised"] = grp["authorise"]
+                if manifest_grp not in manifest["groups"]:
+                    manifest["groups"].append(manifest_grp)
+                _write_json(manifest_path, manifest)
+        except aws_errors as exc:
+            _write_json(manifest_path, manifest)
             raise SystemExit(
                 f"apply HALTED on {gid}: {exc}\n"
                 f"Partial manifest written to {manifest_path}\n"
                 f"Revert: sg_tightener.py revert --manifest {manifest_path}"
             )
-        manifest["groups"].append(manifest_grp)
 
-    with open(manifest_path, "w", encoding="utf-8") as fh:
-        json.dump(manifest, fh, indent=2)
+    manifest["complete"] = True
+    _write_json(manifest_path, manifest)
     LOG.info("apply complete; manifest written to %s", manifest_path)
 
 
@@ -963,18 +1236,24 @@ def revert_from_manifest(manifest_path: str) -> None:
     with open(manifest_path, "r", encoding="utf-8") as fh:
         manifest = json.load(fh)
     ec2 = _client("ec2", manifest["region"])
+    aws_errors = (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError)
+    failures = 0
     for grp in reversed(manifest["groups"]):
         gid = grp["group_id"]
         if grp.get("authorised"):
             try:
                 ec2.revoke_security_group_ingress(GroupId=gid, IpPermissions=grp["authorised"])
-            except botocore.exceptions.ClientError as exc:
-                LOG.warning("revert: could not revoke restored rules on %s: %s", gid, exc)
+            except aws_errors as exc:
+                failures += 1
+                LOG.warning("revert: could not revoke the tightened rules on %s: %s", gid, exc)
         if grp.get("revoked"):
             try:
                 ec2.authorize_security_group_ingress(GroupId=gid, IpPermissions=grp["revoked"])
-            except botocore.exceptions.ClientError as exc:
+            except aws_errors as exc:
+                failures += 1
                 LOG.warning("revert: could not re-authorise original rules on %s: %s", gid, exc)
+    if failures:
+        raise SystemExit(f"revert finished with {failures} failed call(s); see the warnings above")
     LOG.info("revert complete")
 
 
@@ -1004,6 +1283,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ap = sub.add_parser("apply", help="execute a plan")
     ap.add_argument("--plan", required=True)
+    ap.add_argument("--region", help="only for plans that predate the recorded region; must match it otherwise")
     ap.add_argument("--yes", action="store_true")
 
     rv = sub.add_parser("revert", help="restore pre-apply state from a manifest")
@@ -1045,6 +1325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_rules=args.max_rules,
             tolerance=args.tolerance,
             prefix_threshold=args.prefix_threshold,
+            region=args.region,
         )
         with open(args.out, "w", encoding="utf-8") as fh:
             json.dump(plan, fh, indent=2)
@@ -1057,15 +1338,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.mode == "apply":
         with open(args.plan, "r", encoding="utf-8") as fh:
             plan = json.load(fh)
+        region = resolve_apply_region(plan, args.region)
         if not args.yes:
-            _confirm("apply this plan")
+            _confirm(f"apply this plan in {region}")
         ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         manifest_path = f"manifest-{ts}.json"
-        # Region is inferred from the snapshot — but apply needs an explicit region.
-        # We piggyback on AWS_DEFAULT_REGION / boto3 session region for now.
-        region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
-        if not region:
-            sys.exit("AWS_REGION must be set for apply")
         apply_plan(plan, region, manifest_path=manifest_path)
         return 0
 

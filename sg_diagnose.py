@@ -74,9 +74,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.log_group and not args.s3_bucket:
         p.error("either --log-group or --s3-bucket is required")
 
+    if args.hours < 1:
+        p.error("--hours must be >= 1")
+
     cfg = AnalyseConfig(
         region=args.region,
-        days=max(1, args.hours // 24 or 1),
+        days=max(1, -(-args.hours // 24)),
+        hours=args.hours,  # the window; days is informational only
         log_group=args.log_group,
         s3_bucket=args.s3_bucket,
         s3_prefix=args.s3_prefix,

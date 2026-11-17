@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import gzip
 import ipaddress
 import json
 import logging
@@ -62,10 +61,17 @@ except ImportError:
     botocore = None
 
 from sg_tightener import (
+    DEFAULT_LOG_FORMAT_FIELDS,
     DEFAULT_TOLERANCE,
     RFC1918_BLOCKS,
+    AnalyseConfig,
     _client,
+    build_flow_stats_query,
     collapse_ips_to_cidrs,
+    flow_records,
+    iter_s3_flow_log_lines,
+    preflight_flow_logs,
+    run_insights_query,
 )
 
 LOG = logging.getLogger("sg_extend")
@@ -480,8 +486,23 @@ def derive_groups_from_dst_ips(
 # Flow-log readers (AWS)
 # --------------------------------------------------------------------------- #
 
+def _add_flow(flows, dst_map, src, dst, proto_num, dstport) -> None:
+    proto = proto_name(proto_num)
+    if proto is None or not src or src == "-":
+        return
+    try:
+        port = int(dstport)
+    except (TypeError, ValueError):
+        return
+    key = (src.strip(), proto, port)
+    flows.add(key)
+    if dst and dst != "-":
+        dst_map.setdefault(key, set()).add(dst.strip())
+
+
 def read_rejected_flows_cloudwatch(
-    region: str, log_group: str, hours: int
+    region: str, log_group: str, hours: int,
+    fields: list[str] | None = None,
 ) -> tuple[set[tuple[str, str, int]], dict[tuple[str, str, int], set[str]]]:
     """Query CloudWatch Logs Insights for REJECTed flows in the window.
 
@@ -489,109 +510,50 @@ def read_rejected_flows_cloudwatch(
     every downstream pure helper, plus a mapping from each flow tuple to
     the set of destination ENI IPs that observed it. The destination
     information is what makes ENI-based group discovery possible.
+
+    ``fields`` is the configured log format (from preflight_flow_logs); the
+    query follows it, so custom formats and pkt-srcaddr are honoured. A
+    result that reaches the Insights row limit is split by time rather than
+    truncated (run_insights_query).
     """
+    fields = list(fields or DEFAULT_LOG_FORMAT_FIELDS)
     logs = _client("logs", region)
     end = dt.datetime.now(dt.timezone.utc)
     start = end - dt.timedelta(hours=hours)
-    query = (
-        "fields srcAddr, dstAddr, dstPort, protocol "
-        '| filter action = "REJECT" '
-        "| stats count() as hits by srcAddr, dstAddr, dstPort, protocol "
-        "| limit 10000"
+    query, cols = build_flow_stats_query(
+        fields, by=("src", "dst", "dstport", "protocol"), action="REJECT",
     )
-    resp = logs.start_query(
-        logGroupName=log_group,
-        startTime=int(start.timestamp()),
-        endTime=int(end.timestamp()),
-        queryString=query,
-    )
-    qid = resp["queryId"]
-    while True:
-        result = logs.get_query_results(queryId=qid)
-        if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
-            break
-        time.sleep(1)
+    rows = run_insights_query(logs, log_group, query, start, end)
 
     flows: set[tuple[str, str, int]] = set()
     dst_map: dict[tuple[str, str, int], set[str]] = {}
-    if result["status"] != "Complete":
-        LOG.warning("flow-log query ended with status %s", result["status"])
-        return flows, dst_map
-    for row in result.get("results", []):
-        cells = {c["field"]: c["value"] for c in row}
-        proto = proto_name(cells.get("protocol"))
-        if proto is None:
-            continue
-        try:
-            port = int(cells["dstPort"])
-        except (KeyError, ValueError):
-            continue
-        src = cells.get("srcAddr", "").strip()
-        dst = cells.get("dstAddr", "").strip()
-        if not src:
-            continue
-        key = (src, proto, port)
-        flows.add(key)
-        if dst:
-            dst_map.setdefault(key, set()).add(dst)
+    for row in rows:
+        _add_flow(flows, dst_map, row.get(cols["src"], ""), row.get(cols["dst"]),
+                  row.get(cols["protocol"]), row.get(cols["dstport"]))
     return flows, dst_map
 
 
 def read_rejected_flows_s3(
-    region: str, bucket: str, prefix: str | None, hours: int
+    region: str, bucket: str, prefix: str | None, hours: int,
+    fields: list[str] | None = None,
 ) -> tuple[set[tuple[str, str, int]], dict[tuple[str, str, int], set[str]]]:
-    """Parse VPC flow-log objects in S3 (default format) for REJECTed flows.
+    """Parse VPC flow-log objects in S3 for REJECTed ingress flows.
 
     Returns ``(flows, dst_map)`` matching the CloudWatch reader; see that
-    function's docstring for the contract.
+    function's docstring for the contract. Records are parsed with the
+    configured log format (``fields``), not assumed to be the default one.
     """
+    fields = list(fields or DEFAULT_LOG_FORMAT_FIELDS)
     s3 = _client("s3", region)
     end = dt.datetime.now(dt.timezone.utc)
     start = end - dt.timedelta(hours=hours)
-    prefix = (prefix or "").rstrip("/")
     flows: set[tuple[str, str, int]] = set()
     dst_map: dict[tuple[str, str, int], set[str]] = {}
-    total = 0
-    failed = 0
-    paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        for obj in page.get("Contents", []):
-            if obj["LastModified"] < start or obj["LastModified"] > end:
+    for _obj, lines in iter_s3_flow_log_lines(s3, bucket, prefix, start, end):
+        for rec in flow_records(lines, fields):
+            if rec["action"] != "REJECT" or rec["direction"] == "egress":
                 continue
-            total += 1
-            try:
-                body = s3.get_object(Bucket=bucket, Key=obj["Key"])["Body"].read()
-                if obj["Key"].endswith(".gz"):
-                    body = gzip.decompress(body)
-                for line in body.decode("utf-8", errors="ignore").splitlines():
-                    parts = line.split()
-                    # Default format: ... srcaddr[3] dstaddr[4] ... dstport[6] protocol[7] ... action[12]
-                    if len(parts) < 14:
-                        continue
-                    src, dst, dstport, proto_num, action = (
-                        parts[3], parts[4], parts[6], parts[7], parts[12],
-                    )
-                    if action != "REJECT":
-                        continue
-                    proto = proto_name(proto_num)
-                    if proto is None:
-                        continue
-                    try:
-                        port = int(dstport)
-                    except ValueError:
-                        continue
-                    key = (src, proto, port)
-                    flows.add(key)
-                    if dst and dst != "-":
-                        dst_map.setdefault(key, set()).add(dst)
-            except Exception as exc:  # noqa: BLE001 — broad on purpose
-                failed += 1
-                LOG.warning("failed to read s3://%s/%s: %s", bucket, obj["Key"], exc)
-    if total and failed / total > 0.10:
-        raise RuntimeError(
-            f"S3 flow-log read failure ratio {failed}/{total} exceeds 10% — refusing "
-            "to act on a partial view. Check IAM and bucket policies."
-        )
+            _add_flow(flows, dst_map, rec["src"], rec["dst"], rec["protocol"], rec["dstport"])
     return flows, dst_map
 
 
@@ -708,13 +670,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.exit(f"input error: {exc}")
 
     # --- discover rejected traffic --------------------------------------- #
+    # Verify the flow logs first and parse with their real format: a custom
+    # format read as the default one puts the wrong columns in every rule.
+    try:
+        check = preflight_flow_logs(AnalyseConfig(
+            region=args.region, days=1, hours=args.hours,
+            log_group=args.log_group, s3_bucket=args.s3_bucket,
+            s3_prefix=args.s3_prefix, out_path="", accepted_only=False,
+        ))
+    except RuntimeError as exc:
+        sys.exit(str(exc))
     if args.log_group:
         flows, dst_map = read_rejected_flows_cloudwatch(
-            args.region, args.log_group, args.hours
+            args.region, args.log_group, args.hours, check.fields
         )
     else:
         flows, dst_map = read_rejected_flows_s3(
-            args.region, args.s3_bucket, args.s3_prefix, args.hours
+            args.region, args.s3_bucket, args.s3_prefix, args.hours, check.fields
         )
     flows = filter_flows(
         flows, include_public=args.include_public, port_specs=port_specs
