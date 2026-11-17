@@ -715,6 +715,48 @@ def _all_rule_count(sg: dict) -> int:
     return n
 
 
+def _allocate_budget(needs: list[int], budget: int) -> list[int]:
+    """Split ``budget`` rule slots across units that each need ``needs[i]``.
+
+    Every unit with evidence gets at least one slot. When the total need fits,
+    each unit gets what it needs; otherwise the slots above the first are
+    shared in proportion to each unit's extra need (largest remainder).
+    """
+    alloc = [1 if n > 0 else 0 for n in needs]
+    spare = budget - sum(alloc)
+    if spare <= 0:
+        return alloc
+    extra = [max(0, n - a) for n, a in zip(needs, alloc)]
+    total_extra = sum(extra)
+    if total_extra <= spare:
+        return [a + e for a, e in zip(alloc, extra)]
+    shares = [e * spare / total_extra for e in extra]
+    floors = [int(x) for x in shares]
+    leftover = spare - sum(floors)
+    order = sorted(range(len(needs)), key=lambda i: shares[i] - floors[i], reverse=True)
+    for i in order[:leftover]:
+        floors[i] += 1
+    return [a + f for a, f in zip(alloc, floors)]
+
+
+def _replacements_within(
+    original: ipaddress.IPv4Network,
+    ips: list[str],
+    max_rules: int,
+    tolerance: float,
+) -> list[ipaddress.IPv4Network]:
+    """Collapse ``ips`` (all inside ``original``) without ever leaving it.
+
+    collapse_ips_to_cidrs may widen up to the RFC 1918 home block; any block
+    that grew past the original rule is clipped back to the original, so a
+    replacement can only ever narrow a rule.
+    """
+    nets = [ipaddress.ip_network(c) for c in collapse_ips_to_cidrs(
+        ips, max_rules=max_rules, tolerance=tolerance)]
+    clipped = [original if not n.subnet_of(original) else n for n in nets]
+    return list(ipaddress.collapse_addresses(clipped))
+
+
 def build_plan(
     sgs: list[dict],
     approved_ips: list[str],
@@ -723,6 +765,21 @@ def build_plan(
     tolerance: float = DEFAULT_TOLERANCE,
     prefix_threshold: int = DEFAULT_PREFIX_THRESHOLD,
 ) -> dict:
+    """Plan replacements for every eligible rule, scoped to that rule.
+
+    Each eligible rule is rebuilt only from the observed RFC 1918 addresses
+    that fall inside its own CIDR, and the result never extends past that
+    CIDR. A replacement can therefore narrow a rule but never grant a
+    source the rule did not already allow, and public addresses in the
+    approved list can never reach a private rule. A rule with no observed
+    traffic is revoked with no replacement and listed under
+    ``removed_without_evidence`` so the reviewer sees it.
+    """
+    private_ips = [
+        a for a in _normalise_ips(approved_ips)
+        if any(a in b for b in RFC1918_BLOCKS)
+    ]
+
     plan_groups = []
     for sg in sgs:
         eligible = _eligible_rules(sg, prefix_threshold)
@@ -738,29 +795,62 @@ def build_plan(
         untouched = existing_total - len(eligible)
         budget = max(1, max_rules - untouched)
 
-        # Compute replacement CIDRs once across every observed IP that
-        # would be covered by *any* eligible rule on this SG.
-        replacement_cidrs = collapse_ips_to_cidrs(
-            approved_ips,
-            max_rules=budget,
-            tolerance=tolerance,
-        )
+        # One unit per eligible rule: the observed addresses inside it.
+        units = []
+        for key, rules in revokes_per_proto_port.items():
+            for r in rules:
+                net = ipaddress.ip_network(r["cidr"], strict=False)
+                inside = [str(a) for a in private_ips if a in net]
+                units.append((key, net, inside))
+
+        needs = [
+            len(_replacements_within(net, ips, max_rules=10**9, tolerance=tolerance))
+            if ips else 0
+            for _key, net, ips in units
+        ]
+        allocation = _allocate_budget(needs, budget)
+
+        authorised_by_key: dict[tuple, list[ipaddress.IPv4Network]] = {}
+        removed: list[dict] = []
+        for (key, net, ips), slots in zip(units, allocation):
+            if not ips:
+                removed.append({
+                    "cidr": str(net),
+                    "protocol": key[0],
+                    "from_port": key[1],
+                    "to_port": key[2],
+                })
+                continue
+            authorised_by_key.setdefault(key, []).extend(
+                _replacements_within(net, ips, max_rules=slots, tolerance=tolerance)
+            )
 
         authorise_perms: list[dict] = []
-        port_merge_flagged = False
-        for (proto, from_p, to_p), _rules in revokes_per_proto_port.items():
+        for (proto, from_p, to_p), nets in authorised_by_key.items():
+            merged = sorted(
+                ipaddress.collapse_addresses(nets),
+                key=lambda n: (int(n.network_address), n.prefixlen),
+            )
             authorise_perms.append({
                 "IpProtocol": proto,
                 "FromPort": from_p,
                 "ToPort": to_p,
                 "IpRanges": [
-                    {"CidrIp": c, "Description": "sg-tightener evidence-based"}
-                    for c in replacement_cidrs
+                    {"CidrIp": str(c), "Description": "sg-tightener evidence-based"}
+                    for c in merged
                 ],
             })
 
+        if removed:
+            LOG.warning(
+                "%s: %d eligible rule(s) saw no traffic and will be revoked with "
+                "no replacement — check removed_without_evidence in the plan",
+                sg["GroupId"], len(removed),
+            )
+
         # If multiple eligible rules share a CIDR set but differ on ports,
         # the operator can ask to merge. We surface that here.
+        port_merge_flagged = False
         port_ranges_by_proto: dict[str, list[tuple[int, int]]] = {}
         for k in revokes_per_proto_port:
             proto, fp, tp = k
@@ -768,8 +858,8 @@ def build_plan(
                 continue
             port_ranges_by_proto.setdefault(str(proto), []).append((int(fp), int(tp)))
         for proto, ranges in port_ranges_by_proto.items():
-            merged = merge_port_ranges(ranges)
-            if len(merged) < len(ranges):
+            merged_ranges = merge_port_ranges(ranges)
+            if len(merged_ranges) < len(ranges):
                 port_merge_flagged = True
 
         revoke_perms = []
@@ -787,6 +877,7 @@ def build_plan(
             "vpc_id": sg.get("VpcId"),
             "revoke": revoke_perms,
             "authorise": authorise_perms,
+            "removed_without_evidence": removed,
             "port_merge_flagged": port_merge_flagged,
             "budget": budget,
             "current_rule_count": existing_total,

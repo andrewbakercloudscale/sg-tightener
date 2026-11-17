@@ -43,8 +43,9 @@ a planned tightening, a post-change check, and a live incident.
    Read every `WARNING flow-log config:` line. A warning about `pkt-srcaddr`
    in a transit-gateway estate means stop and fix the flow logs.
 
-3. **Clean `approved.json`.** Open it and remove any public (non-RFC 1918)
-   addresses; see [Known limitations](how-it-works.md#known-limitations).
+3. **Add known idle sources.** If a DR host or batch server is known to be
+   needed but was quiet during the window, add its address to `ips` in
+   `approved.json`. Public addresses can stay; `plan` ignores them.
 
 4. **Plan.**
 
@@ -59,7 +60,8 @@ a planned tightening, a post-change check, and a live incident.
 
 5. **Review `plan.json`.** For each group compare `revoke` with `authorise`:
    - Do the new CIDRs make sense for what this group protects?
-   - Is any new CIDR outside the range the old rule allowed?
+   - **`removed_without_evidence`**: these rules saw no traffic and will be
+     revoked with nothing in their place. Confirm each one is really unused.
    - Is `port_merge_flagged` true? Then several port ranges share sources and
      could be merged by hand.
    - Delete groups you are not ready to change from the `groups` array.

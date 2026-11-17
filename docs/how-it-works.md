@@ -52,9 +52,19 @@ each group:
    Everything else counts as a fixed rule.
 2. Computes the group's **rule budget**: `--max-rules` (default 60) minus the
    fixed rules.
-3. Collapses the approved IPs into at most that many CIDRs (see below).
-4. Writes a `revoke` list (the eligible rules, per protocol and port range) and
-   an `authorise` list (the replacement CIDRs on the same protocols and ports).
+3. For **each eligible rule separately**, takes only the approved addresses
+   that are private and fall **inside that rule's own CIDR**, and collapses them
+   into replacement CIDRs (see below). Any block that would grow past the
+   original rule is clipped back to it. A replacement can therefore narrow a
+   rule but never allow a source the rule did not already allow, and public
+   addresses in `approved.json` can never reach a private rule.
+4. Shares the budget across the group's rules: each rule with traffic gets at
+   least one slot, and the rest go in proportion to how many blocks each rule
+   needs.
+5. Writes a `revoke` list (the eligible rules, per protocol and port range), an
+   `authorise` list (the replacement CIDRs on the same protocols and ports),
+   and `removed_without_evidence`: eligible rules with no observed traffic at
+   all, which are revoked with no replacement. Check these carefully.
 
 It also records a SHA-256 hash of every group's current rules
 (`snapshot_hash`). Nothing is written to AWS.
@@ -203,17 +213,14 @@ VPC endpoint. Exit code 1 when any CRITICAL is found.
 Read these before you apply a plan; they are the reason the runbook says to
 review `plan.json` by hand.
 
-* **One replacement set per region.** `approved.json` holds every source seen
-  in the flow logs you analysed, and `plan` gives every eligible rule in every
-  group the same replacement CIDRs. A group that only ever talked to
-  `10.4.0.0/16` may be planned to accept a client seen elsewhere, including one
-  outside its original rule's range. Analyse a log group that covers only the
-  VPCs you are tightening, and check each group's `authorise` list.
-* **Public sources are not filtered by `analyse`.** Accepted flows through a
-  public rule (for example a load balancer open to the internet) put public
-  addresses into `approved.json`, and `plan` would add them as `/32`s on the
-  private rules it rewrites. Remove public addresses from `approved.json`, or
-  analyse flow logs from private subnets only, before planning.
+* **Evidence is per region, not per destination.** A rule keeps any source
+  inside its CIDR that was seen *anywhere* in the analysed flow logs, not only
+  sources seen talking to that group. This errs towards keeping access; the
+  replacement is still never wider than the original rule.
+* **Rules with no observed traffic are removed.** They appear under
+  `removed_without_evidence` in the plan and in a warning. If one should stay,
+  delete that group from the plan or add the expected source to
+  `approved.json`.
 * **The window is the evidence.** Anything that did not connect during the
   analysed window is treated as unused. Use `--days 180` or more where seasonal
   traffic exists.

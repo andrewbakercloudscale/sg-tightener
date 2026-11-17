@@ -887,6 +887,98 @@ class TestCloudwatchQueryBuilder(unittest.TestCase):
         self.assertIn('filter action = "REJECT"', query)
 
 
+def _sg(gid, *perms):
+    return {"GroupId": gid, "GroupName": gid, "VpcId": "vpc-1", "IpPermissions": list(perms)}
+
+
+def _perm(port, *cidrs):
+    return {"IpProtocol": "tcp", "FromPort": port, "ToPort": port,
+            "IpRanges": [{"CidrIp": c} for c in cidrs]}
+
+
+def _authorised(group):
+    return {(p["FromPort"], r["CidrIp"]) for p in group["authorise"] for r in p["IpRanges"]}
+
+
+class TestBuildPlanScoping(unittest.TestCase):
+    """A plan may narrow a rule; it must never grant a source the rule did not allow."""
+
+    def _plan(self, sgs, ips, **kw):
+        from sg_tightener import build_plan
+        return build_plan(sgs, ips, **kw)
+
+    def _assert_within_originals(self, plan, sgs):
+        originals = {}
+        for sg in sgs:
+            for p in sg["IpPermissions"]:
+                for r in p["IpRanges"]:
+                    originals.setdefault((sg["GroupId"], p["FromPort"]), []).append(
+                        ipaddress.ip_network(r["CidrIp"]))
+        for g in plan["groups"]:
+            for port, cidr in _authorised(g):
+                net = ipaddress.ip_network(cidr)
+                self.assertTrue(
+                    any(net.subnet_of(o) for o in originals[(g["group_id"], port)]),
+                    f"{cidr} on {g['group_id']}:{port} is outside the original rule")
+
+    def test_group_only_gets_sources_inside_its_own_rule(self):
+        sgs = [_sg("sg-a", _perm(5432, "10.4.0.0/16")),
+               _sg("sg-b", _perm(443, "10.9.0.0/16"))]
+        plan = self._plan(sgs, ["10.4.1.10", "10.9.7.3"])
+        by_id = {g["group_id"]: g for g in plan["groups"]}
+        self.assertEqual(_authorised(by_id["sg-a"]), {(5432, "10.4.1.10/32")})
+        self.assertEqual(_authorised(by_id["sg-b"]), {(443, "10.9.7.3/32")})
+        self._assert_within_originals(plan, sgs)
+
+    def test_public_addresses_never_reach_private_rules(self):
+        sgs = [_sg("sg-a", _perm(443, "10.0.0.0/8"))]
+        plan = self._plan(sgs, ["8.8.8.8", "52.95.110.1", "10.1.2.3"])
+        self.assertEqual(_authorised(plan["groups"][0]), {(443, "10.1.2.3/32")})
+
+    def test_widening_is_clipped_to_the_original_rule(self):
+        # Every address of a /23 observed: tolerance alone would widen past it.
+        sgs = [_sg("sg-a", _perm(22, "10.4.0.0/23"))]
+        ips = [str(a) for a in ipaddress.ip_network("10.4.0.0/23")]
+        plan = self._plan(sgs, ips, tolerance=0.9)
+        self.assertEqual(_authorised(plan["groups"][0]), {(22, "10.4.0.0/23")})
+
+    def test_rule_with_no_traffic_is_reported_not_replaced(self):
+        sgs = [_sg("sg-a", _perm(5432, "10.4.0.0/16", "172.16.0.0/16"))]
+        plan = self._plan(sgs, ["10.4.1.10"])
+        g = plan["groups"][0]
+        self.assertEqual(_authorised(g), {(5432, "10.4.1.10/32")})
+        self.assertEqual([r["cidr"] for r in g["removed_without_evidence"]], ["172.16.0.0/16"])
+        self.assertEqual(len(g["revoke"][0]["IpRanges"]), 2)
+
+    def test_budget_respected_across_rules(self):
+        sgs = [_sg("sg-a", _perm(443, "10.4.0.0/16"), _perm(5432, "10.8.0.0/16"))]
+        ips = [f"10.4.{i}.1" for i in range(0, 200, 7)] + [f"10.8.{i}.1" for i in range(0, 200, 5)]
+        plan = self._plan(sgs, ips, max_rules=6, tolerance=0.0)
+        g = plan["groups"][0]
+        self.assertLessEqual(len(_authorised(g)), 6)
+        self._assert_within_originals(plan, sgs)
+        covered = [ipaddress.ip_network(c) for _p, c in _authorised(g)]
+        for ip in ips:
+            self.assertTrue(any(ipaddress.ip_address(ip) in n for n in covered), ip)
+
+
+class TestAllocateBudget(unittest.TestCase):
+    def test_fits(self):
+        from sg_tightener import _allocate_budget
+        self.assertEqual(_allocate_budget([3, 2, 0], 10), [3, 2, 0])
+
+    def test_shares_spare_and_never_exceeds_budget(self):
+        from sg_tightener import _allocate_budget
+        alloc = _allocate_budget([30, 10, 1], 12)
+        self.assertEqual(sum(alloc), 12)
+        self.assertTrue(all(a >= 1 for a in alloc))
+        self.assertGreater(alloc[0], alloc[1])
+
+    def test_minimum_one_each_when_over(self):
+        from sg_tightener import _allocate_budget
+        self.assertEqual(_allocate_budget([5, 5, 5], 2), [1, 1, 1])
+
+
 class TestSgDiagnoseWiring(unittest.TestCase):
     """sg_diagnose must parse with the preflighted log format.
 

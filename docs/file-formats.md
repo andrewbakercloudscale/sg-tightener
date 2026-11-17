@@ -26,8 +26,8 @@ Written by `analyse`, extended by `sg_diagnose`, read by `plan`.
 }
 ```
 
-You may edit `ips` by hand, for example to remove public addresses or add a
-known DR host that was idle during the window. `plan` only reads `ips`.
+You may edit `ips` by hand, for example to add a known DR host that was idle
+during the window. `plan` only reads `ips`, and ignores public addresses.
 
 ---
 
@@ -55,6 +55,7 @@ Written by `plan` and `sg_compact plan`, read by `apply`.
         { "IpProtocol": "tcp", "FromPort": 5432, "ToPort": 5432,
           "IpRanges": [{ "CidrIp": "10.4.0.0/16" }] }
       ],
+      "removed_without_evidence": [],
       "authorise": [
         { "IpProtocol": "tcp", "FromPort": 5432, "ToPort": 5432,
           "IpRanges": [
@@ -71,6 +72,7 @@ Written by `plan` and `sg_compact plan`, read by `apply`.
 | `snapshot_hash` | SHA-256 of every group's rules in the region when the plan was made. `apply` refuses if it no longer matches. Do not edit |
 | `budget` | Rules available for replacements: `max_rules` minus the rules being kept |
 | `revoke` / `authorise` | Passed unchanged to `RevokeSecurityGroupIngress` / `AuthorizeSecurityGroupIngress` |
+| `removed_without_evidence` | Eligible rules with no observed traffic: revoked, nothing authorised in their place |
 | `port_merge_flagged` | Several eligible port ranges on the same protocol could be merged |
 
 `sg_compact` plans also carry `tool`, `region` and `ratio`.
