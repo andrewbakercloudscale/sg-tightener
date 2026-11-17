@@ -421,3 +421,14 @@ class TestFlowKeys:
         assert sg_tightener.flow_keys_for(["srcaddr", "dstaddr", "dstport", "action"]) == ("src", "dst", "dstport")
         assert sg_tightener.flow_keys_for(["srcaddr", "dstaddr", "action"]) is None
         assert sg_tightener.flow_keys_for(["srcaddr", "dstport", "action"]) is None
+
+
+def test_version_flag_prints_the_version(capsys):
+    import pytest
+
+    import sg_tightener
+
+    with pytest.raises(SystemExit) as exc:
+        sg_tightener.main(["--version"])
+    assert exc.value.code == 0
+    assert sg_tightener.__version__ in capsys.readouterr().out

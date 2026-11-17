@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.0.0 - 2026-11-17
+
+First release from its own repository (the `v1.x` tags belong to cloudtorepo,
+whose history this repository carries). Major because `approved.json` gains
+per-destination evidence and `plan` now gives each group only the sources that
+reached it. `sg_tightener.py --version` prints the version.
+
 - **Own repository.** Moved out of
   [cloudtorepo](https://github.com/andrewbakercloudscale/cloudtorepo) (where it
   lived in `sg-tightener/`) with its history.

@@ -42,6 +42,8 @@ Usage:
 
 from __future__ import annotations
 
+__version__ = "2.0.0"
+
 import argparse
 import dataclasses
 import datetime as dt
@@ -1551,6 +1553,7 @@ def revert_from_manifest(manifest_path: str) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sg_tightener.py", description=__doc__.splitlines()[0])
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="mode", required=True)
 
     a = sub.add_parser("analyse", help="read flow logs and write approved IP list")
