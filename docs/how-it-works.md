@@ -53,7 +53,10 @@ each group:
 2. Computes the group's **rule budget**: `--max-rules` (default 60) minus the
    fixed rules.
 3. For **each eligible rule separately**, takes only the approved addresses
-   that are private and fall **inside that rule's own CIDR**, and collapses them
+   that are private, fall **inside that rule's own CIDR**, and **reached an
+   interface carrying this group on a protocol and port the rule admits**
+   (destination addresses are mapped to groups with
+   `DescribeNetworkInterfaces`), and collapses them
    into replacement CIDRs (see below). Any block that would grow past the
    original rule is clipped back to it. A replacement can therefore narrow a
    rule but never allow a source the rule did not already allow, and public
@@ -213,10 +216,14 @@ VPC endpoint. Exit code 1 when any CRITICAL is found.
 Read these before you apply a plan; they are the reason the runbook says to
 review `plan.json` by hand.
 
-* **Evidence is per region, not per destination.** A rule keeps any source
-  inside its CIDR that was seen *anywhere* in the analysed flow logs, not only
-  sources seen talking to that group. This errs towards keeping access; the
-  replacement is still never wider than the original rule.
+* **Evidence that cannot be tied to an interface is kept everywhere.** A source
+  whose destination no current network interface owns (a replaced Fargate
+  task, a terminated instance, another account), or an address added to `ips`
+  by hand, is kept on every group whose rule admits it, not only the group it
+  reached. The plan lists these under `unattributed_destinations` and
+  `sources_without_flows`. An `approved.json` from an older version (no
+  `flows`) is planned this way throughout, with a warning. This errs towards
+  keeping access; the replacement is still never wider than the original rule.
 * **Rules with no observed traffic are removed.** They appear under
   `removed_without_evidence` in the plan and in a warning. If one should stay,
   delete that group from the plan or add the expected source to

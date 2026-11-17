@@ -7,13 +7,15 @@ own repository. Start the next session in this folder.
 
 - **Goal A (testing): done.** pytest, `tests/unit` + `tests/integration` (moto),
   `tests/fixtures/flowgen.py` (synthetic flow logs + `FakeLogs` Insights
-  emulator). 170 passing, 1 xfail. Risks 1 to 5 below are fixed and tested;
+  emulator). 197 passing, no xfails. Risks 1 to 5 below are fixed and tested;
   see CHANGELOG.
-- **New finding, not fixed:** `approved.json` has source IPs only, so `plan`
-  grants every observed source inside a rule to every group, not only the
-  sources that reached that group's interfaces on that port. Pinned by
-  `test_a_group_only_gets_sources_that_reached_it` (xfail, strict). Fix needs
-  analyse to record (src, dst, port) and plan to map dst IPs to groups.
+- **Fixed (third session):** `approved.json` had source IPs only, so `plan`
+  granted every observed source inside a rule to every group. `analyse` now
+  writes `approved/v2` with `flows` (src, dst, dstport, protocol) and `plan`
+  maps dst IPs to groups via `DescribeNetworkInterfaces`.
+  `test_a_group_only_gets_sources_that_reached_it` passes for real. Evidence
+  that cannot be tied to a current interface (replaced ENIs, hand-added `ips`,
+  v1 files) is kept per rule and reported; see docs/file-formats.md.
 - **Goal B changed by the owner:** no standalone viewer. `sg_viz.py` keeps
   `export` and `overlay` (data only). The picture goes into the
   aws-org-level-risk-framework-reporting console as a new "Access Graph"
@@ -175,7 +177,7 @@ the JSON preloaded, for people who will not use a file picker.
 | Find flow logs, field order, `pkt-srcaddr` choice | `preflight_flow_logs`, `parse_log_format`, `build_cloudwatch_query` in `sg_tightener.py` |
 | Parse S3 flow-log lines | `ips_from_flow_log_lines` (returns only IPs today; generalise it to return records) |
 | Security groups | `_list_security_groups` |
-| Interface IP → security groups | `derive_groups_from_dst_ips` in `sg_extend.py` (uses `DescribeNetworkInterfaces`) |
+| Interface IP → security groups | `derive_groups_from_dst_ips` in `sg_extend.py`; `interface_groups_by_ip` in `sg_tightener.py` (plan, includes delegated prefixes) |
 | Does a rule cover this source and port | `_existing_nets_for` / `filter_existing` in `sg_extend.py`; `sg_diagnose._covered_by_any_rule` |
 | AWS service labels for public IPs | `classify_aws_service` in `sg_extend.py` |
 

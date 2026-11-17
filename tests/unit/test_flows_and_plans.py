@@ -288,3 +288,136 @@ def test_plan_never_grants_outside_the_rule_it_replaces(seed):
             for r in p["IpRanges"]:
                 net = ipaddress.ip_network(r["CidrIp"])
                 assert any(port == p["FromPort"] and net.subnet_of(o) for port, o in revoked), (seed, net)
+
+
+# --------------------------------------------------------------------------- #
+# Per-group plans from approved/v2 flows
+# --------------------------------------------------------------------------- #
+
+def _rule(port, cidr, proto="tcp", to_port=None):
+    return {"IpProtocol": proto, "FromPort": port, "ToPort": to_port or port,
+            "IpRanges": [{"CidrIp": cidr}]}
+
+
+def _group(gid, *perms):
+    return {"GroupId": gid, "GroupName": gid, "VpcId": "vpc-1", "IpPermissions": list(perms)}
+
+
+def _eni(ip, *gids, prefixes=()):
+    return {"PrivateIpAddress": ip, "PrivateIpAddresses": [{"PrivateIpAddress": ip}],
+            "Groups": [{"GroupId": g} for g in gids],
+            "Ipv4Prefixes": [{"Ipv4Prefix": p} for p in prefixes]}
+
+
+def _flow(src, dst, port, proto="6"):
+    return {"src": src, "dst": dst, "dstport": port, "protocol": proto}
+
+
+def _granted(plan, gid):
+    g = next(g for g in plan["groups"] if g["group_id"] == gid)
+    return {(p["FromPort"], r["CidrIp"]) for p in g["authorise"] for r in p["IpRanges"]}
+
+
+class TestFlowMatchesRule:
+    @pytest.mark.parametrize("flow, rule, expected", [
+        (_flow("a", "b", 443), ("tcp", 443, 443), True),
+        (_flow("a", "b", 444), ("tcp", 443, 443), False),
+        (_flow("a", "b", 8080), ("tcp", 8000, 8999), True),
+        (_flow("a", "b", 443), ("6", 443, 443), True),          # numeric protocol
+        (_flow("a", "b", 53, "17"), ("tcp", 53, 53), False),    # udp flow, tcp rule
+        (_flow("a", "b", 53, "17"), ("udp", 53, 53), True),
+        (_flow("a", "b", 5432), ("-1", None, None), True),      # all traffic
+        (_flow("a", "b", 0, "1"), ("icmp", 8, 0), True),        # icmp: type/code not ports
+        (_flow("a", "b", 0, "1"), ("tcp", 0, 65535), False),
+        ({"src": "a"}, ("tcp", 443, 443), True),                # no port/protocol recorded
+    ])
+    def test_cases(self, flow, rule, expected):
+        assert sg_tightener.flow_matches_rule(flow, *rule) is expected
+
+
+class TestPerGroupPlan:
+    def test_each_group_gets_only_the_sources_that_reached_it(self):
+        sgs = [_group("sg-db", _rule(5432, "10.0.0.0/8")), _group("sg-api", _rule(443, "10.0.0.0/8"))]
+        enis = [_eni("10.4.1.20", "sg-db"), _eni("10.4.2.10", "sg-api")]
+        flows = [_flow("10.4.2.10", "10.4.1.20", 5432), _flow("10.20.33.11", "10.4.2.10", 443)]
+        plan = build_plan(sgs, ["10.4.2.10", "10.20.33.11"], flows=flows, interfaces=enis)
+        assert plan["attribution"] == "per-group"
+        assert _granted(plan, "sg-db") == {(5432, "10.4.2.10/32")}
+        assert _granted(plan, "sg-api") == {(443, "10.20.33.11/32")}
+
+    def test_port_must_match_the_rule(self):
+        sgs = [_group("sg-api", _rule(443, "10.0.0.0/8"), _rule(9100, "10.4.0.0/16"))]
+        enis = [_eni("10.4.2.10", "sg-api")]
+        flows = [_flow("10.4.9.50", "10.4.2.10", 9100), _flow("10.4.9.51", "10.4.2.10", 443)]
+        plan = build_plan(sgs, ["10.4.9.50", "10.4.9.51"], flows=flows, interfaces=enis)
+        assert _granted(plan, "sg-api") == {(9100, "10.4.9.50/32"), (443, "10.4.9.51/32")}
+
+    def test_a_rule_reached_on_no_matching_port_is_removed_without_evidence(self):
+        sgs = [_group("sg-api", _rule(443, "10.0.0.0/8"), _rule(22, "10.0.0.0/8"))]
+        plan = build_plan(sgs, ["10.1.1.1"], flows=[_flow("10.1.1.1", "10.4.2.10", 443)],
+                          interfaces=[_eni("10.4.2.10", "sg-api")])
+        g = plan["groups"][0]
+        assert _granted(plan, "sg-api") == {(443, "10.1.1.1/32")}
+        assert [(r["from_port"], r["cidr"]) for r in g["removed_without_evidence"]] == [(22, "10.0.0.0/8")]
+
+    def test_every_group_on_the_interface_gets_the_source(self):
+        sgs = [_group("sg-a", _rule(443, "10.0.0.0/8")), _group("sg-b", _rule(443, "10.0.0.0/8"))]
+        plan = build_plan(sgs, ["10.1.1.1"], flows=[_flow("10.1.1.1", "10.4.2.10", 443)],
+                          interfaces=[_eni("10.4.2.10", "sg-a", "sg-b")])
+        assert _granted(plan, "sg-a") == _granted(plan, "sg-b") == {(443, "10.1.1.1/32")}
+
+    def test_unknown_destination_is_kept_on_every_admitting_rule_and_reported(self):
+        sgs = [_group("sg-db", _rule(5432, "10.0.0.0/8")), _group("sg-api", _rule(443, "10.0.0.0/8"))]
+        plan = build_plan(sgs, ["10.1.1.1"], flows=[_flow("10.1.1.1", "10.9.9.9", 5432)],
+                          interfaces=[_eni("10.4.1.20", "sg-db")])
+        assert plan["unattributed_destinations"] == ["10.9.9.9"]
+        assert _granted(plan, "sg-db") == {(5432, "10.1.1.1/32")}
+        assert _granted(plan, "sg-api") == set()  # port 5432 is not 443
+
+    def test_missing_destination_counts_as_unknown(self):
+        sgs = [_group("sg-db", _rule(5432, "10.0.0.0/8"))]
+        plan = build_plan(sgs, ["10.1.1.1"], flows=[{"src": "10.1.1.1", "dst": None,
+                                                     "dstport": 5432, "protocol": "6"}],
+                          interfaces=[])
+        assert plan["unattributed_destinations"] == ["-"]
+        assert _granted(plan, "sg-db") == {(5432, "10.1.1.1/32")}
+
+    def test_hand_added_ip_without_a_flow_is_kept_per_rule(self):
+        sgs = [_group("sg-db", _rule(5432, "10.0.0.0/8")), _group("sg-api", _rule(443, "10.0.0.0/8"))]
+        enis = [_eni("10.4.1.20", "sg-db"), _eni("10.4.2.10", "sg-api")]
+        plan = build_plan(sgs, ["10.4.2.10", "10.7.7.7"],
+                          flows=[_flow("10.4.2.10", "10.4.1.20", 5432)], interfaces=enis)
+        assert plan["sources_without_flows"] == ["10.7.7.7"]
+        assert _granted(plan, "sg-api") == {(443, "10.7.7.7/32")}
+        assert (5432, "10.7.7.7/32") in _granted(plan, "sg-db")
+
+    def test_delegated_prefix_maps_pod_addresses_to_the_node_groups(self):
+        sgs = [_group("sg-pods", _rule(8080, "10.0.0.0/8"))]
+        enis = [_eni("10.4.3.5", "sg-pods", prefixes=["10.4.3.16/28"])]
+        plan = build_plan(sgs, ["10.1.1.1"], flows=[_flow("10.1.1.1", "10.4.3.20", 8080)],
+                          interfaces=enis)
+        assert plan["unattributed_destinations"] == []
+        assert _granted(plan, "sg-pods") == {(8080, "10.1.1.1/32")}
+
+    def test_without_flows_the_plan_is_per_rule(self):
+        sgs = [_group("sg-db", _rule(5432, "10.0.0.0/8"))]
+        plan = build_plan(sgs, ["10.1.1.1"])
+        assert plan["attribution"] == "per-rule"
+        assert _granted(plan, "sg-db") == {(5432, "10.1.1.1/32")}
+
+    def test_public_sources_in_flows_never_reach_private_rules(self):
+        sgs = [_group("sg-api", _rule(443, "10.0.0.0/8"))]
+        plan = build_plan(sgs, ["8.8.8.8"], flows=[_flow("8.8.8.8", "10.4.2.10", 443)],
+                          interfaces=[_eni("10.4.2.10", "sg-api")])
+        assert _granted(plan, "sg-api") == set()
+
+
+class TestFlowKeys:
+    def test_default_and_recommended_formats_record_destinations(self):
+        assert sg_tightener.flow_keys_for(DEFAULT_LOG_FORMAT_FIELDS) == ("src", "dst", "dstport", "protocol")
+        assert sg_tightener.flow_keys_for(RECOMMENDED_FIELDS) == ("src", "dst", "dstport", "protocol")
+
+    def test_protocol_is_optional_destination_is_not(self):
+        assert sg_tightener.flow_keys_for(["srcaddr", "dstaddr", "dstport", "action"]) == ("src", "dst", "dstport")
+        assert sg_tightener.flow_keys_for(["srcaddr", "dstaddr", "action"]) is None
+        assert sg_tightener.flow_keys_for(["srcaddr", "dstport", "action"]) is None

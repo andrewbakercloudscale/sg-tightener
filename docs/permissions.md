@@ -18,7 +18,7 @@ the people who apply changes, and only for the change window.
 | Tool | Needs |
 |---|---|
 | `analyse` | `ec2:DescribeFlowLogs`; CloudWatch: `logs:StartQuery`, `logs:GetQueryResults`, `logs:StopQuery`, `logs:DescribeLogGroups`; or S3: `s3:ListBucket`, `s3:GetObject` |
-| `plan` | `ec2:DescribeSecurityGroups` |
+| `plan` | `ec2:DescribeSecurityGroups`, `ec2:DescribeNetworkInterfaces` (to map each destination to its groups) |
 | `apply`, `revert` | `ec2:DescribeSecurityGroups` plus the write statement |
 | `sg_diagnose` | As `analyse`, plus `ec2:DescribeSecurityGroups` |
 | `sg_extend` | As `analyse` (minus `DescribeFlowLogs`), `ec2:DescribeNetworkInterfaces`, `ec2:DescribeSecurityGroups`, `ec2:AuthorizeSecurityGroupIngress` |

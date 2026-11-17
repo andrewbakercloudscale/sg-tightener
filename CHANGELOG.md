@@ -42,9 +42,18 @@
   which connections a plan would block.
 - **Tests:** pytest, split into `tests/unit` and `tests/integration` (moto),
   with a synthetic flow-log generator. 170 tests.
-- **Known gap, pinned by an xfail test:** `approved.json` holds source IPs
-  only, so each group's rule is rebuilt from every observed source inside it,
-  not only the sources that reached that group.
+- **Fix (safety):** `plan` gave each group's rule every observed source inside
+  it, not only the sources that reached that group: a database on 5432 was
+  granted office clients that only ever called the API on 443. `analyse` now
+  writes `approved.json` v2 with `flows` (source, destination address,
+  destination port, protocol), and `plan` maps each destination to its groups
+  through `DescribeNetworkInterfaces` (delegated prefixes included) and keeps a
+  source on a rule only when it reached that group on a protocol and port the
+  rule admits. A destination no current interface owns, or an address in `ips`
+  with no flow, is kept per rule and listed in the plan
+  (`unattributed_destinations`, `sources_without_flows`). A v1 file still plans
+  per rule, with a warning. Plans record `attribution`. `plan` now needs
+  `ec2:DescribeNetworkInterfaces` (already in `iam-policy.json`).
 
 ## History before the move
 

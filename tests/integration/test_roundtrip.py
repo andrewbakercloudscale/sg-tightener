@@ -32,8 +32,7 @@ def _analyse(tmp_fields=RECOMMENDED_FIELDS, hours=48):
 
 
 def _plan(approved):
-    sgs = sg_tightener._list_security_groups(REGION)
-    plan = sg_tightener.build_plan(sgs, approved["ips"], region=REGION)
+    plan = sg_tightener.plan_from_approved(approved, REGION)
     with open("plan.json", "w") as fh:
         json.dump(plan, fh)
     return plan
@@ -68,17 +67,82 @@ def test_round_trip_restores_the_exact_original_rules(estate, observed):
     assert estate.snapshot() == before  # descriptions included
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "known gap: approved.json holds source IPs only, with no destination or port, "
-    "so every group's rule is rebuilt from every observed source inside it. The "
-    "database on 5432 is granted the office clients that only ever called the API "
-    "on 443. Narrower than 10.0.0.0/8, but not what the evidence shows."))
+def _granted(plan, group_id):
+    g = next(g for g in plan["groups"] if g["group_id"] == group_id)
+    return {(p["FromPort"], ipaddress.ip_network(r["CidrIp"])) for p in g["authorise"] for r in p["IpRanges"]}
+
+
+def _reaches(granted, ip, port=None):
+    return any(ipaddress.ip_address(ip) in n for p, n in granted if port in (None, p))
+
+
 def test_a_group_only_gets_sources_that_reached_it(estate, observed):
+    """Regression: approved.json held source IPs only, so the database on
+    5432 was granted the office clients that only ever called the API on 443."""
     _plan(_analyse())
     plan = json.load(open("plan.json"))
-    db = next(g for g in plan["groups"] if g["group_id"] == estate.groups["db"])
-    granted = {ipaddress.ip_network(r["CidrIp"]) for p in db["authorise"] for r in p["IpRanges"]}
-    assert not any(ipaddress.ip_address("10.20.33.11") in n for n in granted)
+    assert plan["attribution"] == "per-group"
+    db = _granted(plan, estate.groups["db"])
+    assert not _reaches(db, "10.20.33.11")
+    assert _reaches(db, "10.4.2.10", 5432)
+    api = _granted(plan, estate.groups["api"])
+    assert _reaches(api, "10.20.33.11", 443)
+    # Port matching inside one group: the metrics scraper only hit 9100.
+    assert _reaches(api, "10.4.9.50", 9100) and not _reaches(api, "10.4.9.50", 443)
+
+
+def test_approved_json_records_each_destination(estate, observed):
+    _analyse()
+    approved = json.load(open("approved.json"))
+    assert approved["schema"] == sg_tightener.APPROVED_SCHEMA_V2
+    flows = {(f["src"], f["dst"], f["dstport"], f["protocol"]) for f in approved["flows"]}
+    assert ("10.20.33.11", "10.4.2.10", 443, "6") in flows
+    assert ("10.4.2.10", "10.4.1.20", 5432, "6") in flows
+    assert not any(f[0] == "10.66.1.2" for f in flows)  # rejected only
+    assert approved["ips"] == sorted({f[0] for f in flows})
+
+
+def test_old_approved_json_still_plans_per_rule_with_a_warning(estate, observed, caplog):
+    approved = _analyse()
+    old = {k: v for k, v in approved.items() if k != "flows"}
+    old["schema"] = sg_tightener.APPROVED_SCHEMA_V1
+    with caplog.at_level("WARNING", logger="sg_tightener"):
+        plan = _plan(old)
+    assert "per rule, not per group" in caplog.text
+    assert plan["attribution"] == "per-rule"
+    # The old behaviour, unchanged: the database keeps the office clients.
+    assert _reaches(_granted(plan, estate.groups["db"]), "10.20.33.11", 5432)
+
+
+def test_destination_with_no_known_interface_is_kept_per_rule(estate, caplog):
+    """A destination that matches no interface (deleted, replaced, another
+    account) cannot be tied to a group, so its sources stay on every group
+    whose rule admits them, and the plan says so."""
+    start, end = window()
+    records = generate_records(estate.topology([
+        Talker(["10.4.2.10"], "10.4.1.20", 5432),
+        Talker(["10.30.0.5"], "10.4.7.99", 5432),   # no interface has 10.4.7.99
+    ]), start, end)
+    add_cloudwatch_flow_log(estate, RECOMMENDED_FIELDS, records)
+    with caplog.at_level("WARNING", logger="sg_tightener"):
+        plan = _plan(_analyse())
+    assert plan["unattributed_destinations"] == ["10.4.7.99"]
+    assert "match no network interface" in caplog.text
+    assert _reaches(_granted(plan, estate.groups["db"]), "10.30.0.5", 5432)
+    # Still port matched: the API's 443 and 9100 rules never admitted 5432.
+    api = next(g for g in plan["groups"] if g["group_id"] == estate.groups["api"])
+    assert api["authorise"] == []
+
+
+def test_format_without_destination_writes_ips_only(estate):
+    fields = ["version", "srcaddr", "action", "pkt-srcaddr", "flow-direction"]
+    start, end = window()
+    records = generate_records(estate.topology(_talkers()), start, end)
+    add_cloudwatch_flow_log(estate, fields, records)
+    approved = _analyse()
+    assert approved["schema"] == sg_tightener.APPROVED_SCHEMA_V1
+    assert "flows" not in approved
+    assert "10.20.33.11" in approved["ips"]
 
 
 def test_every_authorised_cidr_sits_inside_a_revoked_one(estate, observed):
@@ -185,6 +249,8 @@ def test_s3_reader_handles_gzip_headers_prefixes_and_pkt_srcaddr(estate):
     approved = sg_tightener.run_analyse(cfg)
     expected = {r["src"] for r in records if r["action"] == "ACCEPT"}
     assert set(approved["ips"]) == expected
+    assert {(f["src"], f["dst"], f["dstport"]) for f in approved["flows"]} == {
+        (r["src"], r["dst"], r["dstport"]) for r in records if r["action"] == "ACCEPT"}
     assert "10.4.250.9" not in approved["ips"]
     assert approved["flow_log_check"]["verified"] is True
 

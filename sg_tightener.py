@@ -6,7 +6,9 @@ tightest covering CIDR blocks empirically observed in VPC flow logs.
 
 Modes:
   analyse  Read flow logs (CloudWatch Logs or S3) and emit an
-           approved-IPs JSON list. Before reading, the flow logs
+           approved JSON file: the observed source IPs and, for
+           each, the destination address and port it reached.
+           Before reading, the flow logs
            feeding the destination are checked with
            ec2:DescribeFlowLogs: the parse layout is derived from
            the configured log format, and a warning is raised when
@@ -14,9 +16,10 @@ Modes:
            arrives through a transit gateway or NAT gateway is
            recorded under the intermediate interface's IP (the next
            hop), not the true source.
-  plan     Read the approved IPs and the current SG inventory and
-           emit a plan.json describing rules to revoke and rules
-           to authorise. Plans are signed with a state hash so
+  plan     Read the approved file, the current SG inventory and the
+           network interfaces, and emit a plan.json describing rules
+           to revoke and rules to authorise. Each group keeps only
+           the sources that reached an interface carrying it. Plans are signed with a state hash so
            apply refuses to run against a stale snapshot.
   apply    Execute a plan. Halts immediately on any single-group
            failure and prints the revert command.
@@ -74,6 +77,11 @@ DEFAULT_PREFIX_THRESHOLD = 24
 DEFAULT_TOLERANCE = 0.30
 DEFAULT_MAX_RULES = 60
 DEFAULT_DAYS = 90
+
+# approved.json: v1 holds source IPs only; v2 adds ``flows``, the destination
+# (address, port, protocol) each source reached. plan reads either.
+APPROVED_SCHEMA_V1 = "sg-tightener.approved/v1"
+APPROVED_SCHEMA_V2 = "sg-tightener.approved/v2"
 
 # CloudWatch Logs Insights returns at most this many rows per query. A query
 # that returns exactly this many has been cut off; see run_insights_query.
@@ -700,6 +708,61 @@ def _analyse_from_cloudwatch(cfg: AnalyseConfig, fields: list[str]) -> list[str]
     })
 
 
+# The logical keys a flow in approved.json carries: who (src) reached what
+# (dst, dstport) over which protocol. src, dst and dstport are required for
+# per-group planning; protocol is used when the format has it.
+_FLOW_KEYS = ("src", "dst", "dstport", "protocol")
+
+
+def flow_keys_for(fields: list[str]) -> tuple[str, ...] | None:
+    """The flow keys ``fields`` can supply, or None when the format has no
+    destination address or port (then only source IPs can be recorded and
+    ``plan`` falls back to per-rule evidence)."""
+    keys = tuple(k for k in _FLOW_KEYS if any(n in fields for n in _LOGICAL_FIELDS[k]))
+    if not {"src", "dst", "dstport"} <= set(keys):
+        return None
+    return keys
+
+
+def _flow_entry(src: str | None, dst: str | None, dstport, protocol: str | None) -> dict | None:
+    """One approved.json flow, or None when there is no usable source.
+    '-' (flow-log "not applicable") becomes None for dst and protocol."""
+    if not src or src == "-":
+        return None
+    port = dstport if isinstance(dstport, int) or dstport is None else _int_or_none(dstport)
+    return {
+        "src": src,
+        "dst": dst if dst and dst != "-" else None,
+        "dstport": port,
+        "protocol": protocol if protocol and protocol != "-" else None,
+    }
+
+
+def _sorted_flows(flows: Iterable[dict]) -> list[dict]:
+    unique = {(f["src"], f["dst"], f["dstport"], f["protocol"]): f for f in flows}
+    return [unique[k] for k in sorted(
+        unique, key=lambda k: (k[0], k[1] or "", -1 if k[2] is None else k[2], k[3] or ""))]
+
+
+def _analyse_flows_from_cloudwatch(cfg: AnalyseConfig, fields: list[str]) -> list[dict] | None:
+    """Accepted ingress flows as (src, dst, dstport, protocol), or None when
+    the log format records no destination (the caller falls back to IPs)."""
+    keys = flow_keys_for(fields)
+    if keys is None:
+        return None
+    logs = _client("logs", cfg.region)
+    start, end = cfg.window()
+    query, columns = build_flow_stats_query(
+        fields, by=keys, action="ACCEPT" if cfg.accepted_only else "REJECT", ingress_only=True)
+    rows = run_insights_query(logs, cfg.log_group, query, start, end)
+    flows = []
+    for row in rows:
+        entry = _flow_entry(*(row.get(columns[k]) if k in columns else None for k in _FLOW_KEYS))
+        if entry:
+            flows.append(entry)
+    return _sorted_flows(flows)
+
+
 def _int_or_none(value: str | None) -> int | None:
     try:
         return int(value) if value not in (None, "-") else None
@@ -825,6 +888,26 @@ def _analyse_from_s3(cfg: AnalyseConfig, fields: list[str]) -> list[str]:
     return sorted(ips)
 
 
+def _analyse_flows_from_s3(cfg: AnalyseConfig, fields: list[str]) -> list[dict] | None:
+    """S3 counterpart of _analyse_flows_from_cloudwatch."""
+    if flow_keys_for(fields) is None:
+        return None
+    if not cfg.s3_bucket:
+        return []
+    s3 = _client("s3", cfg.region)
+    start, end = cfg.window()
+    wanted_action = "ACCEPT" if cfg.accepted_only else "REJECT"
+    flows = []
+    for _obj, lines in iter_s3_flow_log_lines(s3, cfg.s3_bucket, cfg.s3_prefix, start, end):
+        for r in flow_records(lines, fields):
+            if r["action"] != wanted_action or r["direction"] == "egress":
+                continue
+            entry = _flow_entry(r["src"], r["dst"], r["dstport"], r["protocol"])
+            if entry:
+                flows.append(entry)
+    return _sorted_flows(flows)
+
+
 def preflight_flow_logs(cfg: AnalyseConfig) -> FlowLogCheck:
     """Verify the flow logs feeding cfg's destination and return the check.
 
@@ -872,10 +955,26 @@ def run_analyse(cfg: AnalyseConfig) -> dict:
     # answer "who talks to these instances" before writing any approved list.
     check = preflight_flow_logs(cfg)
 
+    # Record which destination (address and port) each source reached, so
+    # plan can give each group only the sources that reached its interfaces.
     if cfg.log_group:
-        ips = _analyse_from_cloudwatch(cfg, check.fields)
+        flows = _analyse_flows_from_cloudwatch(cfg, check.fields)
     else:
-        ips = _analyse_from_s3(cfg, check.fields)
+        flows = _analyse_flows_from_s3(cfg, check.fields)
+    if flows is None:
+        LOG.warning(
+            "log format has no destination address or port, so approved.json "
+            "will hold source IPs only and plan will grant every observed source "
+            "inside a rule to every group carrying that rule (per rule, not per "
+            "group). Add ${dstaddr} and ${dstport} (or ${pkt-dstaddr}) to the "
+            "flow-log format for per-group plans."
+        )
+        if cfg.log_group:
+            ips = _analyse_from_cloudwatch(cfg, check.fields)
+        else:
+            ips = _analyse_from_s3(cfg, check.fields)
+    else:
+        ips = sorted({f["src"] for f in flows})
 
     if not ips:
         raise RuntimeError(
@@ -884,7 +983,7 @@ def run_analyse(cfg: AnalyseConfig) -> dict:
         )
 
     payload = {
-        "schema": "sg-tightener.approved/v1",
+        "schema": APPROVED_SCHEMA_V2 if flows is not None else APPROVED_SCHEMA_V1,
         "region": cfg.region,
         "days": cfg.days,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -896,9 +995,12 @@ def run_analyse(cfg: AnalyseConfig) -> dict:
         },
         "ips": sorted(set(ips)),
     }
+    if flows is not None:
+        payload["flows"] = flows
     with open(cfg.out_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
-    LOG.info("wrote %d observed IPs to %s", len(payload["ips"]), cfg.out_path)
+    LOG.info("wrote %d observed IPs (%d flows) to %s", len(payload["ips"]),
+             len(payload.get("flows", [])), cfg.out_path)
     return payload
 
 
@@ -976,10 +1078,134 @@ def _replacements_within(
     return list(ipaddress.collapse_addresses(clipped))
 
 
+# Security-group protocol names -> the IANA numbers flow logs record.
+_PROTOCOL_NUMBERS = {"tcp": "6", "udp": "17", "icmp": "1", "icmpv6": "58"}
+
+
+def flow_matches_rule(flow: dict, protocol, from_port, to_port) -> bool:
+    """Whether a rule (protocol, port range) would have admitted ``flow``.
+
+    Protocol "-1" admits everything. Otherwise the flow's protocol must be
+    the rule's, and for TCP and UDP its destination port must be inside the
+    rule's range (for ICMP the rule's "ports" are type and code, which flow
+    logs do not record, so only the protocol is compared). A flow with no
+    protocol or no port recorded (an old or hand-edited approved.json) is
+    not ruled out on that count.
+    """
+    proto = str(protocol).lower()
+    if proto == "-1":
+        return True
+    wanted = _PROTOCOL_NUMBERS.get(proto, proto)
+    if flow.get("protocol") is not None and str(flow["protocol"]) != wanted:
+        return False
+    port = flow.get("dstport")
+    if wanted in ("6", "17") and port is not None and from_port is not None and to_port is not None:
+        return int(from_port) <= int(port) <= int(to_port)
+    return True
+
+
+def interface_groups_by_ip(
+    interfaces: list[dict],
+) -> tuple[dict[str, set[str]], list[tuple[ipaddress.IPv4Network, set[str]]]]:
+    """Map each interface's private IPv4 addresses to the groups it carries.
+
+    ``interfaces`` is DescribeNetworkInterfaces output. Returns
+    ({ip: {group ids}}, [(delegated /28 prefix, {group ids})]), the second
+    for interfaces using prefix delegation (EKS prefix mode), whose pod
+    addresses never appear in PrivateIpAddresses.
+    """
+    by_ip: dict[str, set[str]] = {}
+    prefixes: list[tuple[ipaddress.IPv4Network, set[str]]] = []
+    for eni in interfaces:
+        gids = {g["GroupId"] for g in eni.get("Groups", []) if g.get("GroupId")}
+        if not gids:
+            continue
+        ips = {eni.get("PrivateIpAddress")}
+        ips |= {pa.get("PrivateIpAddress") for pa in eni.get("PrivateIpAddresses", [])}
+        for ip in ips - {None}:
+            by_ip.setdefault(ip, set()).update(gids)
+        for pfx in eni.get("Ipv4Prefixes", []):
+            try:
+                prefixes.append((ipaddress.ip_network(pfx["Ipv4Prefix"]), gids))
+            except (KeyError, ValueError):
+                continue
+    return by_ip, prefixes
+
+
+def _groups_for_destination(dst: str | None, by_ip, prefixes) -> set[str] | None:
+    """Group ids on the interface that owns ``dst``, or None if no known
+    interface does."""
+    if not dst:
+        return None
+    if dst in by_ip:
+        return by_ip[dst]
+    try:
+        addr = ipaddress.ip_address(dst)
+    except ValueError:
+        return None
+    found = set()
+    for net, gids in prefixes:
+        if addr in net:
+            found |= gids
+    return found or None
+
+
+def _attribute_flows(
+    approved_ips: list[str],
+    flows: list[dict] | None,
+    interfaces: list[dict] | None,
+) -> tuple[dict[str, list[dict]], list[dict], dict]:
+    """Split the evidence into flows per group and flows for every group.
+
+    Returns (by_group, everywhere, report). A flow whose destination is an
+    interface we know goes to that interface's groups only. Everything else
+    goes to ``everywhere`` and is treated as before per-group evidence
+    existed, i.e. it counts for every group whose rule admits it:
+
+    * no ``flows`` at all (an approved/v1 file): every source;
+    * a flow whose destination matches no interface in the region (the
+      interface was deleted or replaced, as Fargate tasks and autoscaled
+      instances are, or the address is in another account);
+    * an address in ``ips`` that no flow mentions (added by hand or by
+      sg_diagnose).
+
+    Unattributed evidence keeps access rather than cutting it: without it,
+    a service whose interfaces were replaced during the window would lose
+    every source that only reached the old ones. ``report`` lists it.
+    """
+    if flows is None:
+        return {}, [{"src": ip} for ip in approved_ips], {"attribution": "per-rule"}
+
+    by_ip, prefixes = interface_groups_by_ip(interfaces or [])
+    by_group: dict[str, list[dict]] = {}
+    everywhere: list[dict] = []
+    unknown_dst: set[str] = set()
+    for f in flows:
+        gids = _groups_for_destination(f.get("dst"), by_ip, prefixes)
+        if gids is None:
+            everywhere.append(f)
+            unknown_dst.add(f.get("dst") or "-")
+            continue
+        for gid in gids:
+            by_group.setdefault(gid, []).append(f)
+
+    in_flows = {f["src"] for f in flows}
+    extra = sorted(set(approved_ips) - in_flows)
+    everywhere.extend({"src": ip} for ip in extra)
+    report = {
+        "attribution": "per-group",
+        "unattributed_destinations": sorted(unknown_dst),
+        "sources_without_flows": extra,
+    }
+    return by_group, everywhere, report
+
+
 def build_plan(
     sgs: list[dict],
     approved_ips: list[str],
     *,
+    flows: list[dict] | None = None,
+    interfaces: list[dict] | None = None,
     max_rules: int = DEFAULT_MAX_RULES,
     tolerance: float = DEFAULT_TOLERANCE,
     prefix_threshold: int = DEFAULT_PREFIX_THRESHOLD,
@@ -994,11 +1220,24 @@ def build_plan(
     approved list can never reach a private rule. A rule with no observed
     traffic is revoked with no replacement and listed under
     ``removed_without_evidence`` so the reviewer sees it.
+
+    With ``flows`` (approved/v2) and ``interfaces`` (DescribeNetworkInterfaces
+    output), a group's rule is rebuilt only from sources that reached an
+    interface carrying that group, on a protocol and port the rule admits;
+    see _attribute_flows for evidence that cannot be tied to an interface.
+    Without ``flows`` every source inside a rule counts for every group
+    carrying it (per rule, not per group).
     """
-    private_ips = [
-        a for a in _normalise_ips(approved_ips)
-        if any(a in b for b in RFC1918_BLOCKS)
-    ]
+    by_group, everywhere, attribution = _attribute_flows(
+        [str(a) for a in _normalise_ips(approved_ips)], flows, interfaces)
+
+    private_cache: dict[str, ipaddress.IPv4Address | None] = {}
+
+    def _private(ip: str) -> ipaddress.IPv4Address | None:
+        if ip not in private_cache:
+            addrs = _normalise_ips([ip])
+            private_cache[ip] = addrs[0] if addrs and any(addrs[0] in b for b in RFC1918_BLOCKS) else None
+        return private_cache[ip]
 
     plan_groups = []
     for sg in sgs:
@@ -1015,13 +1254,18 @@ def build_plan(
         untouched = existing_total - len(eligible)
         budget = max(1, max_rules - untouched)
 
-        # One unit per eligible rule: the observed addresses inside it.
+        # One unit per eligible rule: the observed private sources inside it
+        # that reached this group (or cannot be tied to any interface) on a
+        # protocol and port the rule admits.
+        evidence = by_group.get(sg["GroupId"], []) + everywhere
         units = []
         for key, rules in revokes_per_proto_port.items():
+            matching = [f for f in evidence if flow_matches_rule(f, *key)]
             for r in rules:
                 net = ipaddress.ip_network(r["cidr"], strict=False)
-                inside = [str(a) for a in private_ips if a in net]
-                units.append((key, net, inside))
+                inside = sorted({a for a in (_private(f["src"]) for f in matching)
+                                 if a is not None and a in net})
+                units.append((key, net, [str(a) for a in inside]))
 
         needs = [
             len(_replacements_within(net, ips, max_rules=10**9, tolerance=tolerance))
@@ -1130,7 +1374,51 @@ def build_plan(
         "prefix_threshold": prefix_threshold,
         "groups": plan_groups,
         "snapshot_hash": state_hash(snapshot),
+        **attribution,
     }
+    return plan
+
+
+def _list_network_interfaces(region: str) -> list[dict]:
+    ec2 = _client("ec2", region)
+    out: list[dict] = []
+    for page in ec2.get_paginator("describe_network_interfaces").paginate():
+        out.extend(page.get("NetworkInterfaces", []))
+    return out
+
+
+def plan_from_approved(approved: dict, region: str, **kw) -> dict:
+    """Build a plan from a loaded approved.json against ``region``'s groups.
+
+    An approved/v2 file (with ``flows``) is planned per group, which also
+    reads the region's network interfaces. A v1 file has no destinations and
+    is planned per rule, with a warning.
+    """
+    sgs = _list_security_groups(region)
+    flows = approved.get("flows")
+    if flows is None:
+        LOG.warning(
+            "approved.json has no destination data (%s): every observed source "
+            "inside a rule is granted to every group carrying that rule (per "
+            "rule, not per group). Re-run analyse with this version for a "
+            "per-group plan.", approved.get("schema", "no schema"),
+        )
+        return build_plan(sgs, approved["ips"], region=region, **kw)
+    plan = build_plan(sgs, approved["ips"], flows=flows,
+                      interfaces=_list_network_interfaces(region), region=region, **kw)
+    if plan["unattributed_destinations"]:
+        LOG.warning(
+            "%d destination(s) in approved.json match no network interface in "
+            "%s; sources that reached only them are kept on every group whose "
+            "rule admits them (per rule). See unattributed_destinations in the plan.",
+            len(plan["unattributed_destinations"]), region,
+        )
+    if plan["sources_without_flows"]:
+        LOG.warning(
+            "%d address(es) in approved.json ips have no flow (added by hand or by "
+            "sg_diagnose); they are kept on every group whose rule admits them.",
+            len(plan["sources_without_flows"]),
+        )
     return plan
 
 
@@ -1318,14 +1606,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.mode == "plan":
         with open(args.approved, "r", encoding="utf-8") as fh:
             approved = json.load(fh)
-        sgs = _list_security_groups(args.region)
-        plan = build_plan(
-            sgs,
-            approved["ips"],
+        plan = plan_from_approved(
+            approved,
+            args.region,
             max_rules=args.max_rules,
             tolerance=args.tolerance,
             prefix_threshold=args.prefix_threshold,
-            region=args.region,
         )
         with open(args.out, "w", encoding="utf-8") as fh:
             json.dump(plan, fh, indent=2)

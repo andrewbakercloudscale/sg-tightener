@@ -45,7 +45,8 @@ a planned tightening, a post-change check, and a live incident.
 
 3. **Add known idle sources.** If a DR host or batch server is known to be
    needed but was quiet during the window, add its address to `ips` in
-   `approved.json`. Public addresses can stay; `plan` ignores them.
+   `approved.json`. With no flow recorded it is kept on every group whose rule
+   admits it. Public addresses can stay; `plan` ignores them.
 
 4. **Plan.**
 

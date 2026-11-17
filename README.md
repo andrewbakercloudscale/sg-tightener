@@ -69,10 +69,12 @@ Requires Python 3.9 or later and AWS credentials with the permissions in
 
 ```bash
 # 1. Learn: read 90 days of accepted flows and write approved.json
+#    (each source and the destination address and port it reached)
 python sg_tightener.py analyse --region eu-west-1 \
   --log-group /aws/vpc/flowlogs --days 90 --out approved.json
 
-# 2. Plan: work out the replacement rules (reads AWS, writes nothing)
+# 2. Plan: work out the replacement rules (reads AWS, writes nothing).
+#    Each group keeps only the sources that reached its own interfaces.
 python sg_tightener.py plan --region eu-west-1 \
   --approved approved.json --out plan.json
 
