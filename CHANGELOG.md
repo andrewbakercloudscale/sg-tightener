@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.1.0 - 2026-11-20
+
 - **PrivateLink.** `plan` never touches a group on a Network Load Balancer
   behind a PrivateLink endpoint service. Flow logs do not record
   endpoint-to-NLB traffic, and with inbound-rule enforcement on (the default)
