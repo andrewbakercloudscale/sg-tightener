@@ -45,6 +45,7 @@ from __future__ import annotations
 __version__ = "2.2.0"
 
 import argparse
+import bisect
 import dataclasses
 import datetime as dt
 import gzip
@@ -114,99 +115,204 @@ def _normalise_ips(ips: Iterable[str]) -> list[ipaddress.IPv4Address]:
     return out
 
 
+def _home_of(base: int, plen: int) -> int:
+    """Index of the RFC 1918 block holding (base, plen), or -1 for any other address."""
+    for i, b in enumerate(RFC1918_BLOCKS):
+        if plen >= b.prefixlen and (base >> (32 - b.prefixlen)) == (int(b.network_address) >> (32 - b.prefixlen)):
+            return i
+    return -1
+
+
+def _count_in(xs: list[int], base: int, size: int) -> int:
+    """How many of the sorted addresses ``xs`` fall in [base, base + size)."""
+    return bisect.bisect_left(xs, base + size) - bisect.bisect_left(xs, base)
+
+
 def _widest_block_for(
     addr: ipaddress.IPv4Address,
-    observed: set[ipaddress.IPv4Address],
+    observed: set[ipaddress.IPv4Address] | None,
     tolerance: float,
+    xs: list[int] | None = None,
 ) -> ipaddress.IPv4Network:
     """Widest containing CIDR where (block_size - observed_in_block)/block_size <= tolerance.
 
     Always returns at least the /32 host route, and never widens past the
-    RFC 1918 block the address belongs to.
+    RFC 1918 block the address belongs to. ``xs`` (the observed addresses as
+    sorted integers) makes each count a binary search instead of a scan.
     """
     home_block = next((b for b in RFC1918_BLOCKS if addr in b), None)
     if home_block is None:
         return ipaddress.ip_network(f"{addr}/32")
-    best = ipaddress.ip_network(f"{addr}/32")
+    if xs is None:
+        xs = sorted(int(o) for o in observed or ())
+    a = int(addr)
+    best = 32
     for prefix in range(31, home_block.prefixlen - 1, -1):
-        candidate = ipaddress.ip_network(f"{addr}/{prefix}", strict=False)
-        if not candidate.subnet_of(home_block):
-            break
-        size = candidate.num_addresses
-        in_block = sum(1 for o in observed if o in candidate)
-        gap = (size - in_block) / size
-        if gap <= tolerance:
-            best = candidate
+        size = 1 << (32 - prefix)
+        in_block = _count_in(xs, a & ~(size - 1), size)
+        if (size - in_block) / size <= tolerance:
+            best = prefix
         else:
             break
-    return best
+    return ipaddress.ip_network((a & ~((1 << (32 - best)) - 1), best))
 
 
-def _force_fit(
-    nets: list[ipaddress.IPv4Network],
-    max_rules: int,
-) -> list[ipaddress.IPv4Network]:
-    """Merge the closest pairs of CIDR blocks until count <= max_rules.
+def _tolerance_blocks(
+    xs: list[int],
+    tolerance: float,
+    within: ipaddress.IPv4Network | None = None,
+) -> list[tuple[int, int, int]]:
+    """Layer 1: every address widened as far as ``tolerance`` allows, merged.
 
-    Operates per-RFC-1918 home block — merges never cross a boundary
-    (e.g. a 10/8 block is never merged with a 172.16/12 block).
+    Returns disjoint (base, prefix length, observed count) blocks in address
+    order. With ``within``, a block that grew past it is clipped back to it.
+    These blocks are the finest cover sg-tightener will ever grant: their
+    headroom is what ``--tolerance`` buys.
     """
-    if len(nets) <= max_rules:
-        return nets
+    nets = set()
+    for a in xs:
+        n = _widest_block_for(ipaddress.IPv4Address(a), None, tolerance, xs)
+        if within is not None and not n.subnet_of(within):
+            n = within
+        nets.add(n)
+    out = []
+    for n in ipaddress.collapse_addresses(nets):
+        base = int(n.network_address)
+        out.append((base, n.prefixlen, _count_in(xs, base, n.num_addresses)))
+    return out
 
-    def home(net: ipaddress.IPv4Network) -> int:
-        for i, b in enumerate(RFC1918_BLOCKS):
-            if net.subnet_of(b):
-                return i
-        return -1
 
-    groups: dict[int, list[ipaddress.IPv4Network]] = {}
-    for n in nets:
-        groups.setdefault(home(n), []).append(n)
+_INF = float("inf")
 
-    while sum(len(g) for g in groups.values()) > max_rules:
-        biggest_key = max(groups, key=lambda k: len(groups[k]))
-        if len(groups[biggest_key]) <= 1:
-            break
-        items = sorted(groups[biggest_key], key=lambda n: int(n.network_address))
-        best_pair: tuple[int, int] | None = None
-        best_cost = None
-        for i in range(len(items) - 1):
-            a, b = items[i], items[i + 1]
-            super_net = _smallest_covering(a, b)
-            if super_net is None:
+
+class _Node:
+    __slots__ = ("base", "cost", "left", "plen", "right", "waste")
+
+
+class _Cover:
+    """The least wasteful way to cover a set of blocks with at most k CIDRs.
+
+    ``leaves`` are disjoint (base, prefix length, observed count) blocks that
+    must all be covered, and only whole: a leaf is never split. A covering
+    CIDR is only ever the smallest one around some of the leaves, so the
+    candidates are the nodes of the compressed binary tree over them, and for
+    each node the cheapest cover with k CIDRs follows from its two children
+    (cost = addresses granted that were never observed). ``curve[k]`` is that
+    cost for the whole set; ``blocks(k)`` returns the CIDRs, fewest first on a
+    tie. Exact, and O(leaves x kmax) rather than exponential.
+    """
+
+    def __init__(self, leaves: list[tuple[int, int, int]], kmax: int):
+        self.kmax = max(1, kmax)
+        self.root = self._build(leaves, 0, len(leaves))
+        self.curve = self.root.cost
+
+    def _build(self, leaves, lo: int, hi: int) -> _Node:
+        node = _Node()
+        node.left = node.right = None
+        if hi - lo == 1:
+            node.base, node.plen, count = leaves[lo]
+            node.waste = (1 << (32 - node.plen)) - count
+            node.cost = [_INF, node.waste]
+            return node
+        first = leaves[lo][0]
+        last_base, last_plen, _ = leaves[hi - 1]
+        last = last_base + (1 << (32 - last_plen)) - 1
+        node.plen = 32 - (first ^ last).bit_length()
+        node.base = first & ~((1 << (32 - node.plen)) - 1)
+        mid = node.base + (1 << (31 - node.plen))
+        split = bisect.bisect_left(leaves, (mid,), lo, hi)
+        node.left = self._build(leaves, lo, split)
+        node.right = self._build(leaves, split, hi)
+        size = 1 << (32 - node.plen)
+        node.waste = size - sum(c for _b, _p, c in leaves[lo:hi])
+        left, right = node.left.cost, node.right.cost
+        cap = min(self.kmax, len(left) - 1 + len(right) - 1)
+        cost = [_INF] * (cap + 1)
+        for i in range(1, len(left)):
+            li = left[i]
+            for j in range(1, min(len(right), cap - i + 1)):
+                v = li + right[j]
+                if v < cost[i + j]:  # noqa: PLR1730 (hot loop; min() is slower)
+                    cost[i + j] = v
+        cost[1] = node.waste
+        for k in range(2, cap + 1):
+            cost[k] = min(cost[k], node.waste, cost[k - 1])
+        node.cost = cost
+        return node
+
+    def cost(self, k: int) -> float:
+        return self.curve[min(k, len(self.curve) - 1)] if k >= 1 else _INF
+
+    def blocks(self, k: int) -> list[ipaddress.IPv4Network]:
+        out: list[ipaddress.IPv4Network] = []
+        self._pick(self.root, k, out)
+        return sorted(out, key=lambda n: (int(n.network_address), n.prefixlen))
+
+    def _pick(self, node: _Node, k: int, out: list) -> None:
+        cost = node.cost
+        k = min(max(k, 1), len(cost) - 1)
+        while k > 1 and cost[k] == cost[k - 1]:
+            k -= 1
+        if cost[k] == node.waste or node.left is None:
+            out.append(ipaddress.ip_network((node.base, node.plen)))
+            return
+        left, right = node.left.cost, node.right.cost
+        for i in range(max(1, k - len(right) + 1), min(len(left) - 1, k - 1) + 1):
+            if left[i] + right[k - i] == cost[k]:
+                self._pick(node.left, i, out)
+                self._pick(node.right, k - i, out)
+                return
+        raise AssertionError("cover reconstruction failed")  # pragma: no cover
+
+
+def _split_budget(curves: list[Callable[[int], float]], sizes: list[int], budget: int) -> list[int]:
+    """Slots per cover that minimise the total waste, at least one each.
+
+    ``curves[i](k)`` is cover i's waste with k CIDRs, flat beyond ``sizes[i]``.
+    Exact (a knapsack over the covers), and the fewest slots on a tie. When
+    the covers outnumber the budget, each gets one and the result is over it.
+    """
+    n = len(curves)
+    if n == 0:
+        return []
+    if budget <= n:
+        return [1] * n
+    # best[b]: least waste of the covers so far using exactly b slots.
+    best = [0.0] + [_INF] * budget
+    choice: list[list[int]] = []
+    for i, curve in enumerate(curves):
+        nxt = [_INF] * (budget + 1)
+        pick = [0] * (budget + 1)
+        top = min(sizes[i], budget - (n - 1 - i))
+        for b in range(i, budget + 1):
+            if best[b] == _INF:
                 continue
-            cost = super_net.num_addresses - (a.num_addresses + b.num_addresses)
-            if best_cost is None or cost < best_cost:
-                best_cost = cost
-                best_pair = (i, i + 1)
-        if best_pair is None:
-            break
-        i, j = best_pair
-        merged = _smallest_covering(items[i], items[j])
-        new_items = items[:i] + [merged] + items[j + 1:]
-        groups[biggest_key] = new_items
-
-    return [n for g in groups.values() for n in g]
+            for k in range(1, min(top, budget - b) + 1):
+                v = best[b] + curve(k)
+                if v < nxt[b + k]:
+                    nxt[b + k], pick[b + k] = v, k
+        best = nxt
+        choice.append(pick)
+    b = min(range(budget + 1), key=lambda x: (best[x], x))
+    out = [0] * n
+    for i in range(n - 1, -1, -1):
+        out[i] = choice[i][b]
+        b -= out[i]
+    return out
 
 
 def _smallest_covering(
     a: ipaddress.IPv4Network,
     b: ipaddress.IPv4Network,
 ) -> ipaddress.IPv4Network | None:
-    home = next((blk for blk in RFC1918_BLOCKS if a.subnet_of(blk) and b.subnet_of(blk)), None)
-    if home is None:
+    """The smallest CIDR holding both, or None when they sit in different RFC 1918 blocks."""
+    if not any(a.subnet_of(blk) and b.subnet_of(blk) for blk in RFC1918_BLOCKS):
         return None
     lo = min(int(a.network_address), int(b.network_address))
     hi = max(int(a.broadcast_address), int(b.broadcast_address))
-    for prefix in range(32, home.prefixlen - 1, -1):
-        size = 1 << (32 - prefix)
-        base = (lo // size) * size
-        if base + size - 1 >= hi:
-            candidate = ipaddress.ip_network((base, prefix))
-            if candidate.subnet_of(home):
-                return candidate
-    return home
+    plen = 32 - (lo ^ hi).bit_length()
+    return ipaddress.ip_network((lo & ~((1 << (32 - plen)) - 1), plen))
 
 
 def collapse_ips_to_cidrs(
@@ -216,41 +322,44 @@ def collapse_ips_to_cidrs(
 ) -> list[str]:
     """Collapse observed IPs into a CIDR list <= max_rules in size.
 
-    Layer 1: widen each IP to the widest block respecting ``tolerance``.
-    Layer 2: deduplicate, widen tolerance in 5% steps if still over budget.
-    Layer 3: force-fit merge nearest pairs while respecting RFC 1918 home block.
+    Layer 1: widen each IP to the widest block respecting ``tolerance`` (never
+    past its RFC 1918 block), and merge.
+    Layer 2: if that is over budget, choose the at most ``max_rules`` CIDRs
+    that cover those blocks granting the fewest never-observed addresses
+    (see _Cover), sharing the budget across the RFC 1918 blocks the same way.
+    Public addresses are never merged with anything.
 
     Returns sorted ``"a.b.c.d/p"`` strings.
     """
-    addrs = _normalise_ips(ips)
-    if not addrs:
+    xs = sorted({int(a) for a in _normalise_ips(ips)})
+    if not xs:
         return []
-    observed = set(addrs)
-
-    def _collapse_at(t: float) -> list[ipaddress.IPv4Network]:
-        blocks: set[ipaddress.IPv4Network] = set()
-        for a in addrs:
-            blocks.add(_widest_block_for(a, observed, t))
-        # ipaddress.collapse_addresses merges contiguous & adjacent nets.
-        return list(ipaddress.collapse_addresses(blocks))
-
     t = max(0.0, min(1.0, tolerance))
-    nets = _collapse_at(t)
-    while len(nets) > max_rules and t < 0.95:
-        t = round(min(0.95, t + 0.05), 2)
-        LOG.warning("widening tolerance to %.2f to fit %d rule budget", t, max_rules)
-        nets = _collapse_at(t)
+    leaves = _tolerance_blocks(xs, t)
+    if len(leaves) <= max_rules:
+        return [str(ipaddress.ip_network((b, p))) for b, p, _c in leaves]
 
+    by_home: dict[int, list] = {}
+    singles = []
+    for leaf in leaves:
+        home = _home_of(leaf[0], leaf[1])
+        if home < 0:
+            singles.append([leaf])
+        else:
+            by_home.setdefault(home, []).append(leaf)
+    covers = [_Cover(g, max_rules) for g in list(by_home.values()) + singles]
+    slots = _split_budget([c.cost for c in covers], [len(c.curve) - 1 for c in covers], max_rules)
+    nets = [n for c, k in zip(covers, slots) for n in c.blocks(k)]
+    LOG.warning(
+        "%d blocks at tolerance %.2f exceed the %d rule budget; merged into %d with the fewest "
+        "extra addresses — request a quota increase from AWS Support to keep precision",
+        len(leaves), t, max_rules, len(nets),
+    )
     if len(nets) > max_rules:
-        LOG.warning(
-            "tolerance widening exhausted; force-fitting %d blocks into %d rules — "
-            "request a quota increase from AWS Support to keep precision",
-            len(nets), max_rules,
-        )
-        nets = _force_fit(nets, max_rules)
-
-    nets_sorted = sorted(nets, key=lambda n: (int(n.network_address), n.prefixlen))
-    return [str(n) for n in nets_sorted]
+        LOG.warning("%d public addresses cannot be merged: %d rules needed, budget %d",
+                    len(singles), len(nets), max_rules)
+    nets.sort(key=lambda n: (int(n.network_address), n.prefixlen))
+    return [str(n) for n in nets]
 
 
 # --------------------------------------------------------------------------- #
@@ -1049,28 +1158,19 @@ def _all_rule_count(sg: dict) -> int:
     return n
 
 
-def _allocate_budget(needs: list[int], budget: int) -> list[int]:
-    """Split ``budget`` rule slots across units that each need ``needs[i]``.
+def _rule_cover(
+    original: ipaddress.IPv4Network,
+    ips: list[str],
+    kmax: int,
+    tolerance: float,
+) -> _Cover:
+    """The cover of ``ips`` (all inside ``original``) that never leaves it.
 
-    Every unit with evidence gets at least one slot. When the total need fits,
-    each unit gets what it needs; otherwise the slots above the first are
-    shared in proportion to each unit's extra need (largest remainder).
+    Layer-1 blocks that would grow past the original rule are clipped back to
+    it, so a replacement can only ever narrow a rule.
     """
-    alloc = [1 if n > 0 else 0 for n in needs]
-    spare = budget - sum(alloc)
-    if spare <= 0:
-        return alloc
-    extra = [max(0, n - a) for n, a in zip(needs, alloc)]
-    total_extra = sum(extra)
-    if total_extra <= spare:
-        return [a + e for a, e in zip(alloc, extra)]
-    shares = [e * spare / total_extra for e in extra]
-    floors = [int(x) for x in shares]
-    leftover = spare - sum(floors)
-    order = sorted(range(len(needs)), key=lambda i: shares[i] - floors[i], reverse=True)
-    for i in order[:leftover]:
-        floors[i] += 1
-    return [a + f for a, f in zip(alloc, floors)]
+    xs = sorted({int(a) for a in _normalise_ips(ips)})
+    return _Cover(_tolerance_blocks(xs, tolerance, within=original), kmax)
 
 
 def _replacements_within(
@@ -1079,16 +1179,8 @@ def _replacements_within(
     max_rules: int,
     tolerance: float,
 ) -> list[ipaddress.IPv4Network]:
-    """Collapse ``ips`` (all inside ``original``) without ever leaving it.
-
-    collapse_ips_to_cidrs may widen up to the RFC 1918 home block; any block
-    that grew past the original rule is clipped back to the original, so a
-    replacement can only ever narrow a rule.
-    """
-    nets = [ipaddress.ip_network(c) for c in collapse_ips_to_cidrs(
-        ips, max_rules=max_rules, tolerance=tolerance)]
-    clipped = [original if not n.subnet_of(original) else n for n in nets]
-    return list(ipaddress.collapse_addresses(clipped))
+    """Collapse ``ips`` (all inside ``original``) into at most ``max_rules`` CIDRs inside it."""
+    return _rule_cover(original, ips, max_rules, tolerance).blocks(max_rules)
 
 
 # Security-group protocol names -> the IANA numbers flow logs record.
@@ -1487,17 +1579,17 @@ def build_plan(
                                  if a is not None and a in net})
                 units.append((key, net, [str(a) for a in inside]))
 
-        needs = [
-            len(_replacements_within(net, ips, max_rules=10**9, tolerance=tolerance))
-            if ips else 0
-            for _key, net, ips in units
-        ]
-        allocation = _allocate_budget(needs, budget)
+        # Share the budget so the group as a whole grants the fewest
+        # addresses nobody was seen using: each rule's cover says what every
+        # extra slot would save, and _split_budget picks the best split.
+        covers = [_rule_cover(net, ips, budget, tolerance) if ips else None for _key, net, ips in units]
+        live = [c for c in covers if c is not None]
+        shares = iter(_split_budget([c.cost for c in live], [len(c.curve) - 1 for c in live], budget))
 
         authorised_by_key: dict[tuple, list[ipaddress.IPv4Network]] = {}
         removed: list[dict] = []
-        for (key, net, ips), slots in zip(units, allocation):
-            if not ips:
+        for (key, net, ips), cover in zip(units, covers):
+            if cover is None:
                 removed.append({
                     "cidr": str(net),
                     "protocol": key[0],
@@ -1506,7 +1598,7 @@ def build_plan(
                 })
                 continue
             authorised_by_key.setdefault(key, []).extend(
-                n for n in _replacements_within(net, ips, max_rules=slots, tolerance=tolerance)
+                n for n in cover.blocks(next(shares))
                 if not any(n.subnet_of(k) for k in kept.get(key, []))
             )
 

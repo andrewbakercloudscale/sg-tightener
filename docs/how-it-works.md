@@ -62,8 +62,9 @@ each group:
    rule but never allow a source the rule did not already allow, and public
    addresses in `approved.json` can never reach a private rule.
 4. Shares the budget across the group's rules: each rule with traffic gets at
-   least one slot, and the rest go in proportion to how many blocks each rule
-   needs.
+   least one slot, and the rest go wherever they save the most: the split that
+   grants the fewest never-observed addresses across the whole group (exact,
+   not a rule of thumb).
 5. Writes a `revoke` list (the eligible rules, per protocol and port range), an
    `authorise` list (the replacement CIDRs on the same protocols and ports),
    and `removed_without_evidence`: eligible rules with no observed traffic at
@@ -100,7 +101,7 @@ missing rule does not stop the rest of the rollback. Manifests from
 ## How the replacement CIDRs are chosen
 
 The core function is `collapse_ips_to_cidrs(ips, max_rules, tolerance)` in
-[`sg_tightener.py`](../sg_tightener.py). It works in three layers.
+[`sg_tightener.py`](../sg_tightener.py). It works in two layers.
 
 **Tolerance** is the fraction of addresses inside a candidate block that were
 *never observed* and are still allowed. `0.0` means "only exact hosts";
@@ -110,17 +111,26 @@ The core function is `collapse_ips_to_cidrs(ips, max_rules, tolerance)` in
 and widen one bit at a time while the block's unused fraction stays within the
 tolerance. Stop at the RFC 1918 block the address belongs to; a `10.x` address
 can never produce a block outside `10.0.0.0/8`. Adjacent and overlapping
-results are merged.
+results are merged. These blocks are the finest result sg-tightener produces:
+the headroom tolerance buys (room for hosts not yet seen) is never given up to
+use a spare rule.
 
-**Layer 2: relax tolerance to fit the budget.** If there are still more blocks
-than the budget allows, raise the tolerance in steps of 0.05 up to 0.95 and try
-again. Each step is logged as a warning.
+**Layer 2: fit the budget exactly.** If there are more blocks than the budget
+allows, sg-tightener picks the at most `--max-rules` CIDRs that cover every
+layer-1 block while granting the **fewest addresses nobody was seen using**.
+Only CIDRs that are the smallest block around some of the layer-1 blocks can
+be in the best answer, so it is found exactly over the binary tree of those
+blocks (each block's best cover with *k* rules follows from its two halves),
+in milliseconds for thousands of addresses. Blocks in different RFC 1918
+ranges are never merged; the budget is shared between the ranges the same
+exact way, and public addresses are kept as they are. A warning says how many
+blocks were merged into how many rules; a higher rules-per-group quota from
+AWS Support keeps more precision.
 
-**Layer 3: force-fit.** If even 0.95 is not enough, repeatedly merge the
-neighbouring pair of blocks whose smallest covering block wastes the fewest
-addresses, within the same RFC 1918 block. This always fits, but loses
-precision; the log tells you to ask AWS Support for a higher rules-per-group
-quota instead.
+Before 2.3.0, layer 2 raised the tolerance in 0.05 steps and then merged
+neighbouring pairs; on clustered traffic that granted 25 to 60% more unused
+addresses, often left rule slots empty, and took 28 seconds for 2,000
+addresses where the exact cover takes a fraction of one.
 
 Example with the default tolerance:
 

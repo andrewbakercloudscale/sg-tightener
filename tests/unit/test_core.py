@@ -962,23 +962,6 @@ class TestBuildPlanScoping(unittest.TestCase):
             self.assertTrue(any(ipaddress.ip_address(ip) in n for n in covered), ip)
 
 
-class TestAllocateBudget(unittest.TestCase):
-    def test_fits(self):
-        from sg_tightener import _allocate_budget
-        self.assertEqual(_allocate_budget([3, 2, 0], 10), [3, 2, 0])
-
-    def test_shares_spare_and_never_exceeds_budget(self):
-        from sg_tightener import _allocate_budget
-        alloc = _allocate_budget([30, 10, 1], 12)
-        self.assertEqual(sum(alloc), 12)
-        self.assertTrue(all(a >= 1 for a in alloc))
-        self.assertGreater(alloc[0], alloc[1])
-
-    def test_minimum_one_each_when_over(self):
-        from sg_tightener import _allocate_budget
-        self.assertEqual(_allocate_budget([5, 5, 5], 2), [1, 1, 1])
-
-
 class TestSgDiagnoseWiring(unittest.TestCase):
     """sg_diagnose must parse with the preflighted log format.
 

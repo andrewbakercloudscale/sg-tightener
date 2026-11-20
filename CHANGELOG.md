@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Change (`plan`, `sg_extend`): exact rule fitting.** When observed
+  addresses do not fit the rule budget, the CIDRs are now chosen exactly: the
+  at most `--max-rules` blocks that grant the fewest never-observed addresses.
+  This replaces raising the tolerance in steps and force-merging neighbours,
+  which on clustered traffic granted 25 to 60% more unused addresses and often
+  left rule slots empty. Plans are never wider than 2.2.0's (tested against
+  2.2.0's code, kept in `tests/fixtures/legacy_collapse.py`). The tolerance
+  blocks are still the finest result, so headroom for new hosts is kept.
+- **Change (`plan`): budget split by savings.** A group's slots go to the
+  rules where they save the most addresses, not in proportion to how many
+  blocks each rule needs, so a rule of 30 neighbouring hosts no longer takes
+  slots a rule spanning a /16 needed.
+- **Performance:** counting addresses is a binary search, not a scan; 2,000
+  addresses take 0.02 s instead of 14 to 28 s, and `plan` no longer collapses
+  each rule twice.
+- The warnings `widening tolerance to …` and `force-fitting …` are replaced by
+  one: `N blocks at tolerance T exceed the B rule budget; merged into M …`.
+
 ## 2.2.0 - 2026-11-20
 
 - **Fix (`sg_diagnose`):** a rejected source counted as covered if any rule

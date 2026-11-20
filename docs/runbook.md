@@ -55,9 +55,10 @@ a planned tightening, a post-change check, and a live incident.
      --approved approved.json --out plan.json
    ```
 
-   A `widening tolerance to …` warning means the observed addresses did not fit
-   the rule budget at the requested tolerance. A `force-fitting` warning means
-   precision was given up; consider a quota increase first.
+   A `… blocks at tolerance … exceed the … rule budget` warning means the
+   observed addresses did not fit the rule budget at the requested tolerance,
+   so blocks were merged (granting the fewest extra addresses possible).
+   Consider a quota increase first if that is too wide.
 
 5. **Review `plan.json`.** For each group compare `revoke` with `authorise`:
    - Do the new CIDRs make sense for what this group protects?
