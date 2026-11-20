@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.2.0 - 2026-11-20
+
 - **Fix (`sg_diagnose`):** a rejected source counted as covered if any rule
   in any group allowed it, on any port, so the breakage tightening causes
   stayed hidden. Each rejected flow is now judged against the groups on its
