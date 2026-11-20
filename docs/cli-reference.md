@@ -95,7 +95,7 @@ Exit codes: `0` nothing found, or found and merged; `1` found and not merged.
 | `--max-rules` | `60` | Per-group budget; a group that would exceed it is skipped |
 | `--yes` | off | Skip the typed `extend` confirmation |
 
-Writes `sg_extend-manifest-<ts>.json`.
+Writes `sg_extend-manifest-<ts>.json`. Exits 1 if adding rules failed on any group.
 
 ---
 

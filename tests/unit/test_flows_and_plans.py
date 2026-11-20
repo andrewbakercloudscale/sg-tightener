@@ -570,3 +570,97 @@ class TestPrivateLink:
         assert _granted(plan, "sg-vpce") == {(443, "10.4.2.10/32")}
         assert _granted(plan, "sg-app") == {(443, "10.20.0.7/32")}
         assert plan["unattributed_destinations"] == []
+
+
+# --------------------------------------------------------------------------- #
+# sg_extend: destination resolution and authorise outcomes
+# --------------------------------------------------------------------------- #
+
+def _x_eni(eni_id, vpc, ip, *gids, prefixes=()):
+    return {"NetworkInterfaceId": eni_id, "VpcId": vpc, "PrivateIpAddress": ip,
+            "PrivateIpAddresses": [{"PrivateIpAddress": ip}],
+            "Ipv4Prefixes": [{"Ipv4Prefix": p} for p in prefixes],
+            "Groups": [{"GroupId": g} for g in gids]}
+
+
+class TestSgExtendResolution:
+    ENIS = [_x_eni("eni-a", "vpc-a", "10.0.1.5", "sg-a"),
+            _x_eni("eni-b", "vpc-b", "10.0.1.5", "sg-b"),       # same address, other VPC
+            _x_eni("eni-node", "vpc-a", "10.0.3.4", "sg-pods", prefixes=["10.0.3.16/28"])]
+
+    def test_interface_id_picks_the_vpc_even_when_addresses_overlap(self):
+        import sg_extend
+        out = sg_extend.resolve_destination_groups(self.ENIS, [("10.0.1.5", "eni-a")])
+        assert out == {("10.0.1.5", "eni-a"): {"sg-a"}}
+
+    def test_overlapping_address_without_interface_id_is_refused(self, caplog):
+        import sg_extend
+        with caplog.at_level("WARNING", logger="sg_extend"):
+            assert sg_extend.resolve_destination_groups(self.ENIS, [("10.0.1.5", None)]) == {}
+        assert "2 VPCs" in caplog.text
+
+    def test_delegated_prefix_resolves_pod_addresses(self):
+        import sg_extend
+        out = sg_extend.resolve_destination_groups(
+            self.ENIS, [("10.0.3.20", None), ("10.0.3.21", "eni-node")])
+        assert out == {("10.0.3.20", None): {"sg-pods"}, ("10.0.3.21", "eni-node"): {"sg-pods"}}
+
+    def test_record_from_the_sending_interface_is_ignored(self):
+        """Without flow-direction an egress reject is logged by the sender's
+        interface; its groups must not get an ingress rule."""
+        import sg_extend
+        assert sg_extend.resolve_destination_groups(self.ENIS, [("10.9.9.9", "eni-a")]) == {}
+
+
+class _FakeEc2:
+    def __init__(self, existing=(), fail=None):
+        self.existing = set(existing)
+        self.fail = fail
+        self.calls = []
+
+    def authorize_security_group_ingress(self, GroupId, IpPermissions):  # noqa: N803
+        import botocore.exceptions
+        self.calls.append(IpPermissions)
+        if self.fail:
+            raise self.fail
+        cidrs = {r["CidrIp"] for p in IpPermissions for r in p["IpRanges"]}
+        if cidrs & self.existing:
+            raise botocore.exceptions.ClientError(
+                {"Error": {"Code": "InvalidPermission.Duplicate", "Message": "dup"}}, "Authorize")
+        self.existing |= cidrs
+
+
+class TestSgExtendAuthorise:
+    PERMS = [{"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443,
+              "IpRanges": [{"CidrIp": "10.1.0.1/32"}, {"CidrIp": "10.1.0.2/32"}]}]
+    SG = {"GroupId": "sg-a", "IpPermissions": []}
+
+    def test_one_duplicate_no_longer_drops_the_other_rules(self):
+        """Regression: the call is all or nothing, so one duplicate added
+        nothing while the run reported partial success."""
+        import sg_extend
+        ec2 = _FakeEc2(existing={"10.1.0.1/32"})
+        out = sg_extend._apply_to_group(ec2, "sg-a", self.SG, self.PERMS, max_rules=60)
+        assert out["status"] == "ADDED" and out["added_rules"] == 1
+        assert "10.1.0.2/32" in ec2.existing
+        assert [r["IpRanges"][0]["CidrIp"] for r in out["already_present"]] == ["10.1.0.1/32"]
+
+    def test_connection_error_is_reported_not_raised(self):
+        import botocore.exceptions
+        import sg_extend
+        ec2 = _FakeEc2(fail=botocore.exceptions.EndpointConnectionError(endpoint_url="https://ec2"))
+        out = sg_extend._apply_to_group(ec2, "sg-a", self.SG, self.PERMS, max_rules=60)
+        assert out["status"] == "ERROR"
+
+    def test_describe_groups_survives_an_unknown_id(self):
+        import botocore.exceptions
+        import sg_extend
+
+        class Ec2:
+            def describe_security_groups(self, GroupIds):  # noqa: N803
+                if "sg-typo" in GroupIds:
+                    raise botocore.exceptions.ClientError(
+                        {"Error": {"Code": "InvalidGroup.NotFound", "Message": "no"}}, "Describe")
+                return {"SecurityGroups": [{"GroupId": g} for g in GroupIds]}
+
+        assert set(sg_extend.describe_groups(Ec2(), ["sg-a", "sg-typo", "sg-b"])) == {"sg-a", "sg-b"}

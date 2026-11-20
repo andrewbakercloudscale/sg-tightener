@@ -69,6 +69,7 @@ from sg_tightener import (
     build_flow_stats_query,
     collapse_ips_to_cidrs,
     flow_records,
+    interface_groups_by_ip,
     iter_s3_flow_log_lines,
     preflight_flow_logs,
     run_insights_query,
@@ -445,48 +446,123 @@ def filter_existing(perms: list[dict], sg: dict) -> list[dict]:
 # ENI / SG discovery (AWS)
 # --------------------------------------------------------------------------- #
 
-def derive_groups_from_dst_ips(
-    ec2_client, dst_ips: Sequence[str],
-) -> dict[str, set[str]]:
-    """Map each destination IP to the set of SG ids attached to its ENI.
-
-    AWS evaluates ingress permissively across every SG attached to an
-    ENI, so all attached SGs are candidates for the rule. IPs that
-    don't resolve to any ENI in this region are silently skipped — they
-    may belong to a different account, a public IP outside our control,
-    or an ENI that was deleted between the REJECT and the lookup.
-    """
-    out: dict[str, set[str]] = {}
-    targets = sorted({ip for ip in dst_ips if ip})
-    if not targets:
-        return out
-    # describe-network-interfaces' filter values are OR'd within a list.
-    # Cap each chunk at 200 to stay well clear of any service-side limit.
-    for i in range(0, len(targets), 200):
-        chunk = targets[i:i + 200]
+def _eni_owns(eni: dict, dst: str) -> bool:
+    """Whether ``dst`` is one of ``eni``'s private addresses or inside one of
+    its delegated prefixes (EKS prefix mode)."""
+    ips = {eni.get("PrivateIpAddress")} | {
+        pa.get("PrivateIpAddress") for pa in eni.get("PrivateIpAddresses", [])}
+    if dst in ips:
+        return True
+    try:
+        addr = ipaddress.ip_address(dst)
+    except ValueError:
+        return False
+    for pfx in eni.get("Ipv4Prefixes", []):
         try:
-            resp = ec2_client.describe_network_interfaces(Filters=[
-                {"Name": "addresses.private-ip-address", "Values": chunk},
-            ])
-        except botocore.exceptions.ClientError as exc:
-            LOG.warning("describe_network_interfaces chunk failed: %s", exc)
+            if addr in ipaddress.ip_network(pfx["Ipv4Prefix"]):
+                return True
+        except (KeyError, ValueError):
             continue
-        for eni in resp.get("NetworkInterfaces", []):
-            sg_ids = {g["GroupId"] for g in eni.get("Groups", []) if g.get("GroupId")}
-            if not sg_ids:
+    return False
+
+
+def resolve_destination_groups(
+    interfaces: list[dict],
+    destinations: Sequence[tuple[str, str | None]],
+) -> dict[tuple[str, str | None], set[str]]:
+    """Map each (destination IP, logging interface id) to the SG ids on the
+    interface that received it.
+
+    AWS evaluates ingress permissively across every SG attached to an ENI,
+    so all attached SGs are candidates for the rule.
+
+    When the flow record names its interface, that interface decides: this
+    is exact even where VPCs reuse the same addresses. A record logged by an
+    interface that does not own the destination (the sending side of the
+    connection, e.g. an egress reject in a format without flow-direction) is
+    ignored. Without an interface id the address is looked up across the
+    region, delegated prefixes included, and an address that more than one
+    VPC uses is refused as ambiguous rather than opened in every VPC.
+    Destinations that resolve to nothing (another account, deleted
+    interfaces) are left out.
+    """
+    by_id = {e.get("NetworkInterfaceId"): e for e in interfaces}
+    by_ip, prefixes = interface_groups_by_ip(interfaces)
+    vpcs_by_ip: dict[str, set[str]] = {}
+    for eni in interfaces:
+        if eni.get("Groups"):
+            for ip in {eni.get("PrivateIpAddress")} | {
+                    pa.get("PrivateIpAddress") for pa in eni.get("PrivateIpAddresses", [])}:
+                if ip:
+                    vpcs_by_ip.setdefault(ip, set()).add(eni.get("VpcId"))
+    out: dict[tuple[str, str | None], set[str]] = {}
+    for dst, iface in set(destinations):
+        if not dst:
+            continue
+        if iface:
+            eni = by_id.get(iface)
+            if eni is None or not _eni_owns(eni, dst):
                 continue
-            for pa in eni.get("PrivateIpAddresses", []):
-                ip = pa.get("PrivateIpAddress")
-                if ip and ip in chunk:
-                    out.setdefault(ip, set()).update(sg_ids)
+            gids = {g["GroupId"] for g in eni.get("Groups", []) if g.get("GroupId")}
+        else:
+            if len(vpcs_by_ip.get(dst, set())) > 1:
+                LOG.warning("%s belongs to interfaces in %d VPCs and the flow log records no "
+                            "interface-id; skipped rather than opened in all of them (pass "
+                            "--groups, or add ${interface-id} to the log format)",
+                            dst, len(vpcs_by_ip[dst]))
+                continue
+            gids = set(by_ip.get(dst, set()))
+            if not gids:
+                addr = ipaddress.ip_address(dst) if _is_ip(dst) else None
+                for net, pg in prefixes:
+                    if addr is not None and addr in net:
+                        gids |= pg
+        if gids:
+            out[(dst, iface)] = gids
     return out
+
+
+def _is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _list_interfaces(ec2_client) -> list[dict]:
+    out: list[dict] = []
+    for page in ec2_client.get_paginator("describe_network_interfaces").paginate():
+        out.extend(page.get("NetworkInterfaces", []))
+    return out
+
+
+def describe_groups(ec2_client, group_ids: Sequence[str]) -> dict[str, dict]:
+    """{group id: group} for the ids that exist. DescribeSecurityGroups fails
+    the whole call on one unknown id, so a failed chunk is retried one id at
+    a time and the missing ids are simply absent."""
+    found: dict[str, dict] = {}
+    ids = list(dict.fromkeys(group_ids))
+    for i in range(0, len(ids), 100):
+        chunk = ids[i:i + 100]
+        try:
+            for sg in ec2_client.describe_security_groups(GroupIds=chunk)["SecurityGroups"]:
+                found[sg["GroupId"]] = sg
+        except botocore.exceptions.ClientError:
+            for gid in chunk:
+                try:
+                    for sg in ec2_client.describe_security_groups(GroupIds=[gid])["SecurityGroups"]:
+                        found[sg["GroupId"]] = sg
+                except botocore.exceptions.ClientError as exc:
+                    LOG.warning("%s: %s", gid, exc)
+    return found
 
 
 # --------------------------------------------------------------------------- #
 # Flow-log readers (AWS)
 # --------------------------------------------------------------------------- #
 
-def _add_flow(flows, dst_map, src, dst, proto_num, dstport) -> None:
+def _add_flow(flows, dst_map, src, dst, proto_num, dstport, iface=None) -> None:
     proto = proto_name(proto_num)
     if proto is None or not src or src == "-":
         return
@@ -497,7 +573,8 @@ def _add_flow(flows, dst_map, src, dst, proto_num, dstport) -> None:
     key = (src.strip(), proto, port)
     flows.add(key)
     if dst and dst != "-":
-        dst_map.setdefault(key, set()).add(dst.strip())
+        dst_map.setdefault(key, set()).add(
+            (dst.strip(), iface.strip() if iface and iface != "-" else None))
 
 
 def read_rejected_flows_cloudwatch(
@@ -508,7 +585,7 @@ def read_rejected_flows_cloudwatch(
 
     Returns ``(flows, dst_map)`` — the standard 3-tuple flow set used by
     every downstream pure helper, plus a mapping from each flow tuple to
-    the set of destination ENI IPs that observed it. The destination
+    the (destination IP, logging interface id or None) pairs that observed it. The destination
     information is what makes ENI-based group discovery possible.
 
     ``fields`` is the configured log format (from preflight_flow_logs); the
@@ -520,16 +597,16 @@ def read_rejected_flows_cloudwatch(
     logs = _client("logs", region)
     end = dt.datetime.now(dt.timezone.utc)
     start = end - dt.timedelta(hours=hours)
-    query, cols = build_flow_stats_query(
-        fields, by=("src", "dst", "dstport", "protocol"), action="REJECT",
-    )
+    by = ("src", "dst", "dstport", "protocol") + (("interface",) if "interface-id" in fields else ())
+    query, cols = build_flow_stats_query(fields, by=by, action="REJECT")
     rows = run_insights_query(logs, log_group, query, start, end)
 
     flows: set[tuple[str, str, int]] = set()
     dst_map: dict[tuple[str, str, int], set[str]] = {}
     for row in rows:
         _add_flow(flows, dst_map, row.get(cols["src"], ""), row.get(cols["dst"]),
-                  row.get(cols["protocol"]), row.get(cols["dstport"]))
+                  row.get(cols["protocol"]), row.get(cols["dstport"]),
+                  row.get(cols["interface"]) if "interface" in cols else None)
     return flows, dst_map
 
 
@@ -553,7 +630,8 @@ def read_rejected_flows_s3(
         for rec in flow_records(lines, fields):
             if rec["action"] != "REJECT" or rec["direction"] == "egress":
                 continue
-            _add_flow(flows, dst_map, rec["src"], rec["dst"], rec["protocol"], rec["dstport"])
+            _add_flow(flows, dst_map, rec["src"], rec["dst"], rec["protocol"], rec["dstport"],
+                      rec["interface"])
     return flows, dst_map
 
 
@@ -608,17 +686,35 @@ def _apply_to_group(
             "existing_rules": existing, "would_add": would_add,
             "max_rules": max_rules,
         }
+    aws_errors = (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError)
     try:
         ec2_client.authorize_security_group_ingress(GroupId=gid, IpPermissions=perms)
         return {
             "group_id": gid, "status": "ADDED",
             "added_rules": would_add, "rules": perms,
         }
-    except botocore.exceptions.ClientError as exc:
+    except aws_errors as exc:
         err = str(exc)
-        if "InvalidPermission.Duplicate" in err:
-            return {"group_id": gid, "status": "PARTIAL_DUPLICATE", "error": err}
-        return {"group_id": gid, "status": "ERROR", "error": err}
+        if "InvalidPermission.Duplicate" not in err:
+            return {"group_id": gid, "status": "ERROR", "error": err}
+    # The call is all or nothing: one duplicate means NOTHING was added.
+    # Add the rules one by one and skip only the ones that already exist.
+    added: list[dict] = []
+    duplicates: list[dict] = []
+    for perm in perms:
+        for r in perm.get("IpRanges", []):
+            one = {**perm, "IpRanges": [r]}
+            try:
+                ec2_client.authorize_security_group_ingress(GroupId=gid, IpPermissions=[one])
+                added.append(one)
+            except aws_errors as exc:
+                if "InvalidPermission.Duplicate" in str(exc):
+                    duplicates.append(one)
+                    continue
+                return {"group_id": gid, "status": "ERROR", "error": str(exc),
+                        "added_rules": len(added), "rules": added}
+    return {"group_id": gid, "status": "ADDED" if added else "ALREADY_PRESENT",
+            "added_rules": len(added), "rules": added, "already_present": duplicates}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -702,18 +798,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # --- AWS service summarisation -------------------------------------- #
     aws_summaries: dict[tuple[str, str, int], tuple[str, str]] = {}
-    aws_service_perms: list[dict] = []
+    # Which original (src, proto, port) flows each summary stands for, so a
+    # summary only goes to the groups those flows actually reached.
+    aws_origins: dict[tuple[str, str, int], set[tuple[str, str, int]]] = {}
     if args.include_public and not args.no_aws_summarise:
         ranges = load_aws_ip_ranges()
         if ranges:
             regular_flows, aws_summaries = split_aws_service_flows(flows, ranges)
+            for flow in flows - regular_flows:
+                cls = classify_aws_service(flow[0], ranges)
+                if cls:
+                    aws_origins.setdefault((cls[2], flow[1], flow[2]), set()).add(flow)
             if aws_summaries:
                 LOG.info(
                     "summarised %d public source IP(s) into %d AWS service prefix(es)",
                     len(flows) - len(regular_flows), len(aws_summaries),
-                )
-                aws_service_perms = build_aws_service_perms(
-                    aws_summaries, args.description,
                 )
             flows = regular_flows
         else:
@@ -734,33 +833,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     # --- group discovery ------------------------------------------------ #
     ec2 = _client("ec2", args.region)
     auto_mode = not explicit_groups
+    all_flows = flows | {f for origs in aws_origins.values() for f in origs}
 
     if auto_mode:
-        all_dsts: set[str] = set()
-        for flow in flows:
-            all_dsts.update(dst_map.get(flow, set()))
-        # AWS-summarised flows still need their dst IPs looked up — the
-        # summarisation rewrote sources, not destinations.
-        for (prefix, proto, port), _label in aws_summaries.items():
-            # We have to match summaries back to original flow keys to
-            # recover the destinations. Original keys are not preserved
-            # in `aws_summaries`, so walk dst_map for any flow whose
-            # (proto, port) matches and whose src classified into this
-            # prefix — but we already dropped those from `flows`. Pull
-            # them from the pre-split dst_map.
-            for orig_flow, orig_dsts in dst_map.items():
-                osrc, oproto, oport = orig_flow
-                if oproto != proto or oport != port:
-                    continue
-                # Cheap check first: only re-classify if the proto/port matches.
-                cls = classify_aws_service(
-                    osrc, load_aws_ip_ranges(fetch=False),
-                )
-                if cls and cls[2] == prefix:
-                    all_dsts.update(orig_dsts)
-
-        LOG.info("looking up ENIs for %d destination IP(s)", len(all_dsts))
-        dst_to_groups = derive_groups_from_dst_ips(ec2, list(all_dsts))
+        destinations = {d for flow in all_flows for d in dst_map.get(flow, set())}
+        LOG.info("resolving %d destination(s) to their interfaces", len(destinations))
+        dst_to_groups = resolve_destination_groups(_list_interfaces(ec2), list(destinations))
         discovered_groups = {gid for gids in dst_to_groups.values() for gid in gids}
         if not discovered_groups:
             sys.exit(
@@ -777,9 +855,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         groups = sorted(discovered_groups)
         LOG.warning("auto-discovered %d destination security group(s): %s",
                     len(groups), ", ".join(groups))
+        # Every group only gets rules for the flows whose destinations sat
+        # on that group's interfaces, AWS-service summaries included.
+        reached = partition_flows_by_group(all_flows, dst_map, dst_to_groups)
+        flows_per_group = {gid: fl & flows for gid, fl in reached.items()}
+        aws_per_group = {
+            gid: {k: v for k, v in aws_summaries.items() if aws_origins.get(k, set()) & fl}
+            for gid, fl in reached.items()
+        }
     else:
         groups = explicit_groups
-        dst_to_groups = {}
+        flows_per_group = {gid: flows for gid in groups}
+        aws_per_group = {gid: aws_summaries for gid in groups}
+
+    # Look the groups up before asking, so a typo or a group in another
+    # account is reported now, not after the operator has said yes.
+    sg_by_id = describe_groups(ec2, groups)
+    missing = [g for g in groups if g not in sg_by_id]
+    if missing:
+        LOG.warning("not found in %s (typo, deleted, or owned by another account): %s",
+                    args.region, ", ".join(missing))
+        if not set(groups) - set(missing):
+            sys.exit("none of the security groups exist — nothing to do")
 
     if not args.yes:
         try:
@@ -790,17 +887,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             answer = ""
         if answer != "extend":
             sys.exit("aborted")
-
-    # --- build per-group rule sets -------------------------------------- #
-    sg_desc = ec2.describe_security_groups(GroupIds=groups)["SecurityGroups"]
-    sg_by_id = {sg["GroupId"]: sg for sg in sg_desc}
-
-    if auto_mode:
-        # In auto mode, every group only gets rules for the flows whose
-        # destinations sat on that group's ENIs.
-        flows_per_group = partition_flows_by_group(flows, dst_map, dst_to_groups)
-    else:
-        flows_per_group = {gid: flows for gid in groups}
 
     manifest = {
         "schema": "sg-extend.manifest/v1",
@@ -822,8 +908,15 @@ def main(argv: Sequence[str] | None = None) -> int:
              "service": service, "region": region}
             for (prefix, proto, port), (service, region) in sorted(aws_summaries.items())
         ],
+        "complete": False,
         "groups": [],
     }
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    manifest_path = f"sg_extend-manifest-{ts}.json"
+
+    def write_manifest() -> None:
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=2)
 
     for gid in groups:
         sg = sg_by_id.get(gid)
@@ -833,9 +926,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             group_flows, args.description,
             tolerance=args.tolerance, max_rules=args.max_rules,
         ) if group_flows else []
-        # AWS-service perms apply to every group in scope; per-SG filtering
-        # via filter_existing inside _apply_to_group prevents redundant adds.
-        merged_perms = _merge_perms(regular_perms, aws_service_perms)
+        aws_perms = build_aws_service_perms(aws_per_group.get(gid, {}), args.description)
+        merged_perms = _merge_perms(regular_perms, aws_perms)
         if not merged_perms:
             manifest["groups"].append({
                 "group_id": gid, "status": "NO_FLOWS_FOR_GROUP",
@@ -847,9 +939,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             ec2, gid, sg, merged_perms, max_rules=args.max_rules,
         )
         manifest["groups"].append(result)
+        # Written after every group: the manifest is the record of what was
+        # opened, and must survive a crash part way through.
+        write_manifest()
         status = result["status"]
         if status == "ADDED":
-            LOG.info("added %d rule(s) to %s", result["added_rules"], gid)
+            LOG.info("added %d rule(s) to %s%s", result["added_rules"], gid,
+                     f" ({len(result['already_present'])} already present)"
+                     if result.get("already_present") else "")
         elif status == "SKIPPED_BUDGET":
             LOG.warning(
                 "%s skipped: %d existing + %d new > %d max — raise --tolerance to "
@@ -861,18 +958,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             LOG.info("%s already covers every discovered source — nothing to add", gid)
         elif status == "NOT_FOUND":
             LOG.warning("%s not found — skipped", gid)
-        elif status == "PARTIAL_DUPLICATE":
-            LOG.info("some rules already existed on %s", gid)
         elif status == "ERROR":
             LOG.error("authorize failed on %s: %s", gid, result.get("error", ""))
 
-    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    manifest_path = f"sg_extend-manifest-{ts}.json"
-    with open(manifest_path, "w", encoding="utf-8") as fh:
-        json.dump(manifest, fh, indent=2)
+    manifest["complete"] = True
+    write_manifest()
     LOG.info("manifest written to %s", manifest_path)
-    return 0
-
+    errors = [g["group_id"] for g in manifest["groups"] if g["status"] == "ERROR"]
+    return 1 if errors else 0
 
 if __name__ == "__main__":
     sys.exit(main())

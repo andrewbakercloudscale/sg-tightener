@@ -364,3 +364,50 @@ def test_sg_compact_revert_restores_descriptions(estate):
     assert estate.snapshot() != before
     sg_tightener.revert_from_manifest("manifest.json")
     assert estate.snapshot() == before
+
+
+def _run_extend(estate, talkers, *extra):
+    start, end = window(hours=6)
+    add_cloudwatch_flow_log(estate, RECOMMENDED_FIELDS,
+                            generate_records(estate.topology(talkers), start, end))
+    before = estate.snapshot()
+    rc = sg_extend.main(["--region", REGION, "--log-group", LOG_GROUP, "--hours", "6",
+                         "--yes", *extra])
+    after = estate.snapshot()
+    return rc, {g: set(after[g]) - set(before[g]) for g in before}
+
+
+def test_sg_extend_aws_service_prefix_only_reaches_the_group_it_hit(estate, monkeypatch):
+    """Regression: AWS-service summaries were added to EVERY discovered group,
+    so the api group got the EC2 regional prefix on the database port."""
+    monkeypatch.setattr(sg_extend, "load_aws_ip_ranges", lambda **kw: [
+        {"ip_prefix": "3.5.140.0/22", "region": REGION, "service": "EC2"}])
+    rc, added = _run_extend(estate, [
+        Talker(["3.5.140.42"], "10.4.1.20", 5432, action="REJECT"),
+        Talker(["10.4.5.7"], "10.4.2.10", 8443, action="REJECT"),
+    ], "--include-public")
+    assert rc == 0
+    assert {(r[2], r[3]) for r in added[estate.groups["db"]]} == {(5432, "3.5.140.0/22")}
+    assert {(r[2], r[3]) for r in added[estate.groups["api"]]} == {(8443, "10.4.5.7/32")}
+
+
+def test_sg_extend_overlapping_vpc_gets_nothing(estate):
+    vpc2 = estate.ec2.create_vpc(CidrBlock="10.4.0.0/16")["Vpc"]["VpcId"]
+    sub2 = estate.ec2.create_subnet(VpcId=vpc2, CidrBlock="10.4.0.0/20")["Subnet"]["SubnetId"]
+    other = estate.ec2.create_security_group(GroupName="twin", Description="t", VpcId=vpc2)["GroupId"]
+    estate.ec2.create_network_interface(SubnetId=sub2, PrivateIpAddress="10.4.2.10", Groups=[other])
+    estate.groups["twin"] = other
+    rc, added = _run_extend(estate, [Talker(["10.4.5.7"], "10.4.2.10", 8443, action="REJECT")])
+    assert rc == 0
+    assert added[other] == set()
+    assert {(r[2], r[3]) for r in added[estate.groups["api"]]} == {(8443, "10.4.5.7/32")}
+
+
+def test_sg_extend_unknown_explicit_group_is_reported_not_fatal(estate):
+    rc, added = _run_extend(estate, [Talker(["10.4.5.7"], "10.4.2.10", 8443, action="REJECT")],
+                            "--groups", f"{estate.groups['api']},sg-0123456789abcdef0")
+    assert rc == 0
+    assert {(r[2], r[3]) for r in added[estate.groups["api"]]} == {(8443, "10.4.5.7/32")}
+    manifest = json.load(open(next(p for p in __import__("os").listdir(".") if p.startswith("sg_extend-"))))
+    status = {g["group_id"]: g["status"] for g in manifest["groups"]}
+    assert status["sg-0123456789abcdef0"] == "NOT_FOUND" and manifest["complete"] is True

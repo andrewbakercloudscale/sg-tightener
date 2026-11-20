@@ -148,10 +148,15 @@ When a DR failover or a supplier's IP change is being blocked *now*, the
 analyse/plan/apply loop is too slow. `sg_extend` reads recent `REJECT` flows and
 **only adds** ingress rules; it never revokes. Its design:
 
-* **Group discovery.** Without `--groups`, it looks up the destination network
-  interface of every rejected flow and finds the security groups attached to
-  it. Each group only receives rules for flows that hit its own interfaces.
-  `--max-groups` (default 20) refuses runs that would touch more.
+* **Group discovery.** Without `--groups`, it finds the network interface that
+  received each rejected flow and the security groups attached to it. Each
+  group only receives rules for flows that hit its own interfaces, AWS-service
+  ranges included. When the log format has `${interface-id}` (the default and
+  recommended formats do), the logging interface decides, which stays exact
+  where VPCs reuse addresses; records logged by the sending side are ignored.
+  Without it, the address is looked up in the region (EKS delegated prefixes
+  included), and an address used in more than one VPC is skipped with a
+  warning. `--max-groups` (default 20) refuses runs that would touch more.
 * **Per-port rules.** Sources are grouped per protocol and destination port, so
   a rule only opens the port that was actually rejected. `--ports` narrows it
   further.
@@ -164,7 +169,10 @@ analyse/plan/apply loop is too slow. `sg_extend` reads recent `REJECT` flows and
   CIDRs already covered by an existing rule are skipped; a group that would
   exceed `--max-rules` is skipped with a warning.
 * **Manifest.** Every run writes `sg_extend-manifest-<ts>.json` listing exactly
-  what it added, so the next tightening cycle can fold it in.
+  what it added, so the next tightening cycle can fold it in. It is rewritten
+  after every group, so it survives a crash part way (`complete` stays
+  `false`). Unknown `--groups` ids are reported before the confirmation
+  prompt and recorded as `NOT_FOUND`; the run exits 1 if any group failed.
 
 ### `sg_compact.py`: get back under the limit
 

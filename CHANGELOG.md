@@ -23,6 +23,20 @@
 - **Fix:** a replacement already covered by a rule the plan keeps (same
   protocol and ports) was authorised again, which fails as a duplicate after
   the broad rule has been revoked, halting apply mid-group. It is now dropped.
+- **Fix (`sg_extend`, safety):** with `--include-public`, AWS-service ranges
+  (for example a whole regional EC2 prefix) were added to every discovered
+  group, not only the groups whose interfaces received those flows.
+- **Fix (`sg_extend`):** destinations were matched to interfaces by address
+  across the region, so where VPCs reuse a range the twin VPC's group was
+  opened too, and EKS pod addresses (delegated prefixes) never resolved. The
+  flow record's `interface-id` now decides; without it, an address used in
+  more than one VPC is skipped with a warning.
+- **Fix (`sg_extend`):** one duplicate made AWS add nothing while the run
+  reported partial success; the remaining rules are now added one by one. An
+  unknown `--groups` id crashed the run after confirmation; it is now
+  reported first and recorded as `NOT_FOUND`. A connection error no longer
+  loses the manifest, which is written after every group; the exit code is 1
+  when any group failed.
 - **Fix:** `sg_compact` revert restored merged rules without their
   descriptions; compact plans now carry `restore`.
 
