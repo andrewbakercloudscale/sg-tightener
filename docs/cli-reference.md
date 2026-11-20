@@ -35,8 +35,8 @@ Build replacement rules. Reads AWS, writes nothing to it.
 |---|---|---|
 | `--region` | required | AWS region |
 | `--approved` | required | The `approved.json` from `analyse` |
-| `--max-rules` | `60` | Rules allowed per security group |
-| `--tolerance` | `0.30` | Fraction of unused addresses allowed inside a replacement block |
+| `--max-rules` | `60` | Rules allowed per security group. When the observed sources do not fit, blocks are merged to grant the fewest unused addresses |
+| `--tolerance` | `0.30` | Fraction of unused addresses allowed inside a replacement block. Also the finest result: spare rules never split a block below it |
 | `--prefix-threshold` | `24` | Only rules wider than this prefix are eligible |
 | `--out` | `plan.json` | Output file |
 
@@ -88,7 +88,7 @@ refused, or refused and recorded; `1` refused and not recorded.
 | `--groups` | discover | Comma-separated `sg-…` ids. Omit to derive them from the rejected flows' destination interfaces |
 | `--log-group` / `--s3-bucket` / `--s3-prefix` | | Flow-log source |
 | `--hours` | `24` | Window of `REJECT` flows to read |
-| `--tolerance` | `0.30` | Fraction of unused addresses allowed inside a grouping block |
+| `--tolerance` | `0.30` | Fraction of unused addresses allowed inside a grouping block (same meaning and fitting as `plan`) |
 | `--ports` | all | Destination ports or ranges to act on, e.g. `443,5432,8000-8100` |
 | `--include-public` | off | Also add non-RFC 1918 sources |
 | `--no-aws-summarise` | off | With `--include-public`, add AWS-service sources as `/32`s rather than their service range |

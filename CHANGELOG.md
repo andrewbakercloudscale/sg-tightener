@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.3.0 - 2026-11-20
+
 - **Change (`plan`, `sg_extend`): exact rule fitting.** When observed
   addresses do not fit the rule budget, the CIDRs are now chosen exactly: the
   at most `--max-rules` blocks that grant the fewest never-observed addresses.

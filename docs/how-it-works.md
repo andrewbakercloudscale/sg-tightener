@@ -184,7 +184,8 @@ analyse/plan/apply loop is too slow. `sg_extend` reads recent `REJECT` flows and
   range (from `ip-ranges.amazonaws.com`, cached for 7 days) are summarised into
   that service's range with a labelled description, instead of `/32`s that go
   stale when AWS rotates addresses. The catch-all `AMAZON` range is never used.
-* **Budget aware.** Grouping uses `--tolerance` (the same meaning as above);
+* **Budget aware.** Grouping uses `--tolerance` and the same exact fitting as
+  `plan` (see above);
   CIDRs already covered by an existing rule are skipped; a group that would
   exceed `--max-rules` is skipped with a warning.
 * **Manifest.** Every run writes `sg_extend-manifest-<ts>.json` listing exactly
