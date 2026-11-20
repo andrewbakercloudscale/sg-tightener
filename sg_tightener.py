@@ -374,6 +374,9 @@ class FlowLogCheck:
     warnings: list[str]
     errors: list[str]        # fatal: the analysis output would be garbage
     verified: bool           # True when a matching flow-log config was found
+    # ResourceIds (vpc-/subnet-/eni-) the matched flow logs capture, or None
+    # when unknown. plan refuses to tighten groups outside them.
+    resources: list[str] | None = None
 
 
 def check_flow_log_config(
@@ -426,6 +429,7 @@ def check_flow_log_config(
         if traffic == "ALL" and ttype in ("ACCEPT", "REJECT"):
             warnings.append(f"flow log {flid} captures {ttype} traffic only — the other side will be missing from the picture")
 
+    resources = sorted({fl["ResourceId"] for fl in flow_logs if fl.get("ResourceId")}) or None
     formats = {fl.get("LogFormat") or "" for fl in flow_logs}
     if len(formats) > 1:
         errors.append(
@@ -434,7 +438,8 @@ def check_flow_log_config(
             "column order varies per record. Align the formats or split the "
             "destinations."
         )
-        return FlowLogCheck(list(DEFAULT_LOG_FORMAT_FIELDS), warnings, errors, verified=True)
+        return FlowLogCheck(list(DEFAULT_LOG_FORMAT_FIELDS), warnings, errors, verified=True,
+                            resources=resources)
 
     fields = parse_log_format(next(iter(formats)))
     if not fields:
@@ -464,7 +469,7 @@ def check_flow_log_config(
             "the approved list."
         )
 
-    return FlowLogCheck(fields, warnings, errors, verified=True)
+    return FlowLogCheck(fields, warnings, errors, verified=True, resources=resources)
 
 
 def _describe_matching_flow_logs(region: str, log_group: str | None, s3_bucket: str | None):
@@ -994,6 +999,7 @@ def run_analyse(cfg: AnalyseConfig) -> dict:
             "verified": check.verified,
             "fields": check.fields,
             "warnings": check.warnings,
+            "resources": check.resources,
         },
         "ips": sorted(set(ips)),
     }
@@ -1202,6 +1208,135 @@ def _attribute_flows(
     return by_group, everywhere, report
 
 
+def groups_outside_flow_log_coverage(
+    sgs: list[dict],
+    interfaces: list[dict],
+    resources: list[str] | None,
+) -> dict[str, str]:
+    """Groups the analysed flow logs cannot see, as {group id: reason}.
+
+    ``resources`` are the ResourceIds of the flow logs that fed approved.json
+    (vpc-, subnet- or eni-). A group with no flow log on its traffic has no
+    evidence, and planning it would revoke every eligible rule: so a group is
+    covered only when its VPC is, or when every interface carrying it sits in
+    a covered subnet or is itself covered. ``resources`` None (not recorded,
+    e.g. logs delivered from another account) checks nothing.
+    """
+    if resources is None:
+        return {}
+    covered = set(resources)
+    enis_by_group: dict[str, list[dict]] = {}
+    for eni in interfaces:
+        for g in eni.get("Groups", []):
+            if g.get("GroupId"):
+                enis_by_group.setdefault(g["GroupId"], []).append(eni)
+    out = {}
+    for sg in sgs:
+        if sg.get("VpcId") in covered:
+            continue
+        enis = enis_by_group.get(sg["GroupId"], [])
+        if enis and all(e.get("SubnetId") in covered or e.get("NetworkInterfaceId") in covered
+                        for e in enis):
+            continue
+        out[sg["GroupId"]] = (
+            f"no analysed flow log covers {sg.get('VpcId') or 'its VPC'} or every interface "
+            "carrying this group, so there is no evidence for its rules"
+        )
+    return out
+
+
+def privatelink_provider_groups(
+    interfaces: list[dict],
+    service_configs: list[dict] | None,
+    load_balancers: list[dict] | None,
+) -> dict[str, str]:
+    """Groups on Network Load Balancers behind PrivateLink endpoint services,
+    as {group id: reason}.
+
+    Flow logs do not record traffic between an interface endpoint and the
+    NLB it reaches, and when the NLB enforces its inbound rules on
+    PrivateLink traffic they are evaluated against the CONSUMER's private
+    address, in another VPC or account. No flow log in this account can
+    show those sources, so tightening the NLB's group would cut off every
+    consumer. Such groups are never planned.
+
+    ``service_configs`` is DescribeVpcEndpointServiceConfigurations output
+    (None when the call failed: then every group on any NLB interface is
+    held back, since none can be cleared). ``load_balancers`` is elbv2
+    DescribeLoadBalancers output for those NLBs (None when unavailable: the
+    groups are then read from the NLB interfaces and enforcement is assumed,
+    which is the AWS default). An NLB with enforcement "off" does not apply
+    its rules to PrivateLink traffic, so its groups are planned as usual.
+    """
+    out: dict[str, str] = {}
+    nlb_enis = [e for e in interfaces if e.get("InterfaceType") == "network_load_balancer"]
+    if service_configs is None:
+        for eni in nlb_enis:
+            for g in eni.get("Groups", []):
+                out[g["GroupId"]] = (
+                    f"carried by load balancer interface {eni.get('NetworkInterfaceId', '?')}, and "
+                    "endpoint services could not be listed (ec2:DescribeVpcEndpointServiceConfigurations), "
+                    "so it may serve PrivateLink consumers that flow logs cannot show"
+                )
+        return out
+    lbs = {lb.get("LoadBalancerArn"): lb for lb in (load_balancers or [])}
+    for svc in service_configs:
+        for arn in svc.get("NetworkLoadBalancerArns", []):
+            lb = lbs.get(arn)
+            if lb is not None:
+                if str(lb.get("EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic", "on")).lower() == "off":
+                    continue
+                gids = set(lb.get("SecurityGroups", []))
+            else:
+                # ENI description is "ELB net/<name>/<id>"; the ARN ends ":loadbalancer/net/<name>/<id>".
+                suffix = arn.split(":loadbalancer/", 1)[-1]
+                gids = {g["GroupId"] for e in nlb_enis if e.get("Description") == f"ELB {suffix}"
+                        for g in e.get("Groups", [])}
+            for gid in gids:
+                out[gid] = (
+                    f"on NLB {arn.rsplit('/', 2)[-2] if '/' in arn else arn} behind PrivateLink endpoint "
+                    f"service {svc.get('ServiceId', '?')}: flow logs do not record endpoint-to-NLB "
+                    "traffic and its inbound rules see the consumers' own addresses, so there is no "
+                    "evidence for them"
+                )
+    return out
+
+
+def _permission(proto, from_port, to_port, ranges: list[dict]) -> dict:
+    """An IpPermissions entry. Rules for all protocols ("-1") have no ports,
+    and the EC2 API rejects FromPort/ToPort of None, so absent ports are left
+    out rather than sent as null."""
+    perm: dict = {"IpProtocol": proto}
+    if from_port is not None:
+        perm["FromPort"] = from_port
+    if to_port is not None:
+        perm["ToPort"] = to_port
+    perm["IpRanges"] = ranges
+    return perm
+
+
+def _clean_permissions(perms: list[dict]) -> list[dict]:
+    """Drop null ports from plans and manifests written before _permission."""
+    return [{k: v for k, v in p.items() if not (k in ("FromPort", "ToPort") and v is None)}
+            for p in perms]
+
+
+def _untouched_ranges(sg: dict, prefix_threshold: int) -> dict[tuple, list[ipaddress.IPv4Network]]:
+    """IPv4 ranges plan leaves alone, per (protocol, from, to)."""
+    out: dict[tuple, list[ipaddress.IPv4Network]] = {}
+    for perm in sg.get("IpPermissions", []):
+        key = (perm.get("IpProtocol"), perm.get("FromPort"), perm.get("ToPort"))
+        for ip in perm.get("IpRanges", []):
+            cidr = ip.get("CidrIp")
+            if not cidr or rule_is_eligible(cidr, prefix_threshold):
+                continue
+            try:
+                out.setdefault(key, []).append(ipaddress.ip_network(cidr, strict=False))
+            except ValueError:
+                continue
+    return out
+
+
 def build_plan(
     sgs: list[dict],
     approved_ips: list[str],
@@ -1212,6 +1347,7 @@ def build_plan(
     tolerance: float = DEFAULT_TOLERANCE,
     prefix_threshold: int = DEFAULT_PREFIX_THRESHOLD,
     region: str | None = None,
+    skip: dict[str, str] | None = None,
 ) -> dict:
     """Plan replacements for every eligible rule, scoped to that rule.
 
@@ -1229,7 +1365,14 @@ def build_plan(
     see _attribute_flows for evidence that cannot be tied to an interface.
     Without ``flows`` every source inside a rule counts for every group
     carrying it (per rule, not per group).
+
+    Groups in ``skip`` ({group id: reason}) are not planned and are listed
+    under ``skipped_groups``. A replacement already covered by a rule the
+    plan leaves in place (same protocol and ports) is dropped: it adds
+    nothing, and authorising a duplicate fails after the revoke has run.
     """
+    skip = skip or {}
+    skipped: list[dict] = []
     by_group, everywhere, attribution = _attribute_flows(
         [str(a) for a in _normalise_ips(approved_ips)], flows, interfaces)
 
@@ -1246,6 +1389,12 @@ def build_plan(
         eligible = _eligible_rules(sg, prefix_threshold)
         if not eligible:
             continue
+        if sg["GroupId"] in skip:
+            skipped.append({"group_id": sg["GroupId"], "group_name": sg.get("GroupName"),
+                            "reason": skip[sg["GroupId"]]})
+            LOG.warning("%s: not planned: %s", sg["GroupId"], skip[sg["GroupId"]])
+            continue
+        kept = _untouched_ranges(sg, prefix_threshold)
         revokes_per_proto_port: dict[tuple, list[dict]] = {}
         for r in eligible:
             key = (r["protocol"], r["from_port"], r["to_port"])
@@ -1288,24 +1437,22 @@ def build_plan(
                 })
                 continue
             authorised_by_key.setdefault(key, []).extend(
-                _replacements_within(net, ips, max_rules=slots, tolerance=tolerance)
+                n for n in _replacements_within(net, ips, max_rules=slots, tolerance=tolerance)
+                if not any(n.subnet_of(k) for k in kept.get(key, []))
             )
 
         authorise_perms: list[dict] = []
         for (proto, from_p, to_p), nets in authorised_by_key.items():
+            if not nets:
+                continue
             merged = sorted(
                 ipaddress.collapse_addresses(nets),
                 key=lambda n: (int(n.network_address), n.prefixlen),
             )
-            authorise_perms.append({
-                "IpProtocol": proto,
-                "FromPort": from_p,
-                "ToPort": to_p,
-                "IpRanges": [
-                    {"CidrIp": str(c), "Description": "sg-tightener evidence-based"}
-                    for c in merged
-                ],
-            })
+            authorise_perms.append(_permission(proto, from_p, to_p, [
+                {"CidrIp": str(c), "Description": "sg-tightener evidence-based"}
+                for c in merged
+            ]))
 
         if removed:
             LOG.warning(
@@ -1331,23 +1478,14 @@ def build_plan(
         revoke_perms = []
         restore_perms = []
         for (proto, from_p, to_p), rules in revokes_per_proto_port.items():
-            revoke_perms.append({
-                "IpProtocol": proto,
-                "FromPort": from_p,
-                "ToPort": to_p,
-                "IpRanges": [{"CidrIp": r["cidr"]} for r in rules],
-            })
+            revoke_perms.append(_permission(proto, from_p, to_p,
+                                            [{"CidrIp": r["cidr"]} for r in rules]))
             # What revert puts back: the same rules with their descriptions,
             # so a round trip leaves the group exactly as it was.
-            restore_perms.append({
-                "IpProtocol": proto,
-                "FromPort": from_p,
-                "ToPort": to_p,
-                "IpRanges": [
-                    {"CidrIp": r["cidr"], **({"Description": r["description"]} if r.get("description") else {})}
-                    for r in rules
-                ],
-            })
+            restore_perms.append(_permission(proto, from_p, to_p, [
+                {"CidrIp": r["cidr"], **({"Description": r["description"]} if r.get("description") else {})}
+                for r in rules
+            ]))
 
         plan_groups.append({
             "group_id": sg["GroupId"],
@@ -1375,6 +1513,7 @@ def build_plan(
         "tolerance": tolerance,
         "prefix_threshold": prefix_threshold,
         "groups": plan_groups,
+        "skipped_groups": skipped,
         "snapshot_hash": state_hash(snapshot),
         **attribution,
     }
@@ -1389,14 +1528,59 @@ def _list_network_interfaces(region: str) -> list[dict]:
     return out
 
 
+def _list_privatelink_services(region: str) -> tuple[list[dict] | None, list[dict] | None]:
+    """(endpoint service configurations, their NLBs) owned in ``region``.
+
+    Either is None when its API call fails; privatelink_provider_groups then
+    errs on the side of not planning."""
+    try:
+        ec2 = _client("ec2", region)
+        configs: list[dict] = []
+        for page in ec2.get_paginator("describe_vpc_endpoint_service_configurations").paginate():
+            configs.extend(page.get("ServiceConfigurations", []))
+    except Exception as exc:  # noqa: BLE001 — any failure means "cannot clear NLB groups"
+        LOG.warning("could not list PrivateLink endpoint services "
+                    "(ec2:DescribeVpcEndpointServiceConfigurations failed: %s); groups on "
+                    "load balancer interfaces will not be planned", exc)
+        return None, None
+    arns = sorted({a for c in configs for a in c.get("NetworkLoadBalancerArns", [])})
+    if not arns:
+        return configs, []
+    try:
+        elb = _client("elbv2", region)
+        lbs: list[dict] = []
+        for i in range(0, len(arns), 20):  # DescribeLoadBalancers takes at most 20 ARNs
+            lbs.extend(elb.describe_load_balancers(LoadBalancerArns=arns[i:i + 20]).get("LoadBalancers", []))
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("could not describe the NLBs behind endpoint services "
+                    "(elasticloadbalancing:DescribeLoadBalancers failed: %s); assuming they "
+                    "enforce inbound rules on PrivateLink traffic", exc)
+        return configs, None
+    return configs, lbs
+
+
 def plan_from_approved(approved: dict, region: str, **kw) -> dict:
     """Build a plan from a loaded approved.json against ``region``'s groups.
 
     An approved/v2 file (with ``flows``) is planned per group, which also
     reads the region's network interfaces. A v1 file has no destinations and
     is planned per rule, with a warning.
+
+    Two kinds of group are never planned (see ``skipped_groups``): groups the
+    analysed flow logs do not cover, and groups on NLBs behind PrivateLink
+    endpoint services, whose consumers no flow log here can show.
     """
     sgs = _list_security_groups(region)
+    interfaces = _list_network_interfaces(region)
+    resources = (approved.get("flow_log_check") or {}).get("resources")
+    if resources is None:
+        LOG.warning(
+            "approved.json does not record which VPCs, subnets or interfaces its flow "
+            "logs cover, so plan cannot hold back groups those logs never saw. Review "
+            "removed_without_evidence closely, or re-run analyse with this version.")
+    skip = groups_outside_flow_log_coverage(sgs, interfaces, resources)
+    skip.update(privatelink_provider_groups(interfaces, *_list_privatelink_services(region)))
+
     flows = approved.get("flows")
     if flows is None:
         LOG.warning(
@@ -1405,9 +1589,9 @@ def plan_from_approved(approved: dict, region: str, **kw) -> dict:
             "rule, not per group). Re-run analyse with this version for a "
             "per-group plan.", approved.get("schema", "no schema"),
         )
-        return build_plan(sgs, approved["ips"], region=region, **kw)
+        return build_plan(sgs, approved["ips"], region=region, skip=skip, **kw)
     plan = build_plan(sgs, approved["ips"], flows=flows,
-                      interfaces=_list_network_interfaces(region), region=region, **kw)
+                      interfaces=interfaces, region=region, skip=skip, **kw)
     if plan["unattributed_destinations"]:
         LOG.warning(
             "%d destination(s) in approved.json match no network interface in "
@@ -1497,14 +1681,14 @@ def apply_plan(plan: dict, region: str, *, manifest_path: str) -> None:
         manifest_grp: dict = {"group_id": gid, "revoked": [], "authorised": []}
         try:
             if grp["revoke"]:
-                ec2.revoke_security_group_ingress(GroupId=gid, IpPermissions=grp["revoke"])
+                ec2.revoke_security_group_ingress(GroupId=gid, IpPermissions=_clean_permissions(grp["revoke"]))
                 # Record the rules as they were, descriptions included.
                 manifest_grp["revoked"] = grp.get("restore") or grp["revoke"]
                 if manifest_grp not in manifest["groups"]:
                     manifest["groups"].append(manifest_grp)
                 _write_json(manifest_path, manifest)
             if grp["authorise"]:
-                ec2.authorize_security_group_ingress(GroupId=gid, IpPermissions=grp["authorise"])
+                ec2.authorize_security_group_ingress(GroupId=gid, IpPermissions=_clean_permissions(grp["authorise"]))
                 manifest_grp["authorised"] = grp["authorise"]
                 if manifest_grp not in manifest["groups"]:
                     manifest["groups"].append(manifest_grp)
@@ -1532,13 +1716,13 @@ def revert_from_manifest(manifest_path: str) -> None:
         gid = grp["group_id"]
         if grp.get("authorised"):
             try:
-                ec2.revoke_security_group_ingress(GroupId=gid, IpPermissions=grp["authorised"])
+                ec2.revoke_security_group_ingress(GroupId=gid, IpPermissions=_clean_permissions(grp["authorised"]))
             except aws_errors as exc:
                 failures += 1
                 LOG.warning("revert: could not revoke the tightened rules on %s: %s", gid, exc)
         if grp.get("revoked"):
             try:
-                ec2.authorize_security_group_ingress(GroupId=gid, IpPermissions=grp["revoked"])
+                ec2.authorize_security_group_ingress(GroupId=gid, IpPermissions=_clean_permissions(grp["revoked"]))
             except aws_errors as exc:
                 failures += 1
                 LOG.warning("revert: could not re-authorise original rules on %s: %s", gid, exc)

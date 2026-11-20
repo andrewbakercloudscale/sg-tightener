@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **PrivateLink.** `plan` never touches a group on a Network Load Balancer
+  behind a PrivateLink endpoint service. Flow logs do not record
+  endpoint-to-NLB traffic, and with inbound-rule enforcement on (the default)
+  the NLB's rules see the consumers' own addresses, so the plan saw no
+  evidence and would have revoked every consumer's access. NLBs with
+  enforcement off are planned as before. Interface endpoints (consumer side)
+  were already handled and are now tested. `plan` needs
+  `ec2:DescribeVpcEndpointServiceConfigurations` and
+  `elasticloadbalancing:DescribeLoadBalancers` (added to `iam-policy.json`);
+  without them, groups on load balancer interfaces are held back.
+- **Fix (safety):** `plan` tightened every group in the region, including
+  groups in VPCs the analysed flow logs never covered; those had no evidence
+  and lost every eligible rule. `analyse` now records the flow logs' resources
+  in `approved.json` (`flow_log_check.resources`) and `plan` lists uncovered
+  groups under the new `skipped_groups` instead.
+- **Fix:** rules for all traffic (`-1`) could not be applied or reverted: the
+  plan sent `FromPort`/`ToPort` of `null`, which boto3 refuses. Plans and
+  manifests from 2.0.0 are cleaned when applied or reverted.
+- **Fix:** a replacement already covered by a rule the plan keeps (same
+  protocol and ports) was authorised again, which fails as a duplicate after
+  the broad rule has been revoked, halting apply mid-group. It is now dropped.
+- **Fix:** `sg_compact` revert restored merged rules without their
+  descriptions; compact plans now carry `restore`.
+
 ## 2.0.0 - 2026-11-17
 
 First release from its own repository (the `v1.x` tags belong to cloudtorepo,

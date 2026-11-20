@@ -224,6 +224,24 @@ review `plan.json` by hand.
   `sources_without_flows`. An `approved.json` from an older version (no
   `flows`) is planned this way throughout, with a warning. This errs towards
   keeping access; the replacement is still never wider than the original rule.
+* **PrivateLink.** Interface endpoints (the consumer side) are planned like
+  any other interface: their network interface carries the endpoint's group,
+  and flow logs record each client reaching it. The provider side is not.
+  Flow logs do not record traffic from an interface endpoint to the Network
+  Load Balancer behind an endpoint service, and when the NLB enforces its
+  inbound rules on PrivateLink traffic (the AWS default) those rules see the
+  consumers' own addresses, in their VPCs and accounts. No flow log here can
+  show them, so `plan` never touches a group on such an NLB and lists it
+  under `skipped_groups`. If endpoint services cannot be listed, every group
+  on a load balancer interface is held back.
+* **Only groups the flow logs can see.** `plan` skips any group whose VPC, or
+  every interface carrying it, is outside the flow logs that fed
+  `approved.json` (`skipped_groups`). An `approved.json` from before 2.1.0
+  does not record that coverage, and `plan` warns.
+* **Overlapping VPC ranges.** Destinations are matched to interfaces by
+  address across the region. Where two VPCs reuse a range, a source that
+  reached one is also granted on the other's group at that address (still
+  inside the original rule).
 * **Rules with no observed traffic are removed.** They appear under
   `removed_without_evidence` in the plan and in a warning. If one should stay,
   delete that group from the plan or add the expected source to

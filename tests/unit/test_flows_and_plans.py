@@ -432,3 +432,141 @@ def test_version_flag_prints_the_version(capsys):
         sg_tightener.main(["--version"])
     assert exc.value.code == 0
     assert sg_tightener.__version__ in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# Rules apply can execute, flow-log coverage, PrivateLink
+# --------------------------------------------------------------------------- #
+
+class TestPlanIsExecutable:
+    def test_all_traffic_rule_sends_no_null_ports(self):
+        """Regression: "-1" rules have no ports and the plan sent FromPort/ToPort
+        of None, which boto3 rejects, so apply halted on every such group."""
+        sgs = [_group("sg-a", {"IpProtocol": "-1", "IpRanges": [{"CidrIp": "10.0.0.0/8"}]})]
+        plan = build_plan(sgs, ["10.1.1.1"], flows=[_flow("10.1.1.1", "10.4.2.10", 22)],
+                          interfaces=[_eni("10.4.2.10", "sg-a")])
+        g = plan["groups"][0]
+        for perm in g["revoke"] + g["restore"] + g["authorise"]:
+            assert "FromPort" not in perm and "ToPort" not in perm, perm
+        assert g["authorise"][0]["IpRanges"][0]["CidrIp"] == "10.1.1.1/32"
+
+    def test_old_plans_with_null_ports_are_cleaned_before_sending(self):
+        perms = [{"IpProtocol": "-1", "FromPort": None, "ToPort": None, "IpRanges": []},
+                 {"IpProtocol": "tcp", "FromPort": 0, "ToPort": 0, "IpRanges": []}]
+        assert sg_tightener._clean_permissions(perms) == [
+            {"IpProtocol": "-1", "IpRanges": []},
+            {"IpProtocol": "tcp", "FromPort": 0, "ToPort": 0, "IpRanges": []}]
+
+    def test_replacement_already_kept_by_a_narrow_rule_is_not_authorised_again(self):
+        """Regression: the /32 already existed as an untouched rule, so the
+        authorise failed as a duplicate AFTER the broad rule was revoked."""
+        sgs = [_group("sg-a", _rule(443, "10.0.0.0/8"), _rule(443, "10.1.2.3/32"))]
+        plan = build_plan(sgs, ["10.1.2.3", "10.9.0.1"],
+                          flows=[_flow("10.1.2.3", "10.4.2.10", 443), _flow("10.9.0.1", "10.4.2.10", 443)],
+                          interfaces=[_eni("10.4.2.10", "sg-a")])
+        assert _granted(plan, "sg-a") == {(443, "10.9.0.1/32")}
+        assert plan["groups"][0]["removed_without_evidence"] == []
+
+    def test_kept_rule_on_another_port_does_not_count(self):
+        sgs = [_group("sg-a", _rule(443, "10.0.0.0/8"), _rule(22, "10.1.2.3/32"))]
+        plan = build_plan(sgs, ["10.1.2.3"], flows=[_flow("10.1.2.3", "10.4.2.10", 443)],
+                          interfaces=[_eni("10.4.2.10", "sg-a")])
+        assert _granted(plan, "sg-a") == {(443, "10.1.2.3/32")}
+
+
+def _vpc_group(gid, vpc):
+    return {"GroupId": gid, "GroupName": gid, "VpcId": vpc, "IpPermissions": [_rule(443, "10.0.0.0/8")]}
+
+
+def _placed_eni(eni_id, subnet, *gids, ip="10.4.2.10", **extra):
+    return {"NetworkInterfaceId": eni_id, "SubnetId": subnet, "PrivateIpAddress": ip,
+            "Groups": [{"GroupId": g} for g in gids], **extra}
+
+
+class TestFlowLogCoverage:
+    def test_check_records_the_resources_the_flow_logs_capture(self):
+        logs = [{"FlowLogId": "fl-1", "FlowLogStatus": "ACTIVE", "TrafficType": "ALL",
+                 "ResourceId": "vpc-1", "LogFormat": ""},
+                {"FlowLogId": "fl-2", "FlowLogStatus": "ACTIVE", "TrafficType": "ALL",
+                 "ResourceId": "subnet-9", "LogFormat": ""}]
+        assert sg_tightener.check_flow_log_config(logs).resources == ["subnet-9", "vpc-1"]
+        assert sg_tightener.check_flow_log_config([]).resources is None
+
+    def test_group_in_an_unlogged_vpc_is_skipped(self):
+        sgs = [_vpc_group("sg-in", "vpc-1"), _vpc_group("sg-out", "vpc-2")]
+        skip = sg_tightener.groups_outside_flow_log_coverage(sgs, [], ["vpc-1"])
+        assert list(skip) == ["sg-out"]
+
+    def test_subnet_and_interface_logs_cover_a_group_only_when_every_interface_is_covered(self):
+        sgs = [_vpc_group("sg-sub", "vpc-2"), _vpc_group("sg-eni", "vpc-2"),
+               _vpc_group("sg-part", "vpc-2"), _vpc_group("sg-none", "vpc-2")]
+        enis = [_placed_eni("eni-1", "subnet-a", "sg-sub", "sg-part"),
+                _placed_eni("eni-2", "subnet-b", "sg-eni"),
+                _placed_eni("eni-3", "subnet-b", "sg-part")]
+        skip = sg_tightener.groups_outside_flow_log_coverage(sgs, enis, ["subnet-a", "eni-2"])
+        assert sorted(skip) == ["sg-none", "sg-part"]
+
+    def test_unknown_coverage_skips_nothing(self):
+        assert sg_tightener.groups_outside_flow_log_coverage([_vpc_group("sg", "vpc-2")], [], None) == {}
+
+    def test_skipped_groups_are_left_alone_and_listed(self):
+        sgs = [_vpc_group("sg-in", "vpc-1"), _vpc_group("sg-out", "vpc-2")]
+        plan = build_plan(sgs, ["10.1.1.1"], skip={"sg-out": "not logged"})
+        assert [g["group_id"] for g in plan["groups"]] == ["sg-in"]
+        assert plan["skipped_groups"] == [{"group_id": "sg-out", "group_name": "sg-out",
+                                           "reason": "not logged"}]
+
+
+NLB_ARN = "arn:aws:elasticloadbalancing:eu-west-1:111122223333:loadbalancer/net/orders/50dc6c495c0c9188"
+
+
+def _nlb_eni(eni_id, *gids):
+    return _placed_eni(eni_id, "subnet-a", *gids, ip="10.4.5.5", InterfaceType="network_load_balancer",
+                       RequesterManaged=True, Description="ELB net/orders/50dc6c495c0c9188")
+
+
+def _endpoint_service():
+    return [{"ServiceId": "vpce-svc-0abc", "NetworkLoadBalancerArns": [NLB_ARN]}]
+
+
+class TestPrivateLink:
+    def test_provider_nlb_group_is_never_planned(self):
+        """Flow logs miss endpoint-to-NLB traffic, so the NLB group would show
+        no evidence and lose every consumer."""
+        lbs = [{"LoadBalancerArn": NLB_ARN, "SecurityGroups": ["sg-nlb"],
+                "EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic": "on"}]
+        skip = sg_tightener.privatelink_provider_groups([_nlb_eni("eni-n", "sg-nlb")],
+                                                        _endpoint_service(), lbs)
+        assert list(skip) == ["sg-nlb"]
+        assert "vpce-svc-0abc" in skip["sg-nlb"] and "orders" in skip["sg-nlb"]
+
+    def test_enforcement_off_means_the_rules_do_not_see_privatelink_traffic(self):
+        lbs = [{"LoadBalancerArn": NLB_ARN, "SecurityGroups": ["sg-nlb"],
+                "EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic": "off"}]
+        assert sg_tightener.privatelink_provider_groups([], _endpoint_service(), lbs) == {}
+
+    def test_without_the_nlb_description_the_interface_groups_are_used_and_enforcement_assumed(self):
+        skip = sg_tightener.privatelink_provider_groups([_nlb_eni("eni-n", "sg-nlb")],
+                                                        _endpoint_service(), None)
+        assert list(skip) == ["sg-nlb"]
+
+    def test_unlisted_endpoint_services_hold_back_every_load_balancer_group(self):
+        enis = [_nlb_eni("eni-n", "sg-nlb"), _placed_eni("eni-i", "subnet-a", "sg-app")]
+        assert list(sg_tightener.privatelink_provider_groups(enis, None, None)) == ["sg-nlb"]
+
+    def test_nlb_without_an_endpoint_service_is_planned_as_usual(self):
+        assert sg_tightener.privatelink_provider_groups([_nlb_eni("eni-n", "sg-nlb")], [], []) == {}
+
+    def test_interface_endpoint_group_is_tightened_to_the_clients_that_used_it(self):
+        """Consumer side: an interface endpoint's ENI carries its group and
+        flow logs record client-to-endpoint traffic, so it plans like any
+        other interface."""
+        sgs = [_group("sg-vpce", _rule(443, "10.0.0.0/8")), _group("sg-app", _rule(443, "10.0.0.0/8"))]
+        enis = [_placed_eni("eni-e", "subnet-a", "sg-vpce", ip="10.4.8.8", InterfaceType="vpc_endpoint",
+                            RequesterManaged=True, Description="VPC Endpoint Interface vpce-0123"),
+                _placed_eni("eni-a", "subnet-a", "sg-app", ip="10.4.2.10")]
+        flows = [_flow("10.4.2.10", "10.4.8.8", 443), _flow("10.20.0.7", "10.4.2.10", 443)]
+        plan = build_plan(sgs, ["10.4.2.10", "10.20.0.7"], flows=flows, interfaces=enis)
+        assert _granted(plan, "sg-vpce") == {(443, "10.4.2.10/32")}
+        assert _granted(plan, "sg-app") == {(443, "10.20.0.7/32")}
+        assert plan["unattributed_destinations"] == []

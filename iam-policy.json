@@ -24,6 +24,8 @@
         "sts:GetCallerIdentity",
         "sts:AssumeRole",
         "ec2:DescribeVpcEndpoints",
+        "ec2:DescribeVpcEndpointServiceConfigurations",
+        "elasticloadbalancing:DescribeLoadBalancers",
         "transfer:ListServers",
         "transfer:DescribeServer"
       ],

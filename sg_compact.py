@@ -182,6 +182,7 @@ def _perm(proto, from_p, to_p, nets, description: str | None = None) -> dict:
 def analyse_group(sg: dict, ratio: float) -> dict:
     """Compute the revoke/authorise perms and projected counts for one group."""
     buckets: dict[tuple, list[ipaddress.IPv4Network]] = {}
+    descriptions: dict[tuple, str] = {}
     fixed = 0
     total = 0
     for perm in sg.get("IpPermissions", []):
@@ -193,12 +194,15 @@ def analyse_group(sg: dict, ratio: float) -> dict:
                 fixed += 1
             else:
                 buckets.setdefault(key, []).append(net)
+                if ip.get("Description"):
+                    descriptions[(key, net)] = ip["Description"]
         for kind in IPRANGE_KINDS:
             n = len(perm.get(kind, []))
             total += n
             fixed += n
 
     revoke_perms: list[dict] = []
+    restore_perms: list[dict] = []
     authorise_perms: list[dict] = []
     projected_eligible = 0
     for (proto, from_p, to_p), nets in buckets.items():
@@ -210,6 +214,13 @@ def analyse_group(sg: dict, ratio: float) -> dict:
         to_auth = new - orig
         if to_revoke:
             revoke_perms.append(_perm(proto, from_p, to_p, to_revoke))
+            # What revert puts back, descriptions included.
+            restore = _perm(proto, from_p, to_p, to_revoke)
+            for r in restore["IpRanges"]:
+                desc = descriptions.get(((proto, from_p, to_p), ipaddress.ip_network(r["CidrIp"])))
+                if desc:
+                    r["Description"] = desc
+            restore_perms.append(restore)
         if to_auth:
             authorise_perms.append(
                 _perm(proto, from_p, to_p, to_auth, description="sg-compact widened")
@@ -223,6 +234,7 @@ def analyse_group(sg: dict, ratio: float) -> dict:
         "projected_total": projected_total,
         "rules_saved": total - projected_total,
         "revoke": revoke_perms,
+        "restore": restore_perms,
         "authorise": authorise_perms,
     }
 
@@ -244,6 +256,7 @@ def build_compact_plan(
             "group_name": sg.get("GroupName"),
             "vpc_id": sg.get("VpcId"),
             "revoke": a["revoke"],
+            "restore": a["restore"],
             "authorise": a["authorise"],
             "current_rule_count": a["current_total"],
             "projected_rule_count": a["projected_total"],

@@ -20,7 +20,8 @@ Written by `analyse`, extended by `sg_diagnose`, read by `plan`.
   "flow_log_check": {
     "verified": true,
     "fields": ["version", "account-id", "...", "pkt-srcaddr"],
-    "warnings": []
+    "warnings": [],
+    "resources": ["vpc-0def5678"]
   },
   "ips": ["10.4.1.10", "10.4.1.11", "10.9.7.3"],
   "flows": [
@@ -33,6 +34,7 @@ Written by `analyse`, extended by `sg_diagnose`, read by `plan`.
 
 | Field | Meaning |
 |---|---|
+| `flow_log_check.resources` | The VPCs, subnets or interfaces the analysed flow logs capture. `plan` will not touch a group outside them. `null` when the flow logs could not be found (for example delivered from another account): then nothing is held back, and `plan` warns |
 | `ips` | Every observed source address (the `src` values of `flows`, plus anything added by hand or by `sg_diagnose`) |
 | `flows` | One entry per distinct accepted ingress (source, destination address, destination port, protocol). `dst` prefers `pkt-dstaddr`; `protocol` is the IANA number (`"6"` TCP, `"17"` UDP). `dst`, `dstport` or `protocol` is `null` when the record had none |
 
@@ -110,6 +112,7 @@ Written by `plan` and `sg_compact plan`, read by `apply`.
 | `attribution` | `per-group` (built from `flows`) or `per-rule` (an `approved.json` without them) |
 | `unattributed_destinations` | Per-group plans only: destinations that matched no network interface; their sources were kept per rule |
 | `sources_without_flows` | Per-group plans only: addresses in `ips` with no flow; kept per rule |
+| `skipped_groups` | Groups with eligible rules that were deliberately not planned, each with a `reason`: outside the analysed flow logs' coverage, or on a Network Load Balancer behind a PrivateLink endpoint service (see how-it-works, PrivateLink) |
 
 `sg_compact` plans also carry `tool`, `region` and `ratio`.
 

@@ -63,6 +63,10 @@ a planned tightening, a post-change check, and a live incident.
    - Do the new CIDRs make sense for what this group protects?
    - **`removed_without_evidence`**: these rules saw no traffic and will be
      revoked with nothing in their place. Confirm each one is really unused.
+   - **`skipped_groups`**: groups left alone on purpose, each with a reason
+     (outside the flow logs' coverage, or an NLB behind a PrivateLink endpoint
+     service). Tighten those by other means, for example from the consumers'
+     own flow logs.
    - Is `port_merge_flagged` true? Then several port ranges share sources and
      could be merged by hand.
    - Delete groups you are not ready to change from the `groups` array.
