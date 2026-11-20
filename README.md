@@ -14,10 +14,12 @@ need. Nobody knows which of those addresses still connect, so nobody dares
 narrow the rule.
 
 sg-tightener answers that question with evidence. It reads your VPC flow logs,
-records which private source addresses actually connected, and replaces the
-broad rules with the smallest set of CIDR blocks that covers them, within the
-60-rule limit of a security group. Every change is planned, reviewed, applied
-with a manifest, and can be reverted.
+records which private source addresses actually connected to which network
+interface, and replaces each group's broad rules with the CIDR blocks that
+cover the sources that reached *that group*, choosing, within the 60-rule limit
+of a security group, the blocks that open the fewest addresses nobody was seen
+using. Every change is planned, reviewed, applied with a manifest, and can be
+reverted.
 
 It is a companion to [CloudtoRepo](https://cloudtorepo.com), which turns an AWS
 estate into Terraform.
@@ -33,8 +35,23 @@ estate into Terraform.
 | | IPv6 rules |
 | | Egress rules and network ACLs |
 | | Rules already at `/24` or narrower |
+| | Groups on a Network Load Balancer behind a PrivateLink endpoint service (consumers' addresses are not in your flow logs) |
+| | Groups whose interfaces are not covered by the flow logs analysed |
 
-The `/24` cut-off is configurable with `--prefix-threshold`.
+The `/24` cut-off is configurable with `--prefix-threshold`. Held-back groups
+are listed in the plan under `skipped_groups` with the reason.
+
+---
+
+## What's new
+
+| Version | Highlights |
+|---|---|
+| **2.3.0** | Exact rule fitting: when sources do not fit the rule limit, the blocks that open the fewest unused addresses are chosen, and a group's slots go to the rules where they save the most. Fitting 2,000 addresses takes 0.02 s instead of up to 28 s |
+| **2.2.0** | Interface-exact evidence: flows record the interface that logged them, so overlapping VPCs stay apart. `sg_diagnose` judges each refused flow against its destination's own groups, and `--manifest` marks what a tightening caused. `sg_viz` resolves EKS pod prefixes and security-group references. Org reports say which accounts could not be scanned (`scan_status`, exit code 2) and treat `::/0` as public |
+| **2.1.0** | PrivateLink NLB groups and groups outside flow-log coverage are held back. `-1` (all traffic) rules apply cleanly. `sg_compact` revert keeps descriptions. `sg_extend` grants AWS-service ranges only to the groups that received that traffic and reports unknown `--groups` ids up front |
+
+Full history: [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -43,11 +60,11 @@ The `/24` cut-off is configurable with `--prefix-threshold`.
 | Script | Job | Writes to AWS? |
 |---|---|---|
 | [`sg_tightener.py`](sg_tightener.py) | Main loop: `analyse` → `plan` → `apply` → `revert` | `apply` and `revert` only |
-| [`sg_diagnose.py`](sg_diagnose.py) | After an apply: find private sources now being rejected | No |
+| [`sg_diagnose.py`](sg_diagnose.py) | After an apply: find private sources the destination's groups now refuse, mark what the tightening caused, print the command that restores them | No |
 | [`sg_extend.py`](sg_extend.py) | Break-glass: add rules for rejected traffic during an incident (additive only) | Yes, adds only |
 | [`sg_compact.py`](sg_compact.py) | Merge narrow CIDRs into wider ones to get back under the rule limit | `apply` and `revert` only |
-| [`sg_ou_report.py`](sg_ou_report.py) | Rank every account in an AWS Organization by permissive SG and NACL rules | No |
-| [`sg_transfer_audit.py`](sg_transfer_audit.py) | Find AWS Transfer Family servers (SFTP/FTPS/FTP/AS2) open to the internet | No |
+| [`sg_ou_report.py`](sg_ou_report.py) | Rank every account in an AWS Organization by permissive SG and NACL rules; exit 1 on CRITICAL, 2 if any account could not be scanned | No |
+| [`sg_transfer_audit.py`](sg_transfer_audit.py) | Find AWS Transfer Family servers (SFTP/FTPS/FTP/AS2) open to the internet; same exit codes | No |
 | [`sg_viz.py`](sg_viz.py) | Export who talked to what, accepted or rejected, per time bucket, with the rule that allowed it and what a plan would block | No |
 | [`tests/`](tests) | Offline test suite (unit + moto integration), no AWS credentials needed | No |
 
@@ -82,7 +99,13 @@ python sg_tightener.py plan --region eu-west-1 \
 AWS_REGION=eu-west-1 python sg_tightener.py apply --plan plan.json
 
 # 4. Watch for anything legitimate that is now blocked
-python sg_diagnose.py --region eu-west-1 --log-group /aws/vpc/flowlogs --hours 24
+#    (--manifest marks flows the apply's revoked rules used to admit)
+python sg_diagnose.py --region eu-west-1 --log-group /aws/vpc/flowlogs --hours 24 \
+  --approved approved.json --manifest manifest-<timestamp>.json
+
+# Optional: see who talks to what, and what the plan would cut off, before applying
+python sg_viz.py export --region eu-west-1 --log-group /aws/vpc/flowlogs --days 7 \
+  --plan plan.json --out viz-data.json
 
 # 5. Undo, if needed
 python sg_tightener.py revert --manifest manifest-<timestamp>.json
@@ -98,7 +121,7 @@ python sg_tightener.py revert --manifest manifest-<timestamp>.json
 | [Runbook](docs/runbook.md) | You are about to tighten a real account, or are mid-incident |
 | [CLI reference](docs/cli-reference.md) | You need every flag and default for every tool |
 | [Flow-log requirements](docs/flow-logs.md) | Before your first `analyse`, especially behind a transit gateway |
-| [File formats](docs/file-formats.md) | You are reviewing a `plan.json` or editing an `approved.json` |
+| [File formats](docs/file-formats.md) | You are reviewing a `plan.json`, editing an `approved.json` or reading `viz-data.json` |
 | [Permissions](docs/permissions.md) | You are creating the IAM role the tools run as |
 
 ---

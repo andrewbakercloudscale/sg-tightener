@@ -243,6 +243,24 @@ VPC endpoint. Exit code 1 when any CRITICAL is found.
 
 ---
 
+### `sg_viz.py`: who talks to what, and what a plan would cut off
+
+Read-only. Exports a region's traffic over a window as one JSON file
+(`viz-data.json`) for any viewer or report to draw: every connection (source,
+destination interface, port, protocol) with accepted and rejected totals, a
+per-bucket timeline, and the security-group rules that allow it.
+
+* **Interface-exact.** Destinations resolve by the flow's `interface-id`, then
+  by address, including delegated prefixes (EKS pods), so overlapping VPCs
+  become separate connections. An address used in several VPCs with no
+  interface id is shown without one, with a warning.
+* **Reference rules match.** Each connection carries the source's own
+  interface and groups (`src_eni`, `src_groups`, preferring the destination's
+  VPC), so a rule that admits another security group is credited.
+* **Plan overlay.** With `--plan` (or `overlay` later), every accepted
+  connection is marked `blocked` if the plan would stop it, or `kept` with the
+  rule that still allows it.
+
 ## Known limitations
 
 Read these before you apply a plan; they are the reason the runbook says to

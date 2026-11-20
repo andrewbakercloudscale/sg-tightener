@@ -152,6 +152,49 @@ per group. It is a record for the next tightening cycle, not an input to
 
 ---
 
+## `viz-data.json` (`sg-tightener.viz/v1`)
+
+Written by `sg_viz.py export`, changed only by `overlay`.
+
+```json
+{
+  "schema": "sg-tightener.viz/v1",
+  "region": "eu-west-1",
+  "window": {"start": "...", "end": "...", "first_bucket": "...", "bucket_seconds": 3600, "buckets": 168},
+  "flow_log_check": {"verified": true, "fields": ["..."], "warnings": []},
+  "interfaces": [
+    {"eni": "eni-0a1", "ips": ["10.4.1.20"], "prefixes": ["10.4.9.16/28"], "groups": ["sg-0db"],
+     "vpc_id": "vpc-1", "subnet_id": "subnet-1", "type": "interface", "instance_id": "i-0abc",
+     "description": ""}
+  ],
+  "groups": [{"group_id": "sg-0db", "name": "db", "vpc_id": "vpc-1", "rules": []}],
+  "connections": [
+    {"id": 0, "src": "10.4.1.10", "dst": "10.4.1.20", "port": 5432, "proto": "tcp",
+     "eni": "eni-0a1", "groups": ["sg-0db"], "src_eni": "eni-0b2", "src_groups": ["sg-0app"],
+     "accepted": {"records": 120, "packets": 9000, "bytes": 812000},
+     "rejected": {"records": 0, "packets": 0, "bytes": 0},
+     "status": "accepted", "allowed_by": ["..."], "first_seen": "...", "last_seen": "...",
+     "plan_impact": "blocked"}
+  ],
+  "flow_columns": ["connection", "bucket", "action", "records", "packets", "bytes"],
+  "flows": [[0, 5, "A", 3, 210, 18000]],
+  "plan": null
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `connections[].eni` / `groups` | The destination interface and its groups; `null` / `[]` when the address could not be tied to one interface |
+| `connections[].src_eni` / `src_groups` | The source's own interface and groups (in the destination's VPC when it has several), used to match security-group reference rules |
+| `connections[].status` | `accepted`, `rejected` or `mixed` |
+| `connections[].plan_impact` | With a plan: `blocked` (the plan would stop it), `kept` (still allowed, see `allowed_after_plan`), or `null` |
+| `interfaces[].prefixes` | Delegated IPv4 prefixes (EKS pods), matched like the interface's own addresses |
+| `flows` | Timeline rows, one per connection, bucket and action (`A` accepted, `R` rejected), columns as `flow_columns` |
+| `plan` | With a plan: its name, counts of blocked and kept connections, warnings, and each group's revokes and authorises |
+
+The interface key is part of a connection: the same source, destination and
+port seen on two interfaces (overlapping VPCs) are two connections.
+
 ## Reports
 
 `sg_ou_report.py` and `sg_transfer_audit.py` write an Excel workbook (summary
