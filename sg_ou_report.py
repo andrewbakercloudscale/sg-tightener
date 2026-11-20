@@ -9,8 +9,12 @@ Severity-weighted ranking is used so a single CRITICAL outranks many LOWs.
 Network ACLs are scanned and labelled in the report alongside security
 groups, but only security groups are tightened by the rest of the suite.
 
-Exits with code 1 if any CRITICAL findings are present, making the script
-usable as a pipeline gate.
+Exit codes, for use as a pipeline gate: 0 every account and region was
+scanned and nothing is CRITICAL; 1 a CRITICAL finding; 2 the scan is
+incomplete (a role could not be assumed or a region's scan failed) and
+nothing CRITICAL was found in the part that was scanned. Accounts that
+could not be scanned are listed in the report with status "failed" or
+"incomplete" — they are never shown as clean.
 
 Usage:
   sg_ou_report.py --regions us-east-1,eu-west-1
@@ -30,6 +34,7 @@ import ipaddress
 import json
 import logging
 import sys
+import threading
 from typing import Sequence
 
 try:
@@ -85,6 +90,8 @@ def parse_partition_from_arn(arn: str | None) -> str:
 # --------------------------------------------------------------------------- #
 
 PUBLIC_ANY = ipaddress.ip_network("0.0.0.0/0")
+PUBLIC_ANY_V6 = ipaddress.ip_network("::/0")
+PUBLIC_NETS = (PUBLIC_ANY, PUBLIC_ANY_V6)
 RFC1918_BLOCKS = [
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
@@ -107,7 +114,7 @@ def classify_sg_rule(cidr: str, from_p: int | None, to_p: int | None) -> str | N
     except ValueError:
         return None
     ports = _ports_in_range(from_p, to_p)
-    if net == PUBLIC_ANY:
+    if net in PUBLIC_NETS:
         if ports & CRITICAL_PUBLIC_PORTS:
             return "CRITICAL"
         return "HIGH"
@@ -127,7 +134,7 @@ def classify_nacl_rule(cidr: str, port_range: dict | None) -> str | None:
         net = ipaddress.ip_network(cidr, strict=False)
     except ValueError:
         return None
-    if net == PUBLIC_ANY:
+    if net in PUBLIC_NETS:
         return "HIGH"
     if isinstance(net, ipaddress.IPv4Network) and any(net.subnet_of(b) for b in RFC1918_BLOCKS):
         if net.prefixlen <= 16:
@@ -169,60 +176,72 @@ def _assume(role_arn: str, session_name: str) -> "boto3.Session":
     )
 
 
-def _scan_region(session, account_id: str, account_name: str, region: str) -> list[Finding]:
+# boto3 Sessions are not thread-safe; clients are. Create clients under a lock.
+_CLIENT_LOCK = threading.Lock()
+
+
+def _session_client(session, service: str, region: str):
     cfg = BotoConfig(retries={"max_attempts": 10, "mode": "adaptive"})
-    ec2 = session.client("ec2", region_name=region, config=cfg)
+    with _CLIENT_LOCK:
+        return session.client(service, region_name=region, config=cfg)
+
+
+def _port_label(from_p, to_p) -> str:
+    return "all" if from_p is None else f"{from_p}-{to_p}"
+
+
+def _scan_region(session, account_id: str, account_name: str, region: str
+                 ) -> tuple[list[Finding], list[dict]]:
+    """Findings for one account and region, and the parts that failed.
+
+    A failed part is returned as an error, never swallowed: a region whose
+    scan failed would otherwise look exactly like a clean one."""
+    ec2 = _session_client(session, "ec2", region)
     out: list[Finding] = []
+    errors: list[dict] = []
 
     try:
         for page in ec2.get_paginator("describe_security_groups").paginate():
             for sg in page.get("SecurityGroups", []):
                 for perm in sg.get("IpPermissions", []):
-                    for ip in perm.get("IpRanges", []):
-                        cidr = ip.get("CidrIp")
-                        if not cidr:
-                            continue
+                    cidrs = [ip.get("CidrIp") for ip in perm.get("IpRanges", [])]
+                    cidrs += [ip.get("CidrIpv6") for ip in perm.get("Ipv6Ranges", [])]
+                    for cidr in filter(None, cidrs):
                         sev = classify_sg_rule(cidr, perm.get("FromPort"), perm.get("ToPort"))
-                        if not sev:
-                            continue
-                        port = (
-                            "all" if perm.get("FromPort") is None
-                            else f"{perm.get('FromPort')}-{perm.get('ToPort')}"
-                        )
-                        out.append(Finding(
-                            account_id, account_name, region, "SG",
-                            sg["GroupId"], cidr, port, sev,
-                        ))
+                        if sev:
+                            out.append(Finding(
+                                account_id, account_name, region, "SG", sg["GroupId"], cidr,
+                                _port_label(perm.get("FromPort"), perm.get("ToPort")), sev,
+                            ))
     except Exception as exc:  # noqa: BLE001
         LOG.warning("SG scan failed in %s/%s: %s", account_id, region, exc)
+        errors.append({"account_id": account_id, "region": region, "stage": "security-groups",
+                       "error": str(exc)})
 
     try:
         for page in ec2.get_paginator("describe_network_acls").paginate():
             for nacl in page.get("NetworkAcls", []):
                 for entry in nacl.get("Entries", []):
-                    if entry.get("Egress"):
+                    if entry.get("Egress") or entry.get("RuleAction") != "allow":
                         continue
-                    if entry.get("RuleAction") != "allow":
-                        continue
-                    cidr = entry.get("CidrBlock")
+                    cidr = entry.get("CidrBlock") or entry.get("Ipv6CidrBlock")
                     if not cidr:
                         continue
                     sev = classify_nacl_rule(cidr, entry.get("PortRange"))
                     if not sev:
                         continue
                     pr = entry.get("PortRange") or {}
-                    port = (
-                        "all" if not pr
-                        else f"{pr.get('From', '?')}-{pr.get('To', '?')}"
-                    )
+                    port = "all" if not pr else f"{pr.get('From', '?')}-{pr.get('To', '?')}"
                     out.append(Finding(
                         account_id, account_name, region, "NACL",
                         nacl["NetworkAclId"], cidr, port, sev,
                     ))
     except Exception as exc:  # noqa: BLE001
         LOG.warning("NACL scan failed in %s/%s: %s", account_id, region, exc)
+        errors.append({"account_id": account_id, "region": region, "stage": "network-acls",
+                       "error": str(exc)})
 
-    return out
+    return out, errors
 
 
 def _list_org_accounts(ou_id: str | None) -> list[dict]:
@@ -247,8 +266,33 @@ def _list_org_accounts(ou_id: str | None) -> list[dict]:
 # Aggregation
 # --------------------------------------------------------------------------- #
 
-def _aggregate_by_account(findings: list[Finding]) -> list[dict]:
+def account_status(accounts: list[dict], errors: list[dict]) -> dict[str, str]:
+    """{account id: "ok" | "incomplete" | "failed"}. "failed": the role could
+    not be assumed, so nothing was scanned; "incomplete": part of a region's
+    scan failed."""
+    out = {}
+    for acct in accounts:
+        mine = [e for e in errors if e["account_id"] == acct["Id"]]
+        if any(e["stage"] == "assume-role" for e in mine):
+            out[acct["Id"]] = "failed"
+        elif mine:
+            out[acct["Id"]] = "incomplete"
+        else:
+            out[acct["Id"]] = "ok"
+    return out
+
+
+def _aggregate_by_account(findings: list[Finding], accounts: list[dict] | None = None,
+                          status: dict[str, str] | None = None) -> list[dict]:
+    """Per-account severity counts and risk score. Every account in
+    ``accounts`` gets a row, so one with no findings is visibly scanned,
+    and ``status`` says whether its scan was complete."""
     by_account: dict[str, dict] = {}
+    for acct in accounts or []:
+        by_account[acct["Id"]] = {
+            "account_id": acct["Id"], "account_name": acct.get("Name", acct["Id"]),
+            "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0,
+        }
     for f in findings:
         slot = by_account.setdefault(f.account_id, {
             "account_id": f.account_id,
@@ -259,8 +303,45 @@ def _aggregate_by_account(findings: list[Finding]) -> list[dict]:
     rows = list(by_account.values())
     for r in rows:
         r["risk_score"] = compute_risk_score(r["CRITICAL"], r["HIGH"], r["MEDIUM"], r["LOW"])
-    rows.sort(key=lambda r: r["risk_score"], reverse=True)
+        r["scan_status"] = (status or {}).get(r["account_id"], "ok")
+    # Unscanned accounts first among equals: an unknown is not a zero.
+    rows.sort(key=lambda r: (r["risk_score"], r["scan_status"] != "ok"), reverse=True)
     return rows
+
+
+def exit_code(summary: list[dict], errors: list[dict]) -> int:
+    """1 on any CRITICAL finding, else 2 when the scan was incomplete, else 0."""
+    total_critical = sum(r["CRITICAL"] for r in summary)
+    if total_critical:
+        LOG.error("%d CRITICAL findings across estate", total_critical)
+        return 1
+    if errors:
+        failed = sorted({e["account_id"] for e in errors})
+        LOG.error("scan INCOMPLETE: %d error(s) in %d account(s) (%s); those accounts are not "
+                  "known to be clean", len(errors), len(failed), ", ".join(failed[:20]))
+        return 2
+    return 0
+
+
+def assume_all(accounts: list[dict], regions: list[str], partition: str, role_name: str,
+               session_name: str) -> tuple[list[tuple[str, str, str]], dict, list[dict]]:
+    """Assume ``role_name`` in every account: (jobs, sessions, errors). An
+    account whose role cannot be assumed is an error, not a skipped row."""
+    jobs: list[tuple[str, str, str]] = []
+    sessions: dict[str, "boto3.Session"] = {}
+    errors: list[dict] = []
+    for acct in accounts:
+        role_arn = f"arn:{partition}:iam::{acct['Id']}:role/{role_name}"
+        try:
+            sessions[acct["Id"]] = _assume(role_arn, session_name)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("could not assume role into %s: %s", acct["Id"], exc)
+            errors.append({"account_id": acct["Id"], "region": None, "stage": "assume-role",
+                           "error": str(exc)})
+            continue
+        for region in regions:
+            jobs.append((acct["Id"], acct.get("Name", acct["Id"]), region))
+    return jobs, sessions, errors
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -287,36 +368,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         accounts = _list_org_accounts(args.ou_id)
     LOG.info("scanning %d accounts across %d regions", len(accounts), len(regions))
 
-    jobs: list[tuple[str, str, str, str]] = []
-    sessions: dict[str, "boto3.Session"] = {}
-    for acct in accounts:
-        role_arn = f"arn:{partition}:iam::{acct['Id']}:role/{args.role_name}"
-        try:
-            sessions[acct["Id"]] = _assume(role_arn, "sg-tightener-ou-report")
-        except Exception as exc:  # noqa: BLE001
-            LOG.warning("could not assume role into %s: %s", acct["Id"], exc)
-            continue
-        for region in regions:
-            jobs.append((acct["Id"], acct.get("Name", acct["Id"]), region, role_arn))
-
+    jobs, sessions, errors = assume_all(accounts, regions, partition, args.role_name,
+                                        "sg-tightener-ou-report")
     findings: list[Finding] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as pool:
         futs = {
             pool.submit(_scan_region, sessions[aid], aid, aname, region): (aid, region)
-            for aid, aname, region, _ in jobs
+            for aid, aname, region in jobs
         }
         for fut in concurrent.futures.as_completed(futs):
             aid, region = futs[fut]
             try:
-                findings.extend(fut.result())
+                found, errs = fut.result()
+                findings.extend(found)
+                errors.extend(errs)
             except Exception as exc:  # noqa: BLE001
                 LOG.warning("scan failed in %s/%s: %s", aid, region, exc)
+                errors.append({"account_id": aid, "region": region, "stage": "scan",
+                               "error": str(exc)})
 
-    summary = _aggregate_by_account(findings)
+    summary = _aggregate_by_account(findings, accounts, account_status(accounts, errors))
     report = {
         "schema": "sg-tightener.report/v1",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "regions": regions,
+        "complete": not errors,
+        "errors": errors,
         "findings": [dataclasses.asdict(f) for f in findings],
         "summary": summary,
     }
@@ -329,15 +406,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             pd.DataFrame([dataclasses.asdict(f) for f in findings]).to_excel(
                 writer, sheet_name="findings", index=False
             )
+            if errors:
+                pd.DataFrame(errors).to_excel(writer, sheet_name="errors", index=False)
         LOG.info("wrote %s and %s", args.out, args.json)
     else:
         LOG.info("pandas not installed; wrote JSON only at %s", args.json)
 
-    total_critical = sum(r["CRITICAL"] for r in summary)
-    if total_critical:
-        LOG.error("%d CRITICAL findings across estate", total_critical)
-        return 1
-    return 0
+    return exit_code(summary, errors)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **Fix (`sg_diagnose`):** a rejected source counted as covered if any rule
+  in any group allowed it, on any port, so the breakage tightening causes
+  stayed hidden. Each rejected flow is now judged against the groups on its
+  own destination interface, on its protocol and port. `--manifest` marks
+  flows a revoked rule would have admitted. It prints the `sg_extend` command
+  that restores access, and records flows (not just addresses) in
+  `approved.json`, saying plainly that recording alone changes nothing.
+- **Fix (`plan`):** flows now record the `interface-id` that logged them, so
+  where VPCs reuse addresses a source is granted only in the VPC it reached.
+  Records logged by the sending side are ignored. Without an interface id, an
+  address used in several VPCs is kept per rule and listed under
+  `ambiguous_destinations`.
+- **Fix (`sg_viz`):** destinations resolve by interface id and delegated
+  prefix (EKS pods), overlapping VPCs become separate connections, and
+  security-group reference rules match: connections carry the source's own
+  interface and groups (`src_eni`, `src_groups`). One unknown group id no
+  longer aborts the export.
+- **Fix (org reports):** an account whose role could not be assumed, or a
+  region whose scan failed, looked the same as a clean one and the run exited
+  0. Every account now has a `scan_status`, the JSON carries `complete` and
+  `errors`, and the exit code is 2 when the scan was incomplete (1 still wins
+  for CRITICAL). `::/0` is treated like `0.0.0.0/0` in both reports, and
+  boto3 clients are created under a lock (Sessions are not thread-safe).
+
 ## 2.1.0 - 2026-11-20
 
 - **PrivateLink.** `plan` never touches a group on a Network Load Balancer

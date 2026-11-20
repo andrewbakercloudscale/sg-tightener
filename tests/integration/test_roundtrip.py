@@ -411,3 +411,27 @@ def test_sg_extend_unknown_explicit_group_is_reported_not_fatal(estate):
     manifest = json.load(open(next(p for p in __import__("os").listdir(".") if p.startswith("sg_extend-"))))
     status = {g["group_id"]: g["status"] for g in manifest["groups"]}
     assert status["sg-0123456789abcdef0"] == "NOT_FOUND" and manifest["complete"] is True
+
+
+def test_sg_diagnose_finds_what_the_tightening_broke(estate, observed, monkeypatch, capsys):
+    """Regression: a source still allowed by ANY rule in ANY group (here the
+    API's 10.0.0.0/8 on 443) was treated as covered, so the database
+    refusing it after tightening never showed up."""
+    import sg_diagnose
+    from tests.fixtures.flowgen import FakeLogs
+
+    plan = _plan(_analyse())
+    sg_tightener.apply_plan(plan, REGION, manifest_path="manifest.json")
+    start, end = window(hours=2)
+    estate.logs = FakeLogs(generate_records(estate.topology([
+        Talker(["10.30.0.5"], "10.4.1.20", 5432, action="REJECT"),   # batch job, cut off
+    ]), start, end), RECOMMENDED_FIELDS)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+    rc = sg_diagnose.main(["--region", REGION, "--log-group", LOG_GROUP, "--hours", "2",
+                           "--manifest", "manifest.json"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "10.30.0.5 -> 10.4.1.20 tcp/5432" in out and "CAUSED BY TIGHTENING" in out
+    assert f"--groups {estate.groups['db']}" in out and "--ports 5432" in out
+    approved = json.load(open("approved.json"))
+    assert any(f["src"] == "10.30.0.5" and f["dstport"] == 5432 for f in approved["flows"])

@@ -69,7 +69,8 @@ from sg_tightener import (
     build_flow_stats_query,
     collapse_ips_to_cidrs,
     flow_records,
-    interface_groups_by_ip,
+    InterfaceIndex,
+    describe_groups,
     iter_s3_flow_log_lines,
     preflight_flow_logs,
     run_insights_query,
@@ -446,88 +447,34 @@ def filter_existing(perms: list[dict], sg: dict) -> list[dict]:
 # ENI / SG discovery (AWS)
 # --------------------------------------------------------------------------- #
 
-def _eni_owns(eni: dict, dst: str) -> bool:
-    """Whether ``dst`` is one of ``eni``'s private addresses or inside one of
-    its delegated prefixes (EKS prefix mode)."""
-    ips = {eni.get("PrivateIpAddress")} | {
-        pa.get("PrivateIpAddress") for pa in eni.get("PrivateIpAddresses", [])}
-    if dst in ips:
-        return True
-    try:
-        addr = ipaddress.ip_address(dst)
-    except ValueError:
-        return False
-    for pfx in eni.get("Ipv4Prefixes", []):
-        try:
-            if addr in ipaddress.ip_network(pfx["Ipv4Prefix"]):
-                return True
-        except (KeyError, ValueError):
-            continue
-    return False
-
-
 def resolve_destination_groups(
     interfaces: list[dict],
     destinations: Sequence[tuple[str, str | None]],
 ) -> dict[tuple[str, str | None], set[str]]:
     """Map each (destination IP, logging interface id) to the SG ids on the
-    interface that received it.
+    interface that received it (see sg_tightener.InterfaceIndex).
 
     AWS evaluates ingress permissively across every SG attached to an ENI,
-    so all attached SGs are candidates for the rule.
-
-    When the flow record names its interface, that interface decides: this
-    is exact even where VPCs reuse the same addresses. A record logged by an
-    interface that does not own the destination (the sending side of the
-    connection, e.g. an egress reject in a format without flow-direction) is
-    ignored. Without an interface id the address is looked up across the
-    region, delegated prefixes included, and an address that more than one
-    VPC uses is refused as ambiguous rather than opened in every VPC.
+    so all attached SGs are candidates for the rule. A record logged by the
+    sending side is ignored; an address several VPCs use, with no interface
+    id to tell them apart, is refused rather than opened in every VPC.
     Destinations that resolve to nothing (another account, deleted
     interfaces) are left out.
     """
-    by_id = {e.get("NetworkInterfaceId"): e for e in interfaces}
-    by_ip, prefixes = interface_groups_by_ip(interfaces)
-    vpcs_by_ip: dict[str, set[str]] = {}
-    for eni in interfaces:
-        if eni.get("Groups"):
-            for ip in {eni.get("PrivateIpAddress")} | {
-                    pa.get("PrivateIpAddress") for pa in eni.get("PrivateIpAddresses", [])}:
-                if ip:
-                    vpcs_by_ip.setdefault(ip, set()).add(eni.get("VpcId"))
+    index = InterfaceIndex(interfaces)
     out: dict[tuple[str, str | None], set[str]] = {}
     for dst, iface in set(destinations):
-        if not dst:
+        eni, status = index.resolve(dst, iface)
+        if status == "ambiguous":
+            vpcs = {o.get("VpcId") for o in index.owners(dst)}
+            LOG.warning("%s belongs to interfaces in %d VPCs and the flow log records no "
+                        "interface-id; skipped rather than opened in all of them (pass "
+                        "--groups, or add ${interface-id} to the log format)", dst, len(vpcs))
             continue
-        if iface:
-            eni = by_id.get(iface)
-            if eni is None or not _eni_owns(eni, dst):
-                continue
-            gids = {g["GroupId"] for g in eni.get("Groups", []) if g.get("GroupId")}
-        else:
-            if len(vpcs_by_ip.get(dst, set())) > 1:
-                LOG.warning("%s belongs to interfaces in %d VPCs and the flow log records no "
-                            "interface-id; skipped rather than opened in all of them (pass "
-                            "--groups, or add ${interface-id} to the log format)",
-                            dst, len(vpcs_by_ip[dst]))
-                continue
-            gids = set(by_ip.get(dst, set()))
-            if not gids:
-                addr = ipaddress.ip_address(dst) if _is_ip(dst) else None
-                for net, pg in prefixes:
-                    if addr is not None and addr in net:
-                        gids |= pg
+        gids = index.groups(eni)
         if gids:
             out[(dst, iface)] = gids
     return out
-
-
-def _is_ip(value: str) -> bool:
-    try:
-        ipaddress.ip_address(value)
-        return True
-    except ValueError:
-        return False
 
 
 def _list_interfaces(ec2_client) -> list[dict]:
@@ -535,27 +482,6 @@ def _list_interfaces(ec2_client) -> list[dict]:
     for page in ec2_client.get_paginator("describe_network_interfaces").paginate():
         out.extend(page.get("NetworkInterfaces", []))
     return out
-
-
-def describe_groups(ec2_client, group_ids: Sequence[str]) -> dict[str, dict]:
-    """{group id: group} for the ids that exist. DescribeSecurityGroups fails
-    the whole call on one unknown id, so a failed chunk is retried one id at
-    a time and the missing ids are simply absent."""
-    found: dict[str, dict] = {}
-    ids = list(dict.fromkeys(group_ids))
-    for i in range(0, len(ids), 100):
-        chunk = ids[i:i + 100]
-        try:
-            for sg in ec2_client.describe_security_groups(GroupIds=chunk)["SecurityGroups"]:
-                found[sg["GroupId"]] = sg
-        except botocore.exceptions.ClientError:
-            for gid in chunk:
-                try:
-                    for sg in ec2_client.describe_security_groups(GroupIds=[gid])["SecurityGroups"]:
-                        found[sg["GroupId"]] = sg
-                except botocore.exceptions.ClientError as exc:
-                    LOG.warning("%s: %s", gid, exc)
-    return found
 
 
 # --------------------------------------------------------------------------- #

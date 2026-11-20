@@ -992,10 +992,11 @@ class TestSgDiagnoseWiring(unittest.TestCase):
         import sg_diagnose
         from sg_tightener import FlowLogCheck
 
-        custom = ["version", "srcaddr", "dstaddr", "action", "pkt-srcaddr"]
+        custom = ["version", "srcaddr", "dstaddr", "dstport", "action", "pkt-srcaddr"]
         check = FlowLogCheck(fields=custom, warnings=[], errors=[], verified=True)
         with mock.patch.object(sg_diagnose, "preflight_flow_logs", return_value=check), \
-             mock.patch.object(sg_diagnose, "_analyse_from_cloudwatch", return_value=[]) as reader, \
+             mock.patch.object(sg_diagnose, "_analyse_flows_from_cloudwatch", return_value=[]) as reader, \
+             mock.patch.object(sg_diagnose, "_list_network_interfaces", return_value=[]), \
              mock.patch.object(sg_diagnose, "_list_security_groups", return_value=[]):
             rc = sg_diagnose.main(["--region", "us-east-1", "--log-group", "lg"])
         self.assertEqual(rc, 0)

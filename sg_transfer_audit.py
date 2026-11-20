@@ -44,8 +44,10 @@ Usage:
                         [--out transfer_report.xlsx] [--json transfer_report.json]
                         [--max-workers 16]
 
-Exit code 1 if any CRITICAL finding is present, so it can be used as a
-pipeline gate alongside sg_ou_report.py.
+Exit codes, as sg_ou_report.py: 0 complete and nothing CRITICAL; 1 a
+CRITICAL finding; 2 the scan is incomplete (a role could not be assumed, or
+servers could not be listed in a region) and nothing CRITICAL was found in
+what was scanned. Unscanned accounts are reported, never shown as clean.
 """
 
 from __future__ import annotations
@@ -74,11 +76,20 @@ try:
 except ImportError:
     pd = None
 
-from sg_ou_report import _assume, parse_partition_from_arn, _list_org_accounts
+from sg_ou_report import (
+    _list_org_accounts,
+    _session_client,
+    account_status,
+    assume_all,
+    exit_code,
+    parse_partition_from_arn,
+)
+from sg_tightener import describe_groups
 
 LOG = logging.getLogger("sg_transfer_audit")
 
 PUBLIC_ANY = ipaddress.ip_network("0.0.0.0/0")
+PUBLIC_NETS = (PUBLIC_ANY, ipaddress.ip_network("::/0"))
 
 # Approximate default ports per protocol. FTPS passive ranges and custom
 # AS2 listener ports are account specific and are not covered here; treat
@@ -115,13 +126,16 @@ def _require_aws() -> None:
 
 
 def _client(session, service: str, region: str):
-    cfg = BotoConfig(retries={"max_attempts": 10, "mode": "adaptive"})
-    return session.client(service, region_name=region, config=cfg)
+    return _session_client(session, service, region)
 
 
-def _list_transfer_servers(session, region: str) -> list[dict]:
+def _list_transfer_servers(session, region: str, errors: list[str] | None = None) -> list[dict]:
+    """Every Transfer Family server in ``region``. Failures are appended to
+    ``errors``: a region that could not be listed is not a region with no
+    servers."""
     tf = _client(session, "transfer", region)
     out: list[dict] = []
+    errors = [] if errors is None else errors
     try:
         paginator = tf.get_paginator("list_servers")
         for page in paginator.paginate():
@@ -134,8 +148,10 @@ def _list_transfer_servers(session, region: str) -> list[dict]:
                         "describe_server failed for %s in %s: %s",
                         listed.get("ServerId"), region, exc,
                     )
-    except botocore.exceptions.ClientError as exc:
+                    errors.append(f"describe_server {listed.get('ServerId')}: {exc}")
+    except (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError) as exc:
         LOG.warning("list_servers failed in %s: %s", region, exc)
+        errors.append(f"list_servers: {exc}")
     return out
 
 
@@ -166,12 +182,7 @@ def _security_groups_for_server(ec2, server: dict) -> list[str]:
 def _describe_security_groups(ec2, sg_ids: list[str]) -> list[dict]:
     if not sg_ids:
         return []
-    try:
-        resp = ec2.describe_security_groups(GroupIds=sg_ids)
-        return resp.get("SecurityGroups", [])
-    except botocore.exceptions.ClientError as exc:
-        LOG.warning("describe_security_groups failed for %s: %s", sg_ids, exc)
-        return []
+    return list(describe_groups(ec2, sg_ids).values())
 
 
 def _ports_overlap(from_p, to_p, lo: int, hi: int) -> bool:
@@ -181,21 +192,20 @@ def _ports_overlap(from_p, to_p, lo: int, hi: int) -> bool:
 
 
 def _open_to_world_ports(sgs: list[dict], ports: set[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Return the subset of `ports` covered by a 0.0.0.0/0 ingress rule
-    in any of `sgs`."""
+    """Return the subset of `ports` covered by a 0.0.0.0/0 or ::/0 ingress
+    rule in any of `sgs`."""
     exposed: set[tuple[int, int]] = set()
     for sg in sgs:
         for perm in sg.get("IpPermissions", []):
             from_p, to_p = perm.get("FromPort"), perm.get("ToPort")
-            for ip in perm.get("IpRanges", []):
-                cidr = ip.get("CidrIp")
-                if not cidr:
-                    continue
+            cidrs = [ip.get("CidrIp") for ip in perm.get("IpRanges", [])]
+            cidrs += [ip.get("CidrIpv6") for ip in perm.get("Ipv6Ranges", [])]
+            for cidr in filter(None, cidrs):
                 try:
                     net = ipaddress.ip_network(cidr, strict=False)
                 except ValueError:
                     continue
-                if net != PUBLIC_ANY:
+                if net not in PUBLIC_NETS:
                     continue
                 for lo, hi in ports:
                     if _ports_overlap(from_p, to_p, lo, hi):
@@ -282,12 +292,13 @@ def classify_transfer_server(
             security_groups=sg_ids,
             severity=severity,
             reason=(
-                f"Security group(s) {', '.join(sg_ids)} permit 0.0.0.0/0 on "
+                f"Security group(s) {', '.join(sg_ids)} permit the whole internet "
+                f"(0.0.0.0/0 or ::/0) on "
                 f"port(s) {port_desc}, which cover this server's enabled "
                 f"protocols ({', '.join(protocols) or 'none listed'})."
             ),
             recommendation=(
-                "Replace the 0.0.0.0/0 ingress rule with explicit partner CIDR "
+                "Replace the 0.0.0.0/0 or ::/0 ingress rule with explicit partner CIDR "
                 "blocks or /32 addresses for known partner source IPs. This is "
                 "the mechanism that achieves IP-based peering for Transfer "
                 "Family; there is no separate peering construct."
@@ -298,25 +309,36 @@ def classify_transfer_server(
         **base,
         security_groups=sg_ids,
         severity="LOW",
-        reason="No 0.0.0.0/0 ingress rule was found covering this server's enabled protocol ports.",
+        reason="No 0.0.0.0/0 or ::/0 ingress rule was found covering this server's enabled protocol ports.",
         recommendation="No action required. Confirm the currently permitted CIDRs still match your active partner list.",
     )
 
 
-def _scan_region(session, account_id: str, account_name: str, region: str) -> list[Finding]:
+def _scan_region(session, account_id: str, account_name: str, region: str
+                 ) -> tuple[list[Finding], list[dict]]:
     ec2 = _client(session, "ec2", region)
-    servers = _list_transfer_servers(session, region)
-    return [
+    problems: list[str] = []
+    servers = _list_transfer_servers(session, region, problems)
+    findings = [
         classify_transfer_server(account_id, account_name, region, server, ec2)
         for server in servers
     ]
+    errors = [{"account_id": account_id, "region": region, "stage": "transfer", "error": p}
+              for p in problems]
+    return findings, errors
 
 
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
 
-def _aggregate(findings: list[Finding]) -> list[dict]:
+def _aggregate(findings: list[Finding], accounts: list[dict] | None = None,
+               status: dict[str, str] | None = None) -> list[dict]:
     by_account: dict[str, dict] = {}
+    for acct in accounts or []:
+        by_account[acct["Id"]] = {
+            "account_id": acct["Id"], "account_name": acct.get("Name", acct["Id"]),
+            "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0,
+        }
     for f in findings:
         slot = by_account.setdefault(f.account_id, {
             "account_id": f.account_id,
@@ -325,7 +347,10 @@ def _aggregate(findings: list[Finding]) -> list[dict]:
         })
         slot[f.severity] += 1
     rows = list(by_account.values())
-    rows.sort(key=lambda r: (r["CRITICAL"], r["HIGH"], r["MEDIUM"], r["LOW"]), reverse=True)
+    for r in rows:
+        r["scan_status"] = (status or {}).get(r["account_id"], "ok")
+    rows.sort(key=lambda r: (r["CRITICAL"], r["HIGH"], r["MEDIUM"], r["LOW"],
+                             r["scan_status"] != "ok"), reverse=True)
     return rows
 
 
@@ -354,18 +379,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     LOG.info("scanning %d account(s) across %d region(s) for Transfer Family exposure",
               len(accounts), len(regions))
 
-    jobs: list[tuple[str, str, str]] = []
-    sessions: dict[str, "boto3.Session"] = {}
-    for acct in accounts:
-        role_arn = f"arn:{partition}:iam::{acct['Id']}:role/{args.role_name}"
-        try:
-            sessions[acct["Id"]] = _assume(role_arn, "sg-transfer-audit")
-        except Exception as exc:  # noqa: BLE001
-            LOG.warning("could not assume role into %s: %s", acct["Id"], exc)
-            continue
-        for region in regions:
-            jobs.append((acct["Id"], acct.get("Name", acct["Id"]), region))
-
+    jobs, sessions, errors = assume_all(accounts, regions, partition, args.role_name,
+                                        "sg-transfer-audit")
     findings: list[Finding] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as pool:
         futs = {
@@ -375,17 +390,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         for fut in concurrent.futures.as_completed(futs):
             aid, region = futs[fut]
             try:
-                findings.extend(fut.result())
+                found, errs = fut.result()
+                findings.extend(found)
+                errors.extend(errs)
             except Exception as exc:  # noqa: BLE001
                 LOG.warning("scan failed in %s/%s: %s", aid, region, exc)
+                errors.append({"account_id": aid, "region": region, "stage": "scan",
+                               "error": str(exc)})
 
     findings.sort(key=lambda f: SEVERITY_ORDER.get(f.severity, 9))
-    summary = _aggregate(findings)
+    summary = _aggregate(findings, accounts, account_status(accounts, errors))
 
     report = {
         "schema": "sg-transfer-audit.report/v1",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "regions": regions,
+        "complete": not errors,
+        "errors": errors,
         "findings": [dataclasses.asdict(f) for f in findings],
         "summary": summary,
     }
@@ -400,6 +421,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         with pd.ExcelWriter(args.out, engine="openpyxl") as writer:
             pd.DataFrame(summary).to_excel(writer, sheet_name="summary", index=False)
             pd.DataFrame(findings_rows).to_excel(writer, sheet_name="findings", index=False)
+            if errors:
+                pd.DataFrame(errors).to_excel(writer, sheet_name="errors", index=False)
         LOG.info("wrote %s and %s", args.out, args.json)
     else:
         LOG.info("pandas not installed; wrote JSON only at %s", args.json)
@@ -409,11 +432,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"[{f.severity}] {f.account_id}/{f.region} {f.server_id} "
                   f"({f.endpoint_type}, {', '.join(f.protocols)}): {f.reason}")
 
-    total_critical = sum(r["CRITICAL"] for r in summary)
-    if total_critical:
-        LOG.error("%d CRITICAL Transfer Family finding(s) across estate", total_critical)
-        return 1
-    return 0
+    return exit_code(summary, errors)
 
 
 if __name__ == "__main__":

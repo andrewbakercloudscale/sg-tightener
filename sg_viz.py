@@ -35,6 +35,8 @@ from typing import Iterable, Sequence
 import sg_tightener
 from sg_tightener import (
     AnalyseConfig,
+    InterfaceIndex,
+    describe_groups,
     build_flow_stats_query,
     flow_records,
     iter_s3_flow_log_lines,
@@ -95,7 +97,8 @@ def aggregate_records(
     *,
     default_ts: int | None = None,
 ) -> list[dict]:
-    """Sum flow_records() output by (src, dst, port, proto, action, bucket).
+    """Sum flow_records() output by (src, dst, port, proto, action, bucket,
+    logging interface).
 
     Egress records are dropped when the format says which they are. A
     record without a ``start`` time is placed at ``default_ts`` (the S3
@@ -109,7 +112,7 @@ def aggregate_records(
         if ts is None or not r.get("dst"):
             continue
         key = (r["src"], r["dst"], r.get("dstport"), r.get("protocol") or "", r["action"],
-               _bucket_of(int(ts), bucket_seconds))
+               _bucket_of(int(ts), bucket_seconds), r.get("interface"))
         row = acc.setdefault(key, {"records": 0, "packets": 0, "bytes": 0})
         row["records"] += 1
         row["packets"] += r.get("packets") or 0
@@ -130,9 +133,11 @@ def flows_from_insights_rows(rows: Iterable[dict], columns: dict[str, str]) -> l
         if not src or src == "-" or not dst or dst == "-":
             continue
         port = row.get(columns["dstport"])
+        iface = row.get(columns["interface"]) if "interface" in columns else None
         key = (src, dst, _int(port) if port not in (None, "", "-") else None,
                row.get(columns["protocol"], ""), row.get(columns["action"], ""),
-               _parse_insights_time(row[columns["bucket"]]))
+               _parse_insights_time(row[columns["bucket"]]),
+               iface if iface not in (None, "", "-") else None)
         acc_row = acc.setdefault(key, {"records": 0, "packets": 0, "bytes": 0})
         acc_row["records"] += _int(row.get(columns["records"]))
         acc_row["packets"] += _int(row.get(columns.get("packets", ""), 0))
@@ -142,9 +147,9 @@ def flows_from_insights_rows(rows: Iterable[dict], columns: dict[str, str]) -> l
 
 def _flows_from_acc(acc: dict[tuple, dict]) -> list[dict]:
     out = []
-    for (src, dst, port, proto, action, bucket), v in acc.items():
+    for (src, dst, port, proto, action, bucket, iface), v in acc.items():
         out.append({"src": src, "dst": dst, "port": port, "proto": PROTO_NAMES.get(proto, proto),
-                    "action": action, "bucket": bucket, **v})
+                    "action": action, "bucket": bucket, "iface": iface, **v})
     out.sort(key=lambda f: (f["bucket"], f["src"], f["dst"], f["port"] or 0, f["action"]))
     return out
 
@@ -159,7 +164,7 @@ def interface_entry_from_dict(d: dict) -> dict:
         "eni": d["eni"], "ips": [d["ip"]], "groups": list(d.get("groups", [])),
         "description": d.get("description", ""), "vpc_id": d.get("vpc_id"),
         "subnet_id": d.get("subnet"), "type": d.get("interface_type", "interface"),
-        "instance_id": d.get("instance_id"),
+        "instance_id": d.get("instance_id"), "prefixes": list(d.get("prefixes", [])),
     }
 
 
@@ -179,8 +184,19 @@ def interfaces_from_enis(enis: Iterable[dict]) -> list[dict]:
             "subnet_id": eni.get("SubnetId"),
             "type": eni.get("InterfaceType", "interface"),
             "instance_id": (eni.get("Attachment") or {}).get("InstanceId"),
+            "prefixes": [p["Ipv4Prefix"] for p in eni.get("Ipv4Prefixes", []) if p.get("Ipv4Prefix")],
         })
     return out
+
+
+def _index(interfaces: Iterable[dict]) -> InterfaceIndex:
+    """An InterfaceIndex over normalised interface entries."""
+    return InterfaceIndex({
+        "NetworkInterfaceId": i["eni"], "VpcId": i.get("vpc_id"),
+        "PrivateIpAddresses": [{"PrivateIpAddress": ip} for ip in i["ips"]],
+        "Ipv4Prefixes": [{"Ipv4Prefix": p} for p in i.get("prefixes", [])],
+        "Groups": [{"GroupId": g} for g in i["groups"]],
+    } for i in interfaces)
 
 
 def _proto_matches(rule_proto: str | None, flow_proto: str) -> bool:
@@ -223,7 +239,8 @@ def rules_covering(
     """Every ingress rule on ``dst_groups`` that admits src -> port/proto.
 
     CIDR rules match by address; a security-group reference matches when
-    the source address belongs to an interface in the referenced group.
+    the source address belongs to an interface in the referenced group
+    (``ip_groups``: source address -> the groups on its interface).
     Prefix-list rules cannot be resolved here and are reported as possible.
     """
     try:
@@ -280,21 +297,34 @@ def build_viz_data(
     first_bucket = _bucket_of(int(start.timestamp()), bucket_seconds)
     n_buckets = max(1, (int(end.timestamp()) - first_bucket + bucket_seconds - 1) // bucket_seconds)
 
-    ip_to_iface = {ip: i for i in interfaces for ip in i["ips"]}
-    ip_groups = {ip: set(i["groups"]) for i in interfaces for ip in i["ips"]}
+    index = _index(interfaces)
+    by_eni = {i["eni"]: i for i in interfaces}
     perms_by_group = {g["GroupId"]: g.get("IpPermissions", []) for g in groups}
 
     conns: dict[tuple, dict] = {}
     rows: list[list] = []
+    flow_conn: list[tuple[dict, tuple]] = []
+    ambiguous: set[str] = set()
     for f in flows:
-        key = (f["src"], f["dst"], f["port"], f["proto"])
+        eni, status = index.resolve(f["dst"], f.get("iface"))
+        if status == "not-owner":
+            continue  # the sender's copy of a connection the receiver also logs
+        if status == "ambiguous":
+            ambiguous.add(f["dst"])
+        iface = by_eni.get(eni["NetworkInterfaceId"]) if eni else None
+        key = (f["src"], f["dst"], f["port"], f["proto"], iface["eni"] if iface else None)
+        flow_conn.append((f, key))
         conn = conns.get(key)
         if conn is None:
-            iface = ip_to_iface.get(f["dst"])
+            # The source's own interface, preferring the destination's VPC:
+            # security-group references only match within it.
+            src_eni, _ = index.resolve(f["src"], prefer_vpc=iface.get("vpc_id") if iface else None)
             conn = conns[key] = {
                 "src": f["src"], "dst": f["dst"], "port": f["port"], "proto": f["proto"],
                 "eni": iface["eni"] if iface else None,
                 "groups": list(iface["groups"]) if iface else [],
+                "src_eni": src_eni["NetworkInterfaceId"] if src_eni else None,
+                "src_groups": sorted(InterfaceIndex.groups(src_eni)),
                 "first_seen": f["bucket"], "last_seen": f["bucket"],
                 "accepted": {"records": 0, "packets": 0, "bytes": 0},
                 "rejected": {"records": 0, "packets": 0, "bytes": 0},
@@ -306,26 +336,32 @@ def build_viz_data(
         conn["last_seen"] = max(conn["last_seen"], f["bucket"])
 
     ordered = sorted(conns.values(), key=_rank)
-    index = {(c["src"], c["dst"], c["port"], c["proto"]): i for i, c in enumerate(ordered)}
+    position = {(c["src"], c["dst"], c["port"], c["proto"], c["eni"]): i for i, c in enumerate(ordered)}
     for i, c in enumerate(ordered):
         c["id"] = i
-        c["allowed_by"] = rules_covering(perms_by_group, c["groups"], c["src"], c["port"], c["proto"], ip_groups)
+        c["allowed_by"] = rules_covering(perms_by_group, c["groups"], c["src"], c["port"], c["proto"],
+                                         {c["src"]: set(c["src_groups"])})
         c["status"] = ("mixed" if c["accepted"]["records"] and c["rejected"]["records"]
                        else "accepted" if c["accepted"]["records"] else "rejected")
         c["first_seen"] = _iso(c["first_seen"])
         c["last_seen"] = _iso(c["last_seen"] + bucket_seconds)
         c["plan_impact"] = None
 
-    for f in flows:
+    for f, key in flow_conn:
         b = (f["bucket"] - first_bucket) // bucket_seconds
         if not 0 <= b < n_buckets:
             continue
-        rows.append([index[(f["src"], f["dst"], f["port"], f["proto"])], b,
+        rows.append([position[key], b,
                      "A" if f["action"] == "ACCEPT" else "R", f["records"], f["packets"], f["bytes"]])
     rows.sort()
 
     used_groups = {g for c in ordered for g in c["groups"]}
-    used_enis = {c["eni"] for c in ordered if c["eni"]}
+    used_enis = {e for c in ordered for e in (c["eni"], c["src_eni"]) if e}
+    if ambiguous:
+        flow_log_check = {**flow_log_check, "warnings": list(flow_log_check.get("warnings", [])) + [
+            f"{len(ambiguous)} destination address(es) are used in more than one VPC and the flow "
+            "log records no interface-id, so they are shown without an interface: "
+            + ", ".join(sorted(ambiguous)[:20])]}
     return {
         "schema": SCHEMA,
         "generated_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -390,15 +426,14 @@ def apply_plan_overlay(data: dict, plan: dict, plan_name: str = "plan.json") -> 
         gid: rules_after_plan(rules, plan_groups[gid]) if gid in plan_groups else rules
         for gid, rules in perms_now.items()
     }
-    ip_groups = {ip: set(i["groups"]) for i in out["interfaces"] for ip in i["ips"]}
-
     blocked = kept = 0
     for c in out["connections"]:
         c["plan_impact"] = None
         if not c["accepted"]["records"] or not any(g in plan_groups for g in c["groups"]):
             continue
-        now = rules_covering(perms_now, c["groups"], c["src"], c["port"], c["proto"], ip_groups)
-        after = rules_covering(perms_after, c["groups"], c["src"], c["port"], c["proto"], ip_groups)
+        src_groups = {c["src"]: set(c.get("src_groups", []))}
+        now = rules_covering(perms_now, c["groups"], c["src"], c["port"], c["proto"], src_groups)
+        after = rules_covering(perms_after, c["groups"], c["src"], c["port"], c["proto"], src_groups)
         if now and not after:
             c["plan_impact"] = "blocked"
             blocked += 1
@@ -448,15 +483,6 @@ def _all_network_interfaces(ec2) -> list[dict]:
     return out
 
 
-def _groups_by_id(ec2, group_ids: Sequence[str]) -> list[dict]:
-    out = []
-    ids = sorted(set(group_ids))
-    for i in range(0, len(ids), 200):
-        resp = ec2.describe_security_groups(GroupIds=ids[i:i + 200])
-        out.extend(resp.get("SecurityGroups", []))
-    return out
-
-
 def export(
     *,
     region: str,
@@ -477,8 +503,10 @@ def export(
     check = preflight_flow_logs(cfg)
 
     if log_group:
-        query, columns = build_flow_stats_query(
-            check.fields, by=("src", "dst", "dstport", "protocol", "action"), bin_seconds=bucket_seconds)
+        by = ("src", "dst", "dstport", "protocol", "action")
+        if "interface-id" in check.fields:
+            by += ("interface",)
+        query, columns = build_flow_stats_query(check.fields, by=by, bin_seconds=bucket_seconds)
         rows = run_insights_query(sg_tightener._client("logs", region), log_group, query, start, end)
         flows = flows_from_insights_rows(rows, columns)
     else:
@@ -491,11 +519,13 @@ def export(
     flows = [f for f in flows if start.timestamp() - bucket_seconds < f["bucket"] <= end.timestamp()]
 
     ec2 = sg_tightener._client("ec2", region)
+    # Every interface goes to build_viz_data: destinations are resolved by
+    # interface id and prefix, and sources need theirs for security-group
+    # reference rules. Only the ones a connection uses are written out.
     interfaces = interfaces_from_enis(_all_network_interfaces(ec2))
-    dst_ips = {f["dst"] for f in flows}
-    interfaces = [i for i in interfaces if dst_ips.intersection(i["ips"])]
     group_ids = {g for i in interfaces for g in i["groups"]}
-    groups = _groups_by_id(ec2, sorted(group_ids)) if group_ids else []
+    found = describe_groups(ec2, sorted(group_ids)) if group_ids else {}
+    groups = list(found.values())
 
     data = build_viz_data(
         region=region, start=start, end=end, bucket_seconds=bucket_seconds, flows=flows,
@@ -511,7 +541,8 @@ def export(
 def _merge_flows(flows: list[dict]) -> list[dict]:
     acc: dict[tuple, dict] = {}
     for f in flows:
-        key = (f["src"], f["dst"], f["port"], PROTO_NUMBERS.get(f["proto"], f["proto"]), f["action"], f["bucket"])
+        key = (f["src"], f["dst"], f["port"], PROTO_NUMBERS.get(f["proto"], f["proto"]), f["action"],
+               f["bucket"], f.get("iface"))
         row = acc.setdefault(key, {"records": 0, "packets": 0, "bytes": 0})
         for k in row:
             row[k] += f[k]

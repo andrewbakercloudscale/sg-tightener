@@ -69,12 +69,14 @@ Region is read from the manifest.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--region` | required | AWS region |
-| `--hours` | `24` | Window of `REJECT` flows to read (rounded to whole days, minimum 1) |
-| `--approved` | `approved.json` | File to merge newly found sources into |
+| `--hours` | `24` | Window of `REJECT` flows to read, in hours (minimum 1) |
+| `--approved` | `approved.json` | File to record refused flows in, for the next plan |
+| `--manifest` | | The manifest `apply` wrote: flows its revoked rules would have admitted are marked as caused by the tightening |
 | `--log-group` / `--s3-bucket` / `--s3-prefix` | | Flow-log source |
-| `--apply` | off | After merging, remind you to re-run `plan` and `apply` |
+| `--apply` | off | Kept for compatibility; the commands to restore access are always printed |
 
-Exit codes: `0` nothing found, or found and merged; `1` found and not merged.
+Needs `${dstaddr}` and `${dstport}` in the log format. Exit codes: `0` nothing
+refused, or refused and recorded; `1` refused and not recorded.
 
 ---
 
@@ -130,15 +132,17 @@ falling back to `AWS_REGION`. Writes `sg_compact-manifest-<ts>.json`.
 | `--json` | `report.json` | JSON report |
 | `--max-workers` | `16` | Parallel account/region scans |
 
-Exit code `1` if any CRITICAL finding exists.
+Exit codes: `0` every account and region scanned, nothing CRITICAL; `1` a
+CRITICAL finding; `2` the scan was incomplete (see `errors` in the JSON and
+`scan_status` per account) and nothing CRITICAL was found.
 
 ---
 
 ## `sg_transfer_audit.py`
 
 Same flags as `sg_ou_report.py`, with outputs defaulting to
-`transfer_report.xlsx` and `transfer_report.json`. Exit code `1` if any
-CRITICAL finding exists.
+`transfer_report.xlsx` and `transfer_report.json`. Exit codes as
+`sg_ou_report.py`.
 
 ---
 

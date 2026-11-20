@@ -93,14 +93,18 @@ a planned tightening, a post-change check, and a live incident.
 
 ```bash
 python sg_diagnose.py --region eu-west-1 \
-  --log-group /aws/vpc/flowlogs --hours 24 --approved approved.json
+  --log-group /aws/vpc/flowlogs --hours 24 --approved approved.json \
+  --manifest manifest-<ts>.json
 ```
 
-* **"nothing to do"**: no private source is being rejected that the rules do
-  not already cover.
-* **A list of addresses**: these were refused and no rule covers them. Decide
-  whether each is legitimate. Answer `y` to merge them into `approved.json`,
-  then re-run `plan` and `apply`.
+* **"nothing to do"**: no private source is being refused by the groups on the
+  interface it tried to reach.
+* **A list of flows**: each was refused by its destination's groups. Those
+  marked **CAUSED BY TIGHTENING** were allowed by a rule the apply revoked.
+  Decide whether each is legitimate, then restore access with the printed
+  `sg_extend` command (or `revert` the whole apply). Answer `y` to record them
+  in `approved.json` so the next plan keeps them; that alone changes nothing
+  in AWS.
 
 Run it daily for the first week, and again after the next month-end.
 

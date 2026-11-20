@@ -199,7 +199,7 @@ class TestSgViz:
             flow_records(format_lines(records, RECOMMENDED_FIELDS), RECOMMENDED_FIELDS), 3600)
 
         logs = FakeLogs(records, RECOMMENDED_FIELDS)
-        q, cols = build_flow_stats_query(RECOMMENDED_FIELDS, by=("src", "dst", "dstport", "protocol", "action"),
+        q, cols = build_flow_stats_query(RECOMMENDED_FIELDS, by=("src", "dst", "dstport", "protocol", "action", "interface"),
                                          bin_seconds=3600)
         rows = run_insights_query(logs, "lg", q, start, end)
         from_cw = sg_viz.flows_from_insights_rows(rows, cols)
@@ -414,8 +414,9 @@ class TestPerGroupPlan:
 
 class TestFlowKeys:
     def test_default_and_recommended_formats_record_destinations(self):
-        assert sg_tightener.flow_keys_for(DEFAULT_LOG_FORMAT_FIELDS) == ("src", "dst", "dstport", "protocol")
-        assert sg_tightener.flow_keys_for(RECOMMENDED_FIELDS) == ("src", "dst", "dstport", "protocol")
+        keys = ("src", "dst", "dstport", "protocol", "interface")
+        assert sg_tightener.flow_keys_for(DEFAULT_LOG_FORMAT_FIELDS) == keys
+        assert sg_tightener.flow_keys_for(RECOMMENDED_FIELDS) == keys
 
     def test_protocol_is_optional_destination_is_not(self):
         assert sg_tightener.flow_keys_for(["srcaddr", "dstaddr", "dstport", "action"]) == ("src", "dst", "dstport")
@@ -664,3 +665,197 @@ class TestSgExtendAuthorise:
                 return {"SecurityGroups": [{"GroupId": g} for g in GroupIds]}
 
         assert set(sg_extend.describe_groups(Ec2(), ["sg-a", "sg-typo", "sg-b"])) == {"sg-a", "sg-b"}
+
+
+# --------------------------------------------------------------------------- #
+# Overlapping VPCs, sender-side records, pod prefixes (plan, sg_viz)
+# --------------------------------------------------------------------------- #
+
+def _iflow(src, dst, port, iface):
+    return {**_flow(src, dst, port), "interface": iface}
+
+
+class TestPlanAcrossOverlappingVpcs:
+    SGS = [_group("sg-a", _rule(443, "10.0.0.0/8")), _group("sg-b", _rule(443, "10.0.0.0/8"))]
+    ENIS = [_x_eni("eni-a", "vpc-a", "10.0.1.5", "sg-a"), _x_eni("eni-b", "vpc-b", "10.0.1.5", "sg-b")]
+
+    def test_interface_id_gives_the_source_only_to_the_vpc_it_reached(self):
+        """Regression: matching by address alone granted the source on the
+        twin VPC's group too."""
+        plan = build_plan(self.SGS, ["10.9.0.1"], flows=[_iflow("10.9.0.1", "10.0.1.5", 443, "eni-a")],
+                          interfaces=self.ENIS)
+        assert _granted(plan, "sg-a") == {(443, "10.9.0.1/32")}
+        assert _granted(plan, "sg-b") == set()
+        assert plan["ambiguous_destinations"] == []
+
+    def test_without_interface_id_an_overlapping_address_is_kept_per_rule_and_reported(self):
+        plan = build_plan(self.SGS, ["10.9.0.1"], flows=[_flow("10.9.0.1", "10.0.1.5", 443)],
+                          interfaces=self.ENIS)
+        assert plan["ambiguous_destinations"] == ["10.0.1.5"]
+        assert _granted(plan, "sg-a") == _granted(plan, "sg-b") == {(443, "10.9.0.1/32")}
+
+    def test_record_logged_by_the_sender_is_not_evidence_for_anyone(self):
+        sgs = [_group("sg-a", _rule(443, "10.0.0.0/8"))]
+        enis = [_x_eni("eni-a", "vpc-a", "10.0.1.5", "sg-a")]
+        plan = build_plan(sgs, ["10.0.1.5"], flows=[_iflow("10.0.1.5", "10.7.7.7", 443, "eni-a")],
+                          interfaces=enis)
+        assert plan["sender_side_records_ignored"] == 1
+        assert plan["unattributed_destinations"] == []
+        assert _granted(plan, "sg-a") == set()
+
+
+def _viz_iface(eni, ip, groups, vpc="vpc-a", prefixes=()):
+    return {"eni": eni, "ips": [ip], "groups": list(groups), "description": "", "vpc_id": vpc,
+            "subnet_id": None, "type": "interface", "instance_id": None, "prefixes": list(prefixes)}
+
+
+def _viz_flow(src, dst, port, iface=None, action="ACCEPT"):
+    return {"src": src, "dst": dst, "port": port, "proto": "tcp", "action": action,
+            "bucket": int(T0.timestamp()), "iface": iface, "records": 1, "packets": 5, "bytes": 500}
+
+
+def _viz(flows, interfaces, groups):
+    return sg_viz.build_viz_data(region="eu-west-1", start=T0, end=T0 + dt.timedelta(hours=2),
+                                 bucket_seconds=3600, flows=flows, interfaces=interfaces, groups=groups,
+                                 flow_log_check={"verified": True, "fields": [], "warnings": []},
+                                 source="test")
+
+
+class TestSgVizResolution:
+    def test_security_group_reference_matches_a_source_that_is_never_a_destination(self):
+        """Regression: only destination interfaces were indexed, so a rule
+        referencing the client's group never matched in a real export."""
+        db = {"GroupId": "sg-db", "IpPermissions": [{"IpProtocol": "tcp", "FromPort": 5432, "ToPort": 5432,
+              "UserIdGroupPairs": [{"GroupId": "sg-app"}]}]}
+        data = _viz([_viz_flow("10.0.2.10", "10.0.1.20", 5432)],
+                    [_viz_iface("eni-db", "10.0.1.20", ["sg-db"]), _viz_iface("eni-app", "10.0.2.10", ["sg-app"])],
+                    [db])
+        (conn,) = data["connections"]
+        assert conn["src_groups"] == ["sg-app"] and conn["allowed_by"] == ["sg-db: tcp 5432 from sg-app"]
+        assert {i["eni"] for i in data["interfaces"]} == {"eni-db", "eni-app"}
+
+    def test_pod_address_inside_a_delegated_prefix_resolves_to_the_node(self):
+        data = _viz([_viz_flow("10.9.0.1", "10.0.3.20", 8080)],
+                    [_viz_iface("eni-node", "10.0.3.4", ["sg-pods"], prefixes=["10.0.3.16/28"])],
+                    [{"GroupId": "sg-pods", "IpPermissions": [_rule(8080, "10.0.0.0/8")]}])
+        (conn,) = data["connections"]
+        assert conn["eni"] == "eni-node" and conn["groups"] == ["sg-pods"] and conn["allowed_by"]
+
+    def test_overlapping_vpcs_are_separate_connections(self):
+        ifaces = [_viz_iface("eni-a", "10.0.1.5", ["sg-a"], vpc="vpc-a"),
+                  _viz_iface("eni-b", "10.0.1.5", ["sg-b"], vpc="vpc-b")]
+        data = _viz([_viz_flow("10.9.0.1", "10.0.1.5", 443, "eni-a"),
+                     _viz_flow("10.9.0.1", "10.0.1.5", 443, "eni-b")], ifaces, [])
+        assert sorted(c["eni"] for c in data["connections"]) == ["eni-a", "eni-b"]
+
+    def test_overlapping_address_without_interface_id_is_not_guessed(self):
+        ifaces = [_viz_iface("eni-a", "10.0.1.5", ["sg-a"], vpc="vpc-a"),
+                  _viz_iface("eni-b", "10.0.1.5", ["sg-b"], vpc="vpc-b")]
+        data = _viz([_viz_flow("10.9.0.1", "10.0.1.5", 443)], ifaces, [])
+        (conn,) = data["connections"]
+        assert conn["eni"] is None and conn["groups"] == []
+        assert any("more than one VPC" in w for w in data["flow_log_check"]["warnings"])
+
+    def test_sender_side_copy_is_dropped(self):
+        data = _viz([_viz_flow("10.0.2.10", "10.0.1.20", 5432, "eni-app"),
+                     _viz_flow("10.0.2.10", "10.0.1.20", 5432, "eni-db")],
+                    [_viz_iface("eni-db", "10.0.1.20", ["sg-db"]), _viz_iface("eni-app", "10.0.2.10", ["sg-app"])],
+                    [])
+        (conn,) = data["connections"]
+        assert conn["eni"] == "eni-db" and conn["accepted"]["records"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# sg_diagnose: judged against the destination's own groups
+# --------------------------------------------------------------------------- #
+
+class TestSgDiagnose:
+    SGS = [{"GroupId": "sg-db", "IpPermissions": [_rule(5432, "10.4.2.0/24")]},
+           {"GroupId": "sg-api", "IpPermissions": [_rule(443, "10.0.0.0/8")]}]
+    ENIS = [_x_eni("eni-db", "vpc-a", "10.4.1.20", "sg-db"), _x_eni("eni-api", "vpc-a", "10.4.2.10", "sg-api")]
+
+    def test_a_source_allowed_elsewhere_is_still_reported_where_it_was_refused(self):
+        """Regression: any rule in any group (here the API's 10/8 on 443)
+        counted as cover, so the refusal on the database was hidden."""
+        import sg_diagnose
+        out = sg_diagnose.diagnose([_iflow("10.9.0.1", "10.4.1.20", 5432, "eni-db")], self.SGS, self.ENIS)
+        (b,) = out["blocked"]
+        assert (b["src"], b["eni"], b["groups"], b["dstport"]) == ("10.9.0.1", "eni-db", ["sg-db"], 5432)
+
+    def test_reject_the_groups_admit_is_not_a_security_group_problem(self):
+        import sg_diagnose
+        out = sg_diagnose.diagnose([_iflow("10.4.2.10", "10.4.1.20", 5432, "eni-db")], self.SGS, self.ENIS)
+        assert out["blocked"] == [] and out["allowed_by_groups"] == 1
+
+    def test_manifest_marks_what_the_tightening_caused(self):
+        import sg_diagnose
+        manifest = {"groups": [{"group_id": "sg-db", "revoked": [_rule(5432, "10.0.0.0/8")]}]}
+        flows = [_iflow("10.9.0.1", "10.4.1.20", 5432, "eni-db"),
+                 _iflow("192.168.0.9", "10.4.1.20", 5432, "eni-db")]
+        out = sg_diagnose.diagnose(flows, self.SGS, self.ENIS, manifest)
+        assert [(b["src"], bool(b["caused_by"])) for b in out["blocked"]] == [
+            ("10.9.0.1", True), ("192.168.0.9", False)]
+
+    def test_unknown_and_public_and_sender_side_are_set_aside(self):
+        import sg_diagnose
+        out = sg_diagnose.diagnose([_iflow("10.9.0.1", "10.4.7.7", 5432, None),
+                                    _iflow("8.8.8.8", "10.4.1.20", 5432, "eni-db"),
+                                    _iflow("10.4.2.10", "10.9.9.9", 443, "eni-api")], self.SGS, self.ENIS)
+        assert out["blocked"] == [] and out["unresolved"] == ["10.4.7.7"] and out["ignored"] == 2
+
+    def test_extend_commands_cover_each_group_set_and_port(self):
+        import sg_diagnose
+        blocked = [{"groups": ["sg-db"], "dstport": 5432}, {"groups": ["sg-db"], "dstport": 5433},
+                   {"groups": ["sg-api"], "dstport": 443}]
+        assert sg_diagnose.extend_commands(blocked, "eu-west-1", 24, ["--log-group", "lg"]) == [
+            "python sg_extend.py --region eu-west-1 --groups sg-api --hours 24 --log-group lg --ports 443",
+            "python sg_extend.py --region eu-west-1 --groups sg-db --hours 24 --log-group lg --ports 5432,5433"]
+
+
+# --------------------------------------------------------------------------- #
+# Org reports: IPv6 and failures that must not read as clean
+# --------------------------------------------------------------------------- #
+
+class TestOrgReports:
+    def test_ipv6_anywhere_is_as_public_as_ipv4_anywhere(self):
+        import sg_ou_report
+        assert sg_ou_report.classify_sg_rule("::/0", 22, 22) == "CRITICAL"
+        assert sg_ou_report.classify_nacl_rule("::/0", None) == "HIGH"
+
+    def test_transfer_server_open_on_ipv6_is_found(self):
+        import sg_transfer_audit
+        sgs = [{"IpPermissions": [{"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22,
+                                   "Ipv6Ranges": [{"CidrIpv6": "::/0"}]}]}]
+        assert sg_transfer_audit._open_to_world_ports(sgs, {(22, 22)}) == [(22, 22)]
+
+    def test_failed_and_unscanned_accounts_are_listed_and_fail_the_gate(self):
+        import sg_ou_report
+        accounts = [{"Id": "111", "Name": "a"}, {"Id": "222", "Name": "b"}, {"Id": "333", "Name": "c"}]
+        errors = [{"account_id": "222", "region": None, "stage": "assume-role", "error": "denied"},
+                  {"account_id": "333", "region": "eu-west-1", "stage": "network-acls", "error": "x"}]
+        status = sg_ou_report.account_status(accounts, errors)
+        assert status == {"111": "ok", "222": "failed", "333": "incomplete"}
+        summary = sg_ou_report._aggregate_by_account([], accounts, status)
+        assert {r["account_id"]: r["scan_status"] for r in summary} == status
+        assert sg_ou_report.exit_code(summary, errors) == 2
+        assert sg_ou_report.exit_code(summary, []) == 0
+
+    def test_transfer_list_failure_is_an_error_not_an_empty_region(self):
+        import botocore.exceptions
+        import sg_transfer_audit
+
+        class Paginator:
+            def paginate(self):
+                raise botocore.exceptions.ClientError(
+                    {"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "ListServers")
+
+        class Client:
+            def get_paginator(self, _name):
+                return Paginator()
+
+        class Session:
+            def client(self, *_a, **_k):
+                return Client()
+
+        findings, errors = sg_transfer_audit._scan_region(Session(), "111", "a", "eu-west-1")
+        assert findings == [] and errors and errors[0]["stage"] == "transfer"

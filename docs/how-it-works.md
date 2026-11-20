@@ -136,11 +136,20 @@ Example with the default tolerance:
 
 ### `sg_diagnose.py`: what did we break?
 
-Reads the last `--hours` of flow logs for `REJECT` records, keeps private
-(RFC 1918) source addresses that no current rule in the region covers, and
-lists them. You can merge them into `approved.json` interactively and then
-re-run `plan` and `apply`. Exit code 1 means it found sources and you chose not
-to merge them, which makes it usable as a check in a pipeline.
+Reads the last `--hours` of flow logs for `REJECT` records from private
+(RFC 1918) sources and judges each one the way AWS did: against the groups on
+the interface it tried to reach, on its own protocol and port. A source that
+some other group still allows is reported where it was refused. Rejects those
+groups do admit (a network ACL, or return traffic) are counted, not listed.
+With `--manifest` (the file `apply` wrote), flows a revoked rule would have
+admitted are marked **caused by tightening**.
+
+It changes nothing in AWS. For each set of groups it prints the `sg_extend`
+command that restores access now (and, with `--manifest`, the `revert`), and
+can record the flows in `approved.json` so the next plan keeps them. Recording
+alone does not restore access: `plan` only narrows broad rules that still
+exist, and the apply removed them. Exit code 1 means it found refused sources
+and you chose not to record them, which makes it usable as a pipeline check.
 
 ### `sg_extend.py`: break-glass during an incident
 
@@ -197,8 +206,12 @@ permissive rules. Severity:
 | RFC 1918, `/17` to `/20` | MEDIUM | LOW |
 | RFC 1918, `/21` to `/23` | LOW | not reported |
 
-Accounts are ranked by a weighted score so that one CRITICAL outranks any
-number of LOWs. Exit code 1 when any CRITICAL is found.
+`::/0` counts as `0.0.0.0/0`. Accounts are ranked by a weighted score so that
+one CRITICAL outranks any number of LOWs. Every account gets a row with a
+`scan_status`: `ok`, `incomplete` (part of a region's scan failed) or
+`failed` (the role could not be assumed); an account that was not scanned is
+never shown as clean. Exit code 1 when any CRITICAL is found, else 2 when the
+scan was incomplete.
 
 ### `sg_transfer_audit.py`: SFTP servers open to the world
 
@@ -246,10 +259,12 @@ review `plan.json` by hand.
   every interface carrying it, is outside the flow logs that fed
   `approved.json` (`skipped_groups`). An `approved.json` from before 2.1.0
   does not record that coverage, and `plan` warns.
-* **Overlapping VPC ranges.** Destinations are matched to interfaces by
-  address across the region. Where two VPCs reuse a range, a source that
-  reached one is also granted on the other's group at that address (still
-  inside the original rule).
+* **Overlapping VPC ranges.** With `${interface-id}` in the log format (the
+  default and recommended formats have it), each flow is tied to the
+  interface that logged it, so VPCs that reuse a range are told apart, and a
+  record logged by the sending side is ignored. Without it, an address used
+  in more than one VPC is kept per rule and listed under
+  `ambiguous_destinations`.
 * **Rules with no observed traffic are removed.** They appear under
   `removed_without_evidence` in the plan and in a warning. If one should stay,
   delete that group from the plan or add the expected source to
@@ -257,4 +272,3 @@ review `plan.json` by hand.
 * **The window is the evidence.** Anything that did not connect during the
   analysed window is treated as unused. Use `--days 180` or more where seasonal
   traffic exists.
-* **`sg_diagnose --hours` is rounded to whole days** when it queries the logs.

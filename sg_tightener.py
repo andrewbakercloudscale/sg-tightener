@@ -716,9 +716,11 @@ def _analyse_from_cloudwatch(cfg: AnalyseConfig, fields: list[str]) -> list[str]
 
 
 # The logical keys a flow in approved.json carries: who (src) reached what
-# (dst, dstport) over which protocol. src, dst and dstport are required for
-# per-group planning; protocol is used when the format has it.
-_FLOW_KEYS = ("src", "dst", "dstport", "protocol")
+# (dst, dstport) over which protocol, logged by which interface. src, dst and
+# dstport are required for per-group planning; protocol and interface are used
+# when the format has them (interface makes attribution exact where VPCs reuse
+# addresses).
+_FLOW_KEYS = ("src", "dst", "dstport", "protocol", "interface")
 
 
 def flow_keys_for(fields: list[str]) -> tuple[str, ...] | None:
@@ -731,9 +733,11 @@ def flow_keys_for(fields: list[str]) -> tuple[str, ...] | None:
     return keys
 
 
-def _flow_entry(src: str | None, dst: str | None, dstport, protocol: str | None) -> dict | None:
+def _flow_entry(src: str | None, dst: str | None, dstport, protocol: str | None,
+                interface: str | None = None) -> dict | None:
     """One approved.json flow, or None when there is no usable source.
-    '-' (flow-log "not applicable") becomes None for dst and protocol."""
+    '-' (flow-log "not applicable") becomes None for dst, protocol and
+    interface."""
     if not src or src == "-":
         return None
     port = dstport if isinstance(dstport, int) or dstport is None else _int_or_none(dstport)
@@ -742,13 +746,14 @@ def _flow_entry(src: str | None, dst: str | None, dstport, protocol: str | None)
         "dst": dst if dst and dst != "-" else None,
         "dstport": port,
         "protocol": protocol if protocol and protocol != "-" else None,
+        "interface": interface if interface and interface != "-" else None,
     }
 
 
 def _sorted_flows(flows: Iterable[dict]) -> list[dict]:
-    unique = {(f["src"], f["dst"], f["dstport"], f["protocol"]): f for f in flows}
+    unique = {(f["src"], f["dst"], f["dstport"], f["protocol"], f.get("interface")): f for f in flows}
     return [unique[k] for k in sorted(
-        unique, key=lambda k: (k[0], k[1] or "", -1 if k[2] is None else k[2], k[3] or ""))]
+        unique, key=lambda k: (k[0], k[1] or "", -1 if k[2] is None else k[2], k[3] or "", k[4] or ""))]
 
 
 def _analyse_flows_from_cloudwatch(cfg: AnalyseConfig, fields: list[str]) -> list[dict] | None:
@@ -909,7 +914,7 @@ def _analyse_flows_from_s3(cfg: AnalyseConfig, fields: list[str]) -> list[dict] 
         for r in flow_records(lines, fields):
             if r["action"] != wanted_action or r["direction"] == "egress":
                 continue
-            entry = _flow_entry(r["src"], r["dst"], r["dstport"], r["protocol"])
+            entry = _flow_entry(r["src"], r["dst"], r["dstport"], r["protocol"], r["interface"])
             if entry:
                 flows.append(entry)
     return _sorted_flows(flows)
@@ -1112,50 +1117,101 @@ def flow_matches_rule(flow: dict, protocol, from_port, to_port) -> bool:
     return True
 
 
-def interface_groups_by_ip(
-    interfaces: list[dict],
-) -> tuple[dict[str, set[str]], list[tuple[ipaddress.IPv4Network, set[str]]]]:
-    """Map each interface's private IPv4 addresses to the groups it carries.
+class InterfaceIndex:
+    """Which network interface received a packet, from DescribeNetworkInterfaces.
 
-    ``interfaces`` is DescribeNetworkInterfaces output. Returns
-    ({ip: {group ids}}, [(delegated /28 prefix, {group ids})]), the second
-    for interfaces using prefix delegation (EKS prefix mode), whose pod
-    addresses never appear in PrivateIpAddresses.
+    ``resolve(dst, iface)`` returns (interface, status):
+
+    * ``ok``         the interface that owns ``dst``;
+    * ``not-owner``  the flow record was logged by ``iface`` but ``iface``
+                     does not own ``dst``: it is the SENDING side's copy of
+                     the connection (an egress record in a format without
+                     flow-direction) and says nothing about who received it;
+    * ``unknown``    no interface owns ``dst`` (deleted, another account);
+    * ``ambiguous``  no ``iface`` was recorded and interfaces in more than
+                     one VPC use the address (VPCs with overlapping ranges).
+
+    With an interface id the answer is exact even across overlapping VPCs.
+    Delegated /28 prefixes (EKS prefix mode) count as owned addresses.
     """
-    by_ip: dict[str, set[str]] = {}
-    prefixes: list[tuple[ipaddress.IPv4Network, set[str]]] = []
-    for eni in interfaces:
-        gids = {g["GroupId"] for g in eni.get("Groups", []) if g.get("GroupId")}
-        if not gids:
-            continue
+
+    def __init__(self, interfaces: Iterable[dict]):
+        self.by_id: dict[str, dict] = {}
+        self._by_ip: dict[str, list[dict]] = {}
+        self._prefixes: list[tuple[ipaddress.IPv4Network, dict]] = []
+        for eni in interfaces:
+            if eni.get("NetworkInterfaceId"):
+                self.by_id[eni["NetworkInterfaceId"]] = eni
+            for ip in self._ips(eni):
+                self._by_ip.setdefault(ip, []).append(eni)
+            for pfx in eni.get("Ipv4Prefixes", []):
+                try:
+                    self._prefixes.append((ipaddress.ip_network(pfx["Ipv4Prefix"]), eni))
+                except (KeyError, ValueError):
+                    continue
+
+    @staticmethod
+    def _ips(eni: dict) -> set[str]:
         ips = {eni.get("PrivateIpAddress")}
         ips |= {pa.get("PrivateIpAddress") for pa in eni.get("PrivateIpAddresses", [])}
-        for ip in ips - {None}:
-            by_ip.setdefault(ip, set()).update(gids)
-        for pfx in eni.get("Ipv4Prefixes", []):
-            try:
-                prefixes.append((ipaddress.ip_network(pfx["Ipv4Prefix"]), gids))
-            except (KeyError, ValueError):
-                continue
-    return by_ip, prefixes
+        return ips - {None}
+
+    def owners(self, ip: str | None) -> list[dict]:
+        """Every interface owning ``ip`` (exact addresses first, then prefixes)."""
+        if not ip:
+            return []
+        if ip in self._by_ip:
+            return list(self._by_ip[ip])
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return []
+        return [eni for net, eni in self._prefixes if addr in net]
+
+    def owns(self, eni: dict, ip: str) -> bool:
+        return any(o is eni for o in self.owners(ip))
+
+    def resolve(self, dst: str | None, iface: str | None = None,
+                prefer_vpc: str | None = None) -> tuple[dict | None, str]:
+        if iface and iface in self.by_id:
+            eni = self.by_id[iface]
+            return (eni, "ok") if dst and self.owns(eni, dst) else (None, "not-owner")
+        owners = self.owners(dst)
+        if not owners:
+            return None, "unknown"
+        vpcs = {o.get("VpcId") for o in owners}
+        if len(vpcs) > 1:
+            in_vpc = [o for o in owners if o.get("VpcId") == prefer_vpc] if prefer_vpc else []
+            if not in_vpc:
+                return None, "ambiguous"
+            owners = in_vpc
+        return owners[0], "ok"
+
+    @staticmethod
+    def groups(eni: dict | None) -> set[str]:
+        return {g["GroupId"] for g in (eni or {}).get("Groups", []) if g.get("GroupId")}
 
 
-def _groups_for_destination(dst: str | None, by_ip, prefixes) -> set[str] | None:
-    """Group ids on the interface that owns ``dst``, or None if no known
-    interface does."""
-    if not dst:
-        return None
-    if dst in by_ip:
-        return by_ip[dst]
-    try:
-        addr = ipaddress.ip_address(dst)
-    except ValueError:
-        return None
-    found = set()
-    for net, gids in prefixes:
-        if addr in net:
-            found |= gids
-    return found or None
+def describe_groups(ec2, group_ids: Iterable[str]) -> dict[str, dict]:
+    """{group id: group} for the ids that exist. DescribeSecurityGroups fails
+    the whole call on one unknown id (a typo, a group owned by another
+    account), so a failed chunk is retried one id at a time and the missing
+    ids are simply absent."""
+    found: dict[str, dict] = {}
+    ids = list(dict.fromkeys(g for g in group_ids if g))
+    for i in range(0, len(ids), 100):
+        chunk = ids[i:i + 100]
+        try:
+            for sg in ec2.describe_security_groups(GroupIds=chunk)["SecurityGroups"]:
+                found[sg["GroupId"]] = sg
+        except botocore.exceptions.ClientError:
+            for gid in chunk:
+                try:
+                    for sg in ec2.describe_security_groups(GroupIds=[gid])["SecurityGroups"]:
+                        found[sg["GroupId"]] = sg
+                except botocore.exceptions.ClientError as exc:
+                    LOG.warning("%s: %s", gid, exc)
+    return found
 
 
 def _attribute_flows(
@@ -1166,14 +1222,19 @@ def _attribute_flows(
     """Split the evidence into flows per group and flows for every group.
 
     Returns (by_group, everywhere, report). A flow whose destination is an
-    interface we know goes to that interface's groups only. Everything else
-    goes to ``everywhere`` and is treated as before per-group evidence
-    existed, i.e. it counts for every group whose rule admits it:
+    interface we know goes to that interface's groups only; when the flow
+    records the interface that logged it, that interface decides (exact
+    where VPCs reuse addresses), and a record logged by the sending side
+    is dropped. Everything else goes to ``everywhere`` and is treated as
+    before per-group evidence existed, i.e. it counts for every group whose
+    rule admits it:
 
     * no ``flows`` at all (an approved/v1 file): every source;
     * a flow whose destination matches no interface in the region (the
       interface was deleted or replaced, as Fargate tasks and autoscaled
       instances are, or the address is in another account);
+    * a flow with no interface id whose address interfaces in several VPCs
+      use (``ambiguous_destinations``);
     * an address in ``ips`` that no flow mentions (added by hand or by
       sg_diagnose).
 
@@ -1184,15 +1245,21 @@ def _attribute_flows(
     if flows is None:
         return {}, [{"src": ip} for ip in approved_ips], {"attribution": "per-rule"}
 
-    by_ip, prefixes = interface_groups_by_ip(interfaces or [])
+    index = InterfaceIndex(interfaces or [])
     by_group: dict[str, list[dict]] = {}
     everywhere: list[dict] = []
     unknown_dst: set[str] = set()
+    ambiguous: set[str] = set()
+    sender_side = 0
     for f in flows:
-        gids = _groups_for_destination(f.get("dst"), by_ip, prefixes)
-        if gids is None:
+        eni, status = index.resolve(f.get("dst"), f.get("interface"))
+        if status == "not-owner":
+            sender_side += 1
+            continue
+        gids = index.groups(eni)
+        if status != "ok" or not gids:
             everywhere.append(f)
-            unknown_dst.add(f.get("dst") or "-")
+            (ambiguous if status == "ambiguous" else unknown_dst).add(f.get("dst") or "-")
             continue
         for gid in gids:
             by_group.setdefault(gid, []).append(f)
@@ -1203,7 +1270,9 @@ def _attribute_flows(
     report = {
         "attribution": "per-group",
         "unattributed_destinations": sorted(unknown_dst),
+        "ambiguous_destinations": sorted(ambiguous),
         "sources_without_flows": extra,
+        "sender_side_records_ignored": sender_side,
     }
     return by_group, everywhere, report
 

@@ -57,3 +57,39 @@ def test_findings_are_attributed_per_account_and_critical_fails_the_run(org, mon
 def test_lists_accounts_from_the_organization(org):
     listed = {a["Id"] for a in sg_ou_report._list_org_accounts(None)}
     assert set(org) <= listed
+
+
+def test_an_account_that_cannot_be_scanned_is_reported_and_fails_the_gate(org, monkeypatch, tmp_path):
+    prod, dev = org
+    _open_rule(prod, 443, "10.0.0.0/8")
+    real = sg_ou_report._assume
+
+    def assume(role_arn, name):
+        if dev in role_arn:
+            raise RuntimeError("AccessDenied")
+        return real(role_arn, name)
+
+    monkeypatch.setattr(sg_ou_report, "_assume", assume)
+    out = tmp_path / "report.json"
+    rc = sg_ou_report.main(["--regions", REGION, "--accounts", f"{prod},{dev}",
+                            "--json", str(out), "--out", str(tmp_path / "r.xlsx")])
+    report = json.loads(out.read_text())
+    status = {r["account_id"]: r["scan_status"] for r in report["summary"]}
+    assert status == {prod: "ok", dev: "failed"}
+    assert report["complete"] is False and report["errors"][0]["stage"] == "assume-role"
+    assert rc == 2
+
+
+def test_ipv6_open_rule_is_critical(org, tmp_path):
+    prod, dev = org
+    ec2 = _session_for(prod).client("ec2", region_name=REGION)
+    vpc = ec2.create_vpc(CidrBlock="10.0.0.0/16")["Vpc"]["VpcId"]
+    gid = ec2.create_security_group(GroupName="v6", Description="d", VpcId=vpc)["GroupId"]
+    ec2.authorize_security_group_ingress(GroupId=gid, IpPermissions=[
+        {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "Ipv6Ranges": [{"CidrIpv6": "::/0"}]}])
+    out = tmp_path / "report.json"
+    rc = sg_ou_report.main(["--regions", REGION, "--accounts", prod,
+                            "--json", str(out), "--out", str(tmp_path / "r.xlsx")])
+    report = json.loads(out.read_text())
+    assert any(f["cidr"] == "::/0" and f["severity"] == "CRITICAL" for f in report["findings"])
+    assert rc == 1
