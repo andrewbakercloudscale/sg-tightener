@@ -81,8 +81,40 @@ Ranges are separated by commas. Each one is a CIDR, then a space, then a name.
 ## On the page
 
 The **Timeline** buttons switch the graphs between 24 hours (hourly bars), 1 week (6-hour bars),
-and 1, 3 or 6 months (daily bars). The **Show** chips switch each kind of source on or off in all
-three graphs and tables. The kinds are internal, data centre, AWS, SaaS and other networks.
+and 1, 3 or 6 months (daily bars). The **Show** chips switch each kind of source on or off in every
+graph and table. The kinds are internal, data centre, AWS, SaaS and other networks.
+
+### Who each address is
+
+Every source address is attributed, on the computer that writes the page, from these lists:
+
+| Kind | How it is recognised | What the page shows |
+|---|---|---|
+| **Internal** | The account's own VPC ranges, and the ranges given with `--internal` | The VPC or your name for the range, and the range |
+| **Data centre** | The ranges given with `--onprem`, the routes of the account's VPN connections, and any other private address | Your name for the range (for example "Johannesburg DC" or "Behind VPN …"), and the range |
+| **AWS** | AWS's published `ip-ranges.json` | The AWS service and region (for example "Route 53 health checks, eu-west-1"), the published prefix, and the AS number |
+| **SaaS** | Providers' published ranges (GitHub, Cloudflare, Google, Atlassian, Okta, Datadog, Fastly and others), then well-known provider AS numbers | The provider, the published prefix, and the AS number |
+| **Other networks** | Everything else | The **AS number and owner**, the country, and the block that network announces |
+
+### Colour by: kind, network or port class
+
+The refused and active graphs each have a **Colour by** switch:
+
+- **Kind**: the five kinds above. On the active graph, **Last 24 hours** instead splits sources
+  seen in the last day from those not seen in it.
+- **Network (AS number)**: the ten busiest networks among the kinds shown, each one named: an AS
+  number and its owner, an AWS service, a SaaS provider, or one of your named ranges. Each kind
+  keeps its own colour, in darker and lighter shades, and the remaining networks of each kind are
+  summed as "Other".
+- **Port class**: what the destination port is for (see [Ports](#4-ports)). Ports marked ⚠ give
+  control of a host or its data when reached.
+
+Selecting a bar lists that period's sources. Selecting one colour in a bar narrows the list to that
+kind, network or port class.
+
+![Refused sources coloured by network: AS numbers, AWS services and named ranges](images/sg-review-refused-by-network.png)
+
+![Refused sources coloured by port class](images/sg-review-refused-by-port-class.png)
 
 ### 1. Refused sources
 
@@ -97,7 +129,8 @@ the traffic is wanted:
   turns amber and is named under the graph, because it can mean the account is being probed.
 
 Select a bar to list who was refused. The table below the graph suggests a rule for internal and
-data centre sources.
+data centre sources. **Extract rule** turns any of the refused sources into rules you can apply;
+see [Extract rule](#extract-rule) below.
 
 ### 2. Over-provisioned addresses
 
@@ -123,6 +156,33 @@ These are distinct addresses let in during each period.
 
 Replies to the account's own outbound connections are left out.
 
+![Active sources coloured by network](images/sg-review-active-by-network.png)
+
+### 4. Ports
+
+![Refused and let-in sources per port, coloured by port class, and the port class table](images/sg-review-ports.png)
+
+These two graphs show the 15 busiest destination ports over the timeline. One counts the sources
+refused on each port and the other the sources let in. Each bar is labelled with the protocol,
+port and service, for example `tcp 5432 · PostgreSQL, Aurora PostgreSQL`, and is coloured by its
+class. The table under them lists every class seen, the ports in it, and what reaching it means.
+
+| Class | Examples | Marked ⚠ |
+|---|---|---|
+| Web | 80, 443, 8080, 8443 | |
+| Remote admin | 22 SSH, 3389 RDP, 5985/5986 WinRM, 5900 VNC, 23 Telnet | Yes |
+| Database | 1433 SQL Server, 1521 Oracle, 3306 MySQL, 5432 PostgreSQL, 6379 Redis, 27017 MongoDB, 9200 OpenSearch | Yes |
+| Windows and directory | 135 RPC, 139/445 SMB, 389/636 LDAP, 88 Kerberos, 3268 global catalog | Yes |
+| Containers | 2375/2376 Docker, 2379 etcd, 6443 Kubernetes API, 10250 kubelet, 30000-32767 NodePort | Yes |
+| File transfer and storage | 21 FTP, 2049 NFS/EFS, 873 rsync, 3260 iSCSI | |
+| Mail | 25, 465, 587, 110, 143, 993, 995 | |
+| Messaging and streaming | 5672 AMQP, 9092 Kafka/MSK, 1883 MQTT, 2181 ZooKeeper | |
+| Network and monitoring | 53 DNS, 123 NTP, 161 SNMP, 514 syslog, 500/4500 IPsec, 9090/9100 Prometheus, ICMP | |
+| Other | well-known (1-1023), registered (1024-32767), high (32768+) | |
+
+A class names what the port usually carries, not what is actually listening on it. The class and
+service also appear next to every port in the tables, and in the rules CSV.
+
 ### The rules table
 
 ![Rules to act on, with the suggested ranges](images/sg-review-rules.png)
@@ -142,6 +202,53 @@ the suggestions straight into the usual sg-tightener flow:
 ```bash
 python sg_tightener.py plan --region eu-west-1 --approved approved.json --out plan.json
 ```
+
+### Extract rule
+
+**Extract rule**, above the refused graph, turns the refused sources listed into inbound rules that
+would let them in. What it uses is exactly what the list below the graph shows: the **Show** chips,
+the bar selected, and the colour selected in it. With nothing selected, it uses every refused source
+in the timeline. Each row of the refused table also has its own **Extract rule** button, for one
+source.
+
+![Extract rule: the proposed rules, with each source's attribution and the port's class](images/sg-review-extract-rule.png)
+
+For each proposed rule (one per security group, protocol and port) the window shows:
+
+- **The port**: its class and service, and what reaching that class means.
+- **The security group**: name, id, region and VPC, and its inbound rules today. When the
+  interfaces refused have more than one group, you can choose which group gets the rule.
+- **The assets it applies to**: each interface refused, with its kind (EC2 instance, RDS database,
+  load balancer and so on), private and public address, subnet, description, and refused flows.
+- **Every source**, with a tick box: the address, its kind, who it is, and everything known about
+  its network. That means the published range and the AWS service and region; or the AS number,
+  owner, country and announced block; or your named range. It also shows the refused flows, when the
+  source was first and last seen, and whether it is sweeping many ports (a scanner).
+- **The ranges to add**: the ticked sources as the fewest CIDR blocks that hold exactly those
+  addresses and no others.
+
+At the top, the window totals the rules, addresses, kinds, AS numbers, countries and port classes.
+Two boxes flag what to check before adding:
+
+- **Check before adding**: internet sources on remote admin, database, Windows or container ports,
+  and scanners.
+- **Worth knowing**: AWS EC2 addresses, which can belong to any AWS customer; risky ports reached
+  from outside your VPCs; interfaces with several security groups; and whether the page lists only
+  the busiest refused sources.
+
+Scanners, and internet sources on ⚠ ports, start **unticked**. Rules with nothing ticked are folded
+away at the bottom. Sources a new security group rule would not let in are listed separately with the
+reason: a network ACL refused them first, a rule added since already allows them, the interface was
+deleted, or the port is 32768 or higher, where ports are read as one.
+
+![Extract rule: the AWS CLI commands and the JSON download](images/sg-review-extract-apply.png)
+
+**Nothing is applied.** The window writes one `aws ec2 authorize-security-group-ingress` command per
+security group, ready to copy. Each range carries a description naming its sources and the
+service, for example `sg_review 2026-11-21: Behind VPN Johannesburg DC - Kafka, MSK`. **Download the
+rules (JSON)** saves the same rules with the full attribution of every source and asset, and the
+sources left out with the reason. To undo a rule, run the same command with
+`revoke-security-group-ingress`.
 
 ---
 

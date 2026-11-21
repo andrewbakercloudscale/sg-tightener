@@ -75,13 +75,26 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
 ## Security Group Review
 
 `sg_review.py` writes one account's inbound rules, set against months of flow logs, as a single HTML
-page. The page has three timelines (refused sources, over-provisioned addresses, active sources) and
-a table of what to tighten, with CSV and approved.json downloads. Try it with
+page. The page has three timelines (refused sources, over-provisioned addresses, active sources), a
+ports view, and a table of what to tighten, with CSV and approved.json downloads. Try it with
 `python sg_review.py demo`, which needs no AWS access.
+
+- **Attribution:** every source is named: your VPCs and named ranges, your data centres, the AWS
+  service and region, the SaaS provider, or the AS number, owner and country. The graphs can be
+  coloured by kind, by network (AS number) or by port class.
+- **Ports:** the busiest refused and let-in ports, each with its service and class (web, remote
+  admin, database, Windows and directory, containers and more). Risky classes are marked ⚠.
+- **Extract rule:** on the refused graph, this turns the sources selected into the inbound rules
+  that would let them in. It shows everything known about each source, port and asset, then writes
+  the AWS CLI commands and a JSON file. Nothing is applied.
 
 | Refused sources | Over-provisioned addresses | Active sources |
 |---|---|---|
 | [![Refused sources](docs/images/sg-review-refused-sources.png)](docs/images/sg-review-refused-sources.png) | [![Over-provisioned addresses](docs/images/sg-review-over-provisioned.png)](docs/images/sg-review-over-provisioned.png) | [![Active sources](docs/images/sg-review-active-sources.png)](docs/images/sg-review-active-sources.png) |
+| **By network (AS number)** | **By port class** | **Ports** |
+| [![Refused sources by network](docs/images/sg-review-refused-by-network.png)](docs/images/sg-review-refused-by-network.png) | [![Refused sources by port class](docs/images/sg-review-refused-by-port-class.png)](docs/images/sg-review-refused-by-port-class.png) | [![Ports](docs/images/sg-review-ports.png)](docs/images/sg-review-ports.png) |
+
+[![Extract rule](docs/images/sg-review-extract-rule.png)](docs/images/sg-review-extract-rule.png)
 
 | Parameter | What it changes |
 |---|---|
@@ -150,7 +163,7 @@ python sg_tightener.py revert --manifest manifest-<timestamp>.json
 | [Runbook](docs/runbook.md) | You are about to tighten a real account, or are mid-incident |
 | [CLI reference](docs/cli-reference.md) | You need every flag and default for every tool |
 | [Flow-log requirements](docs/flow-logs.md) | Before your first `analyse`, especially behind a transit gateway |
-| [Security Group Review](docs/security-group-review.md) | You want the HTML report: its parameters, its three graphs and how to read them |
+| [Security Group Review](docs/security-group-review.md) | You want the HTML report: its parameters, its graphs, port classes, and Extract rule |
 | [File formats](docs/file-formats.md) | You are reviewing a `plan.json`, editing an `approved.json` or reading `viz-data.json` |
 | [Permissions](docs/permissions.md) | You are creating the IAM role the tools run as |
 

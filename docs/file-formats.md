@@ -195,6 +195,51 @@ Written by `sg_viz.py export`, changed only by `overlay`.
 The interface key is part of a connection: the same source, destination and
 port seen on two interfaces (overlapping VPCs) are two connections.
 
+## Extracted rules (`sg-tightener.extracted-rules/v1`)
+
+Written by **Download the rules (JSON)** in the Security Group Review's Extract rule window.
+It holds what the window proposed, for review or for your own tooling. Nothing in it has been
+applied.
+
+```json
+{
+  "schema": "sg-tightener.extracted-rules/v1",
+  "account": "123456789012",
+  "generated_at": "2026-11-21T07:40:00.000Z",
+  "scope": "All 81 refused sources listed for the last 3 months",
+  "rules": [{
+    "region": "eu-west-1", "vpc": "vpc-0demo",
+    "group_id": "sg-0bat0000000000005", "group_name": "batch-workers",
+    "protocol": "tcp", "port": 9092,
+    "port_class": {"cls": "messaging", "name": "Messaging and streaming", "svc": "Kafka, MSK", "risky": false},
+    "assets": [{"eni": "eni-0bat1", "kind": "EC2 instance", "addresses": ["10.20.6.50"],
+                "public": null, "subnet": "subnet-0a11", "refused_flows": 4896}],
+    "ranges": [{"cidr": "10.200.4.30/32",
+                "description": "sg_review 2026-11-21: Behind VPN Johannesburg DC - Kafka, MSK",
+                "sources": ["10.200.4.30"]}],
+    "sources": [{"address": "10.200.4.30", "kind": "datacentre", "name": "Behind VPN Johannesburg DC",
+                 "range": "10.200.0.0/16", "aws_service": null, "aws_region": null, "asn": null,
+                 "owner": null, "country": null, "announced_block": null, "refused_flows": 4896,
+                 "first_seen": 1793059200, "last_seen": 1795237200, "sweeping": false}]
+  }],
+  "not_extracted": [{"address": "10.200.9.9", "eni": "eni-0app1", "protocol": "tcp", "port": 22,
+                     "reason": "Network ACL acl-0demo rule 90 refused it first: ..."}],
+  "ip_permissions": [{"region": "eu-west-1", "group_id": "sg-0bat0000000000005",
+                      "IpPermissions": [{"IpProtocol": "tcp", "FromPort": 9092, "ToPort": 9092,
+                                         "IpRanges": [{"CidrIp": "10.200.4.30/32", "Description": "..."}]}]}]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `rules[]` | One per security group, protocol and port, with only the sources that were ticked |
+| `rules[].port_class` | The port's class, its service, and whether the class is risky (remote admin, database, Windows and directory, containers) |
+| `rules[].assets` | The interfaces that refused the sources, which the rule would apply to |
+| `rules[].ranges` | The fewest CIDR blocks that hold exactly the ticked sources, each with its description and members |
+| `rules[].sources` | Each ticked source and its attribution. `kind` is `internal`, `datacentre`, `aws`, `saas` or `internet`. `range` is the named or published range it falls in. `asn`, `owner`, `country` and `announced_block` come from the AS number list. Times are Unix seconds |
+| `not_extracted` | Sources a new security group rule would not let in, with the reason |
+| `ip_permissions` | Per group, the `IpPermissions` for `aws ec2 authorize-security-group-ingress` (and `revoke-security-group-ingress` to undo) |
+
 ## Reports
 
 `sg_ou_report.py` and `sg_transfer_audit.py` write an Excel workbook (summary

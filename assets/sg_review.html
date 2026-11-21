@@ -68,7 +68,8 @@ table.data td { border-bottom: 1px solid var(--grid); padding: 8px 10px; vertica
 table.data .num-cell { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 table.data tr:last-child td { border-bottom: none; }
 .btn { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 13px; font-weight: 600; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--control-line); background: var(--surface); color: var(--ink); cursor: pointer; }
-.btn:hover { background: var(--surface-2); }
+.btn:hover:not(:disabled) { background: var(--surface-2); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
 .seg { display: inline-grid; grid-template-columns: repeat(5, auto); gap: 2px; padding: 3px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--border); }
 .seg button { font: inherit; font-size: 13px; font-weight: 600; padding: 6px 10px; border: 0; border-radius: 7px; background: none; color: var(--ink-2); cursor: pointer; }
 .seg button:hover:not(:disabled) { color: var(--ink); }
@@ -95,6 +96,35 @@ table.data tr:last-child td { border-bottom: none; }
 .jump { margin: 8px 0 0; padding: 6px 10px; border-left: 3px solid var(--sev-warning); }
 details summary { cursor: pointer; color: var(--accent); }
 footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
+.chart-tools { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; margin: 0 0 10px; }
+.chart-tools .seg { grid-template-columns: repeat(4, auto); }
+.chart-tools .seg button { padding: 4px 9px; font-size: 12.5px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn.mini { font-size: 12px; padding: 2px 8px; font-weight: 600; }
+.scope { font-size: 12.5px; color: var(--ink-2); }
+.pc { display: inline-block; font-size: 10.5px; font-weight: 650; padding: 0 6px; border-radius: 4px; white-space: nowrap; vertical-align: 1px; background: color-mix(in srgb, var(--c) 14%, var(--surface)); color: color-mix(in srgb, var(--c) 72%, var(--ink)); border: 1px solid color-mix(in srgb, var(--c) 40%, transparent); }
+.pc.risky::after { content: " ⚠"; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid2 .chart-box { height: 360px; }
+dialog.xr { width: min(1180px, calc(100vw - 24px)); max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--page); color: var(--ink); box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+dialog.xr::backdrop { background: rgba(0,0,0,.45); }
+.xr-head { position: sticky; top: 0; z-index: 2; display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; padding: 16px 20px 12px; background: var(--page); border-bottom: 1px solid var(--border); }
+.xr-head h2 { margin: 0; }
+.xr-body { padding: 16px 20px 20px; }
+.xr-rule { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin: 0 0 14px; }
+.xr-rule h3 { margin: 0 0 6px; font-size: 15px; }
+.xr-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 20px; margin: 8px 0 10px; font-size: 12.5px; }
+.xr-facts dt { color: var(--ink-2); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.xr-facts dd { margin: 0; overflow-wrap: anywhere; }
+.xr-warn { margin: 0 0 12px; padding: 10px 14px; border-radius: 8px; border-left: 4px solid var(--sev-critical); background: color-mix(in srgb, var(--sev-critical) 10%, var(--surface)); font-size: 13px; }
+.xr-warn.soft { border-left-color: var(--sev-warning); background: color-mix(in srgb, var(--sev-warning) 12%, var(--surface)); }
+.xr-warn ul { margin: 4px 0 0; padding-left: 18px; }
+.xr-out textarea { width: 100%; min-height: 150px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 10px; border-radius: 8px; border: 1px solid var(--control-line); background: var(--surface-2); color: var(--ink); resize: vertical; }
+tr.off td { opacity: .5; }
+details.xr-fold { margin: 0 0 14px; }
+details.xr-fold > summary { margin: 0 0 10px; }
+@media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
 @media (max-width: 700px) {
   h1 { font-size: 23px; }
   .seg { grid-template-columns: repeat(3, auto); }
@@ -126,8 +156,8 @@ footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
 
   <section class="section">
     <h2><span class="num">1</span>Refused sources</h2>
-    <p class="muted section-lede">Distinct addresses turned away per period, by kind. A refused address needs a rule only if the traffic is wanted: internal and data centre sources usually are (a new service, a moved server), AWS and SaaS sometimes (health checks, webhooks, a partner's new egress), other networks rarely (scanners), so they are drawn in grey as the defences working, and in amber only in a period far above the usual level, which can mean a probe. Select a bar to list its sources.</p>
-    <figure class="card" style="margin:0 0 16px"><div class="chart-box"><canvas id="chRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div><p id="refusedJump" class="small jump" hidden></p></figure>
+    <p class="muted section-lede">Distinct addresses turned away per period, by kind. A refused address needs a rule only if the traffic is wanted: internal and data centre sources usually are (a new service, a moved server), AWS and SaaS sometimes (health checks, webhooks, a partner's new egress), other networks rarely (scanners), so they are drawn in grey as the defences working, and in amber only in a period far above the usual level, which can mean a probe. Select a bar, or one colour in it, to list those sources; <strong>Extract rule</strong> then turns what is listed into the inbound rules that would let it in, with everything known about each source and port.</p>
+    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Colour by</span><div class="seg" id="refusedBy" role="group" aria-label="Colour the refused sources by"><button type="button" data-by="kind">Kind</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="scope" id="extractScope"></span><button type="button" class="btn primary" id="btnExtract">Extract rule</button></div></div><div class="chart-box"><canvas id="chRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div><p id="refusedJump" class="small jump" hidden></p></figure>
     <div id="suggestWrap">
       <h3>Rules that would let in the refused internal and data centre sources</h3>
       <p class="muted small">Per security group and port, the refused private sources as the fewest exact ranges. Add them only if the traffic is wanted; sources a network ACL refused are left out (the ACL decides first).</p>
@@ -154,17 +184,29 @@ footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
   <section class="section">
     <h2><span class="num">3</span>Active sources</h2>
     <p class="muted section-lede">Distinct addresses let in per period. Dark: also let in during the last 24 hours. Light: not seen in the last 24 hours, the sources a rule change would hurt without warning (DR tests, failovers, month-end batches). Replies to the account's own outbound connections are left out. Select a bar to list its sources.</p>
-    <figure class="card" style="margin:0 0 16px"><div class="chart-box"><canvas id="chActive" role="img" aria-label="Stacked bars of active source addresses per period, split into those also seen in the last 24 hours and those not"></canvas></div></figure>
+    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Colour by</span><div class="seg" id="activeBy" role="group" aria-label="Colour the active sources by"><button type="button" data-by="recency">Last 24 hours</button><button type="button" data-by="kind">Kind</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div></div><div class="chart-box"><canvas id="chActive" role="img" aria-label="Stacked bars of active source addresses per period, split into those also seen in the last 24 hours and those not"></canvas></div></figure>
     <p class="filter muted small" id="activeFilter"></p>
     <div class="table-wrap"><table class="data" id="active"></table></div>
   </section>
 
   <section class="section">
-    <h2><span class="num">4</span>How it is read</h2>
+    <h2><span class="num">4</span>Ports</h2>
+    <p class="muted section-lede">Distinct sources per destination port over the timeline, coloured by what the port is for. Remote admin, database, Windows and directory, and container ports (marked ⚠) give control of a host or its data when reached: a refused internet source there is the rule doing its job; one let in deserves a look. Ports from 32768 up are read as one.</p>
+    <div class="grid2">
+      <figure class="card" style="margin:0"><h3 style="margin-top:0">Refused, by port</h3><div class="chart-box"><canvas id="chPortsRefused" role="img" aria-label="Horizontal bars of refused sources per destination port, coloured by port class"></canvas></div></figure>
+      <figure class="card" style="margin:0"><h3 style="margin-top:0">Let in, by port</h3><div class="chart-box"><canvas id="chPortsActive" role="img" aria-label="Horizontal bars of sources let in per destination port, coloured by port class"></canvas></div></figure>
+    </div>
+    <h3>Port classes</h3>
+    <div class="table-wrap"><table class="data" id="portClasses"></table></div>
+  </section>
+
+  <section class="section">
+    <h2><span class="num">5</span>How it is read</h2>
     <div class="card" id="method"></div>
   </section>
   <footer id="footer"></footer>
 </main>
+<dialog class="xr" id="xr" aria-labelledby="xrTitle"><div class="xr-head"><div><div class="eyebrow">Extract rule</div><h2 id="xrTitle">New inbound rules for the refused sources</h2><div class="scope" id="xrScope"></div></div><button type="button" class="btn" id="xrClose">Close</button></div><div class="xr-body" id="xrBody"></div></dialog>
 <script type="application/json" id="data">{{DATA}}</script>
 <script>/*{{CHART_JS}}*/</script>
 <script>
@@ -175,10 +217,14 @@ footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
   const EMPTY = "—";
   const CATS = ["internal", "datacentre", "aws", "saas", "internet"];
   const COLOR = { internal: "#2a78d6", datacentre: "#7357c9", aws: "#e8a317", saas: "#2f9e5b", internet: "#d03b3b" };
+  const CLASS_COLOR = { web: "#2a78d6", admin: "#d03b3b", database: "#7357c9", windows: "#e0673a", containers: "#8a5a2b", transfer: "#0f9d9a", mail: "#b7791f", messaging: "#c2489a", network: "#2f9e5b", low: "#8f8d86", registered: "#b1afa6", high: "#d3d1c8", range: "#6b6a65", all: "#0b0b0b" };
+  const CLASSES = DATA.port_classes || [];
+  const CLASS = Object.fromEntries(CLASSES.map((c) => [c.key, c]));
   const STATUS = { tighten: "Tighten", unused: "Unused", open: "Open to all", watch: "Too early", incomplete: "Incomplete", "not logged": "Not logged", used: "In use" };
   const STATUS_TONE = { tighten: "--tone-risk", unused: "--sev-critical", open: "--warn-ink", watch: "--muted", incomplete: "--muted", "not logged": "--muted", used: "--good" };
   const RANGE_DAYS = { "24h": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180 };
-  const state = { range: DATA.default, rep: null, cats: new Set(CATS), bin: null, mark: null, charts: {} };
+  const NET_SHOWN = 10;
+  const state = { range: DATA.default, rep: null, cats: new Set(CATS), bin: null, mark: null, charts: {}, by: { refused: "kind", active: "recency" }, netTop: { refused: new Set(), active: new Set() }, xr: null };
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const num = (n) => (n == null ? EMPTY : Number(n).toLocaleString("en-GB"));
@@ -194,8 +240,10 @@ footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
     if (step >= 21600) return d.toLocaleString("en-GB", { timeZone: "UTC", weekday: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
     return d.toLocaleTimeString("en-GB", { timeZone: "UTC", hour: "2-digit", minute: "2-digit" });
   }
-  const catChip = (cat) => `<span class="cat" style="--c:${COLOR[cat] || "#888"}">${esc((state.rep.categories || []).find((c) => c.key === cat)?.name || cat)}</span>`;
-  const srcCell = (x) => `<div><code>${esc(x.src)}</code> ${catChip(x.cat)}</div><div class="small">${esc(x.name)}${x.asn && !String(x.name).startsWith("AS") ? ` <span class="muted">· ${esc(x.asn)}</span>` : ""}</div>`;
+  const catName = (cat) => (state.rep.categories || []).find((c) => c.key === cat)?.name || cat;
+  const catChip = (cat) => `<span class="cat" style="--c:${COLOR[cat] || "#888"}">${esc(catName(cat))}</span>`;
+  const pcChip = (pc) => (pc ? `<span class="pc${pc.risky ? " risky" : ""}" style="--c:${CLASS_COLOR[pc.cls] || "#888"}" title="${esc(CLASS[pc.cls]?.note || "")}">${esc(pc.name)}</span>` : "");
+  const srcCell = (x) => `<div><code>${esc(x.src)}</code> ${catChip(x.cat)}</div><div class="small">${esc(x.name)}${x.asn && !String(x.name).startsWith("AS") ? ` <span class="muted">· ${esc(x.asn)}</span>` : ""}${x.cc && String(x.name).startsWith("AS") ? ` <span class="muted">(${esc(x.cc)})</span>` : ""}</div>`;
   function download(text, name, type) {
     const url = URL.createObjectURL(new Blob([text], { type }));
     const a = document.createElement("a");
@@ -207,7 +255,15 @@ footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
     if (typeof Chart === "undefined") return;
     state.charts[id] = new Chart(document.getElementById(id), cfg);
   }
-  const portsOf = (t) => { const p = { 6: "tcp", 17: "udp", 1: "icmp" }[t.proto] || `proto ${t.proto}`; return t.port >= 32768 ? `${p} 32768+` : p === "icmp" ? p : `${p} ${t.port}`; };
+  const protoName = (p) => ({ 6: "tcp", 17: "udp", 1: "icmp", "-1": "all" }[p] || `proto ${p}`);
+  const portsOf = (t) => { const p = protoName(t.proto); return t.port >= 32768 ? `${p} 32768+` : p === "icmp" ? p : `${p} ${t.port}`; };
+  // Shades of one colour for the networks of one kind: darkest for the busiest.
+  function shade(hex, i, n) {
+    const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+    const t = n <= 1 ? 0 : (i / (n - 1)) * 0.6 - 0.15; // -0.15 (darker) .. 0.45 (lighter)
+    const mix = (c) => Math.round(t < 0 ? c * (1 + t) : c + (255 - c) * t);
+    return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
+  }
 
   function readPanel() {
     const est = DATA.estimate || { ranges: [] };
@@ -229,6 +285,7 @@ footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
       b.title = have ? "" : `Read ${RANGE_DAYS[b.dataset.range]} days first`;
       b.setAttribute("aria-pressed", String(b.dataset.range === state.range));
     }
+    for (const kind of ["refused", "active"]) for (const b of document.querySelectorAll(`#${kind}By button`)) b.setAttribute("aria-pressed", String(b.dataset.by === state.by[kind]));
   }
 
   function render() {
@@ -267,11 +324,53 @@ footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
       <p><strong>Inbound only:</strong> by the flow-direction field where the log format has it, otherwise the target inside the VPC; then records an interface logged for its own outbound traffic, through traffic (NAT gateways) and interfaces with no security group are dropped. Ports from 32768 up are read together as one: they are mostly replies to the account's own outbound connections, which security groups always let back in, and they are left out of Active unless a rule allows them.</p>
       <p><strong>Over-provisioned:</strong> for each group with flow logs (accepted traffic) on every interface, the addresses its rules allow less every address seen anywhere in the account in the whole read, let in or refused, summed over groups. Seen in the group means a connection to one of its interfaces matching the rule's protocol and ports, as <code>sg_tightener.py plan</code> counts it. Unattributed: connections to an interface since deleted, in the same VPC. A rule is called unused or ready to tighten only with 30 days of flow logs or more.</p>
       <p><strong>Suggested ranges:</strong> sg-tightener's own fitting: each address seen widened only while at most 30% of the wider block was never seen, never past its private block, at most 60 rules, inside the original rule. Public ranges: only the addresses seen. Download approved.json per region and run <code>sg_tightener.py plan</code> against the same evidence to get a plan you can apply and revert.</p>
-      <p><strong>Who an address is:</strong> this account's VPCs, the internal and data centre ranges given to the report, VPN routes, AWS's published ranges (ip-ranges.json), SaaS providers' published ranges, and every routed network's AS number and owner (iptoasn.com). The lists were downloaded to the computer that wrote this page and looked up there: no address left it.</p>`;
+      <p><strong>Who an address is:</strong> this account's VPCs, the internal and data centre ranges given to the report, VPN routes, AWS's published ranges (ip-ranges.json, with the service and region), SaaS providers' published ranges, and every routed network's AS number, owner, country and announced block (iptoasn.com). The lists were downloaded to the computer that wrote this page and looked up there: no address left it.</p>
+      <p><strong>What a port is for:</strong> each destination port is matched against a list of common services and put in a class (web, remote admin, database, Windows and directory, containers, file transfer, mail, messaging, network and monitoring, or other by port range). It names what the port usually carries, not what is actually listening.</p>
+      <p><strong>Extract rule:</strong> the refused sources listed (by the chips, the period and the colour selected) turned into inbound rules: one per security group, protocol and port, on the first security group of the interface refused, with the sources as the fewest exact ranges. Sources a network ACL refused, sources a rule added since already allows, and interfaces since deleted are listed apart, since a new rule would not change them. Nothing is applied: the page writes the AWS CLI command and the rules as JSON.</p>`;
     $("#footer").textContent = `Written ${new Date(DATA.generated_at).toLocaleString("en-GB", { timeZone: "UTC" })} UTC by sg-tightener sg_review.py · account ${rep.account}`;
   }
 
   function sum(series, i) { let n = 0; for (const c of state.cats) n += series[c]?.[i] || 0; return n; }
+
+  // The datasets for one timeline coloured by network: the busiest networks of the kinds shown, the rest summed per kind.
+  function netSets(kind) {
+    const rep = state.rep;
+    const nets = (rep.series.by_net?.[kind] || []).filter((n) => state.cats.has(n.cat));
+    const named = nets.filter((n) => !n.key.endsWith("|*")).sort((a, b) => b.sources - a.sources);
+    const top = named.slice(0, NET_SHOWN);
+    state.netTop[kind] = new Set(top.map((n) => n.key));
+    const perCat = {};
+    for (const n of top) (perCat[n.cat] = perCat[n.cat] || []).push(n);
+    const sets = [];
+    for (const cat of CATS) {
+      const mine = perCat[cat] || [];
+      mine.forEach((n, i) => sets.push({ label: n.name, data: n.data, backgroundColor: shade(COLOR[cat], i, mine.length + 1), borderWidth: 0, filter: { mode: "net", key: n.key, label: n.name } }));
+      const rest = nets.filter((n) => n.cat === cat && !state.netTop[kind].has(n.key));
+      if (rest.length === 1 && !rest[0].key.endsWith("|*")) {
+        // one network left over: name it rather than "Other"
+        state.netTop[kind].add(rest[0].key);
+        sets.push({ label: rest[0].name, data: rest[0].data, backgroundColor: shade(COLOR[cat], mine.length, mine.length + 1), borderWidth: 0, filter: { mode: "net", key: rest[0].key, label: rest[0].name } });
+      } else if (rest.length) {
+        const data = rep.bins.map((_, i) => rest.reduce((t, n) => t + (n.data[i] || 0), 0));
+        const count = rest.reduce((t, n) => t + (n.key.endsWith("|*") ? (parseInt(n.name, 10) || 1) : 1), 0);
+        sets.push({ label: `Other ${catName(cat)} (${plural(count, "network")})`, data, backgroundColor: shade(COLOR[cat], mine.length, mine.length + 1), borderWidth: 0, filter: { mode: "net-other", key: cat, label: `other ${catName(cat)} networks` } });
+      }
+    }
+    return sets;
+  }
+
+  function classSets(kind) {
+    const rep = state.rep;
+    const m = rep.series.by_class?.[kind] || {};
+    const per = {};
+    for (const [k, arr] of Object.entries(m)) {
+      const [cls, cat] = k.split("|");
+      if (!state.cats.has(cat)) continue;
+      const t = (per[cls] = per[cls] || rep.bins.map(() => 0));
+      arr.forEach((v, i) => (t[i] += v));
+    }
+    return CLASSES.filter((c) => per[c.key]).map((c) => ({ label: c.name + (c.risky ? " ⚠" : ""), data: per[c.key], backgroundColor: CLASS_COLOR[c.key], borderWidth: 0, filter: { mode: "class", key: c.key, label: `${c.name} ports` } }));
+  }
 
   function charts() {
     const rep = state.rep;
@@ -283,7 +382,16 @@ footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
       y: { stacked: !log, type: log ? "logarithmic" : "linear", beginAtZero: !log, grid: { color: grid }, ticks: { color: ink, precision: 0, callback: (v) => (log ? (/^1(0)*$/.test(String(v)) ? big(v) : "") : big(v)) } },
     });
     const title = (items) => `${binLabel(rep.bins[items[0].dataIndex], rep.step)}${rep.step < 86400 ? " UTC" : ""}`;
-    const pick = (kind) => (evt, els) => { if (!els.length) return; const i = els[0].index; state.bin = state.bin?.kind === kind && state.bin.i === i ? null : { kind, i }; tables(); document.getElementById(kind === "refused" ? "refusedFilter" : "activeFilter").scrollIntoView({ behavior: "smooth", block: "nearest" }); };
+    const pick = (kind, sets) => (evt, els) => {
+      if (!els.length) return;
+      const el = els[0];
+      const f = sets[el.datasetIndex]?.filter || null;
+      const same = state.bin?.kind === kind && state.bin.i === el.index && (state.bin.f?.key || null) === (f?.key || null);
+      state.bin = same ? null : { kind, i: el.index, f };
+      tables();
+      document.getElementById(kind === "refused" ? "refusedFilter" : "activeFilter").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    };
+    const tip = { mode: "nearest", intersect: true, callbacks: { title, label: (c) => (c.raw ? `${c.dataset.label}: ${num(c.raw)}` : null) } };
     // Internet sources turned away are the rules working, so grey; a period far above the usual level (more than five
     // times the median of the periods with any, and at least 20 addresses) is amber and named below: a probe.
     const inet = rep.series.refused.internet || [];
@@ -293,12 +401,15 @@ footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
     const jumps = jump.reduce((t, j, i) => (j ? [...t, i] : t), []);
     $("#refusedJump").hidden = !sel.has("internet") || !jumps.length;
     $("#refusedJump").innerHTML = jumps.length ? `<strong>Jump in internet sources turned away</strong> (amber): ${jumps.slice(0, 5).map((i) => `${esc(binLabel(rep.bins[i], rep.step))} ${num(inet[i])}`).join(", ")}${jumps.length > 5 ? ` and ${num(jumps.length - 5)} more` : ""}, against a usual ${num(usual)} a period. Still refused, so nothing got in, but it can mean the account is being probed: select the bar to see who.` : "";
+    const rby = state.by.refused;
+    const refusedSets = rby === "net" ? netSets("refused") : rby === "class" ? classSets("refused")
+      : CATS.filter((c) => sel.has(c)).map((c) => ({ label: catName(c) + (c === "internet" ? " (defended)" : ""), data: rep.series.refused[c], backgroundColor: c === "internet" ? jump.map((j) => css(j ? "--sev-warning" : "--muted")) : COLOR[c], borderWidth: 0, filter: { mode: "kind", key: c, label: catName(c) } }));
     chart("chRefused", {
       type: "bar",
-      data: { labels, datasets: CATS.filter((c) => sel.has(c)).map((c) => ({ label: rep.categories.find((x) => x.key === c).name + (c === "internet" ? " (defended)" : ""), data: rep.series.refused[c], backgroundColor: c === "internet" ? jump.map((j) => css(j ? "--sev-warning" : "--muted")) : COLOR[c], borderWidth: 0 })) },
-      options: { responsive: true, maintainAspectRatio: false, animation: false, scales: scales(false), onClick: pick("refused"), plugins: { legend: { position: "bottom", labels: { color: ink } }, tooltip: { mode: "index", callbacks: { title } } } },
+      data: { labels, datasets: refusedSets },
+      options: { responsive: true, maintainAspectRatio: false, animation: false, scales: scales(false), onClick: pick("refused", refusedSets), plugins: { legend: { position: "bottom", labels: { color: ink, boxWidth: 12 } }, tooltip: rby === "kind" ? { mode: "index", callbacks: { title } } : tip } },
     });
-    const overSets = CATS.filter((c) => sel.has(c)).map((c) => ({ type: "line", label: rep.categories.find((x) => x.key === c).name, data: rep.series.over[c].map((v) => v || null), borderColor: COLOR[c], backgroundColor: COLOR[c], borderWidth: 2, pointRadius: 0, stepped: true, spanGaps: true }));
+    const overSets = CATS.filter((c) => sel.has(c)).map((c) => ({ type: "line", label: catName(c), data: rep.series.over[c].map((v) => v || null), borderColor: COLOR[c], backgroundColor: COLOR[c], borderWidth: 2, pointRadius: 0, stepped: true, spanGaps: true }));
     const total = rep.bins.map((_, i) => sum(rep.series.over, i) || null);
     overSets.unshift({ type: "line", label: "All shown", data: total, borderColor: css("--ink"), backgroundColor: css("--ink"), borderWidth: 2.5, borderDash: [5, 4], pointRadius: 0, stepped: true, spanGaps: true });
     const marks = rep.markers.filter((m) => m.bin >= 0 && m.bin < rep.bins.length);
@@ -329,39 +440,95 @@ footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
         },
       },
     });
-    const today = rep.bins.map((_, i) => sum(rep.series.active_today, i));
-    const older = rep.bins.map((_, i) => sum(rep.series.active_older, i));
+    const aby = state.by.active;
+    let activeSets;
+    if (aby === "net") activeSets = netSets("active");
+    else if (aby === "class") activeSets = classSets("active");
+    else if (aby === "kind") activeSets = CATS.filter((c) => sel.has(c)).map((c) => ({ label: catName(c), data: rep.bins.map((_, i) => (rep.series.active_today[c]?.[i] || 0) + (rep.series.active_older[c]?.[i] || 0)), backgroundColor: COLOR[c], borderWidth: 0, filter: { mode: "kind", key: c, label: catName(c) } }));
+    else activeSets = [
+      { label: "Also let in during the last 24 hours", data: rep.bins.map((_, i) => sum(rep.series.active_today, i)), backgroundColor: css("--accent"), borderWidth: 0, filter: { mode: "recency", key: "today", label: "sources also seen in the last 24 hours" } },
+      { label: "Not seen in the last 24 hours (DR, failover, batch?)", data: rep.bins.map((_, i) => sum(rep.series.active_older, i)), backgroundColor: css("--older"), borderWidth: 0, filter: { mode: "recency", key: "older", label: "sources not seen in the last 24 hours" } },
+    ];
     chart("chActive", {
       type: "bar",
-      data: { labels, datasets: [
-        { label: "Also let in during the last 24 hours", data: today, backgroundColor: css("--accent"), borderWidth: 0 },
-        { label: "Not seen in the last 24 hours (DR, failover, batch?)", data: older, backgroundColor: css("--older"), borderWidth: 0 },
-      ] },
-      options: { responsive: true, maintainAspectRatio: false, animation: false, scales: scales(false), onClick: pick("active"), plugins: { legend: { position: "bottom", labels: { color: ink } }, tooltip: { mode: "index", callbacks: { title } } } },
+      data: { labels, datasets: activeSets },
+      options: { responsive: true, maintainAspectRatio: false, animation: false, scales: scales(false), onClick: pick("active", activeSets), plugins: { legend: { position: "bottom", labels: { color: ink, boxWidth: 12 } }, tooltip: aby === "recency" || aby === "kind" ? { mode: "index", callbacks: { title } } : tip } },
     });
+    portCharts();
   }
+
+  function portCharts() {
+    const rep = state.rep, ink = css("--ink-2"), grid = css("--grid");
+    for (const [id, kind] of [["chPortsRefused", "refused"], ["chPortsActive", "active"]]) {
+      const rows = (rep.ports || []).map((p) => ({ ...p, n: CATS.filter((c) => state.cats.has(c)).reduce((t, c) => t + (p[kind][c] || 0), 0) })).filter((p) => p.n).sort((a, b) => b.n - a.n).slice(0, 15);
+      const labels = rows.map((p) => `${p.label} · ${p.svc}${p.risky ? " ⚠" : ""}`);
+      const classes = CLASSES.filter((c) => rows.some((p) => p.cls === c.key));
+      chart(id, {
+        type: "bar",
+        data: { labels, datasets: classes.map((c) => ({ label: c.name, data: rows.map((p) => (p.cls === c.key ? p.n : null)), backgroundColor: CLASS_COLOR[c.key], borderWidth: 0, skipNull: true })) },
+        options: {
+          indexAxis: "y", responsive: true, maintainAspectRatio: false, animation: false,
+          scales: { x: { stacked: true, beginAtZero: true, grid: { color: grid }, ticks: { color: ink, precision: 0 } }, y: { stacked: true, grid: { display: false }, ticks: { color: ink, autoSkip: false, callback: (v, i) => { const l = labels[i] || ""; return l.length > 38 ? l.slice(0, 37) + "…" : l; } } } },
+          plugins: { legend: { position: "bottom", labels: { color: ink, boxWidth: 12 } }, tooltip: { callbacks: { title: (it) => labels[it[0].dataIndex], label: (c) => (c.raw ? `${c.dataset.label}: ${plural(c.raw, "source")}` : null), afterLabel: (c) => { const p = rows[c.dataIndex]; return CATS.filter((k) => p[kind][k] && state.cats.has(k)).map((k) => `${catName(k)}: ${num(p[kind][k])}`); } } } },
+        },
+      });
+      if (!rows.length) { const cv = document.getElementById(id); const ctx = cv.getContext("2d"); ctx.save(); ctx.fillStyle = ink; ctx.font = "13px system-ui"; ctx.fillText(`No ${kind === "refused" ? "refused" : "let in"} source of the kinds shown.`, 12, 24); ctx.restore(); }
+    }
+    const tally = {};
+    for (const p of rep.ports || []) {
+      const t = (tally[p.cls] = tally[p.cls] || { ports: [], refused: 0, active: 0 });
+      t.ports.push(p.label);
+      for (const k of CATS) { if (!state.cats.has(k)) continue; t.refused += p.refused[k] || 0; t.active += p.active[k] || 0; }
+    }
+    const used = CLASSES.filter((c) => tally[c.key]);
+    $("#portClasses").innerHTML = used.length
+      ? `<thead><tr><th>Class</th><th>Ports seen</th><th class="num-cell">Refused</th><th class="num-cell">Let in</th><th>What it means</th></tr></thead><tbody>${used.map((c) => `<tr><td>${pcChip({ cls: c.key, name: c.name, risky: c.risky })}</td><td class="small"><code>${tally[c.key].ports.slice(0, 10).map(esc).join(", ")}${tally[c.key].ports.length > 10 ? ` +${tally[c.key].ports.length - 10}` : ""}</code></td><td class="num-cell">${num(tally[c.key].refused)}</td><td class="num-cell">${num(tally[c.key].active)}</td><td class="small muted">${esc(c.note)}</td></tr>`).join("")}</tbody>`
+      : `<tbody><tr><td class="muted">No traffic read in this timeline.</td></tr></tbody>`;
+  }
+
+  // Whether a listed source belongs to the bar (and colour) selected in its chart.
+  function inPick(x, kind) {
+    const b = state.bin;
+    if (!b || b.kind !== kind) return true;
+    if (!x.bins.includes(b.i)) return false;
+    const f = b.f;
+    if (!f) return true;
+    if (f.mode === "kind") return x.cat === f.key;
+    if (f.mode === "net") return x.net === f.key;
+    if (f.mode === "net-other") return x.cat === f.key && !state.netTop[kind].has(x.net);
+    if (f.mode === "class") return x.targets.some((t) => t.pc?.cls === f.key);
+    if (f.mode === "recency") return f.key === "today" ? x.today : !x.today;
+    return true;
+  }
+  const targetsInPick = (x, kind) => { const f = state.bin?.kind === kind ? state.bin.f : null; return f?.mode === "class" ? x.targets.filter((t) => t.pc?.cls === f.key) : x.targets; };
 
   function filterNote(id, kind, shown, total) {
     const b = state.bin?.kind === kind ? state.bin : null;
     const rep = state.rep;
     $(id).innerHTML = b
-      ? `Showing the ${plural(shown, "source")} in ${esc(binLabel(rep.bins[b.i], rep.step))}${rep.step < 86400 ? " UTC" : ""}. <a href="#" data-clear>Show all</a>`
+      ? `Showing the ${plural(shown, "source")} in ${esc(binLabel(rep.bins[b.i], rep.step))}${rep.step < 86400 ? " UTC" : ""}${b.f ? `, ${esc(b.f.label)}` : ""}. <a href="#" data-clear>Show all</a>`
       : `${plural(shown, "source")}${total > shown ? ` of ${num(total)}` : ""}, busiest first${kind === "refused" ? ", internal and data centre before the rest" : ""}. Select a bar in the chart to list one period's.`;
+  }
+
+  function refusedShown() {
+    const order = (c) => CATS.indexOf(c);
+    return state.rep.refused.filter((x) => state.cats.has(x.cat) && inPick(x, "refused")).sort((a, b) => order(a.cat) - order(b.cat) || b.flows - a.flows);
   }
 
   function tables() {
     const rep = state.rep;
     const sel = state.cats;
-    const inBin = (x, kind) => !state.bin || state.bin.kind !== kind || x.bins.includes(state.bin.i);
-    const order = (c) => CATS.indexOf(c);
-    const ref = rep.refused.filter((x) => sel.has(x.cat) && inBin(x, "refused")).sort((a, b) => order(a.cat) - order(b.cat) || b.flows - a.flows);
+    const ref = refusedShown();
     filterNote("#refusedFilter", "refused", ref.length, rep.summary.refused);
-    const tgt = (t) => `<div class="small">${esc(t.kind)} <code>${esc(t.eni)}</code> · ${esc(portsOf(t))} · ${num(t.flows)} flows${t.by ? ` · <span class="${t.by.startsWith("Network ACL") ? "acl" : ""}">refused by ${esc(t.by)}</span>` : ""}</div>`;
+    const b = state.bin?.kind === "refused" ? state.bin : null;
+    $("#extractScope").textContent = ref.length ? (b ? `${plural(ref.length, "source")} selected` : `all ${plural(ref.length, "source")} listed`) : "no refused source listed";
+    $("#btnExtract").disabled = !ref.length;
+    const tgt = (t) => `<div class="small">${esc(t.kind)} <code>${esc(t.eni)}</code> · ${esc(portsOf(t))} ${pcChip(t.pc)} <span class="muted">${esc(t.pc?.svc || "")}</span> · ${num(t.flows)} flows${t.by ? ` · <span class="${t.by.startsWith("Network ACL") ? "acl" : ""}">refused by ${esc(t.by)}</span>` : ""}</div>`;
     $("#refused").innerHTML = ref.length
-      ? `<thead><tr><th>Source</th><th>Refused at</th><th class="num-cell">Flows</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${ref.map((x) => `<tr><td>${srcCell(x)}${x.sweep ? ` <span class="pill recon">sweeping ${num(x.ports)} ports, ${num(x.dsts)} targets</span>` : ""}</td><td>${x.targets.map(tgt).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="small">${esc(when(x.first))}</td><td class="small">${esc(when(x.last))}</td></tr>`).join("")}</tbody>`
+      ? `<thead><tr><th>Source</th><th>Refused at</th><th class="num-cell">Flows</th><th>First seen</th><th>Last seen</th><th></th></tr></thead><tbody>${ref.map((x) => `<tr><td>${srcCell(x)}${x.sweep ? ` <span class="pill recon">sweeping ${num(x.ports)} ports, ${num(x.dsts)} targets</span>` : ""}</td><td>${targetsInPick(x, "refused").map(tgt).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="small">${esc(when(x.first))}</td><td class="small">${esc(when(x.last))}</td><td><button type="button" class="btn mini" data-extract="${esc(x.src)}">Extract rule</button></td></tr>`).join("")}</tbody>`
       : `<tbody><tr><td class="muted">No refused source of the kinds shown${state.bin ? " in this period" : ""}.</td></tr></tbody>`;
     $("#suggestWrap").hidden = !rep.suggestions.length;
-    $("#suggest").innerHTML = `<thead><tr><th>Security group</th><th>Port</th><th>From</th><th class="num-cell">Sources</th><th class="num-cell">Flows</th><th>Ranges to add, if wanted</th></tr></thead><tbody>${rep.suggestions.map((x) => `<tr><td>${esc(x.name)} <code class="small">${esc(x.group)}</code><div class="muted small">${esc(x.region)}</div></td><td>${esc(x.ports)}</td><td class="small">${x.from.map(esc).join("<br>")}</td><td class="num-cell">${num(x.sources)}</td><td class="num-cell">${num(x.flows)}</td><td><code class="small">${x.cidrs.map(esc).join("<br>")}</code></td></tr>`).join("")}</tbody>`;
+    $("#suggest").innerHTML = `<thead><tr><th>Security group</th><th>Port</th><th>From</th><th class="num-cell">Sources</th><th class="num-cell">Flows</th><th>Ranges to add, if wanted</th></tr></thead><tbody>${rep.suggestions.map((x) => `<tr><td>${esc(x.name)} <code class="small">${esc(x.group)}</code><div class="muted small">${esc(x.region)}</div></td><td>${esc(x.ports)}<div>${pcChip(x.pc)} <span class="muted small">${esc(x.pc?.svc || "")}</span></div></td><td class="small">${x.from.map(esc).join("<br>")}</td><td class="num-cell">${num(x.sources)}</td><td class="num-cell">${num(x.flows)}</td><td><code class="small">${x.cidrs.map(esc).join("<br>")}</code></td></tr>`).join("")}</tbody>`;
     const act = $("#ruleStatus").value === "act";
     let rules = rep.rules.filter((r) => !act || ["tighten", "unused", "open"].includes(r.status));
     if (state.mark) rules = rep.rules.filter((r) => state.mark.some((m) => m.group === r.group));
@@ -373,10 +540,10 @@ footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
       ? `<thead><tr><th>Status</th><th>Security group</th><th>Rule</th><th class="num-cell">Allowed</th><th class="num-cell">Seen here</th><th class="num-cell">Seen elsewhere</th><th class="num-cell">Never seen</th><th>Last used</th><th>Change to</th></tr></thead><tbody>${rules.map(ruleRow).join("")}</tbody>`
       : `<tbody><tr><td class="muted">${act ? "No rule to act on: every rule is in use, too early to judge, or not logged. Choose Every rule to see them all." : "No rule on groups in use."}</td></tr></tbody>`;
     $("#approvedBtns").innerHTML = Object.keys(DATA.approved || {}).map((r) => `<button type="button" class="btn" data-approved="${esc(r)}">approved.json, ${esc(r)}</button>`).join(" ");
-    const actv = rep.active.filter((x) => sel.has(x.cat) && inBin(x, "active")).sort((a, b) => (a.today === b.today ? b.flows - a.flows : a.today ? 1 : -1));
+    const actv = rep.active.filter((x) => sel.has(x.cat) && inPick(x, "active")).sort((a, b) => (a.today === b.today ? b.flows - a.flows : a.today ? 1 : -1));
     filterNote("#activeFilter", "active", actv.length, rep.summary.active);
     $("#active").innerHTML = actv.length
-      ? `<thead><tr><th>Source</th><th>Let in to</th><th class="num-cell">Flows</th><th class="num-cell">Days seen</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${actv.map((x) => `<tr><td>${srcCell(x)}${x.today ? "" : ` <span class="pill new">not in the last 24 hours</span>`}${!x.today && x.days <= 3 ? `<div class="small dr">Seen on only ${plural(x.days, "day")}: a DR test, batch or failover? Keep it in any tightened rule.</div>` : ""}</td><td>${x.targets.map((t) => `<div class="small">${esc(portsOf(t))} on <code>${esc(t.eni)}</code>${t.groups.length ? ` <span class="muted">(${t.groups.map(esc).join(", ")})</span>` : ""}</div>`).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="num-cell">${num(x.days)}</td><td class="small">${esc(when(x.first))}</td><td class="small">${esc(when(x.last))}</td></tr>`).join("")}</tbody>`
+      ? `<thead><tr><th>Source</th><th>Let in to</th><th class="num-cell">Flows</th><th class="num-cell">Days seen</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${actv.map((x) => `<tr><td>${srcCell(x)}${x.today ? "" : ` <span class="pill new">not in the last 24 hours</span>`}${!x.today && x.days <= 3 ? `<div class="small dr">Seen on only ${plural(x.days, "day")}: a DR test, batch or failover? Keep it in any tightened rule.</div>` : ""}</td><td>${targetsInPick(x, "active").map((t) => `<div class="small">${esc(portsOf(t))} ${pcChip(t.pc)} <span class="muted">${esc(t.pc?.svc || "")}</span> on <code>${esc(t.eni)}</code>${t.groups.length ? ` <span class="muted">(${t.groups.map(esc).join(", ")})</span>` : ""}</div>`).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="num-cell">${num(x.days)}</td><td class="small">${esc(when(x.first))}</td><td class="small">${esc(when(x.last))}</td></tr>`).join("")}</tbody>`
       : `<tbody><tr><td class="muted">No active source of the kinds shown${state.bin ? " in this period" : ""}.</td></tr></tbody>`;
   }
 
@@ -387,21 +554,206 @@ footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
       : r.suggest.length ? `<code class="small">${r.suggest.slice(0, 8).map(esc).join("<br>")}${r.suggest.length > 8 ? `<br>… ${r.suggest.length - 8} more` : ""}</code><div class="muted small">${plural(r.suggest.length, "range")}, ${r.suggest_size === 1 ? "1 address" : `${big(r.suggest_size)} addresses`}; ${big(saved)} fewer${r.unattributed ? `; keeps ${num(r.unattributed)} seen on deleted interfaces` : ""}</div>`
       : r.status === "open" ? `<div class="small">Let in by it: ${[...new Set(r.top.map((x) => x.name))].slice(0, 4).map(esc).join(", ") || "no one seen"}</div>` : "";
     const top = r.top.length ? `<details class="small"><summary>Who uses it (${num(r.here)})</summary>${r.top.map((x) => `<div><code>${esc(x.src)}</code> ${esc(x.name)} · ${num(x.flows)} flows</div>`).join("")}</details>` : "";
-    return `<tr><td><span class="pill" style="--p:var(${tone})">${esc(STATUS[r.status] || r.status)}</span>${r.note ? `<div class="muted small">${esc(r.note)}</div>` : ""}</td><td>${esc(r.gname)} <code class="small">${esc(r.group)}</code><div class="muted small">${esc(r.region)} · ${plural(r.enis, "interface")}</div></td><td>${esc(r.ports)} from <code>${esc(r.source)}</code>${r.desc ? `<div class="muted small">${esc(r.desc)}</div>` : ""}${top}</td><td class="num-cell">${big(r.allowed)}</td><td class="num-cell">${num(r.here)}${r.unattributed ? `<div class="muted small">+${num(r.unattributed)} deleted</div>` : ""}</td><td class="num-cell">${num(r.elsewhere)}</td><td class="num-cell">${big(r.never)}</td><td class="small">${r.last_used ? esc(when(r.last_used)) : EMPTY}<div class="muted">evidence ${num(r.days)} days</div></td><td>${change}</td></tr>`;
+    return `<tr><td><span class="pill" style="--p:var(${tone})">${esc(STATUS[r.status] || r.status)}</span>${r.note ? `<div class="muted small">${esc(r.note)}</div>` : ""}</td><td>${esc(r.gname)} <code class="small">${esc(r.group)}</code><div class="muted small">${esc(r.region)} · ${plural(r.enis, "interface")}</div></td><td>${esc(r.ports)} from <code>${esc(r.source)}</code><div>${pcChip(r.pc)} <span class="muted small">${esc(r.pc?.svc || "")}</span></div>${r.desc ? `<div class="muted small">${esc(r.desc)}</div>` : ""}${top}</td><td class="num-cell">${big(r.allowed)}</td><td class="num-cell">${num(r.here)}${r.unattributed ? `<div class="muted small">+${num(r.unattributed)} deleted</div>` : ""}</td><td class="num-cell">${num(r.elsewhere)}</td><td class="num-cell">${big(r.never)}</td><td class="small">${r.last_used ? esc(when(r.last_used)) : EMPTY}<div class="muted">evidence ${num(r.days)} days</div></td><td>${change}</td></tr>`;
   }
 
   function csv() {
     const rep = state.rep;
-    const cols = ["status", "region", "group", "gname", "ports", "source", "desc", "allowed", "here", "elsewhere", "unattributed", "never", "last_used", "days", "suggest", "note"];
+    const cols = ["status", "region", "group", "gname", "ports", "port_class", "service", "source", "desc", "allowed", "here", "elsewhere", "unattributed", "never", "last_used", "days", "suggest", "note"];
     // A leading =, +, - or @ would run as a formula in a spreadsheet: such cells get a leading apostrophe.
     const q = (v) => { let s = String(v ?? ""); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
-    const rows = rep.rules.map((r) => cols.map((c) => q(c === "suggest" ? r.suggest.join(" ") : c === "last_used" && r.last_used ? new Date(r.last_used * 1000).toISOString() : r[c])).join(","));
+    const val = (r, c) => (c === "suggest" ? r.suggest.join(" ") : c === "last_used" && r.last_used ? new Date(r.last_used * 1000).toISOString() : c === "port_class" ? r.pc?.name : c === "service" ? r.pc?.svc : r[c]);
+    const rows = rep.rules.map((r) => cols.map((c) => q(val(r, c))).join(","));
     download([cols.join(","), ...rows].join("\n"), `security-group-rules-${rep.account}.csv`, "text/csv");
   }
 
+  // ------------------------------------------------------------------------------------------ extract rule
+  const ip2n = (ip) => { const p = String(ip).split(".").map(Number); return p.length === 4 && p.every((x) => Number.isInteger(x) && x >= 0 && x < 256) ? ((p[0] * 256 + p[1]) * 256 + p[2]) * 256 + p[3] : null; };
+  const n2ip = (n) => [Math.floor(n / 16777216) % 256, Math.floor(n / 65536) % 256, Math.floor(n / 256) % 256, n % 256].join(".");
+  // The fewest CIDR blocks covering exactly the addresses given.
+  function exactCidrs(ips) {
+    const ns = [...new Set(ips.map(ip2n).filter((n) => n != null))].sort((a, b) => a - b);
+    const runs = [];
+    for (const n of ns) { const last = runs[runs.length - 1]; if (last && n === last[1] + 1) last[1] = n; else runs.push([n, n]); }
+    const out = [];
+    for (let [a, b] of runs) {
+      while (a <= b) {
+        let size = 1;
+        while (size * 2 <= b - a + 1 && a % (size * 2) === 0) size *= 2;
+        out.push({ cidr: `${n2ip(a)}/${32 - Math.log2(size)}`, first: a, last: a + size - 1 });
+        a += size;
+      }
+    }
+    return out;
+  }
+  // Security group rule descriptions allow letters, digits, spaces and ._-:/()#,@[]+=&;{}!$* up to 255 characters.
+  const sgDesc = (s) => String(s).replace(/[^A-Za-z0-9 ._\-:/()#,@[\]+=&;{}!$*]/g, " ").replace(/\s+/g, " ").trim().slice(0, 255);
+  const today = () => new Date().toISOString().slice(0, 10);
+
+  function openExtract(single) {
+    const rep = state.rep;
+    const sources = single ? rep.refused.filter((x) => x.src === single) : refusedShown();
+    const fb = state.bin?.kind === "refused" ? state.bin : null;
+    const rules = new Map(), apart = [];
+    for (const x of sources) {
+      const targets = single ? x.targets : targetsInPick(x, "refused");
+      for (const t of targets) {
+        const why = !t.groups?.length ? (t.kind === "deleted interface" ? "the interface has since been deleted" : "the interface has no security group")
+          : t.by?.startsWith("Network ACL") ? `${t.by} refused it first: a security group rule would not change that; the ACL entry must change`
+          : t.by?.includes("added since") ? "a rule added since already allows it"
+          : t.port >= 32768 ? "ports from 32768 up are read as one, so the exact port is not known"
+          : ip2n(x.src) == null ? "not an IPv4 address" : "";
+        if (why) { apart.push({ x, t, why }); continue; }
+        const key = `${t.groups[0]}|${t.proto}|${t.port}`;
+        const r = rules.get(key) || { key, group: t.groups[0], groups: new Set(), proto: t.proto, port: t.port, pc: t.pc, region: t.region, vpc: t.vpc, assets: new Map(), sources: new Map() };
+        t.groups.forEach((g) => r.groups.add(g));
+        const a = r.assets.get(t.eni) || { eni: t.eni, kind: t.kind, dst: new Set(), public: t.public, subnet: t.subnet, desc: t.desc, flows: 0 };
+        a.dst.add(t.dst); a.flows += t.flows; r.assets.set(t.eni, a);
+        const s = r.sources.get(x.src) || { x, flows: 0, on: !(x.sweep || (x.cat === "internet" && t.pc?.risky)) };
+        s.flows += t.flows; r.sources.set(x.src, s);
+        rules.set(key, r);
+      }
+    }
+    const scope = single ? `One source: ${single}` : fb ? `${plural(sources.length, "refused source")} in ${binLabel(rep.bins[fb.i], rep.step)}${rep.step < 86400 ? " UTC" : ""}${fb.f ? `, ${fb.f.label}` : ""}` : `All ${plural(sources.length, "refused source")} listed for ${({ "24h": "the last 24 hours", "1w": "the last week", "1m": "the last month", "3m": "the last 3 months", "6m": "the last 6 months" })[state.range]}`;
+    const ticked = (r) => [...r.sources.values()].some((s) => s.on);
+    const flows = (r) => [...r.sources.values()].reduce((t, s) => t + s.flows, 0);
+    state.xr = { rules: [...rules.values()].sort((a, b) => ticked(b) - ticked(a) || flows(b) - flows(a)), apart, scope, capped: !single && rep.summary.refused > rep.refused.length };
+    $("#xrScope").textContent = `${scope} · kinds shown: ${[...state.cats].map(catName).join(", ")}`;
+    drawExtract();
+    const d = $("#xr");
+    if (typeof d.showModal === "function") d.showModal(); else d.setAttribute("open", "");
+    d.scrollTop = 0;
+  }
+
+  function attrFacts(x) {
+    const out = [];
+    if (x.range) out.push(`${x.cat === "aws" || x.cat === "saas" ? "Published range" : "Range"} <code>${esc(x.range)}</code>`);
+    if (x.service) out.push(`AWS service <strong>${esc(x.service)}</strong>${x.aws_region ? `, ${esc(x.aws_region)}` : ""}`);
+    if (x.as_num && !String(x.name).startsWith(`AS${x.as_num}`)) out.push(`<strong>AS${esc(x.as_num)}</strong> ${esc(x.owner || "")}`);
+    else if (x.as_num) out.push(`AS number ${esc(x.as_num)}`);
+    if (x.cc) out.push(`Country ${esc(x.cc)}`);
+    if (x.block) out.push(`Announced block <code>${esc(x.block)}</code>`);
+    return out.join("<br>");
+  }
+
+  function ruleOut(r) {
+    const on = [...r.sources.values()].filter((s) => s.on);
+    const cidrs = exactCidrs(on.map((s) => s.x.src)).map((c) => {
+      const members = on.filter((s) => { const n = ip2n(s.x.src); return n >= c.first && n <= c.last; });
+      const names = [...new Set(members.map((s) => s.x.name + (s.x.cc && !s.x.range ? ` ${s.x.cc}` : "")))];
+      return { ...c, members, desc: sgDesc(`sg_review ${today()}: ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` +${names.length - 3}` : ""} - ${r.pc?.svc || ""}`) };
+    });
+    return { on, cidrs };
+  }
+
+  function drawExtract() {
+    const X = state.xr;
+    const rep = state.rep;
+    const outs = X.rules.map((r) => ({ r, ...ruleOut(r) }));
+    const live = outs.filter((o) => o.on.length);
+    const allOn = live.flatMap((o) => o.on);
+    const uniq = (a) => [...new Set(a.filter(Boolean))];
+    const srcs = uniq(allOn.map((s) => s.x.src));
+    const byCat = CATS.map((c) => [c, uniq(allOn.filter((s) => s.x.cat === c).map((s) => s.x.src)).length]).filter(([, n]) => n);
+    const asns = uniq(allOn.map((s) => s.x.as_num && `AS${s.x.as_num}`));
+    const ccs = uniq(allOn.map((s) => s.x.cc));
+    const addrs = live.reduce((t, o) => t + o.cidrs.reduce((u, c) => u + (c.last - c.first + 1), 0), 0);
+    const warn = [], soft = [];
+    for (const o of live) {
+      const port = `${protoName(o.r.proto)} ${o.r.port} (${o.r.pc?.svc})`;
+      const inet = o.on.filter((s) => s.x.cat === "internet");
+      if (o.r.pc?.risky && inet.length) warn.push(`${plural(inet.length, "internet source")} on ${esc(port)}, a ${esc(o.r.pc.name.toLowerCase())} port, into ${esc(rep.groups?.[o.r.group]?.name || o.r.group)}.`);
+      const sweep = o.on.filter((s) => s.x.sweep);
+      if (sweep.length) warn.push(`${plural(sweep.length, "source")} ticked on ${esc(port)} ${sweep.length === 1 ? "is" : "are"} sweeping many ports or targets: a scanner, not a client.`);
+      const ec2 = o.on.filter((s) => s.x.service === "EC2" || s.x.service === "AMAZON");
+      if (ec2.length) soft.push(`${plural(ec2.length, "AWS source")} on ${esc(port)} ${ec2.length === 1 ? "is" : "are"} in AWS's general EC2 or Amazon ranges: any AWS customer's server can hold these addresses, not only yours.`);
+      if (o.r.pc?.risky && !inet.length && o.on.some((s) => s.x.cat !== "internal")) soft.push(`${esc(port)} is a ${esc(o.r.pc.name.toLowerCase())} port: check each source outside your VPCs is meant to reach it.`);
+      if (o.r.groups.size > 1) soft.push(`The interfaces on ${esc(port)} have ${o.r.groups.size} security groups (${[...o.r.groups].map((g) => esc(rep.groups?.[g]?.name || g)).join(", ")}): the rule goes on the first; choose another below if it fits better.`);
+    }
+    if (X.capped) soft.push(`This page lists the ${num(rep.refused.length)} busiest of ${num(rep.summary.refused)} refused sources: quieter ones are not in these rules.`);
+    let html = `<dl class="xr-facts">
+      <div><dt>Rules</dt><dd>${plural(live.length, "rule")} in ${plural(uniq(live.map((o) => o.r.group)).length, "security group")}${X.rules.length > live.length ? ` · ${num(X.rules.length - live.length)} with nothing ticked` : ""}</dd></div>
+      <div><dt>Sources added</dt><dd>${plural(srcs.length, "address", "addresses")} in ${plural(live.reduce((t, o) => t + o.cidrs.length, 0), "range")} (${plural(addrs, "address", "addresses")} let in)</dd></div>
+      <div><dt>Kinds</dt><dd>${byCat.map(([c, n]) => `${catChip(c)} ${num(n)}`).join(" ") || EMPTY}</dd></div>
+      <div><dt>Networks</dt><dd>${asns.length ? `${plural(asns.length, "AS number")}: ${asns.slice(0, 6).map(esc).join(", ")}${asns.length > 6 ? "…" : ""}` : "none outside your ranges"}${ccs.length ? `<br>Countries: ${ccs.map(esc).join(", ")}` : ""}</dd></div>
+      <div><dt>Port classes</dt><dd>${uniq(live.map((o) => o.r.pc?.cls)).map((k) => pcChip(live.find((o) => o.r.pc?.cls === k).r.pc)).join(" ") || EMPTY}</dd></div>
+    </dl>`;
+    if (warn.length) html += `<div class="xr-warn"><strong>Check before adding</strong><ul>${warn.map((w) => `<li>${w}</li>`).join("")}</ul></div>`;
+    if (soft.length) html += `<div class="xr-warn soft"><strong>Worth knowing</strong><ul>${soft.map((w) => `<li>${w}</li>`).join("")}</ul></div>`;
+    html += `<p class="small muted">Unticked to start with: scanners (sources sweeping many ports or targets) and internet sources on remote admin, database, Windows and container ports. Tick or untick any source: the ranges and the command follow.</p>`;
+    if (!X.rules.length) html += `<p>No rule to extract: ${X.apart.length ? "every source listed is refused for a reason a new security group rule would not change (below)." : "no refused source is listed."}</p>`;
+    let folded = false;
+    const wasOpen = !!document.querySelector("#xrBody details.xr-fold")?.open;
+    const order = [...X.rules.keys()].sort((a, b) => (outs[b].on.length > 0) - (outs[a].on.length > 0));
+    order.forEach((ri, pos) => {
+      const r = X.rules[ri];
+      const o = outs[ri];
+      if (!o.on.length && !folded) {
+        folded = true;
+        const rest = X.rules.length - pos;
+        html += `<details class="xr-fold"${live.length && !wasOpen ? "" : " open"}><summary><strong>${plural(rest, "rule")} with nothing ticked</strong> <span class="muted small">(scanners, and internet sources on risky ports): open to review or tick a source</span></summary>`;
+      }
+      const g = rep.groups?.[r.group] || {};
+      const assets = [...r.assets.values()];
+      html += `<section class="xr-rule"><h3>Allow ${esc(protoName(r.proto))} ${esc(r.port)} into ${esc(g.name || r.group)} <code class="small">${esc(r.group)}</code></h3>
+        <div>${pcChip(r.pc)} <strong>${esc(r.pc?.svc || "")}</strong> <span class="muted small">— ${esc(CLASS[r.pc?.cls]?.note || "")}</span></div>
+        <dl class="xr-facts">
+          <div><dt>Security group</dt><dd>${r.groups.size > 1 ? `<select data-xr-group="${ri}">${[...r.groups].map((gid) => `<option value="${esc(gid)}"${gid === r.group ? " selected" : ""}>${esc(rep.groups?.[gid]?.name || gid)} (${esc(gid)})</option>`).join("")}</select>` : `${esc(g.name || r.group)} <code>${esc(r.group)}</code>`}<br><span class="muted">${esc(r.region)} · ${esc(r.vpc)}</span></dd></div>
+          <div><dt>Its inbound rules today</dt><dd class="small">${(g.rules || []).length ? g.rules.map((x) => `${esc(x.ports)} from ${x.sources.map((s) => `<code>${esc(s)}</code>`).join(", ") || "another group"}`).join("<br>") : "none"}</dd></div>
+          <div><dt>Applies to</dt><dd class="small">${assets.map((a) => `${esc(a.kind)} <code>${esc(a.eni)}</code> at <code>${[...a.dst].map(esc).join(", ")}</code>${a.public ? ` (public <code>${esc(a.public)}</code>)` : ""}${a.subnet ? ` · ${esc(a.subnet)}` : ""}${a.desc ? ` · <span class="muted">${esc(a.desc)}</span>` : ""} · ${num(a.flows)} refused flows`).join("<br>")}</dd></div>
+        </dl>
+        <div class="table-wrap"><table class="data"><thead><tr><th></th><th>Source</th><th>Who it is</th><th>Network</th><th class="num-cell">Refused flows</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${[...r.sources.values()].sort((a, b) => b.flows - a.flows).map((s) => `<tr class="${s.on ? "" : "off"}"><td><input type="checkbox" data-xr-src="${ri}|${esc(s.x.src)}" ${s.on ? "checked" : ""} aria-label="Include ${esc(s.x.src)}"></td><td><code>${esc(s.x.src)}</code><div>${catChip(s.x.cat)}${s.x.sweep ? ` <span class="pill recon">sweeping ${num(s.x.ports)} ports, ${num(s.x.dsts)} targets</span>` : ""}</div></td><td class="small"><strong>${esc(s.x.name)}</strong></td><td class="small">${attrFacts(s.x) || EMPTY}</td><td class="num-cell">${num(s.flows)}</td><td class="small">${esc(when(s.x.first))}</td><td class="small">${esc(when(s.x.last))}</td></tr>`).join("")}</tbody></table></div>
+        <p class="small" style="margin:10px 0 0"><strong>Ranges to add:</strong> ${o.cidrs.length ? o.cidrs.map((c) => `<code>${esc(c.cidr)}</code>`).join(", ") + ` <span class="muted">(${plural(o.cidrs.reduce((t, c) => t + c.last - c.first + 1, 0), "address", "addresses")}, exactly the sources ticked)</span>` : `<span class="muted">none ticked</span>`}</p>
+      </section>`;
+    });
+    if (folded) html += `</details>`;
+    if (X.apart.length) {
+      html += `<h3>Refused, but not for a new rule to fix</h3><div class="table-wrap"><table class="data"><thead><tr><th>Source</th><th>At</th><th>Why no rule</th></tr></thead><tbody>${X.apart.slice(0, 100).map(({ x, t, why }) => `<tr><td><code>${esc(x.src)}</code> ${catChip(x.cat)}<div class="small">${esc(x.name)}</div></td><td class="small">${esc(portsOf(t))} ${pcChip(t.pc)} on <code>${esc(t.eni)}</code></td><td class="small">${esc(why)}</td></tr>`).join("")}</tbody></table></div>`;
+    }
+    const byGroup = {};
+    for (const o of live) {
+      const k = `${o.r.region}|${o.r.group}`;
+      const icmp = String(o.r.proto) === "1";
+      const p = ["6", "17"].includes(String(o.r.proto)) ? protoName(o.r.proto) : icmp ? "icmp" : String(o.r.proto);
+      (byGroup[k] = byGroup[k] || { region: o.r.region, group: o.r.group, perms: [] }).perms.push({ IpProtocol: p, FromPort: icmp ? -1 : o.r.port, ToPort: icmp ? -1 : o.r.port, IpRanges: o.cidrs.map((c) => ({ CidrIp: c.cidr, Description: c.desc })) });
+    }
+    const cmds = Object.values(byGroup).map((g) => `# ${sgDesc(rep.groups?.[g.group]?.name || g.group)}: ${g.perms.map((p) => `${p.IpProtocol} ${p.FromPort}`).join(", ")}\naws ec2 authorize-security-group-ingress --region ${g.region} --group-id ${g.group} \\\n  --ip-permissions '${JSON.stringify(g.perms)}'`);
+    html += `<h3>Apply</h3><div class="xr-out"><p class="small muted">Nothing has been applied. Run with credentials that can change these groups, after the change has been approved. To undo, run the same command with <code>revoke-security-group-ingress</code>.</p><textarea id="xrCli" readonly spellcheck="false">${esc(cmds.join("\n\n") || "# Nothing ticked")}</textarea><div class="tools"><button type="button" class="btn primary" id="xrCopy"${cmds.length ? "" : " disabled"}>Copy the commands</button><button type="button" class="btn" id="xrJson"${cmds.length ? "" : " disabled"}>Download the rules (JSON)</button><span class="small muted" id="xrCopied"></span></div></div>`;
+    $("#xrBody").innerHTML = html;
+    X.json = {
+      schema: "sg-tightener.extracted-rules/v1", account: rep.account, generated_at: new Date().toISOString(), scope: X.scope,
+      rules: live.map((o) => ({
+        region: o.r.region, vpc: o.r.vpc, group_id: o.r.group, group_name: rep.groups?.[o.r.group]?.name || "", protocol: protoName(o.r.proto), port: o.r.port,
+        port_class: o.r.pc, assets: [...o.r.assets.values()].map((a) => ({ eni: a.eni, kind: a.kind, addresses: [...a.dst], public: a.public || null, subnet: a.subnet, refused_flows: a.flows })),
+        ranges: o.cidrs.map((c) => ({ cidr: c.cidr, description: c.desc, sources: c.members.map((s) => s.x.src) })),
+        sources: o.on.map((s) => ({ address: s.x.src, kind: s.x.cat, name: s.x.name, range: s.x.range || null, aws_service: s.x.service || null, aws_region: s.x.aws_region || null, asn: s.x.as_num || null, owner: s.x.owner || null, country: s.x.cc || null, announced_block: s.x.block || null, refused_flows: s.flows, first_seen: s.x.first, last_seen: s.x.last, sweeping: !!s.x.sweep })),
+      })),
+      not_extracted: X.apart.map(({ x, t, why }) => ({ address: x.src, eni: t.eni, protocol: protoName(t.proto), port: t.port, reason: why })),
+      ip_permissions: Object.values(byGroup).map((g) => ({ region: g.region, group_id: g.group, IpPermissions: g.perms })),
+    };
+  }
+
   $("#range").addEventListener("click", (e) => { const b = e.target.closest("[data-range]"); if (!b || b.disabled) return; state.range = b.dataset.range; render(); });
+  for (const kind of ["refused", "active"]) $(`#${kind}By`).addEventListener("click", (e) => { const b = e.target.closest("[data-by]"); if (!b) return; state.by[kind] = b.dataset.by; if (state.bin?.kind === kind) state.bin = null; markRange(); charts(); tables(); });
   $("#ruleStatus").addEventListener("change", () => tables());
   $("#btnCsv").addEventListener("click", () => csv());
+  $("#btnExtract").addEventListener("click", () => openExtract(null));
+  $("#xrClose").addEventListener("click", () => $("#xr").close ? $("#xr").close() : $("#xr").removeAttribute("open"));
+  $("#xrBody").addEventListener("change", (e) => {
+    const cb = e.target.closest("[data-xr-src]");
+    if (cb) { const [ri, src] = cb.dataset.xrSrc.split("|"); state.xr.rules[+ri].sources.get(src).on = cb.checked; drawExtract(); return; }
+    const sg = e.target.closest("[data-xr-group]");
+    if (sg) { state.xr.rules[+sg.dataset.xrGroup].group = sg.value; drawExtract(); }
+  });
+  $("#xrBody").addEventListener("click", (e) => {
+    if (e.target.closest("#xrCopy")) {
+      const ta = $("#xrCli");
+      const done = () => ($("#xrCopied").textContent = "Copied.");
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(ta.value).then(done, () => { ta.select(); document.execCommand("copy"); done(); });
+      else { ta.select(); document.execCommand("copy"); done(); }
+    }
+    if (e.target.closest("#xrJson")) download(JSON.stringify(state.xr.json, null, 2), `extracted-rules-${state.rep.account}-${today()}.json`, "application/json");
+  });
   document.addEventListener("click", (e) => {
     const cat = e.target.closest("[data-cat]");
     if (cat) {
@@ -411,6 +763,8 @@ footer { margin-top: 32px; color: var(--muted); font-size: 12px; }
       charts(); tables();
       return;
     }
+    const one = e.target.closest("[data-extract]");
+    if (one) { openExtract(one.dataset.extract); return; }
     if (e.target.closest("[data-clear]")) { e.preventDefault(); state.bin = null; tables(); return; }
     if (e.target.closest("[data-unmark]")) { e.preventDefault(); state.mark = null; tables(); return; }
     const ap = e.target.closest("[data-approved]");

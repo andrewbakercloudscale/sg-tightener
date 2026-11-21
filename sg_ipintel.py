@@ -55,7 +55,7 @@ GITHUB_KEYS = ("hooks", "web", "api", "git", "packages", "pages", "importer", "d
 # Networks owned by a SaaS or cloud provider, named when no published list matched.
 SAAS_ASNS = {
     8075: "Microsoft", 15169: "Google", 14340: "Salesforce", 13335: "Cloudflare", 20940: "Akamai", 16625: "Akamai",
-    54113: "Fastly", 36459: "GitHub", 22616: "Zscaler", 32934: "Meta", 19679: "Dropbox", 2635: "Automattic",
+    54113: "Fastly", 36459: "GitHub", 22616: "Zscaler", 62044: "Zscaler", 53813: "Zscaler", 32934: "Meta", 19679: "Dropbox", 2635: "Automattic",
 }  # fmt: skip
 # Until the lists are first read: a few ranges whose owner is well known.
 SEED_SAAS = [
@@ -219,10 +219,16 @@ class PrefixIndex:
         self.lens = sorted(self.by_len, reverse=True)
 
     def get(self, ip: int):
+        hit = self.match(ip)
+        return hit[1] if hit else None
+
+    def match(self, ip: int) -> tuple[str, object] | None:
+        """(the longest published prefix holding ip, its payload), or None."""
         for plen in self.lens:
-            hit = self.by_len[plen].get(ip >> (32 - plen) << (32 - plen) if plen else 0)
+            net = ip >> (32 - plen) << (32 - plen) if plen else 0
+            hit = self.by_len[plen].get(net)
             if hit is not None:
-                return hit
+                return f"{ipaddress.IPv4Address(net)}/{plen}", hit
         return None
 
     def intervals(self) -> list[tuple[int, int]]:
@@ -260,7 +266,8 @@ class Intel:
         if i < 0 or ip > self.asn_end[i]:
             return None
         asn, cc, owner = self.asn_meta[i]
-        return {"asn": asn, "country": cc, "owner": owner}
+        block = f"{ipaddress.IPv4Address(self.asn_start[i])}-{ipaddress.IPv4Address(self.asn_end[i])}"
+        return {"asn": asn, "country": cc, "owner": owner, "block": block}
 
     def aws_intervals(self) -> list[tuple[int, int]]:
         if self._aws_iv is None:
@@ -274,16 +281,17 @@ class Intel:
         except ValueError:
             return {"kind": "internet", "name": ip}
         a = self.asn(n) or {}
-        out = {"asn": a.get("asn"), "country": a.get("country", ""), "owner": a.get("owner", "")}
-        hit = self.aws.get(n)
+        out = {"asn": a.get("asn"), "country": a.get("country", ""), "owner": a.get("owner", ""),
+               "block": a.get("block", "")}
+        hit = self.aws.match(n)
         if hit:
-            svc, region = hit
+            prefix, (svc, region) = hit
             name = AWS_SERVICE.get(svc, svc.replace("_", " ").title())
-            return {**out, "kind": "aws", "service": svc, "region": region,
+            return {**out, "kind": "aws", "service": svc, "region": region, "prefix": prefix,
                     "name": f"AWS {name}" + (f", {region}" if region and region != "GLOBAL" else "")}  # fmt: skip
-        hit = self.saas.get(n)
+        hit = self.saas.match(n)
         if hit:
-            return {**out, "kind": "saas", "name": hit}
+            return {**out, "kind": "saas", "name": hit[1], "prefix": hit[0]}
         if a.get("asn") in SAAS_ASNS:
             return {**out, "kind": "saas", "name": SAAS_ASNS[a["asn"]]}
         owner = a.get("owner") or ""

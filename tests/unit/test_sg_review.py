@@ -239,3 +239,55 @@ def test_read_chunk_splits_a_full_slice_down_to_hours():
     assert sorted(c["e"] - c["s"] for c in out) == [3600] * 4
     assert all(c["st"] == "ok" and len(c["rows"]) == 2 for c in out)
     assert sum(c["b"] for c in out) > 0
+
+
+# ------------------------------------------------------------------ port classes, attribution, extract data
+def test_port_class_names_common_ports_and_ranges():
+    assert sg_review.port_class("6", 22)["cls"] == "admin" and sg_review.port_class("6", 22)["risky"]
+    assert sg_review.port_class("6", 443) == {"cls": "web", "name": "Web", "svc": "HTTPS", "risky": False}
+    assert sg_review.port_class("17", 53)["svc"] == "DNS"
+    assert sg_review.port_class("6", 5432)["cls"] == "database"
+    assert sg_review.port_class("6", 445)["cls"] == "windows"
+    assert sg_review.port_class("6", 31000)["cls"] == "containers"  # Kubernetes NodePort range
+    assert sg_review.port_class("6", 40000)["cls"] == "high"
+    assert sg_review.port_class("6", 7)["cls"] == "low"
+    assert sg_review.port_class("6", 1500)["cls"] == "registered"
+    assert sg_review.port_class("1", 0)["cls"] == "network"
+    assert sg_review.rule_port_class({"proto": "-1", "from": 0, "to": 65535})["cls"] == "all"
+    rng = sg_review.rule_port_class({"proto": "6", "from": 20, "to": 450})
+    assert rng["cls"] == "range" and rng["risky"] and "SSH, SFTP (22)" in rng["svc"]
+    assert all(c in sg_review.PORT_CLASSES for c in {v[0] for v in sg_review.PORT_SERVICES.values()})
+
+
+def test_build_attributes_sources_and_classifies_ports(report):
+    _doc, rep = report
+    by_src = {x["src"]: x for x in rep["refused"]}
+    scanner = next(x for x in rep["refused"] if x["src"].startswith("162.142.125."))
+    assert scanner["cat"] == "internet" and scanner["as_num"] == 398324 and scanner["cc"] == "US"
+    assert scanner["net"] == f"internet|{scanner['name']}"
+    hc = by_src["54.228.16.8"]
+    assert hc["cat"] == "aws" and hc["service"] == "ROUTE53_HEALTHCHECKS" and hc["range"]
+    dc = by_src["10.200.4.30"]
+    assert dc["cat"] == "datacentre" and dc["range"] == "10.200.0.0/16"
+    t = dc["targets"][0]
+    assert t["port"] == 9092 and t["pc"]["cls"] == "messaging" and t["region"] == demo_sg.REGION and t["vpc"]
+    assert rep["groups"]["sg-0bat0000000000005"]["name"] == "batch-workers"
+    # the class series count each refused source once per class and period, and add up with the kind series
+    cls = rep["series"]["by_class"]["refused"]
+    assert "admin|internet" in cls and "messaging|datacentre" in cls
+    nets = rep["series"]["by_net"]["refused"]
+    assert sum(n["sources"] for n in nets) == rep["summary"]["refused"]
+    for i in range(len(rep["bins"])):
+        assert sum(n["data"][i] for n in nets) == sum(rep["series"]["refused"][c][i] for c in sg_review.CATS)
+    ports = {(p["proto"], p["port"]): p for p in rep["ports"]}
+    assert ports[("6", 3389)]["refused"].get("internet") and ports[("6", 3389)]["risky"]
+    assert ports[("6", 443)]["active"]
+    assert all("pc" in r for r in rep["rules"])
+
+
+def test_page_carries_the_port_classes_and_extract_dialog(tmp_path):
+    doc = demo_sg.build_doc(ACCT, time.time(), 7)
+    data = sg_review.page_data(doc, "", demo_sg.INTERNAL)
+    assert {c["key"] for c in data["port_classes"]} == set(sg_review.PORT_CLASSES)
+    page = sg_review.render_page(data)
+    assert 'id="btnExtract"' in page and 'id="xr"' in page and 'id="chPortsRefused"' in page

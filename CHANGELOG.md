@@ -20,6 +20,29 @@
   chain (`--profile`, `aws sso login`). `iam-policy.json` gains
   `ec2:DescribeVpnConnections`, `ec2:GetManagedPrefixListEntries`,
   `cloudtrail:LookupEvents` and `iam:ListAccountAliases`.
+- **`sg_review.py` attribution, ports and Extract rule.**
+  - Every source carries everything the lists know about it: the matched
+    range, AWS service and region, the AS number, owner, country and announced
+    block.
+  - The refused and active graphs can be coloured by kind, by **network** (the
+    ten busiest AS numbers, AWS services, SaaS providers or named ranges), or by
+    **port class**. Selecting one colour in a bar lists just those sources.
+  - A new **Ports** section shows the busiest refused and let-in ports, each
+    with its service and class (web, remote admin, database, Windows and
+    directory, containers, file transfer, mail, messaging, network and
+    monitoring, other by range). Risky classes are marked.
+  - **Extract rule**, on the refused graph and on each refused source, turns
+    the sources listed into inbound rules, one per security group, protocol
+    and port. For each rule it shows the port's class and what reaching it
+    means, the group and its rules today, the interfaces it applies to, and
+    each source's full attribution with a tick box. Scanners and internet
+    sources on risky ports start unticked, and sources a rule would not let in
+    (network ACL, deleted interface) are listed with the reason.
+  - Extract rule writes the `aws ec2 authorize-security-group-ingress`
+    commands and a JSON file (`sg-tightener.extracted-rules/v1`). Nothing is
+    applied.
+  - The rules table and CSV gain the port class and service. AS62044 and
+    AS53813 (Zscaler) are named as SaaS.
 
 ## 2.3.0 - 2026-11-20
 

@@ -41,7 +41,9 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
 
     groups = {
         "sg-0app0000000000001": {"name": "app-servers", "vpc": "vpc-0demo", "tag": "",
-                                 "rules": [rule("6", 443, 443, ["10.0.0.0/8"], {"10.0.0.0/8": "internal callers"})]},
+                                 "rules": [rule("6", 443, 443, ["10.0.0.0/8"], {"10.0.0.0/8": "internal callers"}),
+                                           rule("6", 9100, 9100, [_host(vpc, 7 * 256) + "/24"],
+                                                {_host(vpc, 7 * 256) + "/24": "monitoring"})]},
         "sg-0db00000000000002": {"name": "payments-db", "vpc": "vpc-0demo", "tag": "",
                                  "rules": [rule("6", 5432, 5432, [vpc, "172.16.0.0/12"])]},
         "sg-0alb0000000000003": {"name": "public-alb", "vpc": "vpc-0demo", "tag": "",
@@ -167,8 +169,19 @@ def _patterns(vpc: str, other: tuple | None) -> list[dict]:
         pats.append({"src": _host("162.142.125.0/24", 10 + 17 * i), "to": sftp, "port": 3389, "ok": False,
                      "p": 0.25, "rate": 2, "sweep": True})  # fmt: skip
     pats.append({"src": "185.220.101.33", "to": alb, "port": 3389, "ok": False, "p": 0.2, "rate": 1, "sweep": True})
-    # a probe twelve days ago: forty hosts of one network try SSH on the load balancer, all refused
-    for i in range(40):
+    # more ports: batch workers trying a cache on an app server, a data centre producer trying the batch workers'
+    # Kafka port, the internal Prometheus scraping node exporters, and scanners on the ports they always try
+    pats.append({"src": h(5 * 256 + 61), "to": app[1], "port": 6379, "ok": False, "p": 0.7, "rate": 15, "after": 10})
+    pats.append({"src": "10.200.4.30", "to": bat, "port": 9092, "ok": False, "p": 0.5, "rate": 10, "after": 25})
+    for ip in app:
+        pats.append({"src": h(7 * 256 + 9), "to": ip, "port": 9100, "ok": True, "p": 1.0, "rate": 120})
+    for port, net, n in ((445, "89.248.165.0/24", 6), (23, "71.6.199.0/24", 3), (5900, "193.163.125.0/24", 4),
+                         (6379, "64.62.197.0/24", 3), (9200, "198.235.24.0/24", 3)):
+        for i in range(n):
+            pats.append({"src": _host(net, 20 + 11 * i), "to": alb if i % 2 else sftp, "port": port, "ok": False,
+                         "p": 0.03, "rate": 1, "sweep": True})  # fmt: skip
+    # a probe twelve days ago: seventy hosts of one network try SSH on the load balancer, all refused
+    for i in range(70):
         pats.append({"src": _host("45.155.205.0/24", 2 + i), "to": alb, "port": 22, "ok": False, "p": 1.0, "rate": 2,
                      "only": [12], "sweep": True})  # fmt: skip
     return pats

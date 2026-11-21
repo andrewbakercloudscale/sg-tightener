@@ -647,7 +647,7 @@ class Labeller:
 
     def __init__(self, doc: dict, onprem: str = "", internal: str = ""):
         self.intel = sg_ipintel.get()
-        self.nets: list[tuple[int, int, str, str]] = []  # (first, last, category, name), most specific first
+        self.nets: list[tuple[int, int, str, str, str]] = []  # (first, last, category, name, cidr), narrowest first
         own = []
         for snap in (x.get("snapshot") or {} for x in doc["regions"].values()):
             for v in snap.get("vpcs") or []:
@@ -655,24 +655,24 @@ class Labeller:
                     iv = sg_ipintel.cidr_iv(c)
                     if iv and ":" not in c:
                         own.append(iv)
-                        self.nets.append((*iv, "internal", f"This account, {v.get('name') or v['id']}"))
+                        self.nets.append((*iv, "internal", f"This account, {v.get('name') or v['id']}", c))
         others = []
         for net, name in parse_ranges(internal, "Your network"):
             iv = (int(net.network_address), int(net.broadcast_address))
             others.append(iv)
-            self.nets.append((*iv, "internal", name))
+            self.nets.append((*iv, "internal", name, str(net)))
         dc = []
         for net, name in parse_ranges(onprem, "On-premises"):
             iv = (int(net.network_address), int(net.broadcast_address))
             dc.append(iv)
-            self.nets.append((*iv, "datacentre", name))
+            self.nets.append((*iv, "datacentre", name, str(net)))
         for snap in (x.get("snapshot") or {} for x in doc["regions"].values()):
             for v in snap.get("vpns") or []:
                 for c in v.get("routes") or []:
                     iv = sg_ipintel.cidr_iv(c)
                     if iv:
                         dc.append(iv)
-                        self.nets.append((*iv, "datacentre", f"Behind VPN {v['name']}"))
+                        self.nets.append((*iv, "datacentre", f"Behind VPN {v['name']}", c))
         self.nets.sort(key=lambda n: n[1] - n[0])
         internal = sg_ipintel.merge(own + others)
         private = sg_ipintel.subtract(sg_ipintel.merge(PRIVATE + dc), internal)
@@ -691,12 +691,15 @@ class Labeller:
         except ValueError:
             return {"cat": "internet", "name": str(ip)}
         out = None
-        for first, last, cat, name in self.nets:
+        for first, last, cat, name, cidr in self.nets:
             if first <= n <= last:
-                out = {"cat": cat, "name": name}
+                out = {"cat": cat, "name": name, "range": cidr}
                 break
-        if out is None and any(a <= n <= b for a, b in PRIVATE):
-            out = {"cat": "datacentre", "name": "Private address outside every scanned VPC"}
+        if out is None:
+            for (a, b), cidr in zip(PRIVATE, PRIVATE_V4):
+                if a <= n <= b:
+                    out = {"cat": "datacentre", "name": "Private address outside every scanned VPC", "range": cidr}
+                    break
         if out is None:
             lab = self.intel.label(ip)
             out = {"cat": lab["kind"], "name": lab["name"]}
@@ -704,6 +707,13 @@ class Labeller:
                 out["asn"] = f"AS{lab['asn']} {lab.get('owner', '')}".strip() + (
                     f" ({lab['country']})" if lab.get("country") else ""
                 )
+                out.update(as_num=lab["asn"], owner=lab.get("owner", ""), cc=lab.get("country", ""),
+                           block=lab.get("block", ""))  # fmt: skip
+            if lab.get("prefix"):
+                out["range"] = lab["prefix"]
+            if lab.get("service"):
+                out.update(service=lab["service"], aws_region=lab.get("region", ""))
+        out["net"] = f"{out['cat']}|{out['name']}"
         self._memo[ip] = out
         return out
 
@@ -734,6 +744,128 @@ def ports_label(rule: dict) -> str:
     if p in ("all", "icmp") or (rule["from"], rule["to"]) == (0, 65535):
         return p if p != "all" else "all traffic"
     return f"{p} {rule['from']}" if rule["from"] == rule["to"] else f"{p} {rule['from']}-{rule['to']}"
+
+
+# --------------------------------------------------------------------------------- port classification
+# Each class: (name, what a reviewer should know before letting a new source in on it). Risky classes give
+# control of a host or its data when reached; the page warns harder when such a source is not internal.
+PORT_CLASSES = {
+    "web": ("Web", "Web traffic. From the internet, it is best behind a load balancer, CloudFront or a WAF."),
+    "admin": ("Remote admin", "Remote administration gives control of the host. Allow only named admin hosts or a "
+              "bastion, never the internet; Systems Manager Session Manager needs no inbound rule at all."),
+    "database": ("Database", "A database should be reached only by its own application tier and admin hosts."),
+    "windows": ("Windows and directory", "SMB, RPC, NetBIOS, LDAP and Kerberos beyond the domain are a common "
+                "ransomware and credential-theft path. Allow only domain members and controllers."),
+    "containers": ("Containers", "Container and cluster control planes (Docker, etcd, kubelet, the Kubernetes "
+                   "API) give control of every workload on the host when reached."),
+    "transfer": ("File transfer and storage", "File transfer and network storage carry data out as easily as in: "
+                 "allow only the partners or hosts that exchange files."),
+    "mail": ("Mail", "Mail relays reached from new sources can be used to send spam as you."),
+    "messaging": ("Messaging and streaming", "Brokers and queues: producers and consumers only."),
+    "network": ("Network and monitoring", "Name, time, VPN, routing and monitoring services."),
+    "low": ("Other well-known port (1-1023)", "A well-known port with no common service named here."),
+    "registered": ("Other port (1024-32767)", "A registered port: name the application before allowing it."),
+    "high": ("High port (32768+)", "Ports from 32768 up are mostly replies to the account's own connections."),
+    "range": ("Port range", "More than one port: list the ports the traffic needs instead, where you can."),
+    "all": ("All traffic", "Every protocol and port. Rarely needed: list the ports the traffic needs instead."),
+}  # fmt: skip
+RISKY_CLASSES = frozenset({"admin", "database", "windows", "containers"})
+_TCP, _UDP, _BOTH = ("6",), ("17",), ("6", "17")
+PORT_SERVICES = {
+    # (protocols, port) -> (class, service)
+    **{(p, n): ("web", svc) for p, n, svc in (
+        (_TCP, 80, "HTTP"), (_BOTH, 443, "HTTPS"), (_TCP, 8080, "HTTP (alternative)"),
+        (_TCP, 8443, "HTTPS (alternative)"), (_TCP, 8000, "HTTP (alternative)"), (_TCP, 8888, "HTTP (alternative)"),
+        (_TCP, 9443, "HTTPS (alternative)"), (_TCP, 3000, "Web application (development)"),
+        (_TCP, 5000, "Web application (development)"), (_TCP, 8081, "HTTP (alternative)"))},
+    **{(p, n): ("admin", svc) for p, n, svc in (
+        (_TCP, 22, "SSH, SFTP"), (_TCP, 2222, "SSH (alternative)"), (_TCP, 23, "Telnet (unencrypted)"),
+        (_BOTH, 3389, "RDP, Windows Remote Desktop"), (_TCP, 5985, "WinRM, PowerShell remoting (HTTP)"),
+        (_TCP, 5986, "WinRM, PowerShell remoting (HTTPS)"), (_TCP, 5900, "VNC"), (_TCP, 5901, "VNC"),
+        (_TCP, 513, "rlogin (unencrypted)"), (_TCP, 512, "rexec (unencrypted)"), (_TCP, 10000, "Webmin"))},
+    **{(p, n): ("database", svc) for p, n, svc in (
+        (_TCP, 1433, "Microsoft SQL Server"), (_UDP, 1434, "SQL Server Browser"), (_TCP, 1521, "Oracle"),
+        (_TCP, 2484, "Oracle (TLS)"), (_TCP, 3306, "MySQL, MariaDB, Aurora MySQL"),
+        (_TCP, 5432, "PostgreSQL, Aurora PostgreSQL"), (_TCP, 5439, "Redshift"), (_TCP, 6379, "Redis, Valkey"),
+        (_TCP, 6380, "Redis (TLS)"), (_BOTH, 11211, "Memcached"), (_TCP, 27017, "MongoDB, DocumentDB"),
+        (_TCP, 27018, "MongoDB"), (_TCP, 9042, "Cassandra, Keyspaces"), (_TCP, 7000, "Cassandra cluster"),
+        (_TCP, 9200, "Elasticsearch, OpenSearch"), (_TCP, 9300, "Elasticsearch cluster"),
+        (_TCP, 8086, "InfluxDB"), (_TCP, 7474, "Neo4j"), (_TCP, 8182, "Neptune, Gremlin"),
+        (_TCP, 26257, "CockroachDB"), (_TCP, 50000, "Db2"), (_TCP, 1830, "Oracle (alternative)"))},
+    **{(p, n): ("windows", svc) for p, n, svc in (
+        (_TCP, 135, "Microsoft RPC"), (_UDP, 137, "NetBIOS name"), (_UDP, 138, "NetBIOS datagram"),
+        (_TCP, 139, "NetBIOS session, SMB"), (_TCP, 445, "SMB, Windows file sharing"),
+        (_BOTH, 389, "LDAP"), (_TCP, 636, "LDAPS"), (_TCP, 3268, "Active Directory global catalog"),
+        (_TCP, 3269, "Active Directory global catalog (TLS)"), (_BOTH, 88, "Kerberos"),
+        (_BOTH, 464, "Kerberos password change"), (_TCP, 9389, "Active Directory Web Services"))},
+    **{(p, n): ("containers", svc) for p, n, svc in (
+        (_TCP, 2375, "Docker API (unencrypted)"), (_TCP, 2376, "Docker API (TLS)"), (_TCP, 2379, "etcd"),
+        (_TCP, 2380, "etcd peers"), (_TCP, 6443, "Kubernetes API"), (_TCP, 10250, "kubelet API"),
+        (_TCP, 10255, "kubelet (read-only)"), (_UDP, 4789, "VXLAN overlay"), (_UDP, 8472, "Flannel VXLAN"))},
+    **{(p, n): ("transfer", svc) for p, n, svc in (
+        (_TCP, 20, "FTP data"), (_TCP, 21, "FTP"), (_TCP, 990, "FTPS"), (_UDP, 69, "TFTP"),
+        (_BOTH, 2049, "NFS, EFS"), (_BOTH, 111, "RPC portmapper (NFS)"), (_TCP, 873, "rsync"),
+        (_TCP, 3260, "iSCSI"), (_TCP, 988, "FSx for Lustre"))},
+    **{(p, n): ("mail", svc) for p, n, svc in (
+        (_TCP, 25, "SMTP"), (_TCP, 465, "SMTPS"), (_TCP, 587, "SMTP submission"), (_TCP, 110, "POP3"),
+        (_TCP, 995, "POP3S"), (_TCP, 143, "IMAP"), (_TCP, 993, "IMAPS"))},
+    **{(p, n): ("messaging", svc) for p, n, svc in (
+        (_TCP, 5672, "AMQP, RabbitMQ"), (_TCP, 5671, "AMQP (TLS)"), (_TCP, 9092, "Kafka, MSK"),
+        (_TCP, 9094, "Kafka, MSK (TLS)"), (_TCP, 9096, "MSK (SASL)"), (_TCP, 9098, "MSK (IAM)"),
+        (_TCP, 2181, "ZooKeeper"), (_TCP, 1883, "MQTT"), (_TCP, 8883, "MQTT (TLS)"), (_TCP, 61616, "ActiveMQ"),
+        (_TCP, 61617, "ActiveMQ (TLS)"), (_TCP, 4222, "NATS"), (_TCP, 6650, "Pulsar"), (_TCP, 15672, "RabbitMQ admin"))},
+    **{(p, n): ("network", svc) for p, n, svc in (
+        (_BOTH, 53, "DNS"), (_UDP, 123, "NTP"), (_UDP, 67, "DHCP"), (_UDP, 68, "DHCP"), (_UDP, 161, "SNMP"),
+        (_UDP, 162, "SNMP traps"), (_BOTH, 514, "Syslog"), (_TCP, 6514, "Syslog (TLS)"), (_UDP, 500, "IPsec IKE"),
+        (_UDP, 4500, "IPsec NAT traversal"), (_BOTH, 1194, "OpenVPN"), (_UDP, 51820, "WireGuard"),
+        (_TCP, 179, "BGP"), (_UDP, 1812, "RADIUS"), (_UDP, 1813, "RADIUS accounting"), (_TCP, 49, "TACACS+"),
+        (_TCP, 9090, "Prometheus"), (_TCP, 9100, "Prometheus node exporter"), (_TCP, 10050, "Zabbix agent"),
+        (_TCP, 10051, "Zabbix server"), (_UDP, 8125, "StatsD"), (_TCP, 2003, "Graphite"),
+        (_TCP, 5044, "Logstash Beats"), (_TCP, 8126, "Datadog APM"), (_UDP, 6081, "GENEVE (Gateway Load Balancer)"))},
+}  # fmt: skip
+PORT_SERVICES = {(p, n): v for (ps, n), v in PORT_SERVICES.items() for p in ps}
+PROTO_NAME = {"6": "tcp", "17": "udp", "1": "icmp", "-1": "all", "58": "icmpv6", "50": "esp", "47": "gre"}
+
+
+def port_class(proto, port: int) -> dict:
+    """{cls, name, svc, risky} for one protocol and destination port."""
+    proto = str(proto)
+    if proto == "-1":
+        cls, svc = "all", "Every protocol and port"
+    elif proto in ("1", "58"):
+        cls, svc = "network", "ICMP (ping, unreachable, path MTU)"
+    elif proto not in ("6", "17"):
+        cls, svc = "network", f"IP protocol {PROTO_NAME.get(proto, proto)}"
+    elif (proto, port) in PORT_SERVICES:
+        cls, svc = PORT_SERVICES[(proto, port)]
+    elif port >= EPHEMERAL:
+        cls, svc = "high", "High port (replies, or an application's own)"
+    elif 30000 <= port <= 32767 and proto == "6":
+        cls, svc = "containers", "Kubernetes NodePort range"
+    elif port < 1024:
+        cls, svc = "low", "Well-known port, no common service"
+    else:
+        cls, svc = "registered", "Registered port, no common service"
+    return {"cls": cls, "name": PORT_CLASSES[cls][0], "svc": svc, "risky": cls in RISKY_CLASSES or port == 23}
+
+
+def rule_port_class(rule: dict) -> dict:
+    """port_class for a rule: one port, all traffic, or a range (with the named services inside it)."""
+    proto, lo, hi = str(rule["proto"]), rule["from"], rule["to"]
+    if proto == "-1" or (proto in ("6", "17") and (lo, hi) == (0, 65535)):
+        out = port_class("-1", 0)
+        if proto != "-1":
+            out["svc"] = f"Every {PROTO_NAME[proto]} port"
+        out["risky"] = True
+        return out
+    if proto not in ("6", "17") or lo == hi:
+        return port_class(proto, lo)
+    inside = sorted((n, *v) for (p, n), v in PORT_SERVICES.items() if p == proto and lo <= n <= hi)
+    named = ", ".join(f"{svc} ({n})" for n, _c, svc in inside[:4]) + (
+        f" and {len(inside) - 4} more" if len(inside) > 4 else "")
+    return {"cls": "range", "name": PORT_CLASSES["range"][0],
+            "svc": f"{hi - lo + 1:,} ports" + (f", including {named}" if named else ""),
+            "risky": any(c in RISKY_CLASSES for _n, c, _s in inside)}  # fmt: skip
 
 
 def _entries(rule: dict) -> list[str]:
@@ -821,6 +953,14 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
     seen: set[str] = set()
     rej: dict[str, dict] = {}
     act: dict[str, dict] = {}
+    by_class: dict[str, dict] = {"refused": {}, "active": {}}  # kind -> (class, category) -> bin -> sources
+    port_use: dict[tuple, dict] = {}  # (proto, port) -> kind -> category -> sources
+
+    def note_port(kind: str, src: str, b: int, proto, port: int) -> None:
+        cat = lab(src)["cat"]
+        by_class[kind].setdefault((_port_cls(str(proto), port), cat), {}).setdefault(b, set()).add(src)
+        use = port_use.setdefault((str(proto), port), {"refused": {}, "active": {}})
+        use[kind].setdefault(cat, set()).add(src)
     accepted_rows = []  # (src, dst, eni, proto, dport, flows, chunk)
     region_first: dict[str, int] = {}
     cut_regions, pub_cut = set(), 0
@@ -851,8 +991,10 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
                     a["flows"] += flows
                     k = (eni, str(proto), dport)
                     a["targets"][k] = a["targets"].get(k, 0) + flows
+                    note_port("active", src, b, proto, dport)
             elif in_view and dport < EPHEMERAL:
                 _refused(rej, src, b, c, flows, (eni, str(proto), dport, dst))
+                note_port("refused", src, b, proto, dport)
         for src, flows, ports, dsts, dst, eni, port, proto in c.get("pub") or []:
             if not src:
                 continue
@@ -861,6 +1003,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
                 r = _refused(rej, src, b, c, flows, (eni, str(proto), port, dst))
                 r["ports"] = max(r.get("ports", 1), ports)
                 r["dsts"] = max(r.get("dsts", 1), dsts)
+                note_port("refused", src, b, proto, port)
 
     seen_iv = sg_ipintel.merge([(n, n) for n in map(_ip, seen) if n is not None])
 
@@ -878,6 +1021,18 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         cat = lab(src)["cat"]
         for b in a["bins"]:
             (act_today if a["today"] else act_older)[cat][b] += 1
+    class_series = {
+        kind: {f"{cls}|{cat}": [len(bs.get(i, ())) for i in range(nbins)] for (cls, cat), bs in m.items()}
+        for kind, m in by_class.items()
+    }
+    net_series = {"refused": _net_series(rej, lab, nbins), "active": _net_series(act, lab, nbins)}
+    ports = []
+    for (proto, port), use in port_use.items():
+        pc = port_class(proto, port)
+        ports.append({"proto": proto, "port": port, "label": _port_label(proto, port), **pc,
+                      "refused": {k: len(v) for k, v in use["refused"].items()},
+                      "active": {k: len(v) for k, v in use["active"].items()}})  # fmt: skip
+    ports.sort(key=lambda x: -(sum(x["refused"].values()) + sum(x["active"].values())))
 
     # ---- rules: today's, worked back through the changes for the over-provisioned line
     hist = {r: (x.get("history") or {}) for r, x in doc["regions"].items()}
@@ -942,6 +1097,8 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
             e = enis.get(eni) or {}
             targets.append({"eni": eni, "dst": dst, "proto": proto, "port": port, "flows": flows,
                             "kind": e.get("kind", "deleted interface"), "groups": e.get("groups", []),
+                            "region": e.get("region", ""), "vpc": e.get("vpc", ""), "subnet": e.get("subnet", ""),
+                            "desc": e.get("desc", ""), "public": e.get("public", ""), "pc": port_class(proto, port),
                             "by": _refused_by(src, e, groups, snaps, proto, port)})  # fmt: skip
         row.update(targets=targets, ports=r.get("ports", len({t[2] for t in r["targets"]})), dsts=r.get("dsts", 1))
         row["sweep"] = row["ports"] >= 10 or row["dsts"] >= 5
@@ -954,7 +1111,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
             continue
         row = src_row(src, a)
         row.update(today=a["today"], days=len(a["days"]),
-                   targets=[{"eni": k[0], "proto": k[1], "port": k[2], "flows": v,
+                   targets=[{"eni": k[0], "proto": k[1], "port": k[2], "flows": v, "pc": port_class(k[1], k[2]),
                              "groups": (enis.get(k[0]) or {}).get("groups", [])}
                             for k, v in sorted(a["targets"].items(), key=lambda kv: -kv[1])[:5]])  # fmt: skip
         active.append(row)
@@ -987,7 +1144,12 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         "bins": bins,
         "end": end,
         "categories": [{"key": k, "name": CAT_NAME[k]} for k in CATS],
-        "series": {"refused": rej_series, "over": over_series, "active_today": act_today, "active_older": act_older},
+        "series": {"refused": rej_series, "over": over_series, "active_today": act_today, "active_older": act_older,
+                   "by_class": class_series, "by_net": net_series},
+        "ports": ports[:60],
+        "groups": {gid: {"name": g["name"], "region": g["region"], "vpc": g["vpc"],
+                         "rules": [{"ports": ports_label(r), "sources": _entries(r)} for r in g["rules"]]}
+                   for gid, g in groups.items()},
         "markers": markers,
         "summary": {
             "refused": len(rej),
@@ -1017,6 +1179,51 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         "suggestions": suggestions,
         "active": active,
     }
+
+
+_PCLS: dict[tuple, str] = {}
+
+
+def _port_cls(proto: str, port: int) -> str:
+    k = (proto, port)
+    if k not in _PCLS:
+        _PCLS[k] = port_class(proto, port)["cls"]
+    return _PCLS[k]
+
+
+def _port_label(proto: str, port: int) -> str:
+    p = PROTO_NAME.get(str(proto), f"proto {proto}")
+    if p in ("icmp", "icmpv6", "all") or str(proto) not in ("6", "17"):
+        return p
+    return f"{p} {port}+" if port >= EPHEMERAL else f"{p} {port}"
+
+
+NET_TOP = 150  # networks listed per series; the rest are summed per kind of source
+
+
+def _net_series(srcs: dict, lab, nbins: int) -> list[dict]:
+    """Distinct sources per period for each network a source belongs to (an AS number, an AWS service, a named
+    range), busiest first."""
+    nets: dict[str, dict] = {}
+    for src, x in srcs.items():
+        if not x["bins"]:
+            continue
+        lb = lab(src)
+        n = nets.setdefault(lb["net"], {"key": lb["net"], "name": lb["name"], "cat": lb["cat"],
+                                        "asn": lb.get("asn", ""), "data": [0] * nbins, "sources": 0})  # fmt: skip
+        n["sources"] += 1
+        for b in x["bins"]:
+            n["data"][b] += 1
+    out = sorted(nets.values(), key=lambda n: -n["sources"])
+    rest = out[NET_TOP:]
+    out = out[:NET_TOP]
+    for cat in CATS:
+        mine = [n for n in rest if n["cat"] == cat]
+        if mine:
+            out.append({"key": f"{cat}|*", "name": f"{len(mine)} more {CAT_NAME[cat]} networks", "cat": cat,
+                        "asn": "", "sources": sum(n["sources"] for n in mine),
+                        "data": [sum(n["data"][i] for n in mine) for i in range(nbins)]})  # fmt: skip
+    return out
 
 
 def _in(ip: str, cidr: str) -> bool:
@@ -1088,7 +1295,7 @@ def _suggest(rej: dict, enis: dict, groups: dict, snaps: dict, lab) -> list[dict
         g = groups.get(gid) or {}
         out.append({"group": gid, "name": g.get("name", ""), "region": g.get("region", ""),
                     "ports": ports_label({"proto": proto, "from": port, "to": port}), "sources": len(w["srcs"]),
-                    "flows": w["flows"], "from": sorted(w["names"])[:5],
+                    "flows": w["flows"], "from": sorted(w["names"])[:5], "pc": port_class(proto, port),
                     "cidrs": sg_tightener.collapse_ips_to_cidrs(sorted(w["srcs"]), sg_tightener.DEFAULT_MAX_RULES, 0.0)})  # fmt: skip
     return out
 
@@ -1143,7 +1350,8 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
                        "elsewhere": max(0, n_seen - len(here) - len(unattr - set(here))),
                        "unattributed": len(unattr - set(here)), "never": never,
                        "last_used": max((h[1] for h in here.values()), default=None), "since": since,
-                       "days": round(days, 1), "suggest": [], "suggest_size": None, "note": ""}  # fmt: skip
+                       "days": round(days, 1), "suggest": [], "suggest_size": None, "note": "",
+                       "pc": rule_port_class(rule)}  # fmt: skip
                 row["top"] = [{"src": s, **lab(s), "flows": h[0]}
                               for s, h in sorted(here.items(), key=lambda kv: -kv[1][0])[:8]]  # fmt: skip
                 row["status"], row["note"] = _status(row, rule, entry, logged, g, cut_regions, days)
@@ -1329,6 +1537,8 @@ def page_data(doc: dict, onprem: str = "", internal: str = "", now: float | None
         "end": end,
         "default": keys[-1],
         "ranges": ranges,
+        "port_classes": [{"key": k, "name": n, "note": note, "risky": k in RISKY_CLASSES}
+                         for k, (n, note) in PORT_CLASSES.items()],
         "estimate": estimate(doc, doc["account"], list(doc["regions"]), now),
         "regions": sorted(doc["regions"]),
         "approved": {r: approved(doc, r) for r in regions if any(c["r"] == r for c in doc["chunks"])},

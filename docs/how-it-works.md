@@ -299,6 +299,27 @@ clipped to the original rule, keeping sources seen on interfaces since deleted
 in the same VPC. The page offers the evidence as approved.json per region, so
 `plan` can be run against exactly what was reviewed.
 
+**Attribution and ports.** Each source address is matched, most specific first,
+against the account's VPCs, the `--internal` and `--onprem` ranges and the VPN
+routes; then against AWS's published prefixes (longest match, so a service
+prefix wins over the general AMAZON one), the SaaS providers' published
+prefixes, and the AS number table, which gives the owner, country and announced
+block. Each source is counted once per period in its kind, its network and
+each port class it reached, so the graphs can be coloured any of those ways.
+The page lists the 150 busiest networks per timeline and sums the rest per
+kind. Ports are classed from a fixed table of common services (`PORT_CLASSES`
+and `PORT_SERVICES` in `sg_review.py`). A class names what a port usually
+carries, not what listens on it.
+
+**Extract rule.** This runs in the page, without the network. It groups the
+refused sources listed by the first security group of the interface that
+refused them, the protocol and the port. It covers each group's ticked sources
+with the fewest CIDR blocks that hold exactly those addresses. A /31 is used
+only when both addresses were refused, so it never adds an address that was not
+seen. It writes one `authorize-security-group-ingress` per group. Sources that a
+network ACL refused, or that a rule added since already allows, are left out,
+because a new security group rule would not change them.
+
 **Naming.** A source is internal (this account's VPCs, or `--internal`
 ranges), data centre (`--onprem`, VPN routes, other private space), AWS (from
 ip-ranges.json, with the service), SaaS (providers' published ranges, then
