@@ -3159,6 +3159,34 @@ def watch_once(sess, args, now: float | None = None) -> dict:
     return out
 
 
+def _org_watch_accounts(sess, args) -> list[dict]:
+    accounts = org_accounts(sess, getattr(args, "ou_id", None))
+    if getattr(args, "accounts", None):
+        keep = {a.strip() for a in args.accounts.split(",")}
+        accounts = [a for a in accounts if a["Id"] in keep]
+    if not accounts:
+        raise SystemExit("no active account found")
+    return accounts
+
+
+def watch_org_once(sess, args, accounts: list[dict], now: float | None = None) -> list[dict]:
+    """One watch in every account (a role assumed in each, fresh each time, as the credentials last an hour);
+    one account out of reach is logged and the rest still run."""
+    import copy
+
+    out = []
+    for a in accounts:
+        try:
+            s = _assume(sess, a["Id"], args.role_name, args.external_id)
+            one = copy.copy(args)
+            one.name = a.get("Name", "") or args.name
+            out.append(watch_once(s, one, now))
+        except (ClientError, BotoCoreError) as exc:
+            LOG.warning("%s (%s) not watched: %s", a["Id"], a.get("Name", ""), describe_error(exc))
+            out.append({"account": a["Id"], "error": describe_error(exc)[:300]})
+    return out
+
+
 def cmd_watch(args) -> int:
     if args.min_severity not in ATTENTION:
         raise SystemExit(f"--min-severity must be one of {', '.join(ATTENTION)}")
@@ -3167,9 +3195,16 @@ def cmd_watch(args) -> int:
     if not args.offline:
         sg_ipintel.refresh()
     sess = _session(args.profile)
+    across = getattr(args, "ou_id", None) or getattr(args, "org", False)
+    accounts = _org_watch_accounts(sess, args) if across else []
+    if across:
+        LOG.info("watching %d account(s) for rejected traffic", len(accounts))
     while True:
         try:
-            watch_once(sess, args)
+            if across:
+                watch_org_once(sess, args, accounts)
+            else:
+                watch_once(sess, args)
         except (ClientError, BotoCoreError, OSError, ValueError) as exc:  # a loop must survive one bad hour
             if not args.loop:
                 raise
@@ -3283,6 +3318,27 @@ def org_accounts(sess, ou_id: str | None) -> list[dict]:
     return sorted((a for a in out if a.get("Status") == "ACTIVE"), key=lambda a: a.get("Name", ""))
 
 
+ORG_REFUSED = 200  # refused sources per account in the roll-up (the account's own page has them all)
+
+
+def refused_rows(account: str, name: str, rep: dict, limit: int = ORG_REFUSED) -> list[dict]:
+    """One account's refused sources, flat, for the OU-wide view: who was turned away, where, and the verdict."""
+    out = []
+    for r in (rep.get("refused") or [])[:limit]:
+        t = (r.get("targets") or [{}])[0]
+        v = r.get("verdict") or {}
+        pc = t.get("pc") or {}
+        out.append({"account": account, "account_name": name, "src": r["src"], "name": r.get("name", ""),
+                    "cat": r.get("cat", ""), "type": r.get("group", ""), "flows": r.get("flows", 0),
+                    "first": r.get("first"), "last": r.get("last"), "ports": r.get("ports", 0),
+                    "dsts": r.get("dsts", 0), "sev": v.get("sev", "info"), "verdict": v.get("label", ""),
+                    "reason": v.get("reason", ""), "region": t.get("region", ""), "eni": t.get("eni", ""),
+                    "kind": t.get("kind", ""), "dst": t.get("dst", ""), "proto": t.get("proto", ""),
+                    "port": t.get("port"), "port_class": pc.get("name", ""), "risky": bool(pc.get("risky")),
+                    "groups": t.get("groups", [])})  # fmt: skip
+    return out
+
+
 def org_row(account: str, name: str, rep: dict | None, status: str, page: str = "", error: str = "") -> dict:
     """One account in the roll-up: its verdict counts and its "Needs attention" items."""
     rep = rep or {}
@@ -3292,7 +3348,8 @@ def org_row(account: str, name: str, rep: dict | None, status: str, page: str = 
             "verdicts": (rep.get("summary") or {}).get("verdicts", {}),
             "refused": (rep.get("summary") or {}).get("refused", 0),
             "items": [{k: it.get(k) for k in ("sev", "label", "title", "target", "reason", "action", "flows", "srcs")}
-                      for it in att]}  # fmt: skip
+                      for it in att],
+            "refused_rows": refused_rows(account, name, rep) if rep else []}  # fmt: skip
 
 
 def org_summary(rows: list[dict]) -> dict:
@@ -3304,9 +3361,12 @@ def org_summary(rows: list[dict]) -> dict:
     def worst(r):
         return tuple(-r["attention"].get(s, 0) for s in ATTENTION)
 
+    refused = sorted((x for r in rows for x in r.get("refused_rows") or []),
+                     key=lambda x: (SEV_RANK.get(x["sev"], 9), -x["flows"]))  # fmt: skip
     return {"schema": "sg-tightener.review-org/v1",
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "accounts": len(rows), "failed": sum(1 for r in rows if r["status"] != "ok"), "attention": tot,
+            "refused_total": sum(r.get("refused", 0) for r in rows), "refused": refused,
             "rows": sorted(rows, key=lambda r: (r["status"] != "ok", worst(r), r["name"]))}  # fmt: skip
 
 
@@ -3347,6 +3407,11 @@ ul {{ margin: 0; padding-left: 18px; }} li {{ margin-bottom: 6px; }}
   border: 1px solid color-mix(in srgb, var(--p) 45%, transparent); background: color-mix(in srgb, var(--p) 14%, var(--surface));
   color: color-mix(in srgb, var(--p) 75%, var(--ink)); }}
 a {{ color: inherit; font-weight: 600; }}
+.tools {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 12px; }}
+input[type=search], select {{ font: inherit; padding: 6px 10px; border: 1px solid var(--grid); border-radius: 8px;
+  background: var(--surface); color: var(--ink); min-width: 0; }}
+input[type=search] {{ flex: 1 1 260px; }}
+.scroll {{ overflow-x: auto; }} code {{ font-size: 12.5px; }} h2 {{ margin-top: 32px; }}
 @media (max-width: 700px) {{ td:nth-child(2), th:nth-child(2) {{ display: none; }} }}
 </style></head><body><main>
 <h1>Security Group Review, all accounts</h1>
@@ -3355,6 +3420,43 @@ Needs attention across them: {head}. Each account's page has the evidence, the v
 <table><thead><tr><th>Account</th><th>Needs attention</th><th>Worst items</th></tr></thead><tbody>
 {"".join(rows)}
 </tbody></table>
+<h2 id="refused">All rejected traffic</h2>
+<p class="muted">{summary.get("refused_total", 0):,} refused sources across the accounts read; the {len(summary.get("refused") or []):,} busiest
+(up to {ORG_REFUSED} per account) are below, worst verdict first. Filter by any text: account, source, owner, port, verdict.</p>
+<div class="tools"><input id="q" type="search" placeholder="Filter: account, source, owner, port, verdict…" aria-label="Filter rejected traffic">
+<select id="sev" aria-label="Severity"><option value="">Every severity</option><option>critical</option><option>high</option>
+<option>medium</option><option>low</option><option>info</option></select>
+<label class="small"><input id="risky" type="checkbox"> risky ports only</label> <span id="n" class="muted small"></span></div>
+<div class="scroll"><table id="rt"><thead><tr><th>Severity</th><th>Account</th><th>Source</th><th>Refused on</th><th>Flows</th><th>Last seen</th><th>Verdict</th></tr></thead><tbody></tbody></table></div>
+<script id="rdata" type="application/json">{_script_json(summary.get("refused") or [])}</script>
+<script>
+(() => {{
+  const rows = JSON.parse(document.getElementById("rdata").textContent);
+  const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({{"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}})[c]);
+  const col = {{critical: "var(--crit)", high: "var(--high)", medium: "var(--med)"}};
+  const when = (t) => t ? new Date(t * 1000).toISOString().slice(0, 16).replace("T", " ") : "";
+  const proto = {{"6": "tcp", "17": "udp", "1": "icmp"}};
+  const tb = document.querySelector("#rt tbody");
+  const draw = () => {{
+    const q = document.getElementById("q").value.toLowerCase().trim();
+    const sev = document.getElementById("sev").value;
+    const risky = document.getElementById("risky").checked;
+    const shown = rows.filter((r) => (!sev || r.sev === sev) && (!risky || r.risky) && (!q ||
+      [r.account, r.account_name, r.src, r.name, r.type, r.port, r.port_class, r.verdict, r.reason, r.kind, r.region, r.eni, r.dst]
+        .join(" ").toLowerCase().includes(q)));
+    tb.innerHTML = shown.slice(0, 2000).map((r) => `<tr><td><span class="pill" style="--p:${{col[r.sev] || "var(--muted)"}}">${{esc(r.sev)}}</span></td>
+      <td>${{esc(r.account_name || r.account)}}<div class="muted small"><code>${{esc(r.account)}}</code></div></td>
+      <td><code>${{esc(r.src)}}</code><div class="muted small">${{esc(r.name)}}${{r.type ? " · " + esc(r.type) : ""}}</div></td>
+      <td>${{esc(proto[r.proto] || r.proto)}} ${{esc(r.port)}}${{r.risky ? " ⚠" : ""}} <span class="muted small">${{esc(r.port_class)}}</span>
+        <div class="muted small">${{esc(r.kind)}} ${{esc(r.dst)}} · ${{esc(r.region)}}${{r.ports > 1 ? ` · ${{r.ports}} ports` : ""}}</div></td>
+      <td>${{Number(r.flows).toLocaleString()}}</td><td class="small">${{when(r.last)}}</td>
+      <td>${{esc(r.verdict)}}<div class="muted small">${{esc(r.reason)}}</div></td></tr>`).join("");
+    document.getElementById("n").textContent = `${{shown.length.toLocaleString()}} of ${{rows.length.toLocaleString()}}`;
+  }};
+  for (const id of ["q", "sev", "risky"]) document.getElementById(id).addEventListener("input", draw);
+  draw();
+}})();
+</script>
 <p class="muted small">Written {e(summary["generated_at"])} by sg-tightener sg_review.py org.</p>
 </main></body></html>
 """
@@ -3499,6 +3601,11 @@ def _build_parser() -> argparse.ArgumentParser:
     w.add_argument("--every", type=float, default=5, help="minutes between watches with --loop (default 5)")
     w.add_argument("--alerts", default="refused", help="what to post: refused (rejected traffic only, the default) "
                    "or all (adds exposure, rules opened wide, hygiene, PrivateLink)")
+    w.add_argument("--ou-id", help="watch every active account in this OU and the OUs under it (a role assumed in each)")
+    w.add_argument("--org", action="store_true", help="watch every active account in the organisation")
+    w.add_argument("--accounts", help="only these comma-separated account ids (with --ou-id or --org)")
+    w.add_argument("--role-name", default="OrganizationAccountAccessRole", help="role to assume in each account")
+    w.add_argument("--external-id", default="", help="external id for the role, if it needs one")
     w.add_argument("--no-tail", dest="tail", action="store_false", help="read only to the last full hour (alerts "
                    "up to 75 minutes late, about half the cost)")
     w.set_defaults(fn=cmd_watch)

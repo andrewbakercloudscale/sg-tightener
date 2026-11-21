@@ -262,6 +262,33 @@ def test_org_rolls_up_every_account_and_names_the_one_not_read(monkeypatch, tmp_
     index = (out / "index.html").read_text()
     assert f"sg-review-{demo.ACCOUNT}.html" in index and "locked" in index
     assert (out / f"sg-review-{demo.ACCOUNT}.html").exists()
+    # every rejected source across the OU, in one list, worst verdict first
+    assert roll["refused"] and roll["refused_total"] >= len(roll["refused"])
+    first = roll["refused"][0]
+    assert first["account"] == demo.ACCOUNT and first["account_name"] == "main" and first["src"] and first["sev"] != "info"
+    ranks = [sg_review.SEV_RANK[r["sev"]] for r in roll["refused"]]
+    assert ranks == sorted(ranks)
+    assert "All rejected traffic" in index and 'id="rdata"' in index and "</script><" not in index.split('id="rdata"')[1][:20]
+
+
+def test_watch_across_an_ou_watches_each_account_and_survives_one_out_of_reach(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    seen = []
+
+    def assume(sess, account, role, external_id=""):
+        if account == "222":
+            raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "AssumeRole")
+        return account
+
+    monkeypatch.setattr(sg_review, "_assume", assume)
+    monkeypatch.setattr(sg_review, "watch_once", lambda s, a, now=None: seen.append((s, a.name)) or {"account": s})
+
+    class A:
+        name, role_name, external_id = "", "R", ""
+
+    out = sg_review.watch_org_once(object(), A(), [{"Id": "111", "Name": "prod"}, {"Id": "222", "Name": "locked"}])
+    assert seen == [("111", "prod")] and "AccessDenied" in out[1]["error"]
 
 
 # ------------------------------------------------------------------------------------------- PrivateLink
