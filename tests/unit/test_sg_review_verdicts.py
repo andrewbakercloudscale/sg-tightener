@@ -165,12 +165,13 @@ def test_watch_reads_the_gap_posts_new_items_and_keeps_quiet_next_time(monkeypat
     sg_review.save(demo.build_doc(demo.ACCOUNT, time.time(), 7))
     asked = []
     monkeypatch.setattr(sg_review, "plan_read", lambda sess, doc, regions, days, now, say=None: asked.append(days) or [])
+    monkeypatch.setattr(sg_review, "plan_tail", lambda doc, regions, now: asked.append("tail") or [])
     posted = []
     monkeypatch.setattr(sg_review, "post_slack", lambda url, text: posted.append((url, text)))
     argv = ["--data-dir", str(ipintel.DATA_DIR), "watch", "--regions", demo.REGION, "--offline",
             "--slack", "https://hooks.slack.test/x", "--min-severity", "critical"]  # fmt: skip
     assert sg_review.main(argv) == 0
-    assert asked == [1]
+    assert asked == [1, "tail"]
     assert len(posted) == 1 and "critical".upper() in posted[0][1]
     saved = json.loads((ipintel.DATA_DIR / "review" / f"{demo.ACCOUNT}.watch.json").read_text())
     assert saved["sent"]
@@ -178,10 +179,46 @@ def test_watch_reads_the_gap_posts_new_items_and_keeps_quiet_next_time(monkeypat
     assert len(posted) == 1  # nothing new: nothing posted
 
 
+def test_watch_posts_only_rejected_traffic_unless_asked_for_all(monkeypatch):
+    sg_review.save(demo.build_doc(demo.ACCOUNT, time.time(), 7))
+    monkeypatch.setattr(sg_review, "plan_read", lambda *a, **k: [])
+    monkeypatch.setattr(sg_review, "plan_tail", lambda *a, **k: [])
+    posted = []
+    monkeypatch.setattr(sg_review, "fresh_items", lambda items, *a, **k: posted.append(items) or [])
+
+    class A:
+        regions, name, max_cost, min_severity, repeat, alerts = demo.REGION, "", 0.5, "medium", 24, "refused"
+        slack = email_to = names = None
+        onprem = internal = ""
+
+    sg_review.watch_once(_Sess(demo.ACCOUNT), A())
+    A.alerts = "all"
+    sg_review.watch_once(_Sess(demo.ACCOUNT), A())
+    refused, every = posted
+    assert refused and {it["kind"] for it in refused} == {"refused"}
+    assert {"drift", "posture"} <= {it["kind"] for it in every}
+
+
+def test_tail_reads_to_five_minutes_ago_and_gives_way_to_the_hourly_read():
+    now = 1_800_000_000 + 40 * 60 + 17  # 40 minutes past an hour
+    doc = {"regions": {"r": {"query_sets": [{"format": "f", "groups": ["g"]}], "snapshot": {"vpcs": []}}},
+           "chunks": []}
+    (t,) = sg_review.plan_tail(doc, ["r"], now)
+    assert t[0] == "r" and t[1] == sg_review.read_end(now) and t[2] == (now - 300) // 60 * 60 and t[5] is True
+    doc["chunks"].append({"r": "r", "s": t[1], "e": t[2], "st": "ok", "tail": True})
+    (t2,) = sg_review.plan_tail(doc, ["r"], now + 120)  # the next watch starts where this one stopped
+    assert t2[1] == t[2]
+    assert sg_review.plan_tail(doc, ["r"], now + 30) == []  # under a minute new: nothing to read
+    later = now + 3600  # the hourly read now covers the tail: it goes, and the tail starts at the new hour
+    (t3,) = sg_review.plan_tail(doc, ["r"], later)
+    assert not [c for c in doc["chunks"] if c.get("tail")] and t3[1] == sg_review.read_end(later)
+
+
 def test_watch_skips_a_read_over_the_cost_cap(monkeypatch):
     doc = demo.build_doc(demo.ACCOUNT, time.time(), 7)
     sg_review.save(doc)
     monkeypatch.setattr(sg_review, "plan_read", lambda *a, **k: [(demo.REGION, 0, 3600, [], [])])
+    monkeypatch.setattr(sg_review, "plan_tail", lambda *a, **k: [(demo.REGION, 3600, 4800, [], [], True)])
     monkeypatch.setattr(sg_review, "_read_cost", lambda *a: 9.0)
     monkeypatch.setattr(sg_review, "run_read", lambda *a, **k: pytest.fail("read over the cap"))
 

@@ -713,6 +713,7 @@ RANGES = {
     "6m": (180 * DAY, DAY),
 }
 LAG = 900  # flow logs reach CloudWatch up to ~10 minutes late: the newest quarter hour is left for the next read
+TAIL_LAG = 300  # watch also reads from the last full hour up to five minutes ago ("tail" slices), to alert in minutes
 WORKERS = 4
 EVIDENCE_DAYS = 30  # fewer days of flow logs than this and no rule is called unused or ready to tighten
 INSIGHTS_PER_GB = 0.005
@@ -2689,20 +2690,48 @@ def plan_read(sess, doc: dict, regions: Sequence[str], days: int, now: float, sa
             continue
         if doc.get("egress"):  # slices read before outbound was asked for are read again, with it
             doc["chunks"] = [c for c in doc["chunks"] if c["r"] != region or "egr" in c]
-        have = [(c["s"], c["e"]) for c in doc["chunks"] if c["r"] == region and c["st"] in ("ok", "cut")]
+        drop_stale_tails(doc, region, now)
+        have = [(c["s"], c["e"]) for c in doc["chunks"] if c["r"] == region and c["st"] in ("ok", "cut")
+                and not c.get("tail")]  # fmt: skip
         vpcs = _vpc_ranges(entry["snapshot"])
         tasks += [(region, s, e, qsets, vpcs) for s, e in plan(now, days, have)]
     return tasks
 
 
+def drop_stale_tails(doc: dict, region: str, now: float) -> None:
+    """Tail slices run past the last full hour. Once the hourly read reaches into them they would be counted
+    twice, so all of the region's tail slices go and the tail is read again from the new last full hour."""
+    end = read_end(now)
+    tails = [c for c in doc["chunks"] if c["r"] == region and c.get("tail")]
+    if any(c["s"] < end for c in tails):
+        doc["chunks"] = [c for c in doc["chunks"] if not (c["r"] == region and c.get("tail"))]
+
+
+def plan_tail(doc: dict, regions: Sequence[str], now: float) -> list[tuple]:
+    """The slices from the last full hour (or the last tail read) up to TAIL_LAG ago, one per region."""
+    tasks = []
+    stop = _floor(now - TAIL_LAG, 60)
+    for region in regions:
+        entry = doc["regions"].get(region) or {}
+        if not entry.get("query_sets") or entry.get("error"):
+            continue
+        drop_stale_tails(doc, region, now)
+        start = max([read_end(now)] + [c["e"] for c in doc["chunks"] if c["r"] == region and c.get("tail")])
+        if stop - start >= 60:
+            tasks.append((region, start, stop, entry["query_sets"], _vpc_ranges(entry["snapshot"]), True))
+    return tasks
+
+
 def run_read(sess, doc: dict, tasks: list[tuple], days: int, now: float, cancelled=lambda: False) -> dict:
-    """Read the slices into ``doc`` (saved every dozen slices and at the end)."""
+    """Read the slices into ``doc`` (saved every dozen slices and at the end). A task with a sixth element
+    True is a tail slice: its chunks are marked so the hourly read replaces them."""
     lock = threading.Lock()
     clients: dict = {}
     state = {"done": 0, "bytes": 0}
 
     def one(task):
-        region, s, e, qsets, vpcs = task
+        region, s, e, qsets, vpcs, *rest = task
+        tail = bool(rest and rest[0])
         if cancelled():
             return
         with lock:
@@ -2710,6 +2739,8 @@ def run_read(sess, doc: dict, tasks: list[tuple], days: int, now: float, cancell
                 region, sess.client("logs", region_name=region, config=BOTO_CONFIG)
             )
         for chunk in read_chunk(logs, region, s, e, qsets, vpcs, cancelled, bool(doc.get("egress"))):
+            if tail:
+                chunk["tail"] = True
             with lock:
                 doc["chunks"].append(chunk)
                 state["bytes"] += chunk["b"]
@@ -2856,7 +2887,7 @@ def cmd_read(args) -> int:
         LOG.info("nothing to read: the last %d days are already read in %s", args.days, ", ".join(regions))
         return 0
     est = estimate(doc, account, regions, now)
-    hours = sum(e - s for _, s, e, _, _ in tasks) / HOUR
+    hours = sum(t[2] - t[1] for t in tasks) / HOUR
     cost = est["rate"] * hours * HOUR / 1e9 * INSIGHTS_PER_GB if est["rate"] is not None else None
     LOG.info("account %s%s: %d slices, %.0f hours of flow logs in %d region(s), %s (Logs Insights, about "
              "US$0.005 a GB scanned)", account, f" ({name})" if name else "", len(tasks), hours,
@@ -3056,7 +3087,7 @@ def send_email(host: str, port: int, sender: str, to: list[str], subject: str, t
 
 def _read_cost(doc: dict, account: str, regions: list[str], tasks: list[tuple], now: float) -> float | None:
     est = estimate(doc, account, regions, now)
-    hours = sum(e - s for _, s, e, _, _ in tasks) / HOUR
+    hours = sum(t[2] - t[1] for t in tasks) / HOUR
     return est["rate"] * hours * HOUR / 1e9 * INSIGHTS_PER_GB if est["rate"] is not None else None
 
 
@@ -3064,8 +3095,12 @@ def _report_opts(args) -> tuple[str, str, list]:
     return getattr(args, "onprem", ""), getattr(args, "internal", ""), load_names(getattr(args, "names", None))
 
 
+ALERTS = ("refused", "all")
+
+
 def watch_once(sess, args, now: float | None = None) -> dict:
-    """Read what is new in the last day, build the last 24 hours and post the items not posted yet."""
+    """Read what is new in the last day, up to five minutes ago, build the last 24 hours and post the items not
+    posted yet: by default only rejected traffic (--alerts refused); --alerts all adds exposure, drift and the rest."""
     now = now or time.time()
     regions = [r.strip() for r in args.regions.split(",") if r.strip()]
     account = with_backoff(lambda: sess.client("sts", config=BOTO_CONFIG).get_caller_identity())["Account"]
@@ -3073,6 +3108,8 @@ def watch_once(sess, args, now: float | None = None) -> dict:
     if args.name:
         doc["name"] = args.name
     tasks = plan_read(sess, doc, regions, 1, now, say=LOG.debug)
+    if getattr(args, "tail", True):
+        tasks += plan_tail(doc, regions, now)
     save(doc)
     out = {"account": account, "read": 0, "bytes": 0, "items": 0, "posted": 0, "skipped": ""}
     if tasks:
@@ -3089,6 +3126,8 @@ def watch_once(sess, args, now: float | None = None) -> dict:
     onprem, internal, names = _report_opts(args)
     rep = build(doc, "24h", onprem, internal, names)
     items = rep.get("attention", [])
+    if getattr(args, "alerts", "refused") == "refused":
+        items = [it for it in items if it.get("kind") == "refused"]
     out["items"] = len(items)
     state = load_watch(account)
     new = fresh_items(items, state, now, args.min_severity, args.repeat * HOUR)
@@ -3123,6 +3162,8 @@ def watch_once(sess, args, now: float | None = None) -> dict:
 def cmd_watch(args) -> int:
     if args.min_severity not in ATTENTION:
         raise SystemExit(f"--min-severity must be one of {', '.join(ATTENTION)}")
+    if getattr(args, "alerts", "refused") not in ALERTS:
+        raise SystemExit(f"--alerts must be one of {', '.join(ALERTS)}")
     if not args.offline:
         sg_ipintel.refresh()
     sess = _session(args.profile)
@@ -3455,7 +3496,11 @@ def _build_parser() -> argparse.ArgumentParser:
     w.add_argument("--repeat", type=float, default=24, help="post an item still open again after this many hours (default 24)")
     w.add_argument("--max-cost", type=float, default=0.50, help="skip a read estimated above this many US$ (default 0.50)")
     w.add_argument("--loop", action="store_true", help="keep running, once every --every minutes")
-    w.add_argument("--every", type=float, default=60, help="minutes between watches with --loop (default 60)")
+    w.add_argument("--every", type=float, default=5, help="minutes between watches with --loop (default 5)")
+    w.add_argument("--alerts", default="refused", help="what to post: refused (rejected traffic only, the default) "
+                   "or all (adds exposure, rules opened wide, hygiene, PrivateLink)")
+    w.add_argument("--no-tail", dest="tail", action="store_false", help="read only to the last full hour (alerts "
+                   "up to 75 minutes late, about half the cost)")
     w.set_defaults(fn=cmd_watch)
     g.add_argument("--role-name", default="OrganizationAccountAccessRole", help="role to assume in each account")
     g.add_argument("--external-id", default="", help="external id for the role, if it needs one")
