@@ -68,7 +68,8 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
         "sg-0nlb0000000000010": {"name": "payments-api-nlb", "vpc": "vpc-0demo", "tag": "",
                                  "rules": [rule("6", 443, 443, ["10.0.0.0/8"])]},
         "sg-0ops0000000000006": {"name": "ops-ssh", "vpc": "vpc-0demo", "tag": "",
-                                 "rules": [rule("6", 22, 22, ["10.200.0.0/16"], v6=["2c0f:fb50::/32"])]},
+                                 "rules": [rule("6", 22, 22, ["10.200.0.0/16"], v6=["2c0f:fb50::/32"]),
+                                           rule("6", 22, 22, ["0.0.0.0/0"], {"0.0.0.0/0": "debug, remove after"})]},
         "sg-0old0000000000007": {"name": "unused-sg", "vpc": "vpc-0demo", "tag": "",
                                  "rules": [rule("-1", 0, 65535, ["10.0.0.0/8"])]},
         "sg-0def000000000011": {"name": "default", "vpc": "vpc-0demo", "tag": "",
@@ -161,6 +162,8 @@ def history(now: float) -> dict:
              "sg-0bat0000000000005", "added": [["6", 8080, 8080, "10.0.0.0/8"]], "removed": [], "unknown": False},
             {"t": now - 4 * DAY - 5 * HOUR, "name": "RevokeSecurityGroupIngress", "who": "jsmith", "group":
              "sg-0app0000000000001", "added": [], "removed": [["6", 8443, 8443, "10.40.0.0/16"]], "unknown": False},
+            {"t": now - 2 * HOUR, "name": "AuthorizeSecurityGroupIngress", "who": "contractor-ops", "ip": "41.13.7.200",
+             "group": "sg-0ops0000000000006", "added": [["6", 22, 22, "0.0.0.0/0"]], "removed": [], "unknown": False},
         ],
     }  # fmt: skip
 

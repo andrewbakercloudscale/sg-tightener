@@ -539,6 +539,34 @@ def _perm_entries(perms) -> list[list]:
     return out
 
 
+def _perm_entries6(perms) -> list[list]:
+    """[proto, from, to, range] for each IPv6 range in CloudTrail's ipPermissions (kept apart from the IPv4
+    entries the rule history works back through)."""
+    out = []
+    for p in _items(perms):
+        r = _rule({"IpProtocol": p.get("ipProtocol"), "FromPort": p.get("fromPort"), "ToPort": p.get("toPort")})
+        for x in _items(p.get("ipv6Ranges")):
+            if x.get("cidrIpv6"):
+                out.append([r["proto"], r["from"], r["to"], x["cidrIpv6"]])
+    return out
+
+
+def _modified_to(inner: dict) -> list[list]:
+    """What ModifySecurityGroupRules set each rule to: [proto, from, to, range, rule id]."""
+    out = []
+    v = inner.get("SecurityGroupRule") or inner.get("securityGroupRule")
+    rows = _items(v) if isinstance(v, dict) and "items" in v else v if isinstance(v, list) else [v] if v else []
+    for x in rows:
+        rule = x.get("SecurityGroupRule") or x.get("securityGroupRule") or {}
+        cidr = rule.get("CidrIpv4") or rule.get("CidrIpv6") or rule.get("cidrIpv4") or rule.get("cidrIpv6")
+        if not cidr:
+            continue
+        r = _rule({"IpProtocol": rule.get("IpProtocol") or rule.get("ipProtocol"),
+                   "FromPort": rule.get("FromPort", rule.get("fromPort")), "ToPort": rule.get("ToPort", rule.get("toPort"))})
+        out.append([r["proto"], r["from"], r["to"], cidr, x.get("SecurityGroupRuleId") or x.get("securityGroupRuleId") or ""])
+    return out
+
+
 def parse_event(ev: dict) -> dict | None:
     """One CloudTrail record as {t, group, added, removed, unknown, who, name}; None for a failed call."""
     try:
@@ -558,18 +586,82 @@ def parse_event(ev: dict) -> dict | None:
             return None
     ident = doc.get("userIdentity") or {}
     who = (ident.get("arn") or ident.get("principalId") or "").split("/")[-1][:80]
-    out = {"t": t, "name": name, "who": who, "added": [], "removed": [], "unknown": False}
+    out = {"t": t, "name": name, "who": who, "added": [], "removed": [], "unknown": False,
+           "ip": (doc.get("sourceIPAddress") or "")[:60]}
     if name == "ModifySecurityGroupRules":
         inner = req.get("ModifySecurityGroupRulesRequest") or req
         out["group"] = inner.get("GroupId") or inner.get("groupId") or ""
         out["unknown"] = True  # the rule's earlier value is not in the event
+        out["set"] = _modified_to(inner)
         return out
     out["group"] = req.get("groupId") or ""
     entries = _perm_entries(req.get("ipPermissions"))
     if name == "RevokeSecurityGroupIngress" and _items(req.get("securityGroupRuleIds")) and not entries:
         out["unknown"] = True  # revoked by rule id: which range it was is not in the event
     out["added" if name == "AuthorizeSecurityGroupIngress" else "removed"] = entries
+    if name == "AuthorizeSecurityGroupIngress":
+        out["added6"] = _perm_entries6(req.get("ipPermissions"))
     return out if out["group"] else None
+
+
+# --------------------------------------------------------------------------------------------- drift
+DRIFT_WINDOW = 86400  # rule changes this recent are "new": watch, run hourly, posts each once
+
+
+def drift_findings(doc: dict, now: float, window: float = DRIFT_WINDOW) -> list[dict]:
+    """Rules opened wide in the last ``window``: 0.0.0.0/0 or ::/0 (critical on a risky port, high on others,
+    medium on a web port), an internet range of a /16 or wider (high on a risky port, else medium), or a private
+    /8 on a risky port (medium). Each names who, from where, and the command that takes it back out."""
+    out = []
+    for region, x in sorted(doc["regions"].items()):
+        groups = (x.get("snapshot") or {}).get("groups") or {}
+        for ev in (x.get("history") or {}).get("events") or []:
+            if ev["t"] < now - window:
+                continue
+            entries = [(*e, "") for e in ev.get("added") or []] + [(*e, "") for e in ev.get("added6") or []]
+            entries += [tuple(e) for e in ev.get("set") or []]
+            for proto, lo, hi, cidr, rule_id in entries:
+                if str(cidr).startswith("pl-"):
+                    continue
+                try:
+                    net = ipaddress.ip_network(cidr, strict=False)
+                except ValueError:
+                    continue
+                rule = {"proto": str(proto), "from": lo, "to": hi}
+                pc = rule_port_class(rule)
+                risky = pc["risky"] or pc["cls"] == "all"
+                if net.prefixlen == 0:
+                    sev = "critical" if risky else "medium" if pc["cls"] == "web" else "high"
+                elif not net.is_private and net.num_addresses >= (65536 if net.version == 4 else 2 ** 96):
+                    sev = "high" if risky else "medium"
+                elif net.is_private and net.version == 4 and net.prefixlen <= 8 and risky:
+                    sev = "medium"
+                else:
+                    continue
+                gid = ev["group"]
+                gname = (groups.get(gid) or {}).get("name") or gid
+                ports = ports_label(rule)
+                cli = (f"aws ec2 revoke-security-group-ingress --region {region} --group-id {gid} "
+                       f"--security-group-rule-ids {rule_id}" if rule_id else
+                       f"aws ec2 revoke-security-group-ingress --region {region} --group-id {gid} "
+                       f"--ip-permissions '{_perm_arg(str(proto), lo, hi, cidr)}'")  # fmt: skip
+                still = any(cidr in (r.get("cidrs") or []) + (r.get("cidrs6") or []) and r["from"] <= lo <= r["to"]
+                            for r in (groups.get(gid) or {}).get("rules") or [])  # fmt: skip
+                if not still:
+                    sev = "low"  # already taken back out: shown, not alerted
+                out.append({
+                    **_pl_item("drift-wide", sev, "Opened wide",
+                               f"{ev['who'] or 'Someone'} opened {gname} to {cidr} on {ports}",
+                               f"{ev['name']} at {_stamp(ev['t'])} UTC by {ev['who'] or 'an unknown principal'}"
+                               + (f" from {ev['ip']}" if ev.get("ip") else "")
+                               + f": {cidr} ({net.num_addresses:,} addresses) on {pc['svc']}."
+                               + (" It is still there." if still else " It has since been removed."),
+                               "Ask whoever made the change why; take it out unless it is meant and approved, and "
+                               "narrow it to the addresses that need it.",
+                               region, gname, cli if still else "", group=gid, target=f"{ports} from {cidr}"),
+                    "kind": "drift", "event": {"t": ev["t"], "group": gid, "who": ev["who"]}, "still": still})
+    out.sort(key=lambda it: (SEV_RANK[it["sev"]], -it["event"]["t"]))
+    return out
 
 
 def rule_history(session, region: str, now: datetime, days: int = HISTORY_DAYS) -> dict:
@@ -1333,7 +1425,9 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         for (eni, proto, port) in a["targets"]:
             inet_in.setdefault((eni, proto, port), set()).add(src)
     posture = posture_findings(doc, inet_in, egress_seen, lab)
-    attention = sorted(attention + [p for p in privatelink + posture if p["sev"] in ATTENTION],
+    drift = drift_findings(doc, end + LAG)
+    attention = sorted([p for p in drift if p["sev"] in ATTENTION] + attention
+                       + [p for p in privatelink + posture if p["sev"] in ATTENTION],
                        key=lambda it: SEV_RANK[it["sev"]])  # fmt: skip
     for m in markers:
         m["caused"] = sorted({src for src, v in verdicts.items() if (v.get("event") or {}).get("t") == m["t"]
@@ -1414,6 +1508,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         "attention": attention,
         "privatelink": privatelink,
         "posture": posture,
+        "drift": drift,
         "egress_read": {"slices": egress_read, "on": bool(doc.get("egress"))},
         "summary": {
             "privatelink": {k: sum(1 for p in privatelink if p["sev"] == k) for k in SEVERITIES},
