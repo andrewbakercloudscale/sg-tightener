@@ -7,6 +7,7 @@
       "Action": [
         "cloudtrail:LookupEvents",
         "ec2:DescribeFlowLogs",
+        "ec2:DescribeInstances",
         "ec2:DescribeNetworkAcls",
         "ec2:DescribeNetworkInterfaces",
         "ec2:DescribeRegions",
@@ -56,7 +57,9 @@
         "ec2:RevokeSecurityGroupIngress",
         "ec2:AuthorizeSecurityGroupEgress",
         "ec2:RevokeSecurityGroupEgress",
-        "ec2:CreateSecurityGroup"
+        "ec2:CreateSecurityGroup",
+        "ec2:ModifyNetworkInterfaceAttribute",
+        "ec2:CreateTags"
       ],
       "Resource": "*"
     }

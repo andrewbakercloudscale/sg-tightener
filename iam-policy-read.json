@@ -7,6 +7,7 @@
       "Action": [
         "cloudtrail:LookupEvents",
         "ec2:DescribeFlowLogs",
+        "ec2:DescribeInstances",
         "ec2:DescribeNetworkAcls",
         "ec2:DescribeNetworkInterfaces",
         "ec2:DescribeRegions",

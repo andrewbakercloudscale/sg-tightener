@@ -17,15 +17,23 @@ same database and the same rules.
 
 | Tab | What it shows and does |
 |---|---|
-| **Overview** | Every account and region: groups, rules, changes waiting to be applied, when AWS was last read. The approvals mode, who you are acting as, and whether the audit trail's hash chain is intact |
-| **Security groups** | Pick an account and region. Every group and rule, marked *to add* (approved, not in AWS yet) or *to remove* (in AWS, not wanted). **Propose a change**, **Propose removing** a rule, **Reconcile with AWS**, **Apply approved changes** (press twice), **Propose keeping what AWS holds** |
-| **Change requests** | Requests waiting for approval, approved, applied, rejected, withdrawn. Approve, or reject with a note, someone else's request; withdraw your own. Apply an approved one |
+| **Overview** | Every account and region: its **mode** (surveillance or enforce), groups, rules, assets, changes waiting to be applied, **whether this identity can apply there** (with a **Check** button: a DryRun of every write, nothing changes), when AWS was last read. The approvals mode, who you are acting as, and whether the audit trail's hash chain is intact |
+| **Security groups** | Pick an account and region. Every group and rule, marked *to add* (approved, not in AWS yet) or *to remove* (in AWS, not wanted). **Propose a change**, **Propose removing** a rule, **Reconcile with AWS**, **Apply approved changes** (press twice; off in surveillance mode), **Propose keeping what AWS holds**. Below, every **asset** (network interface): what it is attached to, its addresses and groups, whether it can have a group of its own (auto scaling, EKS, ECS and AWS-managed interfaces cannot), and its **History** of group changes |
+| **Change requests** | Requests waiting for approval, approved, applied, rejected, withdrawn. Approve, or reject with a note, someone else's request; withdraw your own. Apply an approved one. An **asset request** (from `sg_db.py asset-propose`) shows the interface, the group it gets, the rules narrowed and why, and once approved **Create the group and move** the interface |
 | **Audit trail** | Every entry, newest first, searchable (who, why, ticket, group, rule) and filtered by time and origin. Changes made outside the tool are red, with who made them from CloudTrail |
 | **Rejected traffic** | Every source the security groups and network ACLs refused, in every account `sg_review.py` has read, worst verdict first. Filter by account, severity, risky ports and text. **Propose allowing** opens the change form with the source, port and a reason filled in |
 
 ![Change requests: approve or reject someone else's](images/sg-console-requests.png)
 
 ![Rejected traffic across every account read](images/sg-console-rejected-traffic.png)
+
+## Surveillance and enforce
+
+An account in **surveillance** mode (the default) is reported on and requests are recorded, but
+nothing is applied: the Security groups tab says so and Apply is off. When the organisation is ready,
+press **Check** on the Overview (or `sg_db.py check`), then
+`sg_db.py mode enforce --account ID --reason "…"`. Setting the mode is deliberately a command, not a
+button: it is the decision to let the tool change AWS.
 
 ## Two-person approval
 

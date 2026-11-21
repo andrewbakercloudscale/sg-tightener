@@ -89,6 +89,73 @@ python sg_db.py apply --region eu-west-1      # request 12 is marked applied onc
 
 The [console](console.md) does all of this from a web page.
 
+## Surveillance and enforce modes
+
+Every account is in one of two modes (`modes` table; account `*` is the default for the rest):
+
+| Mode | What happens |
+|---|---|
+| **surveillance** (the default) | Everything is read and reported: over-provisioned rules, what they should be (`sg_tightener plan`, `asset-plan`), change requests. **Nothing is applied**: `apply`, `exec`, `create-group`, `sg_tightener`/`sg_compact apply`, `sg_extend` and `asset-apply` refuse and say so. `exec` records the request and says "recorded, not applied" |
+| **enforce** | Approved changes can be applied, per account, per group or per asset |
+
+```bash
+python sg_db.py mode show                                  # every account's mode
+python sg_db.py check --regions eu-west-1 --assets         # can this identity apply here? (DryRun)
+python sg_db.py mode enforce --account 123456789012 --reason "CAB-17: payments may apply"
+python sg_db.py mode surveillance --all --reason "default for every other account"
+```
+
+- `mode enforce --account ID` needs a permission check for that account first, and refuses when the
+  last one failed (`--anyway` to override, recorded). Every mode change is audited (`mode-enforce`,
+  `mode-surveillance`).
+- `revert` and `asset-revert` work in either mode: undoing is always allowed.
+
+## Checking permissions first (DryRun)
+
+`sg_db.py check --regions R [--ou-id …] [--assets] [--sample N]` calls each write sg-tightener makes,
+authorize and revoke, ingress and egress, on every group, as an EC2 **DryRun**: AWS answers whether
+the call would be allowed, taking every policy into account (identity, permission boundary, SCPs, tag
+and VPC conditions), and nothing changes. `--assets` also checks creating a group, swapping an
+interface's groups and tagging. The result is stored (`permissions` table, audited
+`permissions-checked`) and shown on the console's Overview. Exit 1 when a call would be refused, 2 when
+an account could not be reached.
+
+`apply` (and the console's Apply) runs the same check on the groups it is about to change and stops
+before changing anything when a call would be refused: a change is never left half done for want of a
+permission.
+
+## Assets: an audit trail per network interface, and a group of its own
+
+`import` and `reconcile` record every network interface (`assets` table): the instance it belongs to,
+its auto scaling group or EKS cluster, its addresses (IPv4 and IPv6) and its groups. A change to an
+asset's groups is an audit entry of its own (`asset-groups-changed`, with before and after, external
+when made outside the tool), and interfaces that came and went (auto scaling) are one entry together.
+
+```bash
+python sg_db.py assets --region eu-west-1                     # every interface, and whether it can have its own group
+python sg_db.py asset-log --instance i-0abc…                   # every group change on that instance's interfaces
+```
+
+To tighten **one asset on its own** without touching the shared group:
+
+```bash
+python sg_db.py asset-plan --region eu-west-1 --eni eni-0db1… --approved approved.json   # writes asset-plan.json
+python sg_db.py asset-propose --plan asset-plan.json --reason "only the API reads the database"
+python sg_db.py approve 14                                     # a different person
+python sg_db.py asset-apply 14                                 # enforce mode only
+python sg_db.py asset-revert --region eu-west-1 --eni eni-0db1… --reason "…"   # back to the groups it had
+```
+
+- The plan merges the rules of the asset's groups and keeps only the sources **that reached this
+  interface** in the flow logs (plus hand-added addresses in `approved.json`), signed like every plan.
+- `asset-apply` creates `sgt-<eni>-<time>` in the same VPC with exactly those rules, then moves the
+  interface onto it (`asset-group-created`, `asset-swapped`). If a rule cannot be added, the interface
+  is not moved. It refuses when the interface's groups changed since the plan.
+- **Auto scaling, EKS and ECS assets are refused**: a new instance would start with the launch
+  template's groups again. Tighten the shared groups instead (every instance inherits that change), or
+  change the launch template. Load balancers, NAT gateways and other interfaces AWS manages are refused
+  too.
+
 ## Across an OU
 
 One database holds every account. `import` and `reconcile` take `--ou-id ou-…` (every active account
@@ -123,6 +190,12 @@ python sg_db.py show --region eu-west-1 --account 444455556666
 | `requests [--status pending] [--json]` | Change requests |
 | `approve ID [--note "…"]`, `reject ID --note "…"`, `cancel ID` | Decide a request (a different person), or withdraw your own |
 | `approvals on\|off --reason "…"` | Two-person approval (on by default) |
+| `mode [show\|surveillance\|enforce] (--account ID \| --all) --reason "…" [--anyway]` | Surveillance (report only, the default) or enforce (apply) |
+| `check --regions R [--ou-id …] [--assets] [--sample N]` | DryRun every write on every group: can this identity apply here? Nothing changes |
+| `assets --region R [--account ID] [--json]` | Every network interface, its groups and whether it can have its own group |
+| `asset-plan --region R (--eni E \| --instance I) --approved approved.json [--out F]` | A group of its own for one asset, from its own flows |
+| `asset-propose --plan asset-plan.json --reason "…"`, `asset-apply ID [--yes]` | Propose it; apply it once approved (enforce mode) |
+| `asset-revert --region R --eni E --reason "…"`, `asset-log (--eni E \| --instance I) [--json]` | Put the asset's groups back; its history |
 
 ---
 

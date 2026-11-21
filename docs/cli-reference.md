@@ -68,7 +68,19 @@ python sg_db.py approve   ID [--note "…"]
 python sg_db.py reject    ID --note "…"
 python sg_db.py cancel    ID
 python sg_db.py approvals on|off --reason "…"
+python sg_db.py mode      [show|surveillance|enforce] (--account ID | --all) --reason "…" [--anyway]
+python sg_db.py check     --regions R [--ou-id OU | --org | --accounts IDS] [--assets] [--sample N]
+python sg_db.py assets    --region R [--account ID] [--json]
+python sg_db.py asset-plan --region R (--eni eni-… | --instance i-…) --approved approved.json [--max-rules N] [--out asset-plan.json]
+python sg_db.py asset-propose --plan asset-plan.json --reason "…" [--ticket T]
+python sg_db.py asset-apply ID [--yes]
+python sg_db.py asset-revert --region R --eni eni-… --reason "…"
+python sg_db.py asset-log (--eni eni-… | --instance i-…) [--json]
 ```
+
+Every account starts in **surveillance** mode: everything is reported and proposed, nothing is
+applied. `mode enforce --account ID` (after a passing `check`) lets approved changes be applied there
+([modes](database.md#surveillance-and-enforce-modes), [assets](database.md#assets-an-audit-trail-per-network-interface-and-a-group-of-its-own)).
 
 `import` and `reconcile` also take `--ou-id OU`, `--org` or `--accounts IDS`, with `--role-name`
 (default `OrganizationAccountAccessRole`) and `--external-id`; `show`, `diff`, `apply`, `exec` and
@@ -86,7 +98,8 @@ python sg_db.py approvals on|off --reason "…"
 Exit codes: `reconcile` 1 when AWS changed outside the tool or the database has changes not applied;
 `diff` 1 when there is something to apply; `verify` 1 when the audit trail is broken; `apply` and
 `exec` 1 when a change failed; `reconcile` across accounts 2 when an account could not be read;
-`approve`, `reject` and `cancel` exit with an error when the rule (a different person, a note) is not met.
+`approve`, `reject` and `cancel` exit with an error when the rule (a different person, a note) is not met;
+`check` 1 when a call would be refused and 2 when an account could not be reached.
 
 `sg_tightener apply`/`revert`, `sg_compact apply`/`revert` and `sg_extend` record every change in the
 database. `apply` refuses while AWS has changes not yet reviewed (`reconcile`) or the database has

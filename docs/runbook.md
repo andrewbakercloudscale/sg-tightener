@@ -29,6 +29,10 @@ a planned tightening, a post-change check, and a live incident.
       [`iam-policy-write.json`](../iam-policy-write.json) (scoped to one VPC)
       for `apply` and `revert` during the change window. See
       [permissions.md](permissions.md).
+- [ ] **Surveillance first.** Every account starts in surveillance mode: reports, plans and change
+      requests, nothing applied. When the change board agrees, check and switch that account:
+      `sg_db.py check --regions eu-west-1 --assets` then
+      `sg_db.py mode enforce --account ID --reason "CAB-…"`.
 - [ ] **The rule quota.** The default limit is 60 inbound rules per group. If
       your account's quota is higher, pass it as `--max-rules`.
 

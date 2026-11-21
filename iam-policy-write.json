@@ -51,6 +51,35 @@
       ]
     },
     {
+      "Sid": "MoveAssetsOntoTheirOwnGroup",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:ModifyNetworkInterfaceAttribute"
+      ],
+      "Resource": [
+        "arn:aws:ec2:REGION:ACCOUNT_ID:network-interface/*",
+        "arn:aws:ec2:REGION:ACCOUNT_ID:security-group/*"
+      ],
+      "Condition": {
+        "ArnEquals": {
+          "ec2:Vpc": "arn:aws:ec2:REGION:ACCOUNT_ID:vpc/VPC_ID"
+        }
+      }
+    },
+    {
+      "Sid": "TagTheGroupsItCreates",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags"
+      ],
+      "Resource": "arn:aws:ec2:REGION:ACCOUNT_ID:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": "CreateSecurityGroup"
+        }
+      }
+    },
+    {
       "Sid": "NeverTouchProtectedGroups",
       "Effect": "Deny",
       "Action": [

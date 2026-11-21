@@ -130,6 +130,23 @@ See [the console](docs/console.md).
 
 ![The console: every rejected flow across the accounts](docs/images/sg-console-rejected-traffic.png)
 
+### Surveillance first, then apply per account, per group or per asset
+
+Every account starts in **surveillance** mode: sg-tightener reads, reports what is over-provisioned and
+what each group should be, and records change requests, but **applies nothing**. When the organisation
+is comfortable:
+
+- `sg_db.py check --regions eu-west-1 --assets` makes every write as an EC2 DryRun (nothing changes) and
+  says whether this identity, with its SSO permission set, boundaries and SCPs, can apply there.
+- `sg_db.py mode enforce --account 123456789012 --reason "CAB-17"` lets approved changes be applied in that
+  account: the whole account (`sg_db.py apply --region R`), one group (`--group sg-…`), or **one asset**.
+- **One asset**: `sg_db.py asset-plan --eni eni-…` builds a group of its own from the sources that reached
+  that interface only; once approved, `asset-apply` creates `sgt-<eni>-…` and moves the interface onto it
+  (`asset-revert` puts it back). Auto scaling, EKS and ECS assets are refused, since new instances start
+  from the launch template: tighten the shared group, which every instance inherits.
+- Every interface's groups are recorded, and every change to them is in the audit trail
+  (`sg_db.py asset-log --instance i-…`, or **History** in the console).
+
 Across an OU: `sg_db.py import|reconcile --ou-id ou-…` takes and checks every account's groups (a role
 assumed in each), `sg_review.py org --ou-id ou-…` reads their flow logs, and
 `sg_review.py watch --ou-id ou-… --loop` alerts on rejected traffic in any of them every 5 minutes.
@@ -195,6 +212,7 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
 
 | Script | Job | Writes to AWS? |
 |---|---|---|
+| [`sg_assets.py`](sg_assets.py) | Every network interface and its groups, and a group of its own for one asset from its own flows (used by `sg_db.py assets`, `asset-plan`, `asset-apply`) | Creates `sgt-<eni>-…` and moves the interface onto it, in enforce mode, once approved |
 | [`sg_console.py`](sg_console.py) | Local web console over the database: every account's groups, change requests to propose and approve, the audit trail, rejected traffic across an OU | Apply and reconcile from the page, recorded in the database |
 | [`sg_db.py`](sg_db.py) | The security group database: `import`, `reconcile` (one account or an OU), change requests (`add`/`remove`/`exec`/`propose`, `approve`/`reject`/`cancel`), `apply`, `adopt`, `create-group`, `log`, `verify` | `apply`, `exec`, `create-group`; every change recorded |
 | [`sg_tightener.py`](sg_tightener.py) | Main loop: `analyse` → `plan` → `apply` → `revert` | `apply` and `revert` only, recorded in the database |
