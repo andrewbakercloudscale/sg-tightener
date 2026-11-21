@@ -63,8 +63,38 @@ def test_round_trip_restores_the_exact_original_rules(estate, observed):
 
     manifest = json.load(open("manifest.json"))
     assert manifest["complete"] is True
+    assert manifest["integrity"]["by"].startswith("arn:aws:")  # signed by the caller
+    assert sg_tightener.verify(manifest)[0] == "ok"
     sg_tightener.revert_from_manifest("manifest.json")
     assert estate.snapshot() == before  # descriptions included
+
+
+def test_revert_refuses_an_edited_manifest(estate, observed):
+    approved = _analyse()
+    plan = _plan(approved)
+    sg_tightener.apply_plan(plan, REGION, manifest_path="manifest.json")
+    with open("manifest.json") as fh:
+        manifest = json.load(fh)
+    manifest["groups"][0]["revoked"][0]["IpRanges"] = [{"CidrIp": "0.0.0.0/0"}]
+    with open("manifest.json", "w") as fh:
+        json.dump(manifest, fh)
+    tightened = estate.snapshot()
+    with pytest.raises(SystemExit, match="SHA-256 does not match"):
+        sg_tightener.revert_from_manifest("manifest.json")
+    assert estate.snapshot() == tightened  # nothing was touched
+
+
+def test_cli_plan_is_signed_and_apply_refuses_it_once_edited(estate, observed):
+    _analyse()
+    assert sg_tightener.main(["plan", "--region", REGION, "--approved", "approved.json", "--out", "p.json"]) == 0
+    with open("p.json") as fh:
+        plan = json.load(fh)
+    assert sg_tightener.verify(plan)[0] == "ok"
+    plan["groups"] = plan["groups"][:1]
+    with open("p.json", "w") as fh:
+        json.dump(plan, fh)
+    with pytest.raises(SystemExit, match="allow-modified"):
+        sg_tightener.main(["apply", "--plan", "p.json", "--yes"])
 
 
 def _granted(plan, group_id):

@@ -62,7 +62,9 @@ except ImportError:
 
 from sg_tightener import (
     add_profile_arg,
+    caller_arn,
     friendly_login_errors,
+    sign,
     use_profile,
     DEFAULT_LOG_FORMAT_FIELDS,
     DEFAULT_TOLERANCE,
@@ -846,7 +848,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     manifest_path = f"sg_extend-manifest-{ts}.json"
 
+    by = caller_arn()
+
     def write_manifest() -> None:
+        sign(manifest, by)
         with open(manifest_path, "w", encoding="utf-8") as fh:
             json.dump(manifest, fh, indent=2)
 

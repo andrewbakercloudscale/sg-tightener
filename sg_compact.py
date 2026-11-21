@@ -54,8 +54,11 @@ from sg_tightener import (
     _is_strict_rfc1918,
     _list_security_groups,
     _smallest_covering,
+    _write_json,
     add_profile_arg,
     apply_plan,
+    caller_arn,
+    check_integrity,
     friendly_login_errors,
     revert_from_manifest,
     state_hash,
@@ -362,10 +365,14 @@ def _build_parser() -> argparse.ArgumentParser:
     ap = sub.add_parser("apply", help="execute a compaction plan")
     ap.add_argument("--plan", required=True)
     ap.add_argument("--yes", action="store_true")
+    ap.add_argument("--allow-modified", action="store_true",
+                    help="apply a plan whose contents changed since plan wrote it")
 
     rv = sub.add_parser("revert", help="restore pre-apply state from a manifest")
     rv.add_argument("--manifest", required=True)
     rv.add_argument("--yes", action="store_true")
+    rv.add_argument("--allow-modified", action="store_true",
+                    help="revert from a manifest whose contents changed since apply wrote it")
     for q in (pl, ap, rv):
         add_profile_arg(q)
     return p
@@ -401,8 +408,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         plan = build_compact_plan(
             sgs, ratio=args.ratio, max_rules=args.max_rules, region=args.region
         )
-        with open(args.out, "w", encoding="utf-8") as fh:
-            json.dump(plan, fh, indent=2)
+        _write_json(args.out, plan, caller_arn())
         saved = sum(g["rules_saved"] for g in plan["groups"])
         print(
             f"\nWrote plan for ratio {args.ratio:.2f} to {args.out}: "
@@ -414,6 +420,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.mode == "apply":
         with open(args.plan, "r", encoding="utf-8") as fh:
             plan = json.load(fh)
+        check_integrity(plan, "plan", args.plan, allow_modified=args.allow_modified)
         if not args.yes:
             _confirm("apply this compaction plan")
         region = (
@@ -431,7 +438,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.mode == "revert":
         if not args.yes:
             _confirm("revert from manifest")
-        revert_from_manifest(args.manifest)
+        revert_from_manifest(args.manifest, allow_modified=args.allow_modified)
         return 0
 
     return 2

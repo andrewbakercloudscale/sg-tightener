@@ -50,6 +50,7 @@ import dataclasses
 import datetime as dt
 import gzip
 import hashlib
+import hmac
 import ipaddress
 import json
 import logging
@@ -1894,7 +1895,86 @@ def resolve_apply_region(plan: dict, cli_region: str | None, env: dict | None = 
     return region
 
 
-def _write_json(path: str, payload: dict) -> None:
+# --------------------------------------------------------------------------- #
+# Integrity of plans and manifests
+# --------------------------------------------------------------------------- #
+
+SIGNING_KEY_ENV = "SG_TIGHTENER_SIGNING_KEY"
+
+
+def _canonical(doc: dict) -> bytes:
+    body = {k: v for k, v in doc.items() if k != "integrity"}
+    return json.dumps(body, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+
+
+def caller_arn() -> str:
+    """Who is signing; empty when the caller cannot be read (it is a label, not a check)."""
+    try:
+        return boto3.client("sts").get_caller_identity()["Arn"]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def sign(doc: dict, by: str = "") -> dict:
+    """Add an ``integrity`` block: SHA-256 of the canonical JSON, who, when, and
+    an HMAC-SHA256 when ``SG_TIGHTENER_SIGNING_KEY`` is set. Returns ``doc``."""
+    blob = _canonical(doc)
+    block = {
+        "sha256": hashlib.sha256(blob).hexdigest(),
+        "by": by,
+        "at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    key = os.environ.get(SIGNING_KEY_ENV, "")
+    if key:
+        block["hmac_sha256"] = hmac.new(key.encode("utf-8"), blob, hashlib.sha256).hexdigest()
+    doc["integrity"] = block
+    return doc
+
+
+def verify(doc: dict) -> tuple[str, str]:
+    """Return (status, message). Status is ok, unsigned, unverified (HMAC present
+    or expected, but cannot be checked) or modified."""
+    block = doc.get("integrity")
+    if not isinstance(block, dict) or "sha256" not in block:
+        return "unsigned", "no integrity block (written before 2.7.0, or by hand)"
+    blob = _canonical(doc)
+    if not hmac.compare_digest(hashlib.sha256(blob).hexdigest(), str(block["sha256"])):
+        return "modified", "contents changed since it was written (SHA-256 does not match)"
+    key = os.environ.get(SIGNING_KEY_ENV, "")
+    mac = block.get("hmac_sha256")
+    if mac and key:
+        good = hmac.new(key.encode("utf-8"), blob, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(good, str(mac)):
+            return "modified", f"signature does not match {SIGNING_KEY_ENV} (re-signed or edited without the key)"
+        return "ok", "signature verified"
+    if mac:
+        return "unverified", f"signed, but {SIGNING_KEY_ENV} is not set here; only the SHA-256 was checked"
+    if key:
+        return "unverified", f"{SIGNING_KEY_ENV} is set but the file was written without it; only the SHA-256 was checked"
+    return "ok", "SHA-256 matches"
+
+
+def check_integrity(doc: dict, what: str, path: str, *, allow_modified: bool = False) -> None:
+    """Refuse a modified plan or manifest unless ``allow_modified``; warn on the rest."""
+    status, msg = verify(doc)
+    by = (doc.get("integrity") or {}).get("by") or "unknown"
+    if status == "ok":
+        LOG.info("%s %s: %s (written by %s)", what, path, msg, by)
+    elif status == "modified":
+        if not allow_modified:
+            raise SystemExit(
+                f"{what} {path}: {msg}.\n"
+                f"Refusing to use it. Re-create it, or pass --allow-modified if the change was yours and reviewed."
+            )
+        LOG.warning("%s %s: %s; continuing because of --allow-modified", what, path, msg)
+    else:
+        LOG.warning("%s %s: %s", what, path, msg)
+
+
+def _write_json(path: str, payload: dict, by: str | None = None) -> None:
+    """Write ``payload``; with ``by`` (a caller ARN, possibly empty) sign it first."""
+    if by is not None:
+        sign(payload, by)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
 
@@ -1916,6 +1996,7 @@ def apply_plan(plan: dict, region: str, *, manifest_path: str) -> None:
         )
 
     ec2 = _client("ec2", region)
+    by = caller_arn()
     manifest = {
         "schema": "sg-tightener.manifest/v1",
         "applied_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -1934,15 +2015,15 @@ def apply_plan(plan: dict, region: str, *, manifest_path: str) -> None:
                 manifest_grp["revoked"] = grp.get("restore") or grp["revoke"]
                 if manifest_grp not in manifest["groups"]:
                     manifest["groups"].append(manifest_grp)
-                _write_json(manifest_path, manifest)
+                _write_json(manifest_path, manifest, by)
             if grp["authorise"]:
                 ec2.authorize_security_group_ingress(GroupId=gid, IpPermissions=_clean_permissions(grp["authorise"]))
                 manifest_grp["authorised"] = grp["authorise"]
                 if manifest_grp not in manifest["groups"]:
                     manifest["groups"].append(manifest_grp)
-                _write_json(manifest_path, manifest)
+                _write_json(manifest_path, manifest, by)
         except aws_errors as exc:
-            _write_json(manifest_path, manifest)
+            _write_json(manifest_path, manifest, by)
             raise SystemExit(
                 f"apply HALTED on {gid}: {exc}\n"
                 f"Partial manifest written to {manifest_path}\n"
@@ -1950,13 +2031,14 @@ def apply_plan(plan: dict, region: str, *, manifest_path: str) -> None:
             )
 
     manifest["complete"] = True
-    _write_json(manifest_path, manifest)
+    _write_json(manifest_path, manifest, by)
     LOG.info("apply complete; manifest written to %s", manifest_path)
 
 
-def revert_from_manifest(manifest_path: str) -> None:
+def revert_from_manifest(manifest_path: str, *, allow_modified: bool = False) -> None:
     with open(manifest_path, "r", encoding="utf-8") as fh:
         manifest = json.load(fh)
+    check_integrity(manifest, "manifest", manifest_path, allow_modified=allow_modified)
     ec2 = _client("ec2", manifest["region"])
     aws_errors = (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError)
     failures = 0
@@ -2008,10 +2090,14 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--plan", required=True)
     ap.add_argument("--region", help="only for plans that predate the recorded region; must match it otherwise")
     ap.add_argument("--yes", action="store_true")
+    ap.add_argument("--allow-modified", action="store_true",
+                    help="apply a plan whose contents changed since plan wrote it")
 
     rv = sub.add_parser("revert", help="restore pre-apply state from a manifest")
     rv.add_argument("--manifest", required=True)
     rv.add_argument("--yes", action="store_true")
+    rv.add_argument("--allow-modified", action="store_true",
+                    help="revert from a manifest whose contents changed since apply wrote it")
 
     for q in (a, pl, ap, rv):
         add_profile_arg(q)
@@ -2052,8 +2138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             tolerance=args.tolerance,
             prefix_threshold=args.prefix_threshold,
         )
-        with open(args.out, "w", encoding="utf-8") as fh:
-            json.dump(plan, fh, indent=2)
+        _write_json(args.out, plan, caller_arn())
         LOG.info(
             "wrote plan covering %d groups to %s",
             len(plan["groups"]), args.out,
@@ -2063,6 +2148,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.mode == "apply":
         with open(args.plan, "r", encoding="utf-8") as fh:
             plan = json.load(fh)
+        check_integrity(plan, "plan", args.plan, allow_modified=args.allow_modified)
         region = resolve_apply_region(plan, args.region)
         if not args.yes:
             _confirm(f"apply this plan in {region}")
@@ -2074,7 +2160,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.mode == "revert":
         if not args.yes:
             _confirm("revert from manifest")
-        revert_from_manifest(args.manifest)
+        revert_from_manifest(args.manifest, allow_modified=args.allow_modified)
         return 0
 
     return 2
