@@ -1,5 +1,48 @@
 # Changelog
 
+## 5.0.0 - 2026-11-21
+
+Breaking: every account starts in **surveillance** mode. Reports, plans and
+change requests work as before, but `sg_db.py apply`, `exec`, `create-group`,
+`sg_tightener apply`, `sg_compact apply`, `sg_extend` and the console's Apply
+refuse until `sg_db.py check` passes and `sg_db.py mode enforce --account ID
+--reason "…"` (or `mode enforce --all`) is set. `revert` works in either mode.
+
+- **Surveillance and enforce modes**, per account with a default (`sg_db.py
+  mode`), each change audited. Enforce needs a passing permission check.
+- **Permission check with DryRun** (`sg_db.py check --regions R [--ou-id …]
+  [--assets]`): every authorize and revoke, ingress and egress, on every
+  group, and for assets creating a group, swapping an interface's groups and
+  tagging, as EC2 DryRun calls, so SSO permission sets, boundaries, SCPs and
+  conditions all count and nothing changes. Stored and shown on the console's
+  Overview with a Check button. `apply` runs it first and changes nothing if
+  any call would be refused.
+- **Assets.** `import` and `reconcile` record every network interface (its
+  instance, auto scaling group or EKS cluster, addresses and groups); a change
+  of groups is an audit entry of its own, external when made outside the tool.
+  `sg_db.py assets`, `asset-log`, and the console's Assets table with History.
+- **A group of its own for one asset** (`sg_assets.py`): `asset-plan` merges
+  the asset's groups and keeps only the sources that reached that interface;
+  `asset-propose` makes it a change request; once a second person approves,
+  `asset-apply` creates `sgt-<eni>-<time>` and moves the interface onto it;
+  `asset-revert` moves it back. Auto scaling, EKS, ECS and AWS-managed
+  interfaces are refused: tighten the shared group, which new instances
+  inherit. IAM: `ec2:ModifyNetworkInterfaceAttribute`, `ec2:CreateTags` (write)
+  and `ec2:DescribeInstances` (read).
+- **IPv6 sources named**: IPv6 ranges for AWS, Cloudflare, Google, Datadog,
+  ip2asn and Tor; your VPCs' IPv6 blocks, ULA and link-local count as
+  internal. IPv6 works in verdicts, network ACL checks, Extract rule and
+  `watch`.
+- **IPv6 tightening**: `sg_tightener plan` narrows IPv6 rules wider than `/64`
+  that are ULA or inside the region's VPC IPv6 blocks to the `/64`s seen;
+  `::/0` and public IPv6 ranges are never touched.
+- **New addresses**: each source's first sighting across everything read; a
+  source is **new** when first seen in the last 7 days with at least 14 days
+  of flow logs before it. Shown on the review page (New only and IPv6 only
+  filters), the org page, `watch` alerts ("N new"), and the console's Rejected
+  traffic tab, which also marks internal / external / IPv6 / scanning and
+  filters on them.
+
 ## 4.0.0 - 2026-11-21
 
 Breaking: two-person approval is on by default. `sg_db.py add`, `remove`,

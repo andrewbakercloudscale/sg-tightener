@@ -177,8 +177,8 @@ refers to them by id ([why](#security-groups-live-in-a-local-database-not-in-ter
 | Changed | Never touched |
 |---|---|
 | IPv4 ingress rules whose source is inside RFC 1918 (`10/8`, `172.16/12`, `192.168/16`) **and** wider than `/24` | `0.0.0.0/0` and any public CIDR |
+| IPv6 ingress rules wider than `/64` that are unique local (`fc00::/7`) or inside the region's VPC IPv6 blocks (clients are kept by `/64`) | `::/0` and any other public IPv6 range |
 | | Security-group references and prefix lists |
-| | IPv6 rules |
 | | Egress rules and network ACLs |
 | | Rules already at `/24` or narrower |
 | | Groups on a Network Load Balancer behind a PrivateLink endpoint service (consumers' addresses are not in your flow logs) |
@@ -193,6 +193,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.0.0** | **Surveillance first**: every account starts in surveillance mode (report and propose, never apply) until `sg_db.py mode enforce --account ID`, which needs a passing **DryRun permission check** (`sg_db.py check`); apply checks again before any change. **Per-asset groups**: `asset-plan`/`asset-propose`/`asset-apply`/`asset-revert` give one interface a group of its own from its own flows, with every asset's group changes in the audit trail (`asset-log`); auto scaling, EKS and ECS assets are refused in favour of the shared group. **IPv6**: sources named (providers, Tor, scanners, internal vs external) and private IPv6 rules tightened. **New addresses**: each source's first sighting, with "new" (never seen before) on the page, in the console, in `watch` alerts |
 | **4.0.0** | **Security group console** (`sg_console.py serve`): one local web page for every account's groups and rules, change requests, the audit trail, and every rejected flow across an OU, with "Propose allowing" from a refused flow. **Two-person approval, on by default**: every change is a request with a reason and ticket that a different person approves before it is applied; `sg_tightener apply` and `sg_compact apply` now propose (`sg_db.py propose --plan`), break-glass still goes through. **Across an OU**: `sg_db.py import`/`reconcile --ou-id`, `sg_review.py watch --ou-id`, and an **All rejected traffic** table on the org page |
 | **3.0.0** | **Security groups live in a local database** (`sg_db.py`): every group and rule in SQLite, every change with who, why and ticket in an append-only, hash-chained audit trail. `reconcile` records changes made outside the tool (console, CLI, Terraform), names who from CloudTrail, and offers to put them back. sg_tightener, sg_compact, sg_extend and the fixes `sg_review` prints all go through it. **Terraform cannot manage security groups with this solution**: [move out once](docs/terraform.md). **Real-time alerts are for rejected traffic**: `watch --loop` every 5 minutes reads up to five minutes ago. The 2.8.0 drift Lambda is removed |
 | **2.8.0** | Real-time drift alerts by EventBridge and Lambda (removed in 3.0.0: alerts are on rejected traffic, and changes made outside the tool are found by `sg_db.py reconcile`). It alerted within seconds when a security group rule is opened wide, naming who and from where, to SNS, Slack and Security Hub, and can revoke it automatically (`AutoRevoke`, with a tag to exempt groups meant to be public) |
