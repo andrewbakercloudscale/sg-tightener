@@ -158,3 +158,19 @@ def test_rejected_traffic_across_every_account_read(console):
     ranks = [sg_review.SEV_RANK[r["sev"]] for r in got["rows"]]
     assert ranks == sorted(ranks), "worst verdict first"
     assert {"src", "port", "verdict", "groups", "account_name"} <= set(got["rows"][0])
+
+
+def test_overview_shows_each_accounts_mode_and_assets(console):
+    p = console["port"]
+    _, state, _ = _req(p, "GET", "/api/state")
+    acct = state["accounts"][0]
+    assert acct["mode"] == "surveillance", "every account starts in surveillance mode"
+    assert acct["regions"][0]["permissions"] is None and acct["regions"][0]["assets"] == 0
+    st = sg_db.Store(console["db"])
+    with st:
+        st.set_mode(ACCOUNT, "enforce", "arn:aws:sts::111122223333:assumed-role/Admin/alice", "ready")
+    st.close()
+    _, state, _ = _req(p, "GET", "/api/state")
+    assert state["accounts"][0]["mode"] == "enforce"
+    assert _req(p, "GET", f"/api/assets?account={ACCOUNT}&region={REGION}")[1] == []
+    assert _req(p, "GET", "/api/asset-history?eni=eni-1")[1] == []

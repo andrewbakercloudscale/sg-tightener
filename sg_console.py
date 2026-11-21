@@ -77,15 +77,23 @@ class Console:
         try:
             ok, n, why = st.verify()
             names = st.account_names()
+            perms = {(p["account"], p["region"]): p for p in st.permissions()}
             accounts: dict[str, dict] = {}
             for account, region in st.regions():
-                a = accounts.setdefault(account, {"account": account, "name": names.get(account, ""), "regions": []})
+                a = accounts.setdefault(account, {"account": account, "name": names.get(account, ""), "regions": [],
+                                                  "mode": st.mode(account)})  # fmt: skip
+                p = perms.get((account, region))
                 groups = st.groups(account, region)
                 rules = sum(len(st.rules(account, region, g, "desired")) for g in groups)
                 synced = st.db.execute("SELECT synced_at FROM regions WHERE account = ? AND region = ?",
                                        (account, region)).fetchone()[0]  # fmt: skip
-                a["regions"].append({"region": region, "groups": len(groups), "rules": rules,
-                                     "pending": len(st.pending(account, region)), "synced_at": synced})  # fmt: skip
+                n_assets = st.db.execute("SELECT COUNT(*) FROM assets WHERE account = ? AND region = ?",
+                                         (account, region)).fetchone()[0]  # fmt: skip
+                a["regions"].append({"region": region, "groups": len(groups), "rules": rules, "assets": n_assets,
+                                     "pending": len(st.pending(account, region)), "synced_at": synced,
+                                     "permissions": None if p is None else {
+                                         "ok": p["ok"], "at": p["checked_at"], "by": sg_db.principal(p["actor"]),
+                                         "problems": sg_db._permission_problems(p["result"])[:20]}})  # fmt: skip
             try:
                 me = self.targets().actor
                 me_account = self.targets().account
@@ -111,6 +119,26 @@ class Console:
                                   "text": sg_db.rule_text(r)})  # fmt: skip
                 out.append({"id": gid, **g, "rules": rules})
             return out
+        finally:
+            st.close()
+
+    def assets(self, account: str, region: str) -> list[dict]:
+        import sg_assets
+
+        st = self.store()
+        try:
+            names = {g: v["name"] for g, v in st.groups(account, region).items()}
+            return [{**a, "group_names": [names.get(g, "") for g in a["groups"]], "alone": sg_assets.why_not_alone(a)}
+                    for a in sg_assets.list_assets(st, account, region)]  # fmt: skip
+        finally:
+            st.close()
+
+    def asset_history(self, eni: str) -> list[dict]:
+        import sg_assets
+
+        st = self.store()
+        try:
+            return sg_assets.asset_history(st, eni=eni)[::-1]
         finally:
             st.close()
 
@@ -225,13 +253,57 @@ class Console:
         finally:
             st.close()
 
+    def check(self, body: dict) -> dict:
+        """DryRun every call apply needs on every group in this region (and an asset swap): nothing changes."""
+        import sg_assets
+
+        account, region = _need(body, "account"), _need(body, "region")
+        t, ec2 = self._ec2(account, region)
+        st = self.store()
+        try:
+            sg_db.ensure_current(st, ec2, account, region, t.actor)
+            assets = [a for a in sg_assets.list_assets(st, account, region) if not sg_assets.why_not_alone(a)][:1]
+            res = sg_db.check_permissions(ec2, sorted(st.groups(account, region)), assets)
+            with st:
+                st.record_permissions(account, region, t.actor, res)
+            return {"ok": not sg_db._permission_problems(res), "checked": len(res),
+                    "problems": sg_db._permission_problems(res)[:20], "mode": st.mode(account)}  # fmt: skip
+        finally:
+            st.close()
+
+    def asset_apply(self, body: dict) -> dict:
+        import sg_assets
+
+        try:
+            rid = int(body.get("id"))
+        except (TypeError, ValueError):
+            raise ConsoleError(400, "id is a request number")
+        st = self.store()
+        try:
+            r = st._request(rid)
+            t, ec2 = self._ec2(r["account"], r["region"])
+            return sg_assets.apply(st, ec2, r["account"], rid, t.actor)
+        finally:
+            st.close()
+
+    def asset_revert(self, body: dict) -> dict:
+        import sg_assets
+
+        account, region, eni = _need(body, "account"), _need(body, "region"), _need(body, "eni")
+        t, ec2 = self._ec2(account, region)
+        st = self.store()
+        try:
+            return sg_assets.revert(st, ec2, account, region, eni, t.actor, str(body.get("reason") or ""))
+        finally:
+            st.close()
+
     def reconcile(self, body: dict) -> dict:
         account, region = _need(body, "account"), _need(body, "region")
         t, ec2 = self._ec2(account, region)
         st = self.store()
         try:
             who = sg_db._who_from_cloudtrail(t.session(account), region) if body.get("cloudtrail", True) else None
-            changes = sg_db.ensure_current(st, ec2, account, region, t.actor, who)
+            changes = sg_db.ensure_current(st, ec2, account, region, t.actor, who, assets=True)
             return {"changes": changes, "pending": len(st.pending(account, region))}
         finally:
             st.close()
@@ -319,6 +391,10 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.state())
                 if url.path == "/api/groups":
                     return self._json(200, console.groups(_need(q, "account"), _need(q, "region")))
+                if url.path == "/api/assets":
+                    return self._json(200, console.assets(_need(q, "account"), _need(q, "region")))
+                if url.path == "/api/asset-history":
+                    return self._json(200, console.asset_history(_need(q, "eni")))
                 if url.path == "/api/audit":
                     return self._json(200, console.audit(q))
                 if url.path == "/api/requests":
@@ -349,7 +425,8 @@ def make_handler(console: Console, token: str, port: int):
             if not isinstance(body, dict):
                 return self._json(400, {"error": "bad JSON: an object is expected"})
             route = {"/api/propose": console.propose, "/api/decide": console.decide, "/api/apply": console.apply,
-                     "/api/reconcile": console.reconcile, "/api/adopt": console.adopt}.get(urlparse(self.path).path)  # fmt: skip
+                     "/api/reconcile": console.reconcile, "/api/adopt": console.adopt, "/api/check": console.check,
+                     "/api/asset-apply": console.asset_apply, "/api/asset-revert": console.asset_revert}.get(urlparse(self.path).path)  # fmt: skip
             if not route:
                 return self._json(404, {"error": "not found"})
             try:

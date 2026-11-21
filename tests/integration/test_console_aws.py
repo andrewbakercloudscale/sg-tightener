@@ -36,6 +36,8 @@ def test_console_propose_approve_apply_and_reconcile(estate, monkeypatch):
     con._targets, con._fixed = other, True
     assert con.decide({"id": res["id"], "action": "approve", "note": "fine"})["status"] == "approved"
 
+    chk = con.check({"account": account, "region": REGION})
+    assert chk["ok"] and chk["checked"] >= 2 and chk["mode"] == "enforce"
     out = con.apply({"account": account, "region": REGION})
     assert out["done"] == 1 and out["failed"] == [] and out["settled"] == [res["id"]]
     assert ("tcp", 5432, "10.4.9.0/24") in _ingress(ec2, db)
@@ -45,3 +47,6 @@ def test_console_propose_approve_apply_and_reconcile(estate, monkeypatch):
     got = con.reconcile({"account": account, "region": REGION, "cloudtrail": False})
     assert len(got["changes"]) == 1 and got["pending"] == 1, "the outside rule is wanted gone"
     assert me != other.actor
+    assets = con.assets(account, REGION)
+    assert len(assets) == 3 and all(a["groups"] for a in assets)
+    assert con.asset_history(estate.enis["10.4.1.20"])[-1]["action"] == "assets-imported"

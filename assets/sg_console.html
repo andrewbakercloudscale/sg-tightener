@@ -95,9 +95,9 @@ details summary { cursor: pointer; font-weight: 600; }
 
   <section id="tab-overview">
     <h2>Every account in the database</h2>
-    <p class="lede">The database is the source of truth for security groups: every group and rule, as wanted and as AWS last held it. Changes are change requests: one person proposes, a different person approves, then they are applied. Changes made in AWS outside the tool are found by Reconcile.</p>
+    <p class="lede">The database is the source of truth for security groups: every group and rule, as wanted and as AWS last held it. Changes are change requests: one person proposes, a different person approves, then they are applied. Changes made in AWS outside the tool are found by Reconcile. An account in <b>surveillance</b> mode is only reported on: what to change, and change requests, but nothing is applied. In <b>enforce</b> mode approved changes can be applied, once a permission check (DryRun, nothing changes) shows this identity can make them.</p>
     <div class="grid" id="stats"></div>
-    <div class="card scroll"><table><thead><tr><th>Account</th><th>Region</th><th>Groups</th><th>Rules</th><th>To apply</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table></div>
+    <div class="card scroll"><table><thead><tr><th>Account</th><th>Mode</th><th>Region</th><th>Groups</th><th>Rules</th><th>Assets</th><th>To apply</th><th>Can apply here?</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table></div>
   </section>
 
   <section id="tab-groups" hidden>
@@ -126,7 +126,11 @@ details summary { cursor: pointer; font-weight: 600; }
         </div>
       </details>
     </div>
+    <div class="flash" id="modeNote" hidden></div>
     <div id="groupList"></div>
+    <h3>Assets (network interfaces) and their groups</h3>
+    <p class="lede">Every interface, what it is attached to and the groups it carries; every change to them is in the audit trail. To tighten one asset on its own, <code>sg_db.py asset-plan --eni … --approved approved.json</code> gives it a group of its own from its own flows; propose it with <code>sg_db.py asset-propose</code>, and it is approved and applied here. Auto scaling, EKS, ECS and AWS-managed interfaces inherit their groups: tighten the groups instead.</p>
+    <div class="card scroll"><table><thead><tr><th>Interface</th><th>Attached to</th><th>Addresses</th><th>Groups</th><th>Own group?</th><th></th></tr></thead><tbody id="assetRows"></tbody></table></div>
   </section>
 
   <section id="tab-requests" hidden>
@@ -169,6 +173,10 @@ details summary { cursor: pointer; font-weight: 600; }
   const TOKEN = "{{TOKEN}}";
   const $ = (id) => document.getElementById(id);
   const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[c]);
+  const modePill = (m) => m === "enforce" ? '<span class="pill" style="--p:var(--high)">enforce</span>' : '<span class="pill" style="--p:var(--accent)">surveillance</span>';
+  const permCell = (p) => !p ? '<span class="muted">not checked</span>' : p.ok
+    ? `<span class="pill" style="--p:var(--good)">yes</span> <span class="muted">${esc(when(p.at))}</span>`
+    : `<span class="pill" style="--p:var(--bad)" title="${esc(p.problems.join("; "))}">no</span> <span class="muted">${esc(when(p.at))}</span>`;
   const SEV = {critical: "var(--bad)", high: "var(--high)", medium: "var(--warn)", low: "var(--muted)", info: "var(--muted)"};
   const STATUS = {pending: "var(--warn)", approved: "var(--accent)", applied: "var(--good)", rejected: "var(--bad)", cancelled: "var(--muted)"};
   const PROTO = {"6": "tcp", "17": "udp", "1": "icmp"};
@@ -208,7 +216,7 @@ details summary { cursor: pointer; font-weight: 600; }
     $("who").textContent = `Acting as ${S.me_principal}`;
     $("mode").innerHTML = S.approvals ? '<span class="pill" style="--p:var(--good)">two-person approval on</span>' : '<span class="pill" style="--p:var(--bad)">approvals off</span>';
     $("pendingCount").hidden = !S.pending_requests; $("pendingCount").textContent = S.pending_requests;
-    const regions = S.accounts.flatMap((a) => a.regions.map((r) => ({...r, account: a.account, name: a.name})));
+    const regions = S.accounts.flatMap((a) => a.regions.map((r) => ({...r, account: a.account, name: a.name, mode: a.mode})));
     const sum = (k) => regions.reduce((n, r) => n + r[k], 0);
     $("stats").innerHTML = [
       [S.accounts.length, "accounts"], [sum("groups"), "security groups"], [sum("rules"), "rules"],
@@ -216,9 +224,18 @@ details summary { cursor: pointer; font-weight: 600; }
       [S.verify.ok ? `${S.verify.entries.toLocaleString()} ✓` : "BROKEN", S.verify.ok ? "audit entries, chain intact" : S.verify.why],
     ].map(([n, l]) => `<div class="card stat"><b>${esc(n)}</b><span>${esc(l)}</span></div>`).join("");
     $("regions").innerHTML = regions.map((r, i) => `<tr><td>${esc(r.name || r.account)}<div class="muted small"><code>${esc(r.account)}</code></div></td>
-      <td>${esc(r.region)}</td><td>${r.groups}</td><td>${r.rules}</td><td>${r.pending ? `<span class="pill" style="--p:var(--warn)">${r.pending}</span>` : "0"}</td>
+      <td>${modePill(r.mode)}</td>
+      <td>${esc(r.region)}</td><td>${r.groups}</td><td>${r.rules}</td><td>${r.assets}</td><td>${r.pending ? `<span class="pill" style="--p:var(--warn)">${r.pending}</span>` : "0"}</td>
+      <td class="small">${permCell(r.permissions)} <button class="btn" data-check="${i}">Check</button></td>
       <td class="small">${esc(when(r.synced_at))}</td><td><button class="btn" data-open="${i}">Open</button></td></tr>`).join("")
-      || '<tr><td colspan="7" class="muted">Nothing yet: run <code>sg_db.py import --regions … [--ou-id …]</code>.</td></tr>';
+      || '<tr><td colspan="10" class="muted">Nothing yet: run <code>sg_db.py import --regions … [--ou-id …]</code>.</td></tr>';
+    for (const b of document.querySelectorAll("[data-check]")) b.addEventListener("click", () => act(b, async () => {
+      const r = regions[+b.dataset.check];
+      const res = await api("/api/check", {account: r.account, region: r.region});
+      flash(res.ok ? `${r.account} ${r.region}: this identity can change all ${res.checked} group(s) checked (DryRun, nothing changed).${res.mode === "surveillance" ? ` The account is in surveillance mode; to allow applying: sg_db.py mode enforce --account ${r.account} --reason "…"` : ""}`
+        : `${r.account} ${r.region}: cannot apply everywhere: ${res.problems.join("; ")}`, !res.ok);
+      await loadState();
+    }));
     for (const b of document.querySelectorAll("[data-open]")) b.addEventListener("click", () => {
       const r = regions[+b.dataset.open]; $("gWhere").value = `${r.account}|${r.region}`; show("groups");
     });
@@ -237,6 +254,12 @@ details summary { cursor: pointer; font-weight: 600; }
     const w = where();
     if (!w.account) { $("groupList").innerHTML = '<p class="muted">No account in the database yet.</p>'; return; }
     groupsCache = await api(`/api/groups?account=${encodeURIComponent(w.account)}&region=${encodeURIComponent(w.region)}`);
+    const acct = S.accounts.find((a) => a.account === w.account) || {};
+    const surv = acct.mode !== "enforce";
+    $("gApply").disabled = surv;
+    $("modeNote").hidden = !surv;
+    $("modeNote").innerHTML = `${esc(w.account)} is in <b>surveillance</b> mode: what to change is shown and proposed, nothing is applied. When the organisation is ready: Check permissions on the Overview, then <code>sg_db.py mode enforce --account ${esc(w.account)} --reason "…"</code>.`;
+    loadAssets(w);
     $("pGroup").innerHTML = groupsCache.map((g) => `<option value="${esc(g.id)}">${esc(g.name)} (${esc(g.id)})</option>`).join("");
     drawGroups();
   }
@@ -258,6 +281,27 @@ details summary { cursor: pointer; font-weight: 600; }
       const [gid, i] = b.dataset.rm.split("|"); const r = groupsCache.find((g) => g.id === gid).rules[+i];
       openPropose({group: gid, op: "remove", rule: r});
     });
+  }
+  async function loadAssets(w) {
+    const rows = await api(`/api/assets?account=${encodeURIComponent(w.account)}&region=${encodeURIComponent(w.region)}`);
+    $("assetRows").innerHTML = rows.map((a, i) => `<tr><td><code>${esc(a.eni)}</code><div class="muted small">${esc(a.kind)}</div></td>
+      <td>${a.instance ? `<code>${esc(a.instance)}</code>` : '<span class="muted">-</span>'}${a.asg ? `<div class="muted small">${esc(a.asg)}</div>` : ""}</td>
+      <td class="small"><code>${a.ips.slice(0, 3).map(esc).join("<br>")}</code></td>
+      <td class="small">${a.groups.map((g, j) => `<code>${esc(g)}</code> ${esc(a.group_names[j])}`).join("<br>")}</td>
+      <td class="small">${a.alone ? `<span class="muted" title="${esc(a.alone)}">no: ${esc(a.alone.split(":")[0])}</span>` : '<span class="pill" style="--p:var(--good)">possible</span>'}</td>
+      <td><button class="btn" data-hist="${i}">History</button></td></tr>
+      <tr hidden id="hist-${i}"><td colspan="6"></td></tr>`).join("") || '<tr><td colspan="6" class="muted">No assets recorded: Reconcile with AWS reads them.</td></tr>';
+    for (const b of document.querySelectorAll("[data-hist]")) b.addEventListener("click", () => act(b, async () => {
+      const a = rows[+b.dataset.hist], row = $(`hist-${b.dataset.hist}`);
+      if (!row.hidden) { row.hidden = true; return; }
+      const h = await api(`/api/asset-history?eni=${encodeURIComponent(a.eni)}`);
+      row.firstElementChild.innerHTML = h.map((e) => {
+        const d = e.detail || {};
+        const what = d.before ? `${d.before.join(", ")} → ${d.after.join(", ")}` : e.action === "assets-imported" ? "first recorded" : "";
+        return `<div class="small"><b>#${e.seq}</b> ${esc(when(e.at))} <span class="pill" style="--p:${e.origin === "external" ? "var(--bad)" : "var(--accent)"}">${esc(e.origin)}</span> ${esc(e.action)} <code>${esc(what)}</code> · ${who(e.actor)}${e.reason ? " · " + esc(e.reason) : ""}</div>`;
+      }).join("") || '<span class="muted small">Nothing recorded yet.</span>';
+      row.hidden = false;
+    }));
   }
   function openPropose({group, op, rule, reason}) {
     $("proposeBox").open = true;
@@ -320,10 +364,17 @@ details summary { cursor: pointer; font-weight: 600; }
     const rows = await api(`/api/requests?status=${encodeURIComponent($("rStatus").value)}`);
     $("requestList").innerHTML = rows.map((r) => {
       const mine = r.proposer.split(" (")[0] === S.me_principal;
-      const changes = r.changes.map((c) => `<li><span class="pill" style="--p:${c.op === "add" ? "var(--good)" : "var(--bad)"}">${c.op}</span> <code>${esc(c.group)}</code> ${esc(c.rule.direction === "in" ? "inbound" : "outbound")} <code>${esc(c.rule.proto === "-1" ? "all traffic" : `${c.rule.proto} ${c.rule.from === c.rule.to ? c.rule.from : c.rule.from + "-" + c.rule.to}`)}</code> ${c.rule.direction === "in" ? "from" : "to"} <code>${esc(c.rule.source)}</code> <span class="muted small">${esc(c.rule.description)}</span></li>`).join("");
+      const ruleLine = (c) => `<code>${esc(c.direction === "in" ? "in" : "out")} ${esc(c.proto === "-1" ? "all" : `${c.proto} ${c.from === c.to ? c.from : c.from + "-" + c.to}`)} ${esc(c.source)}</code>`;
+      const changes = r.kind === "asset"
+        ? `<li>A group of its own, <code>${esc(r.changes.group_name)}</code>, for <code>${esc(r.changes.eni)}</code>${r.changes.instance ? ` (<code>${esc(r.changes.instance)}</code>)` : ""} in place of ${r.changes.from_groups.map((g) => `<code>${esc(g)}</code>`).join(", ")}, from ${r.changes.evidence.flows} flow(s) of ${r.changes.evidence.sources} source(s)</li>
+           ${r.changes.narrowed.removed.map((c) => `<li><span class="pill" style="--p:var(--bad)">narrowed</span> ${ruleLine(c)}</li>`).join("")}
+           ${r.changes.narrowed.added.map((c) => `<li><span class="pill" style="--p:var(--good)">to</span> ${ruleLine(c)}</li>`).join("")}
+           <li class="muted small">${r.changes.ingress.length} inbound and ${r.changes.egress.length} outbound rule(s) in all</li>`
+        : r.changes.map((c) => `<li><span class="pill" style="--p:${c.op === "add" ? "var(--good)" : "var(--bad)"}">${c.op}</span> <code>${esc(c.group)}</code> ${esc(c.rule.direction === "in" ? "inbound" : "outbound")} <code>${esc(c.rule.proto === "-1" ? "all traffic" : `${c.rule.proto} ${c.rule.from === c.rule.to ? c.rule.from : c.rule.from + "-" + c.rule.to}`)}</code> ${c.rule.direction === "in" ? "from" : "to"} <code>${esc(c.rule.source)}</code> <span class="muted small">${esc(c.rule.description)}</span></li>`).join("");
       const buttons = r.status === "pending" ? (mine
         ? `<button class="btn" data-dec="cancel|${r.id}">Withdraw</button><span class="muted small">A different person must approve it.</span>`
         : `<input placeholder="Note (required to reject)" data-note="${r.id}"><button class="btn primary" data-dec="approve|${r.id}">Approve</button><button class="btn danger" data-dec="reject|${r.id}">Reject</button>`)
+        : r.status === "approved" && r.kind === "asset" ? `<button class="btn primary" data-applyasset="${r.id}">Create the group and move ${esc(r.changes.eni)}</button>`
         : r.status === "approved" ? `<button class="btn primary" data-applyreq="${esc(r.account)}|${esc(r.region)}">Apply in ${esc(r.region)}</button>` : "";
       return `<div class="card"><div class="tools" style="margin:0 0 6px"><b>#${r.id}</b><span class="pill" style="--p:${STATUS[r.status]}">${esc(r.status)}</span>
         <span>${esc(r.account)} · ${esc(r.region)}</span><span class="muted small">proposed by ${who(r.proposer)} at ${esc(when(r.at))}</span>${r.ticket ? `<code>${esc(r.ticket)}</code>` : ""}</div>
@@ -336,6 +387,12 @@ details summary { cursor: pointer; font-weight: 600; }
       const note = document.querySelector(`[data-note="${id}"]`)?.value || "";
       const res = await api("/api/decide", {id: +id, action, note});
       flash(`Change request #${res.id}: ${res.status}.${res.status === "approved" ? " Apply it to make it in AWS." : ""}`);
+      await loadState(); await loadRequests();
+    }));
+    for (const b of document.querySelectorAll("[data-applyasset]")) b.addEventListener("click", () => act(b, async () => {
+      if (!confirmInline(b)) return;
+      const res = await api("/api/asset-apply", {id: +b.dataset.applyasset});
+      flash(res.swapped ? `Moved onto ${res.group} (was ${res.before.join(", ")}). Undo: sg_db.py asset-revert.` : `${res.group} created, the asset NOT moved: ${res.failed.join("; ")}`, !res.swapped);
       await loadState(); await loadRequests();
     }));
     for (const b of document.querySelectorAll("[data-applyreq]")) b.addEventListener("click", () => act(b, async () => {
