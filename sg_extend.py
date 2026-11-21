@@ -61,6 +61,9 @@ except ImportError:
     botocore = None
 
 from sg_tightener import (
+    add_profile_arg,
+    friendly_login_errors,
+    use_profile,
     DEFAULT_LOG_FORMAT_FIELDS,
     DEFAULT_TOLERANCE,
     RFC1918_BLOCKS,
@@ -643,6 +646,7 @@ def _apply_to_group(
             "added_rules": len(added), "rules": added, "already_present": duplicates}
 
 
+@friendly_login_errors
 def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     p = argparse.ArgumentParser(prog="sg_extend.py")
@@ -670,7 +674,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--description", default="sg-extend break-glass")
     p.add_argument("--max-rules", type=int, default=60)
     p.add_argument("--yes", action="store_true", help="bypass the 'extend' prompt")
+    add_profile_arg(p)
     args = p.parse_args(argv)
+    use_profile(args.profile)
 
     if not args.log_group and not args.s3_bucket:
         p.error("either --log-group or --s3-bucket is required")

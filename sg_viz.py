@@ -578,6 +578,7 @@ def _build_parser() -> argparse.ArgumentParser:
     e.add_argument("--s3-prefix")
     e.add_argument("--plan", help="also overlay this plan.json")
     e.add_argument("--out", default="viz-data.json")
+    sg_tightener.add_profile_arg(e)
 
     o = sub.add_parser("overlay", help="add a plan's impact to a viz-data.json")
     o.add_argument("--data", required=True)
@@ -586,10 +587,12 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+@sg_tightener.friendly_login_errors
 def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     p = _build_parser()
     args = p.parse_args(argv)
+    sg_tightener.use_profile(getattr(args, "profile", None))
 
     if args.mode == "export":
         if not args.log_group and not args.s3_bucket:

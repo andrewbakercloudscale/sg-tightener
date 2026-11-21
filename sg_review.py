@@ -2828,7 +2828,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return args.fn(args)
     except (ClientError, BotoCoreError) as exc:
-        LOG.error("%s", describe_error(exc))
+        LOG.error("%s", sg_tightener.login_hint(exc, getattr(args, "profile", None)) or describe_error(exc))
         return 1
 
 

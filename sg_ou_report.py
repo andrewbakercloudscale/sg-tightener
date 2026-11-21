@@ -37,6 +37,8 @@ import sys
 import threading
 from typing import Sequence
 
+from sg_tightener import add_profile_arg, friendly_login_errors, use_profile
+
 try:
     import boto3
     from botocore.config import Config as BotoConfig
@@ -413,6 +415,7 @@ def assume_all(accounts: list[dict], regions: list[str], partition: str, role_na
     return jobs, sessions, errors
 
 
+@friendly_login_errors
 def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     p = argparse.ArgumentParser(prog="sg_ou_report.py")
@@ -423,7 +426,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--out", default="report.xlsx")
     p.add_argument("--json", default="report.json")
     p.add_argument("--max-workers", type=int, default=16)
+    add_profile_arg(p)
     args = p.parse_args(argv)
+    use_profile(args.profile)
 
     _require_aws()
     regions = [r.strip() for r in args.regions.split(",") if r.strip()]

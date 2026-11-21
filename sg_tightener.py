@@ -70,6 +70,93 @@ except ImportError:
 
 LOG = logging.getLogger("sg_tightener")
 
+# --------------------------------------------------------------------------- #
+# Credentials: profiles, IAM Identity Center (SSO), and friendly login errors
+# --------------------------------------------------------------------------- #
+
+# botocore exception class names that mean "not logged in" rather than "denied".
+_LOGIN_ERRORS = {
+    "SSOTokenLoadError": "the SSO login has expired or was never made",
+    "UnauthorizedSSOTokenError": "the SSO login has expired",
+    "TokenRetrievalError": "the SSO login has expired",
+    "SSOError": "the SSO login failed",
+    "NoCredentialsError": "no AWS credentials were found",
+    "PartialCredentialsError": "the AWS credentials are incomplete",
+    "ProfileNotFound": "that AWS profile does not exist",
+    "NoRegionError": "no region is set",
+}
+# Error codes AWS returns when credentials have expired or are not recognised.
+_LOGIN_CODES = {"ExpiredToken", "ExpiredTokenException", "RequestExpired", "InvalidClientTokenId",
+                "UnrecognizedClientException", "AuthFailure"}
+_PROFILE: list = [None]
+
+
+def add_profile_arg(parser: argparse.ArgumentParser) -> None:
+    """Add --profile, which works for SSO (IAM Identity Center), role and key profiles alike."""
+    parser.add_argument(
+        "--profile",
+        help="AWS profile to use, for example one set up with `aws configure sso` "
+             "(default: the usual credential chain, including AWS_PROFILE)",
+    )
+
+
+def use_profile(profile: str | None) -> None:
+    """Make every boto3 client in this process use `profile`. No-op for None."""
+    _PROFILE[0] = profile or os.environ.get("AWS_PROFILE")
+    if profile:
+        _require_boto3()
+        boto3.setup_default_session(profile_name=profile)
+
+
+def login_hint(exc: BaseException, profile: str | None = None) -> str | None:
+    """A plain message, with the command that fixes it, when `exc` means
+    "you are not logged in"; None for every other error."""
+    profile = profile or _PROFILE[0] or os.environ.get("AWS_PROFILE")
+    flag = f" --profile {profile}" if profile else ""
+    seen: set = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        names = {k.__name__ for k in type(exc).__mro__}
+        for name, why in _LOGIN_ERRORS.items():
+            if name in names:
+                if name == "ProfileNotFound":
+                    return (f"{why} ({exc}). List profiles with `aws configure list-profiles`, "
+                            f"or create an SSO one with `aws configure sso`.")
+                if name == "NoRegionError":
+                    return f"{why}: pass --region (or --regions), or set AWS_REGION."
+                if name.startswith(("SSO", "Unauthorized", "Token")):
+                    return f"{why}. Log in again with: aws sso login{flag}"
+                return (f"{why}. Log in with `aws sso login{flag}` (IAM Identity Center), "
+                        f"or set AWS_PROFILE / pass --profile.")
+        resp = getattr(exc, "response", None)
+        code = (resp or {}).get("Error", {}).get("Code") if isinstance(resp, dict) else None
+        if code in _LOGIN_CODES:
+            return (f"AWS did not accept the credentials ({code}): they have probably expired. "
+                    f"If you use SSO, log in again with: aws sso login{flag}")
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+def friendly_login_errors(main_fn: Callable) -> Callable:
+    """Wrap a script's main(): a "not logged in" error becomes one line with the
+    fix and exit code 1, instead of a traceback. Other errors pass through."""
+    import functools
+
+    @functools.wraps(main_fn)
+    def wrapper(*a, **kw):
+        try:
+            return main_fn(*a, **kw)
+        except SystemExit:
+            raise
+        except Exception as exc:  # re-raised unless it is a login error
+            hint = login_hint(exc)
+            if hint is None:
+                raise
+            LOG.error("%s", hint)
+            return 1
+
+    return wrapper
+
 RFC1918_BLOCKS = [
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
@@ -1926,6 +2013,8 @@ def _build_parser() -> argparse.ArgumentParser:
     rv.add_argument("--manifest", required=True)
     rv.add_argument("--yes", action="store_true")
 
+    for q in (a, pl, ap, rv):
+        add_profile_arg(q)
     return p
 
 
@@ -1935,9 +2024,11 @@ def _confirm(action: str) -> None:
         sys.exit("aborted")
 
 
+@friendly_login_errors
 def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = _build_parser().parse_args(argv)
+    use_profile(args.profile)
 
     if args.mode == "analyse":
         cfg = AnalyseConfig(

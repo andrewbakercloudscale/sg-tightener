@@ -54,9 +54,12 @@ from sg_tightener import (
     _is_strict_rfc1918,
     _list_security_groups,
     _smallest_covering,
+    add_profile_arg,
     apply_plan,
+    friendly_login_errors,
     revert_from_manifest,
     state_hash,
+    use_profile,
 )
 
 LOG = logging.getLogger("sg_compact")
@@ -363,12 +366,16 @@ def _build_parser() -> argparse.ArgumentParser:
     rv = sub.add_parser("revert", help="restore pre-apply state from a manifest")
     rv.add_argument("--manifest", required=True)
     rv.add_argument("--yes", action="store_true")
+    for q in (pl, ap, rv):
+        add_profile_arg(q)
     return p
 
 
+@friendly_login_errors
 def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = _build_parser().parse_args(argv)
+    use_profile(args.profile)
 
     if args.mode == "plan":
         if args.ratio is not None and not 0.0 <= args.ratio <= 1.0:

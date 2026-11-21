@@ -84,7 +84,12 @@ from sg_ou_report import (
     exit_code,
     parse_partition_from_arn,
 )
-from sg_tightener import describe_groups
+from sg_tightener import (
+    add_profile_arg,
+    describe_groups,
+    friendly_login_errors,
+    use_profile,
+)
 
 LOG = logging.getLogger("sg_transfer_audit")
 
@@ -354,6 +359,7 @@ def _aggregate(findings: list[Finding], accounts: list[dict] | None = None,
     return rows
 
 
+@friendly_login_errors
 def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     p = argparse.ArgumentParser(prog="sg_transfer_audit.py")
@@ -364,7 +370,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--out", default="transfer_report.xlsx")
     p.add_argument("--json", default="transfer_report.json")
     p.add_argument("--max-workers", type=int, default=16)
+    add_profile_arg(p)
     args = p.parse_args(argv)
+    use_profile(args.profile)
 
     _require_aws()
     regions = [r.strip() for r in args.regions.split(",") if r.strip()]

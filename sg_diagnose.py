@@ -44,7 +44,10 @@ from sg_tightener import (
     _list_network_interfaces,
     _list_security_groups,
     _sorted_flows,
+    add_profile_arg,
+    friendly_login_errors,
     preflight_flow_logs,
+    use_profile,
 )
 from sg_viz import PROTO_NAMES, rules_covering
 
@@ -146,6 +149,7 @@ def record_in_approved(path: str, blocked: list[dict]) -> dict:
     return approved
 
 
+@friendly_login_errors
 def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     p = argparse.ArgumentParser(prog="sg_diagnose.py")
@@ -159,7 +163,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--s3-prefix")
     p.add_argument("--apply", action="store_true",
                    help="kept for compatibility: only prints the commands to run")
+    add_profile_arg(p)
     args = p.parse_args(argv)
+    use_profile(args.profile)
 
     if not args.log_group and not args.s3_bucket:
         p.error("either --log-group or --s3-bucket is required")
