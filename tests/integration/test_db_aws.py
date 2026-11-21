@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 
 import boto3
 import pytest
@@ -105,3 +106,16 @@ def test_tracked_client_records_tool_changes_and_refuses_unreviewed_drift(estate
     with pytest.raises(SystemExit, match="changed outside sg-tightener"):
         sg_db.track(ec2, REGION, "sg_tightener apply")
     sg_db.track(ec2, REGION, "sg_extend", strict=False)  # break-glass goes ahead, the change is on record
+
+
+def test_a_fix_printed_by_sg_review_runs_as_printed(estate):
+    import sg_review
+
+    ec2, api = estate.ec2, estate.groups["api"]
+    rule = {"proto": "6", "from": 443, "to": 443}
+    line = sg_review._revoke_cli(REGION, api, rule, "172.16.0.0/12")
+    argv = shlex.split(line)
+    assert argv[:3] == ["python", "sg_db.py", "exec"]
+    assert sg_db.main(argv[2:]) == 0
+    assert ("tcp", 443, "172.16.0.0/12") not in _ingress(ec2, api)
+    assert _db().log()[-2]["reason"].startswith("sg_review: remove")

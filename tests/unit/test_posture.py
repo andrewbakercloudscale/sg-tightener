@@ -43,7 +43,8 @@ def test_open_ssh_on_a_public_routed_instance_is_critical_with_the_revoke():
     (it,) = [i for i in posture_findings(d, {("eni-1", "6", 22): {"1.2.3.4"}}) if i["key"] == "exposed"]
     assert it["sev"] == "critical" and it["kind"] == "posture" and it["area"] == "exposure"
     assert "198.51.100.9" in it["reason"] and "1 internet source(s)" in it["reason"]
-    assert it["cli"] == ("aws ec2 revoke-security-group-ingress --region eu-west-1 --group-id sg-1 "
+    assert it["cli"] == ("python sg_db.py exec --reason 'sg_review: remove tcp 22 from 0.0.0.0/0' -- "
+                         "aws ec2 revoke-security-group-ingress --region eu-west-1 --group-id sg-1 "
                          "--ip-permissions 'IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=0.0.0.0/0}]'")
 
 

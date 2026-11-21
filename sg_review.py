@@ -49,6 +49,7 @@ import logging
 import os
 import random
 import re
+import shlex
 import signal
 import sys
 import tempfile
@@ -642,10 +643,11 @@ def drift_findings(doc: dict, now: float, window: float = DRIFT_WINDOW) -> list[
                 gid = ev["group"]
                 gname = (groups.get(gid) or {}).get("name") or gid
                 ports = ports_label(rule)
-                cli = (f"aws ec2 revoke-security-group-ingress --region {region} --group-id {gid} "
-                       f"--security-group-rule-ids {rule_id}" if rule_id else
-                       f"aws ec2 revoke-security-group-ingress --region {region} --group-id {gid} "
-                       f"--ip-permissions '{_perm_arg(str(proto), lo, hi, cidr)}'")  # fmt: skip
+                cli = db_exec(f"aws ec2 revoke-security-group-ingress --region {region} --group-id {gid} "
+                              f"--security-group-rule-ids {rule_id}" if rule_id else
+                              f"aws ec2 revoke-security-group-ingress --region {region} --group-id {gid} "
+                              f"--ip-permissions '{_perm_arg(str(proto), lo, hi, cidr)}'",
+                              f"sg_review: {ports} opened to {cidr} by {ev.get('who') or 'unknown'}")  # fmt: skip
                 still = any(cidr in (r.get("cidrs") or []) + (r.get("cidrs6") or []) and r["from"] <= lo <= r["to"]
                             for r in (groups.get(gid) or {}).get("rules") or [])  # fmt: skip
                 if not still:
@@ -2170,10 +2172,20 @@ def _perm_arg(proto: str, lo: int, hi: int, cidr: str = "", ref: str = "") -> st
     return f"IpProtocol={p}{ports}{src}"
 
 
-def _revoke_cli(region: str, gid: str, rule: dict, cidr: str = "", ref: str = "", egress: bool = False) -> str:
+def db_exec(cmd: str, reason: str) -> str:
+    """A security group change, run through the database so it is recorded with who and why
+    (sg_db.py exec). Security groups are changed only through the database: never in the console,
+    never in Terraform."""
+    return f"python sg_db.py exec --reason {shlex.quote(reason)} -- {cmd}"
+
+
+def _revoke_cli(region: str, gid: str, rule: dict, cidr: str = "", ref: str = "", egress: bool = False,
+                reason: str = "") -> str:  # fmt: skip
     verb = "revoke-security-group-egress" if egress else "revoke-security-group-ingress"
-    return (f"aws ec2 {verb} --region {region} --group-id {gid} "
-            f"--ip-permissions '{_perm_arg(rule['proto'], rule['from'], rule['to'], cidr, ref)}'")
+    src = cidr or ref or "?"
+    return db_exec(f"aws ec2 {verb} --region {region} --group-id {gid} "
+                   f"--ip-permissions '{_perm_arg(rule['proto'], rule['from'], rule['to'], cidr, ref)}'",
+                   reason or f"sg_review: remove {ports_label(rule)} {'to' if egress else 'from'} {src}")  # fmt: skip
 
 
 def _route(snap: dict, eni: dict) -> dict | None:
@@ -2320,9 +2332,9 @@ def posture_findings(doc: dict, inet_in: dict | None = None, egress_seen: dict |
                         + ". CIS AWS 5.4: the default group should allow nothing.",
                         "Move the interfaces to groups made for them, then remove every rule from the default group.",
                         region, gname,
-                        f"aws ec2 revoke-security-group-ingress --region {region} --group-id {gid} --ip-permissions "
-                        f"\"$(aws ec2 describe-security-groups --region {region} --group-ids {gid} "
-                        f"--query 'SecurityGroups[0].IpPermissions')\"",
+                        f"python sg_db.py remove --region {region} --group {gid} --all "
+                        f"--reason 'CIS AWS 5.4: the default group allows nothing' && "
+                        f"python sg_db.py apply --region {region} --group {gid}",
                         group=gid, extra={"interfaces": mine[:20]}))  # fmt: skip
             # one group across unrelated tiers
             tiers = sorted({enis[e]["kind"] for e in mine} & {"EC2 instance", "RDS database", "load balancer",
@@ -2453,12 +2465,13 @@ def _egress_items(region, gid, g, mine, enis, groups, egress_seen, lab) -> list[
                            for r in (groups.get(o) or {}).get("egress") or [])})  # fmt: skip
     desc = "; ".join(f"{PROTO_NAME.get(str(p), p)} {port} to {', '.join(c[:3])}{' …' if len(c) > 3 else ''}"
                      for p, port, c, _ in rules[:6])  # fmt: skip
-    cli = "\n".join(f"aws ec2 authorize-security-group-egress --region {region} --group-id {gid} --ip-permissions "
-                    f"'{_perm_arg(str(p), port, port, c)}'" for p, port, cs, _ in rules for c in cs)  # fmt: skip
+    cli = "\n".join(db_exec(f"aws ec2 authorize-security-group-egress --region {region} --group-id {gid} --ip-permissions "
+                            f"'{_perm_arg(str(p), port, port, c)}'", "sg_review: outbound fitted to what was seen")
+                    for p, port, cs, _ in rules for c in cs)  # fmt: skip
     for r in open_all:
         for c in [*(r.get("cidrs") or []), *(r.get("cidrs6") or [])]:
             if c in ("0.0.0.0/0", "::/0"):
-                cli += "\n" + _revoke_cli(region, gid, r, c, egress=True)
+                cli += "\n" + _revoke_cli(region, gid, r, c, egress=True, reason="sg_review: outbound fitted to what was seen")
     out.append(_pt_item(
         "egress", "egress-fit", "medium" if n <= EGRESS_FIT_MAX else "low", "Outbound wider than used",
         f"{gname} may connect anywhere, but used {len(rules)} port(s)",
@@ -3007,8 +3020,9 @@ def alert_text(account: str, name: str, items: list[dict], markdown: bool = True
             out += [f"Fix: {line}" for line in it["cli"].splitlines()]
         if it.get("restore"):
             r = it["restore"]
-            out.append(f"Restore: aws ec2 authorize-security-group-ingress --region {r['region']} --group-id {r['group']} "
-                       f"--ip-permissions '{json.dumps(r['perms'], separators=(',', ':'))}'")  # fmt: skip
+            out.append("Restore: " + db_exec(f"aws ec2 authorize-security-group-ingress --region {r['region']} --group-id "
+                                             f"{r['group']} --ip-permissions '{json.dumps(r['perms'], separators=(',', ':'))}'",
+                                             "sg_review: put back a revoked rule that is still needed"))  # fmt: skip
         out.append("")
     return "\n".join(out).rstrip() + "\n"
 
