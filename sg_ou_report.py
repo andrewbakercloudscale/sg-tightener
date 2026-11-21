@@ -101,6 +101,7 @@ RFC1918_BLOCKS = [
 ]
 
 CRITICAL_PUBLIC_PORTS = {22, 3389, 3306, 5432, 1433, 27017, 6379, 9200, 9300, 11211}
+WIDE_V6 = 32
 
 
 def _ports_in_range(from_p: int | None, to_p: int | None) -> set[int]:
@@ -120,6 +121,11 @@ def classify_sg_rule(cidr: str, from_p: int | None, to_p: int | None) -> str | N
         if ports & CRITICAL_PUBLIC_PORTS:
             return "CRITICAL"
         return "HIGH"
+    if isinstance(net, ipaddress.IPv6Network):
+        # a global IPv6 range of a /32 or wider is an ISP-sized allocation: as good as public
+        if net.prefixlen <= WIDE_V6 and not net.is_private:
+            return "HIGH" if ports & CRITICAL_PUBLIC_PORTS else "MEDIUM"
+        return None
     if isinstance(net, ipaddress.IPv4Network) and any(net.subnet_of(b) for b in RFC1918_BLOCKS):
         if net.prefixlen <= 16:
             return "HIGH"
@@ -160,6 +166,7 @@ class Finding:
     cidr: str
     port_range: str
     severity: str
+    note: str = ""  # e.g. whether an open rule is reachable from the internet
 
 
 def _require_aws():
@@ -202,9 +209,11 @@ def _scan_region(session, account_id: str, account_name: str, region: str
     out: list[Finding] = []
     errors: list[dict] = []
 
+    sgs: list[dict] = []
     try:
         for page in ec2.get_paginator("describe_security_groups").paginate():
             for sg in page.get("SecurityGroups", []):
+                sgs.append(sg)
                 for perm in sg.get("IpPermissions", []):
                     cidrs = [ip.get("CidrIp") for ip in perm.get("IpRanges", [])]
                     cidrs += [ip.get("CidrIpv6") for ip in perm.get("Ipv6Ranges", [])]
@@ -243,12 +252,92 @@ def _scan_region(session, account_id: str, account_name: str, region: str
         errors.append({"account_id": account_id, "region": region, "stage": "network-acls",
                        "error": str(exc)})
 
+    hy, hy_errors = scan_reach_and_hygiene(ec2, sgs, out, account_id, account_name, region)
+    out += hy
+    errors += hy_errors
     pl, pl_errors, endpoint_groups = scan_privatelink(session, ec2, account_id, account_name, region)
     for f in out:
         if f.resource_type == "SG" and f.resource_id in endpoint_groups:
             f.resource_type = "SG (PrivateLink endpoint)"
             f.resource_id = f"{f.resource_id} ({endpoint_groups[f.resource_id]})"
     return out + pl, errors + pl_errors
+
+
+def internet_routed_subnets(ec2) -> tuple[set[str], set[str], set[str], set[str]]:
+    """(subnets routed to an internet gateway for IPv4, for IPv6, VPCs whose main table is, for IPv4 and IPv6)."""
+    s4, s6, m4, m6 = set(), set(), set(), set()
+    for page in ec2.get_paginator("describe_route_tables").paginate():
+        for t in page.get("RouteTables", []):
+            igw4 = any((r.get("GatewayId") or "").startswith("igw-") and r.get("DestinationCidrBlock") == "0.0.0.0/0"
+                       for r in t.get("Routes", []))
+            igw6 = any((r.get("GatewayId") or "").startswith("igw-") and r.get("DestinationIpv6CidrBlock") == "::/0"
+                       for r in t.get("Routes", []))
+            for a in t.get("Associations", []):
+                key = t.get("VpcId") if a.get("Main") else a.get("SubnetId")
+                v4s, v6s = (m4, m6) if a.get("Main") else (s4, s6)
+                if key and igw4:
+                    v4s.add(key)
+                if key and igw6:
+                    v6s.add(key)
+    return s4, s6, m4, m6
+
+
+def scan_reach_and_hygiene(ec2, sgs: list[dict], found: list[Finding], account_id: str, account_name: str,
+                           region: str) -> tuple[list[Finding], list[dict]]:
+    """Marks each finding open to 0.0.0.0/0 or ::/0 with whether the internet can reach it today (an interface in
+    the group with a public address, in a subnet routed to an internet gateway), and adds: the default group in
+    use with rules beyond its own members (MEDIUM), and rules trusting another account's group (MEDIUM). What
+    could not be read is an optional error: it does not make the account incomplete."""
+    out: list[Finding] = []
+    errors: list[dict] = []
+    members: dict[str, list[dict]] = {}
+    try:
+        for page in ec2.get_paginator("describe_network_interfaces").paginate():
+            for e in page.get("NetworkInterfaces", []):
+                for g in e.get("Groups", []):
+                    members.setdefault(g["GroupId"], []).append(e)
+        s4, s6, m4, m6 = internet_routed_subnets(ec2)
+    except Exception as exc:  # noqa: BLE001
+        errors.append({"account_id": account_id, "region": region, "stage": "reachability", "error": str(exc),
+                       "optional": True})
+        return out, errors
+
+    def routed(e: dict, v6: bool) -> bool:
+        subnets, mains = (s6, m6) if v6 else (s4, m4)
+        if e.get("SubnetId") in subnets:
+            return True
+        # a subnet with no table of its own uses the VPC's main table
+        return e.get("VpcId") in mains and e.get("SubnetId") not in (s4 | s6)
+
+    for f in found:
+        if f.resource_type != "SG" or f.cidr not in ("0.0.0.0/0", "::/0"):
+            continue
+        v6 = f.cidr == "::/0"
+        live = [e for e in members.get(f.resource_id, [])
+                if (e.get("Ipv6Addresses") if v6 else (e.get("Association") or {}).get("PublicIp")) and routed(e, v6)]
+        n = len(members.get(f.resource_id, []))
+        f.note = (f"reachable from the internet: {len(live)} of {n} interface(s) have a public address in a subnet "
+                  "routed to an internet gateway" if live else
+                  f"not reachable today: none of its {n} interface(s) has a public address and an internet route")
+    for sg in sgs:
+        gid = sg["GroupId"]
+        if sg.get("GroupName") == "default" and members.get(gid):
+            extra = [p for p in sg.get("IpPermissions", []) if p.get("IpRanges") or p.get("Ipv6Ranges")
+                     or p.get("PrefixListIds") or any(x.get("GroupId") != gid for x in p.get("UserIdGroupPairs", []))]
+            if extra:
+                out.append(Finding(account_id, account_name, region, "SG (default, in use)", gid, "default group",
+                                   _port_label(extra[0].get("FromPort"), extra[0].get("ToPort")), "MEDIUM",
+                                   f"{len(members[gid])} interface(s) use the VPC's default group, which lets in "
+                                   "more than its own members"))
+        for p in sg.get("IpPermissions", []):
+            for x in p.get("UserIdGroupPairs", []):
+                owner = x.get("UserId")
+                if owner and owner not in (account_id, sg.get("OwnerId")):
+                    out.append(Finding(account_id, account_name, region, "SG (cross-account reference)", gid,
+                                       f"{x.get('GroupId', '')} (account {owner})",
+                                       _port_label(p.get("FromPort"), p.get("ToPort")), "MEDIUM",
+                                       "who joins that group is decided in the other account"))
+    return out, errors
 
 
 def classify_endpoint_service(principals: list[str], acceptance_required: bool) -> str | None:
