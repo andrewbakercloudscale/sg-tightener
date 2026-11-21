@@ -24,6 +24,3 @@ viz-data*.json
 
 # sg_review output: describes your network
 sg-review*.html
-deploy/drift-alerts/build/
-deploy/drift-alerts/.terraform*
-deploy/drift-alerts/packaged.yaml
