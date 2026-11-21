@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.8.0 - 2026-11-21
+
+- **Real-time drift alerts.** `sg_drift_lambda.py` and `deploy/drift-alerts/`
+  (CloudFormation template and Terraform module). EventBridge sends each
+  successful `AuthorizeSecurityGroupIngress` and `ModifySecurityGroupRules`
+  call to a Lambda function, which rates the rule it added as `sg_review`'s
+  **Rules opened wide** does and, at or above `MinSeverity` (default high),
+  alerts within seconds: SNS (email, chat, pager), Slack (webhook in Secrets
+  Manager) and Security Hub (the same finding id as `sg_review securityhub`).
+  It names who made the change and from which address, and gives the revoke
+  command.
+- **Optional automatic revoke** (`AutoRevoke` = `critical` or `high`, off by
+  default). Groups tagged `sg-tightener-allow-wide=true` are never revoked,
+  by the code and by a Deny in the function's policy.
+- A CloudWatch alarm on the function's errors posts to the alert topic.
+- `python sg_drift_lambda.py event.json` prints the alert a saved event would
+  raise, with no AWS call.
+- Drift items carry the rule they found (`rule`: protocol, ports, range, rule
+  id).
+
 ## 2.7.0 - 2026-11-21
 
 - **SSO everywhere.** Every tool that calls AWS takes `--profile` (an

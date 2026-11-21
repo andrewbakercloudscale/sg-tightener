@@ -660,7 +660,8 @@ def drift_findings(doc: dict, now: float, window: float = DRIFT_WINDOW) -> list[
                                "Ask whoever made the change why; take it out unless it is meant and approved, and "
                                "narrow it to the addresses that need it.",
                                region, gname, cli if still else "", group=gid, target=f"{ports} from {cidr}"),
-                    "kind": "drift", "event": {"t": ev["t"], "group": gid, "who": ev["who"]}, "still": still})
+                    "kind": "drift", "event": {"t": ev["t"], "group": gid, "who": ev["who"]}, "still": still,
+                    "rule": {"proto": str(proto), "from": lo, "to": hi, "cidr": cidr, "id": rule_id}})
     out.sort(key=lambda it: (SEV_RANK[it["sev"]], -it["event"]["t"]))
     return out
 

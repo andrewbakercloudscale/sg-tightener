@@ -1,0 +1,191 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  sg-tightener real-time drift alerts. Alerts within seconds when a security group rule is opened wide
+  (0.0.0.0/0, ::/0, a public /16 or wider, a private /8 on a risky port), and optionally takes it back out.
+  Deploy once per region (EventBridge only sees API calls made in its own region); StackSets for an organisation.
+  Needs a CloudTrail trail recording management events in the account.
+
+Parameters:
+  MinSeverity:
+    Type: String
+    Default: high
+    AllowedValues: [critical, high, medium]
+    Description: Alert at or above this severity.
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: Optional. Subscribe this address to the alert topic (confirm the email AWS sends).
+  SlackSecretArn:
+    Type: String
+    Default: ""
+    Description: Optional. Secrets Manager secret holding a Slack incoming-webhook URL.
+  SecurityHub:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Also send each finding to Security Hub in this region (it must be enabled).
+  AutoRevoke:
+    Type: String
+    Default: "off"
+    AllowedValues: ["off", critical, high]
+    Description: >
+      Revoke a rule rated this or worse as soon as it is added. Groups tagged sg-tightener-allow-wide=true are
+      never revoked (and are denied to the function by policy as well).
+  AccountName:
+    Type: String
+    Default: ""
+    Description: Optional. Shown in alerts next to the account id.
+
+Conditions:
+  HasEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+  HasSlack: !Not [!Equals [!Ref SlackSecretArn, ""]]
+  HasHub: !Equals [!Ref SecurityHub, "true"]
+  HasRevoke: !Not [!Equals [!Ref AutoRevoke, "off"]]
+
+Resources:
+  Topic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub sg-tightener-drift-${AWS::Region}
+
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail
+    Properties:
+      TopicArn: !Ref Topic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/sg-tightener-drift-${AWS::Region}
+      RetentionInDays: 90
+
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: drift-alerts
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub ${LogGroup.Arn}:*
+              - Sid: ReadTheGroup
+                Effect: Allow
+                Action: ec2:DescribeSecurityGroups
+                Resource: "*"
+              - Sid: Alert
+                Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref Topic
+              - !If
+                - HasSlack
+                - Sid: SlackWebhook
+                  Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource: !Ref SlackSecretArn
+                - !Ref AWS::NoValue
+              - !If
+                - HasHub
+                - Sid: SecurityHub
+                  Effect: Allow
+                  Action: securityhub:BatchImportFindings
+                  Resource: "*"
+                - !Ref AWS::NoValue
+              - !If
+                - HasRevoke
+                - Sid: Revoke
+                  Effect: Allow
+                  Action: ec2:RevokeSecurityGroupIngress
+                  Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
+                - !Ref AWS::NoValue
+              - !If
+                - HasRevoke
+                - Sid: NeverRevokeAllowedGroups
+                  Effect: Deny
+                  Action: ec2:RevokeSecurityGroupIngress
+                  Resource: "*"
+                  Condition:
+                    StringEquals: {"aws:ResourceTag/sg-tightener-allow-wide": "true"}
+                - !Ref AWS::NoValue
+
+  Function:
+    Type: AWS::Lambda::Function
+    DependsOn: LogGroup
+    Properties:
+      FunctionName: !Sub sg-tightener-drift-${AWS::Region}
+      Description: sg-tightener real-time drift alerts
+      Runtime: python3.12
+      Handler: sg_drift_lambda.handler
+      Code: build/  # run build.sh, then `aws cloudformation package` uploads it
+      Timeout: 30
+      MemorySize: 256
+      ReservedConcurrentExecutions: 5
+      Role: !GetAtt Role.Arn
+      Environment:
+        Variables:
+          HOME: /tmp
+          MIN_SEVERITY: !Ref MinSeverity
+          SNS_TOPIC_ARN: !Ref Topic
+          SLACK_SECRET_ARN: !Ref SlackSecretArn
+          SECURITY_HUB: !Ref SecurityHub
+          AUTO_REVOKE: !Ref AutoRevoke
+          ACCOUNT_NAME: !Ref AccountName
+
+  Rule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub sg-tightener-drift-${AWS::Region}
+      Description: Security group rules added (CloudTrail management events)
+      EventPattern:
+        source: [aws.ec2]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventSource: [ec2.amazonaws.com]
+          eventName: [AuthorizeSecurityGroupIngress, ModifySecurityGroupRules]
+          errorCode: [{exists: false}]
+      Targets:
+        - Id: drift
+          Arn: !GetAtt Function.Arn
+          RetryPolicy: {MaximumRetryAttempts: 4, MaximumEventAgeInSeconds: 3600}
+
+  Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt Rule.Arn
+
+  ErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub sg-tightener-drift-errors-${AWS::Region}
+      AlarmDescription: The drift-alert function failed; alerts may have been missed.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{Name: FunctionName, Value: !Ref Function}]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref Topic]
+
+Outputs:
+  TopicArn:
+    Value: !Ref Topic
+    Description: Subscribe more endpoints (chat, pager) here.
+  FunctionName:
+    Value: !Ref Function

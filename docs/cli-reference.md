@@ -212,6 +212,21 @@ Same flags as `sg_ou_report.py`, with outputs defaulting to
 
 ---
 
+## `sg_drift_lambda.py`
+
+The Lambda handler for [real-time drift alerts](../deploy/drift-alerts/README.md). Locally it prints
+the alert a saved event would raise, with no AWS call:
+
+```bash
+python sg_drift_lambda.py event.json     # an EventBridge event, or a bare CloudTrail record
+```
+
+Exit codes: `0` nothing high or critical, `1` a high or critical rule, `2` wrong usage. In Lambda it
+is configured by environment variables: `MIN_SEVERITY`, `SNS_TOPIC_ARN`, `SLACK_SECRET_ARN`,
+`SECURITY_HUB`, `AUTO_REVOKE`, `ACCOUNT_NAME`.
+
+---
+
 ## `sg_viz.py`
 
 Read-only. Writes one JSON file (`sg-tightener.viz/v1`) for drawing a region's

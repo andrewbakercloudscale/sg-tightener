@@ -154,6 +154,11 @@ The item gives the `revoke-security-group-ingress` command (by rule id when Clou
 Run `watch` hourly and these are posted within the hour, so a rule opened by mistake, or by someone
 who should not have, is seen the same day.
 
+For alerts within seconds instead, and the option to revoke such a rule automatically, deploy
+[real-time drift alerts](../deploy/drift-alerts/README.md): an EventBridge rule and a Lambda function
+that make the same judgement on each CloudTrail event as it happens, and post to SNS, Slack and
+Security Hub.
+
 ### PrivateLink
 
 ![PrivateLink: an endpoint service any account may connect to, a load balancer that does not filter PrivateLink traffic, an interface endpoint open to 10.0.0.0/8](images/sg-review-privatelink.png)

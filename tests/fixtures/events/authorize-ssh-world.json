@@ -1,0 +1,28 @@
+{
+  "version": "0",
+  "id": "6f1d0a5e-0000-4000-8000-000000000001",
+  "detail-type": "AWS API Call via CloudTrail",
+  "source": "aws.ec2",
+  "account": "111122223333",
+  "time": "2026-11-21T10:00:00Z",
+  "region": "eu-west-1",
+  "resources": [],
+  "detail": {
+    "eventVersion": "1.09",
+    "userIdentity": {"type": "AssumedRole", "arn": "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_Ops_ab12/contractor-ops"},
+    "eventTime": "2026-11-21T10:00:00Z",
+    "eventSource": "ec2.amazonaws.com",
+    "eventName": "AuthorizeSecurityGroupIngress",
+    "awsRegion": "eu-west-1",
+    "sourceIPAddress": "41.13.7.200",
+    "requestParameters": {
+      "groupId": "sg-0demo1234567890a",
+      "ipPermissions": {"items": [{"ipProtocol": "tcp", "fromPort": 22, "toPort": 22,
+        "ipRanges": {"items": [{"cidrIp": "0.0.0.0/0"}]},
+        "ipv6Ranges": {"items": [{"cidrIpv6": "::/0"}]}}]}
+    },
+    "responseElements": {"_return": true},
+    "eventType": "AwsApiCall",
+    "recipientAccountId": "111122223333"
+  }
+}
