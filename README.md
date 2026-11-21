@@ -47,6 +47,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **2.5.0** | `sg_review.py` verdicts: every refused and let-in source gets a severity and a one-line reason, and a **Needs attention** box lists only what looks broken (a rule change that cut traffic off, with the command to restore it; a partner's new address; your own traffic refused; health checks refused) or too open (scanners and Tor exits let in), worst first. Scans turned away stay out. A red triangle marks the change that broke traffic. `watch` posts new items to Slack or email; `org` rolls the verdicts up across every account in an OU |
 | **2.4.0** | `sg_review.py`: a self-contained HTML Security Group Review of one account over 24 hours to 6 months. Three timelines (refused sources, over-provisioned addresses worked back through CloudTrail's rule changes, active sources with DR and batch traffic apart), every source named and typed (AWS service, CDN, secure access, SaaS, anyone's hosting, scanner, Tor exit, your partners via a names file), graphs by port class, **Extract rule** to turn refused sources into reviewed rules, each rule's status and suggested ranges, CSV and approved.json downloads. Moved here from the AWS Cloud Risk Review console |
 | **2.3.0** | Exact rule fitting: when sources do not fit the rule limit, the blocks that open the fewest unused addresses are chosen, and a group's slots go to the rules where they save the most. Fitting 2,000 addresses takes 0.02 s instead of up to 28 s |
 | **2.2.0** | Interface-exact evidence: flows record the interface that logged them, so overlapping VPCs stay apart. `sg_diagnose` judges each refused flow against its destination's own groups, and `--manifest` marks what a tightening caused. `sg_viz` resolves EKS pod prefixes and security-group references. Org reports say which accounts could not be scanned (`scan_status`, exit code 2) and treat `::/0` as public |
@@ -66,7 +67,7 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
 | [`sg_compact.py`](sg_compact.py) | Merge narrow CIDRs into wider ones to get back under the rule limit | `apply` and `revert` only |
 | [`sg_ou_report.py`](sg_ou_report.py) | Rank every account in an AWS Organization by permissive SG and NACL rules; exit 1 on CRITICAL, 2 if any account could not be scanned | No |
 | [`sg_transfer_audit.py`](sg_transfer_audit.py) | Find AWS Transfer Family servers (SFTP/FTPS/FTP/AS2) open to the internet; same exit codes | No |
-| [`sg_review.py`](sg_review.py) | One account's inbound rules against months of flow logs, as one HTML page with three timelines and what to change; `sg_review.py demo` shows it without AWS | No |
+| [`sg_review.py`](sg_review.py) | One account's inbound rules against months of flow logs, as one HTML page with what needs attention, three timelines and what to change; `watch` alerts to Slack or email, `org` rolls up an OU; `sg_review.py demo` shows it without AWS | No |
 | [`sg_viz.py`](sg_viz.py) | Export who talked to what, accepted or rejected, per time bucket, with the rule that allowed it and what a plan would block | No |
 | [`tests/`](tests) | Offline test suite (unit + moto integration), no AWS credentials needed | No |
 
@@ -79,6 +80,12 @@ page. The page has three timelines (refused sources, over-provisioned addresses,
 ports view, and a table of what to tighten, with CSV and approved.json downloads. Try it with
 `python sg_review.py demo`, which needs no AWS access.
 
+- **Needs attention:** every refused and let-in source gets a verdict with a severity and a
+  one-line reason, from what was already read. The box at the top lists only what looks broken (a
+  rule change that cut traffic off, with the command that restores it; a partner's new address; your
+  own traffic or AWS health checks refused) or too open (scanners and Tor exits let in on remote
+  admin), worst first. Scans the defences turned away stay out. `watch` posts new items to Slack or
+  email every hour; `org` rolls them up across every account in an OU.
 - **Attribution:** every source is named: your VPCs and named ranges, your data centres, the AWS
   service and region, the SaaS provider, or the AS number, owner and country. The graphs can be
   coloured by kind, by network (AS number) or by port class.
@@ -131,6 +138,7 @@ Requires Python 3.9 or later and AWS credentials with the permissions in
 python sg_review.py read --regions eu-west-1 --days 1     # measures what longer reads cost
 python sg_review.py read --regions eu-west-1 --days 90    # asks before spending
 python sg_review.py report --onprem "10.200.0.0/16 Johannesburg DC"   # sg-review-<account>.html
+python sg_review.py watch --regions eu-west-1 --slack "$WEBHOOK"   # hourly from cron: alert on what broke
 
 # 1. Learn: read 90 days of accepted flows and write approved.json
 #    (each source and the destination address and port it reached)

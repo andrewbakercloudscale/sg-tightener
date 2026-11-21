@@ -1,5 +1,47 @@
 # Changelog
 
+## 2.5.0 - 2026-11-21
+
+- **`sg_review.py` verdicts and Needs attention.** Every refused source gets a
+  verdict with a severity (critical, high, medium, low, info) and a one-line
+  reason, worked out from what `read` already collected: flows, CloudTrail rule
+  history, network ACLs, attribution and the names file. No new AWS call or
+  permission. The verdicts are internal scan (critical), scan (info: the
+  defences working), fixed since, broken by a change, stopped working, network
+  ACL, new address of a client, same provider, health check refused, own
+  traffic blocked, partner refused, service refused, retrying and refused.
+  Sources let in are checked too: a scanner or Tor exit let in is critical on a
+  risky port and high on other non-web ports; a hosting provider let in on a
+  risky port is high.
+  - A **Needs attention** box at the top of the page lists only the critical,
+    high and medium items, grouped by the change, source or provider and ranked
+    by severity, then flows times days. Each has its evidence, one action,
+    **List these sources** and **Extract rule**.
+  - When a CloudTrail rule change caused the refusals, the item names who made
+    it and offers **Restore the revoked rule**: the exact
+    `authorize-security-group-ingress` command that puts the entry back. A red
+    triangle on the refused graph marks the change; selecting it lists the
+    sources it cut off.
+  - Each refused row, and each flagged let-in row, shows its verdict chip and
+    reason.
+  - **Extract rule** starts from the verdicts: wanted traffic starts ticked,
+    and the dialog offers the restore when a change caused the refusal.
+- **New: `sg_review.py watch`** (alert mode). Reads only the flow logs not
+  read yet in the last day, builds the last 24 hours and posts the new Needs
+  attention items at or above `--min-severity` to a Slack webhook and/or by
+  SMTP email. An item still open is posted again after `--repeat` hours; one
+  that closes and comes back is posted at once. `--max-cost` skips an expensive
+  read; `--loop` runs it every `--every` minutes.
+- **New: `sg_review.py org`.** Lists the accounts in an OU (and the OUs under
+  it), assumes a role in each, confirms one combined cost, reads them, and
+  writes each account's page plus `index.html` and `org.json`
+  (`sg-tightener.review-org/v1`): the Needs attention counts and items per
+  account, worst first. Accounts whose role cannot be assumed are listed and
+  the exit code is 2.
+- The demo gains the cases: a revoked rule that cut off two callers, an
+  internal host scanning twelve ports, and Censys and a Tor exit let in on RDP
+  through a `0.0.0.0/0` rule.
+
 ## 2.4.0 - 2026-11-21
 
 - **New: `sg_review.py`**, moved here from the AWS Cloud Risk Review console,

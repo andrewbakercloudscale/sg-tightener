@@ -124,6 +124,17 @@ dialog.xr::backdrop { background: rgba(0,0,0,.45); }
 tr.off td { opacity: .5; }
 details.xr-fold { margin: 0 0 14px; }
 details.xr-fold > summary { margin: 0 0 10px; }
+.att { display: grid; gap: 10px; }
+.att-more { margin-top: 10px; }
+.att-more summary { cursor: pointer; font-weight: 600; margin-bottom: 10px; }
+.att-item { border: 1px solid var(--grid); border-left: 4px solid var(--s, var(--muted)); border-radius: 10px; padding: 12px 14px; background: var(--surface); }
+.att-top { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.att-item p { margin: 6px 0 0; font-size: 13.5px; }
+.att-item .tools { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+.att-sum { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; }
+.att-restore textarea, .xr-restore textarea { width: 100%; box-sizing: border-box; min-height: 92px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; margin-top: 8px; }
+.xr-restore { margin: 0 0 12px; padding: 10px 14px; border-radius: 8px; border-left: 4px solid var(--tone-risk); background: color-mix(in srgb, var(--tone-risk) 10%, var(--surface)); font-size: 13px; }
+.verdict-why { margin-top: 3px; }
 @media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
 @media (max-width: 700px) {
   h1 { font-size: 23px; }
@@ -154,10 +165,16 @@ details.xr-fold > summary { margin: 0 0 10px; }
 
   <div class="chips" id="chips" role="group" aria-label="Kinds of source shown"></div>
 
+  <section class="section" id="attentionWrap">
+    <h2><span class="num">!</span>Needs attention</h2>
+    <p class="muted section-lede">Refusals that look like something broke, and sources let in that should not have been, each with its evidence and one action, worst first, then by flows and how long it has lasted. Scans the defences turned away stay out of it: every refused source still carries its verdict in the table below.</p>
+    <div id="attention"></div>
+  </section>
+
   <section class="section">
     <h2><span class="num">1</span>Refused sources</h2>
     <p class="muted section-lede">Distinct addresses turned away per period, by kind. A refused address needs a rule only if the traffic is wanted: internal and data centre sources usually are (a new service, a moved server), AWS and SaaS sometimes (health checks, webhooks, a partner's new egress), other networks rarely (scanners), so they are drawn in grey as the defences working, and in amber only in a period far above the usual level, which can mean a probe. Select a bar, or one colour in it, to list those sources; <strong>Extract rule</strong> then turns what is listed into the inbound rules that would let it in, with everything known about each source and port.</p>
-    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Colour by</span><div class="seg" id="refusedBy" role="group" aria-label="Colour the refused sources by"><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="scope" id="extractScope"></span><button type="button" class="btn primary" id="btnExtract">Extract rule</button></div></div><div class="chart-box"><canvas id="chRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div><p id="refusedJump" class="small jump" hidden></p></figure>
+    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Colour by</span><div class="seg" id="refusedBy" role="group" aria-label="Colour the refused sources by"><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="scope" id="extractScope"></span><button type="button" class="btn primary" id="btnExtract">Extract rule</button></div></div><div class="chart-box"><canvas id="chRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div><p id="refusedJump" class="small jump" hidden></p><p id="refusedCause" class="small jump" hidden></p></figure>
     <div id="suggestWrap">
       <h3>Rules that would let in the refused internal and data centre sources</h3>
       <p class="muted small">Per security group and port, the refused private sources as the fewest exact ranges. Add them only if the traffic is wanted; sources a network ACL refused are left out (the ACL decides first).</p>
@@ -218,6 +235,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
   const CATS = ["internal", "datacentre", "aws", "saas", "internet"];
   const COLOR = { internal: "#2a78d6", datacentre: "#7357c9", aws: "#e8a317", saas: "#2f9e5b", internet: "#d03b3b" };
   const CLASS_COLOR = { web: "#2a78d6", admin: "#d03b3b", database: "#7357c9", windows: "#e0673a", containers: "#8a5a2b", transfer: "#0f9d9a", mail: "#b7791f", messaging: "#c2489a", network: "#2f9e5b", low: "#8f8d86", registered: "#b1afa6", high: "#d3d1c8", range: "#6b6a65", all: "#0b0b0b" };
+  const SEV_VAR = { critical: "--sev-critical", high: "--tone-risk", medium: "--warn-ink", low: "--tone-est", info: "--muted" };
+  const SEV_NAME = { critical: "Critical", high: "High", medium: "Medium", low: "Low", info: "Info" };
   const TYPES = DATA.source_types || [];
   const TYPE = Object.fromEntries(TYPES.map((t) => [t.key, t]));
   const TYPE_COLOR = { internal: "#2a78d6", datacentre: "#7357c9", aws: "#e8a317", cdn: "#0f9d9a", security: "#1f6f43", saas: "#2f9e5b", hosting: "#e0673a", scanner: "#8f8d86", anon: "#5b2a86", partner: "#b5367a", other: "#d03b3b" };
@@ -228,7 +247,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   const STATUS_TONE = { tighten: "--tone-risk", unused: "--sev-critical", open: "--warn-ink", watch: "--muted", incomplete: "--muted", "not logged": "--muted", used: "--good" };
   const RANGE_DAYS = { "24h": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180 };
   const NET_SHOWN = 10;
-  const state = { range: DATA.default, rep: null, cats: new Set(CATS), bin: null, mark: null, charts: {}, by: { refused: "kind", active: "recency" }, netTop: { refused: new Set(), active: new Set() }, xr: null };
+  const state = { range: DATA.default, rep: null, cats: new Set(CATS), bin: null, mark: null, only: null, charts: {}, by: { refused: "kind", active: "recency" }, netTop: { refused: new Set(), active: new Set() }, xr: null };
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const num = (n) => (n == null ? EMPTY : Number(n).toLocaleString("en-GB"));
@@ -247,6 +266,9 @@ details.xr-fold > summary { margin: 0 0 10px; }
   const catName = (cat) => (state.rep.categories || []).find((c) => c.key === cat)?.name || cat;
   const catChip = (cat) => `<span class="cat" style="--c:${COLOR[cat] || "#888"}">${esc(catName(cat))}</span>`;
   const typeChip = (x) => (TYPE_SHORT[x.group] ? `<span class="pc${x.group === "scanner" || x.group === "anon" ? " risky" : ""}" style="--c:${TYPE_COLOR[x.group]}" title="${esc(TYPE[x.group]?.note || "")}">${esc(TYPE_SHORT[x.group])}</span>` : "");
+  const sevPill = (sev, text) => `<span class="pill" style="--p:var(${SEV_VAR[sev] || "--muted"})">${esc(text || SEV_NAME[sev] || sev)}</span>`;
+  const verdictBlock = (v) => (v ? `<div style="margin-top:4px"><span class="pill" style="--p:var(${SEV_VAR[v.sev] || "--muted"})" title="${esc(v.action)}">${esc(v.label)}</span></div><div class="small ${v.sev === "info" ? "muted" : ""} verdict-why">${esc(v.reason)}</div>` : "");
+  const restoreCmd = (r) => `# Put back ${r.entry} on ${r.group_name || r.group}\naws ec2 authorize-security-group-ingress --region ${r.region} --group-id ${r.group} \\\n  --ip-permissions '${JSON.stringify(r.perms)}'`;
   const pcChip = (pc) => (pc ? `<span class="pc${pc.risky ? " risky" : ""}" style="--c:${CLASS_COLOR[pc.cls] || "#888"}" title="${esc(CLASS[pc.cls]?.note || "")}">${esc(pc.name)}</span>` : "");
   const srcCell = (x) => `<div><code>${esc(x.src)}</code> ${catChip(x.cat)} ${typeChip(x)}</div><div class="small">${esc(x.name)}${x.asn && !String(x.name).startsWith("AS") ? ` <span class="muted">· ${esc(x.asn)}</span>` : ""}${x.cc && String(x.name).startsWith("AS") ? ` <span class="muted">(${esc(x.cc)})</span>` : ""}</div>`;
   function download(text, name, type) {
@@ -295,7 +317,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
 
   function render() {
     state.rep = DATA.ranges[state.range];
-    state.bin = null; state.mark = null;
+    state.bin = null; state.mark = null; state.only = null;
     markRange();
     $("#read").innerHTML = readPanel();
     const rep = state.rep, s = rep.summary;
@@ -322,6 +344,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     $("#coverage").hidden = !gaps.length;
     $("#coverage").innerHTML = gaps.length ? `<strong>What this review cannot see</strong><ul>${gaps.map((g) => `<li>${g}</li>`).join("")}</ul>` : "";
     $("#chips").innerHTML = `<span class="muted small">Show:</span>` + rep.categories.map((c) => `<button type="button" class="chip" data-cat="${c.key}" aria-pressed="${state.cats.has(c.key)}" style="--c:${COLOR[c.key]}">${esc(c.name)}</button>`).join("");
+    attention();
     charts();
     tables();
     $("#method").innerHTML = `<p><strong>Read, per region, live and read-only:</strong> the security groups, network interfaces, VPCs, network ACLs, VPN routes and flow logs (ec2 Describe calls, and GetManagedPrefixListEntries for prefix lists); 90 days of inbound rule changes (cloudtrail:LookupEvents); and the VPC flow logs in CloudWatch Logs (logs:StartQuery, GetQueryResults, StopQuery). All are in sg-tightener's <code>iam-policy.json</code>.</p>
@@ -331,7 +354,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
       <p><strong>Suggested ranges:</strong> sg-tightener's own fitting: each address seen widened only while at most 30% of the wider block was never seen, never past its private block, at most 60 rules, inside the original rule. Public ranges: only the addresses seen. Download approved.json per region and run <code>sg_tightener.py plan</code> against the same evidence to get a plan you can apply and revert.</p>
       <p><strong>Who an address is:</strong> this account's VPCs, the internal and data centre ranges given to the report, VPN routes, AWS's published ranges (ip-ranges.json, with the service and region), SaaS providers' published ranges, and every routed network's AS number, owner, country and announced block (iptoasn.com). Each provider network is then given a source type from a built-in list of AS numbers and owner names: a CDN, a secure access service (whose shared addresses serve every customer), a SaaS or big-tech service, anyone's hosting, a known internet scanner, a Tor or VPN exit (with the Tor Project's own list of exit relays), or another network.${DATA.names ? ` ${num(DATA.names)} ${DATA.names === 1 ? "network is" : "networks are"} named from your names file, over every list.` : ""} The lists were downloaded to the computer that wrote this page and looked up there: no address left it.</p>
       <p><strong>What a port is for:</strong> each destination port is matched against a list of common services and put in a class (web, remote admin, database, Windows and directory, containers, file transfer, mail, messaging, network and monitoring, or other by port range). It names what the port usually carries, not what is actually listening.</p>
-      <p><strong>Extract rule:</strong> the refused sources listed (by the chips, the period and the colour selected) turned into inbound rules: one per security group, protocol and port, on the first security group of the interface refused, with the sources as the fewest exact ranges. Sources a network ACL refused, sources a rule added since already allows, and interfaces since deleted are listed apart, since a new rule would not change them. Nothing is applied: the page writes the AWS CLI command and the rules as JSON.</p>`;
+      <p><strong>Extract rule:</strong> the refused sources listed (by the chips, the period and the colour selected) turned into inbound rules: one per security group, protocol and port, on the first security group of the interface refused, with the sources as the fewest exact ranges. Sources a network ACL refused, sources a rule added since already allows, and interfaces since deleted are listed apart, since a new rule would not change them. Nothing is applied: the page writes the AWS CLI command and the rules as JSON. Sources start ticked when their verdict says the traffic is wanted; when a rule change caused the refusal, the box offers the command that puts the revoked entry back.</p>
+      <p><strong>Verdicts, from what is already read:</strong> each refused source is matched, in order, against: a scan (many ports or targets; from inside your network it is critical, from outside it is the defences working), traffic that stopped by the end of the range (fixed since), traffic let in before and refused right after a CloudTrail rule change (broken by a change, with the revoked entry to restore) or refused since with no change found (stopped working), a network ACL, a new address for a client let in on the same interface and port within two days (Zscaler, a partner moving egress), the same provider elsewhere, AWS health checks, your own internal or data centre traffic, a partner in the names file, a known service, retries, and anything else (info). Sources let in are checked too: a known scanner or Tor exit let in is critical on a risky port and high otherwise, and hosting providers on a risky port are high. <strong>Needs attention</strong> lists critical, high and medium verdicts, grouped by the change, source or provider, ranked by severity, then flows times days. No extra AWS call is made.</p>`;
     $("#footer").textContent = `Written ${new Date(DATA.generated_at).toLocaleString("en-GB", { timeZone: "UTC" })} UTC by sg-tightener sg_review.py · account ${rep.account}`;
   }
 
@@ -415,10 +439,27 @@ details.xr-fold > summary { margin: 0 0 10px; }
     const rby = state.by.refused;
     const refusedSets = rby === "net" ? netSets("refused") : rby === "class" ? classSets("refused") : rby === "group" ? groupSets("refused")
       : CATS.filter((c) => sel.has(c)).map((c) => ({ label: catName(c) + (c === "internet" ? " (defended)" : ""), data: rep.series.refused[c], backgroundColor: c === "internet" ? jump.map((j) => css(j ? "--sev-warning" : "--muted")) : COLOR[c], borderWidth: 0, filter: { mode: "kind", key: c, label: catName(c) } }));
+    // Triangles on the refused chart: a rule change after which sources that used to be let in were refused.
+    const caused = rep.markers.filter((m) => m.caused?.length && m.bin >= 0 && m.bin < rep.bins.length);
+    const rTotal = rep.bins.map((_, i) => refusedSets.reduce((t, d) => t + (+d.data[i] || 0), 0));
+    if (caused.length) {
+      const byBin = {};
+      for (const m of caused) (byBin[m.bin] = byBin[m.bin] || []).push(m);
+      refusedSets.push({ type: "line", stack: "caused", label: "Change that broke traffic", data: rep.bins.map((_, i) => (byBin[i] ? Math.max(rTotal[i], 1) : null)), showLine: false, pointStyle: "triangle", pointRadius: 9, pointHoverRadius: 11, borderColor: css("--sev-critical"), backgroundColor: css("--sev-critical"), marks: byBin, order: -1 });
+    }
+    $("#refusedCause").hidden = !caused.length;
+    $("#refusedCause").innerHTML = caused.slice(0, 3).map((m) => `<strong>Refusals began after a rule change</strong> (red triangle): ${esc(m.event.replace("SecurityGroupIngress", "").replace("SecurityGroupRules", " rules"))} on ${esc(m.name)} by ${esc(m.who || "unknown")}, ${esc(when(m.t))}, removed ${m.removed.map((x) => `<code>${esc(x)}</code>`).join(", ") || "a rule"}; ${plural(m.caused.length, "source")} let in before ${m.caused.length === 1 ? "has" : "have"} been refused since. Select the triangle to list them.`).join("<br>");
+    const rPick = pick("refused", refusedSets);
+    const rLabel = (c) => (c.dataset.marks ? (c.dataset.marks[c.dataIndex] || []).map((m) => `${m.event.replace("SecurityGroupIngress", "").replace("SecurityGroupRules", " rules")} on ${m.name} by ${m.who || "unknown"}: ${m.caused.length} let in before, refused since`) : c.raw ? `${c.dataset.label}: ${num(c.raw)}` : null);
     chart("chRefused", {
       type: "bar",
       data: { labels, datasets: refusedSets },
-      options: { responsive: true, maintainAspectRatio: false, animation: false, scales: scales(false), onClick: pick("refused", refusedSets), plugins: { legend: { position: "bottom", labels: { color: ink, boxWidth: 12 } }, tooltip: rby === "kind" ? { mode: "index", callbacks: { title } } : tip } },
+      options: { responsive: true, maintainAspectRatio: false, animation: false, scales: scales(false),
+        onClick: (evt, els) => {
+          const el = els.find((e) => refusedSets[e.datasetIndex]?.marks);
+          if (el) { const ms = refusedSets[el.datasetIndex].marks[el.index] || []; showOnly({ kind: "refused", srcs: [...new Set(ms.flatMap((m) => m.caused))], title: `Refused since ${ms.map((m) => `the change on ${m.name} by ${m.who || "unknown"}`).join(" and ")}` }); return; }
+          rPick(evt, els.filter((e) => !refusedSets[e.datasetIndex]?.marks));
+        }, plugins: { legend: { position: "bottom", labels: { color: ink, boxWidth: 12 } }, tooltip: rby === "kind" ? { mode: "index", callbacks: { title, label: rLabel } } : { ...tip, callbacks: { ...tip.callbacks, label: (c) => (c.dataset.marks ? rLabel(c) : tip.callbacks.label(c)) } } } },
     });
     const overSets = CATS.filter((c) => sel.has(c)).map((c) => ({ type: "line", label: catName(c), data: rep.series.over[c].map((v) => v || null), borderColor: COLOR[c], backgroundColor: COLOR[c], borderWidth: 2, pointRadius: 0, stepped: true, spanGaps: true }));
     const total = rep.bins.map((_, i) => sum(rep.series.over, i) || null);
@@ -500,6 +541,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
 
   // Whether a listed source belongs to the bar (and colour) selected in its chart.
   function inPick(x, kind) {
+    const o = state.only;
+    if (o && o.kind === kind && !o.srcs.has(x.src)) return false;
     const b = state.bin;
     if (!b || b.kind !== kind) return true;
     if (!x.bins.includes(b.i)) return false;
@@ -518,9 +561,54 @@ details.xr-fold > summary { margin: 0 0 10px; }
   function filterNote(id, kind, shown, total) {
     const b = state.bin?.kind === kind ? state.bin : null;
     const rep = state.rep;
-    $(id).innerHTML = b
+    const o = state.only?.kind === kind ? state.only : null;
+    $(id).innerHTML = o
+      ? `Showing ${plural(shown, "source")}: ${esc(o.label)}. <a href="#" data-clear>Show all</a>`
+      : b
       ? `Showing the ${plural(shown, "source")} in ${esc(binLabel(rep.bins[b.i], rep.step))}${rep.step < 86400 ? " UTC" : ""}${b.f ? `, ${esc(b.f.label)}` : ""}. <a href="#" data-clear>Show all</a>`
       : `${plural(shown, "source")}${total > shown ? ` of ${num(total)}` : ""}, busiest first${kind === "refused" ? ", internal and data centre before the rest" : ""}. Select a bar in the chart to list one period's.`;
+  }
+
+  // List only the sources of one "Needs attention" item in its table, and scroll to it.
+  function showOnly(it, scroll = true) {
+    const kind = it.kind === "active" ? "active" : "refused";
+    state.bin = null;
+    state.only = { kind, srcs: new Set(it.srcs), label: it.title.charAt(0).toLowerCase() + it.title.slice(1) };
+    for (const c of it.srcs.map((s) => state.rep[kind].find((x) => x.src === s)?.cat).filter(Boolean)) {
+      if (!state.cats.has(c)) { state.cats.add(c); for (const b of document.querySelectorAll(`[data-cat="${c}"]`)) b.setAttribute("aria-pressed", "true"); charts(); }
+    }
+    tables();
+    if (scroll) document.getElementById(kind === "refused" ? "refusedFilter" : "activeFilter").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function attention() {
+    const rep = state.rep;
+    const items = rep.attention || [];
+    const counts = rep.summary.attention || {};
+    const sum = ["critical", "high", "medium"].filter((k) => counts[k]).map((k) => sevPill(k, `${num(counts[k])} ${SEV_NAME[k].toLowerCase()}`)).join(" ");
+    const v = rep.summary.verdicts || {};
+    const quiet = (v.info || 0) + (v.low || 0);
+    const foot = quiet ? `<p class="small muted">${plural(quiet, "other source")} refused or let in carry a low or info verdict (scans turned away, retries, one-offs): they are in the tables below, not here.</p>` : "";
+    if (!items.length) {
+      $("#attention").innerHTML = `<div class="att-item" style="--s:var(--good)"><div class="att-top">${sevPill("info", "Nothing")}<strong>Nothing needs attention in this range</strong></div><p class="muted">No refusal looks like something broke, and no scanner or Tor exit was let in.</p></div>${foot}`;
+      return;
+    }
+    const srcList = (it) => { const n = it.srcs.length; return `${it.srcs.slice(0, 4).map((s) => `<code>${esc(s)}</code>`).join(", ")}${n > 4 ? ` and ${num(n - 4)} more` : ""}`; };
+    const card = (it, i) => {
+      const dates = it.first ? `${when(it.first)}${it.last && it.last !== it.first ? ` to ${when(it.last)}` : ""}` : "";
+      const restore = it.restore ? `<div class="att-restore" id="attR${i}" hidden><p class="small">This puts the revoked entry back exactly as it was. Nothing has been applied: run it after the change has been approved.</p><textarea id="attT${i}" readonly spellcheck="false">${esc(restoreCmd(it.restore))}</textarea><div class="tools"><button type="button" class="btn" data-copy="attT${i}">Copy the command</button></div></div>` : "";
+      return `<div class="att-item" style="--s:var(${SEV_VAR[it.sev] || "--muted"})">
+        <div class="att-top">${sevPill(it.sev, `${SEV_NAME[it.sev]} · ${it.label}`)}<strong>${esc(it.title)}</strong>${it.target ? `<span class="small muted">${esc(it.target)}</span>` : ""}</div>
+        <p>${esc(it.reason)}</p>
+        <p><strong>Do:</strong> ${esc(it.action)}</p>
+        <p class="small muted">${plural(it.srcs.length, "source")}: ${srcList(it)} · ${num(it.flows)} flows${dates ? ` · ${esc(dates)}` : ""}${it.days > 1 ? ` · ${plural(it.days, "day")}` : ""}</p>
+        <div class="tools"><button type="button" class="btn" data-att-list="${i}">List these sources</button>${it.kind === "refused" && !["internal-scan", "nacl"].includes(it.key) ? `<button type="button" class="btn" data-att-extract="${i}">Extract rule</button>` : ""}${it.restore ? `<button type="button" class="btn primary" data-att-restore="${i}">Restore the revoked rule</button>` : ""}</div>
+        ${restore}
+      </div>`;
+    };
+    const top = items.slice(0, 6).map(card).join("");
+    const rest = items.slice(6).map((it, i) => card(it, i + 6)).join("");
+    $("#attention").innerHTML = `<div class="att-sum">${sum}</div><div class="att">${top}</div>${rest ? `<details class="att-more"><summary>${plural(items.length - 6, "more item")}</summary><div class="att">${rest}</div></details>` : ""}${foot}`;
   }
 
   function refusedShown() {
@@ -538,7 +626,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     $("#btnExtract").disabled = !ref.length;
     const tgt = (t) => `<div class="small">${esc(t.kind)} <code>${esc(t.eni)}</code> · ${esc(portsOf(t))} ${pcChip(t.pc)} <span class="muted">${esc(t.pc?.svc || "")}</span> · ${num(t.flows)} flows${t.by ? ` · <span class="${t.by.startsWith("Network ACL") ? "acl" : ""}">refused by ${esc(t.by)}</span>` : ""}</div>`;
     $("#refused").innerHTML = ref.length
-      ? `<thead><tr><th>Source</th><th>Refused at</th><th class="num-cell">Flows</th><th>First seen</th><th>Last seen</th><th></th></tr></thead><tbody>${ref.map((x) => `<tr><td>${srcCell(x)}${x.sweep ? ` <span class="pill recon">sweeping ${num(x.ports)} ports, ${num(x.dsts)} targets</span>` : ""}</td><td>${targetsInPick(x, "refused").map(tgt).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="small">${esc(when(x.first))}</td><td class="small">${esc(when(x.last))}</td><td><button type="button" class="btn mini" data-extract="${esc(x.src)}">Extract rule</button></td></tr>`).join("")}</tbody>`
+      ? `<thead><tr><th>Source</th><th>Refused at</th><th class="num-cell">Flows</th><th>First seen</th><th>Last seen</th><th></th></tr></thead><tbody>${ref.map((x) => `<tr><td>${srcCell(x)}${x.sweep ? ` <span class="pill recon">sweeping ${num(x.ports)} ports, ${num(x.dsts)} targets</span>` : ""}${verdictBlock(x.verdict)}</td><td>${targetsInPick(x, "refused").map(tgt).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="small">${esc(when(x.first))}</td><td class="small">${esc(when(x.last))}</td><td><button type="button" class="btn mini" data-extract="${esc(x.src)}">Extract rule</button></td></tr>`).join("")}</tbody>`
       : `<tbody><tr><td class="muted">No refused source of the kinds shown${state.bin ? " in this period" : ""}.</td></tr></tbody>`;
     $("#suggestWrap").hidden = !rep.suggestions.length;
     $("#suggest").innerHTML = `<thead><tr><th>Security group</th><th>Port</th><th>From</th><th class="num-cell">Sources</th><th class="num-cell">Flows</th><th>Ranges to add, if wanted</th></tr></thead><tbody>${rep.suggestions.map((x) => `<tr><td>${esc(x.name)} <code class="small">${esc(x.group)}</code><div class="muted small">${esc(x.region)}</div></td><td>${esc(x.ports)}<div>${pcChip(x.pc)} <span class="muted small">${esc(x.pc?.svc || "")}</span></div></td><td class="small">${x.from.map(esc).join("<br>")}</td><td class="num-cell">${num(x.sources)}</td><td class="num-cell">${num(x.flows)}</td><td><code class="small">${x.cidrs.map(esc).join("<br>")}</code></td></tr>`).join("")}</tbody>`;
@@ -556,7 +644,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     const actv = rep.active.filter((x) => sel.has(x.cat) && inPick(x, "active")).sort((a, b) => (a.today === b.today ? b.flows - a.flows : a.today ? 1 : -1));
     filterNote("#activeFilter", "active", actv.length, rep.summary.active);
     $("#active").innerHTML = actv.length
-      ? `<thead><tr><th>Source</th><th>Let in to</th><th class="num-cell">Flows</th><th class="num-cell">Days seen</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${actv.map((x) => `<tr><td>${srcCell(x)}${x.today ? "" : ` <span class="pill new">not in the last 24 hours</span>`}${!x.today && x.days <= 3 ? `<div class="small dr">Seen on only ${plural(x.days, "day")}: a DR test, batch or failover? Keep it in any tightened rule.</div>` : ""}</td><td>${targetsInPick(x, "active").map((t) => `<div class="small">${esc(portsOf(t))} ${pcChip(t.pc)} <span class="muted">${esc(t.pc?.svc || "")}</span> on <code>${esc(t.eni)}</code>${t.groups.length ? ` <span class="muted">(${t.groups.map(esc).join(", ")})</span>` : ""}</div>`).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="num-cell">${num(x.days)}</td><td class="small">${esc(when(x.first))}</td><td class="small">${esc(when(x.last))}</td></tr>`).join("")}</tbody>`
+      ? `<thead><tr><th>Source</th><th>Let in to</th><th class="num-cell">Flows</th><th class="num-cell">Days seen</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${actv.map((x) => `<tr><td>${srcCell(x)}${verdictBlock(x.verdict)}${x.today ? "" : ` <span class="pill new">not in the last 24 hours</span>`}${!x.today && x.days <= 3 ? `<div class="small dr">Seen on only ${plural(x.days, "day")}: a DR test, batch or failover? Keep it in any tightened rule.</div>` : ""}</td><td>${targetsInPick(x, "active").map((t) => `<div class="small">${esc(portsOf(t))} ${pcChip(t.pc)} <span class="muted">${esc(t.pc?.svc || "")}</span> on <code>${esc(t.eni)}</code>${t.groups.length ? ` <span class="muted">(${t.groups.map(esc).join(", ")})</span>` : ""}</div>`).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="num-cell">${num(x.days)}</td><td class="small">${esc(when(x.first))}</td><td class="small">${esc(when(x.last))}</td></tr>`).join("")}</tbody>`
       : `<tbody><tr><td class="muted">No active source of the kinds shown${state.bin ? " in this period" : ""}.</td></tr></tbody>`;
   }
 
@@ -622,15 +710,22 @@ details.xr-fold > summary { margin: 0 0 10px; }
         t.groups.forEach((g) => r.groups.add(g));
         const a = r.assets.get(t.eni) || { eni: t.eni, kind: t.kind, dst: new Set(), public: t.public, subnet: t.subnet, desc: t.desc, flows: 0 };
         a.dst.add(t.dst); a.flows += t.flows; r.assets.set(t.eni, a);
-        const s = r.sources.get(x.src) || { x, flows: 0, on: !(x.sweep || x.group === "scanner" || x.group === "anon" || (x.cat === "internet" && t.pc?.risky)) };
+        const v = x.verdict;
+        const noisy = x.sweep || x.group === "scanner" || x.group === "anon" || (x.cat === "internet" && t.pc?.risky);
+        const s = r.sources.get(x.src) || { x, flows: 0, on: v ? v.wanted || (!!single && !noisy && !["scan", "internal-scan"].includes(v.key)) : !noisy };
         s.flows += t.flows; r.sources.set(x.src, s);
         rules.set(key, r);
       }
     }
     const scope = single ? `One source: ${single}` : fb ? `${plural(sources.length, "refused source")} in ${binLabel(rep.bins[fb.i], rep.step)}${rep.step < 86400 ? " UTC" : ""}${fb.f ? `, ${fb.f.label}` : ""}` : `All ${plural(sources.length, "refused source")} listed for ${({ "24h": "the last 24 hours", "1w": "the last week", "1m": "the last month", "3m": "the last 3 months", "6m": "the last 6 months" })[state.range]}`;
+    const restores = new Map();
+    for (const x of sources) {
+      const v = x.verdict;
+      if (v?.restore) { const k = `${v.event?.t}|${v.restore.group}|${v.restore.entry}`; const e = restores.get(k) || { ...v.restore, event: v.event, srcs: [] }; e.srcs.push(x.src); restores.set(k, e); }
+    }
     const ticked = (r) => [...r.sources.values()].some((s) => s.on);
     const flows = (r) => [...r.sources.values()].reduce((t, s) => t + s.flows, 0);
-    state.xr = { rules: [...rules.values()].sort((a, b) => ticked(b) - ticked(a) || flows(b) - flows(a)), apart, scope, capped: !single && rep.summary.refused > rep.refused.length };
+    state.xr = { rules: [...rules.values()].sort((a, b) => ticked(b) - ticked(a) || flows(b) - flows(a)), apart, restores: [...restores.values()], scope, capped: !single && rep.summary.refused > rep.refused.length };
     $("#xrScope").textContent = `${scope} · kinds shown: ${[...state.cats].map(catName).join(", ")}`;
     drawExtract();
     const d = $("#xr");
@@ -698,9 +793,10 @@ details.xr-fold > summary { margin: 0 0 10px; }
       <div><dt>Networks</dt><dd>${asns.length ? `${plural(asns.length, "AS number")}: ${asns.slice(0, 6).map(esc).join(", ")}${asns.length > 6 ? "…" : ""}` : "none outside your ranges"}${ccs.length ? `<br>Countries: ${ccs.map(esc).join(", ")}` : ""}</dd></div>
       <div><dt>Port classes</dt><dd>${uniq(live.map((o) => o.r.pc?.cls)).map((k) => pcChip(live.find((o) => o.r.pc?.cls === k).r.pc)).join(" ") || EMPTY}</dd></div>
     </dl>`;
+    for (const [i, rs] of (X.restores || []).entries()) html += `<div class="xr-restore"><strong>Restore the revoked rule</strong><p>${plural(rs.srcs.length, "source")} here (${rs.srcs.slice(0, 4).map((s) => `<code>${esc(s)}</code>`).join(", ")}${rs.srcs.length > 4 ? "…" : ""}) worked until ${esc(rs.event?.who || "someone")} removed <code>${esc(rs.entry)}</code> from ${esc(rs.group_name || rs.group)} on ${esc(when(rs.event?.t))}. If that removal was a mistake, putting the entry back is simpler and exact; if it was meant, untick these sources below.</p><textarea id="xrR${i}" readonly spellcheck="false">${esc(restoreCmd(rs))}</textarea><div class="tools"><button type="button" class="btn" data-copy="xrR${i}">Copy the command</button></div></div>`;
     if (warn.length) html += `<div class="xr-warn"><strong>Check before adding</strong><ul>${warn.map((w) => `<li>${w}</li>`).join("")}</ul></div>`;
     if (soft.length) html += `<div class="xr-warn soft"><strong>Worth knowing</strong><ul>${soft.map((w) => `<li>${w}</li>`).join("")}</ul></div>`;
-    html += `<p class="small muted">Unticked to start with: scanners (known scanning services, and sources sweeping many ports or targets), Tor and VPN exits, and internet sources on remote admin, database, Windows and container ports. Tick or untick any source: the ranges and the command follow.</p>`;
+    html += `<p class="small muted">Ticked to start with: the sources whose verdict says something broke (broken by a change, stopped working, a client's new address, your own traffic, a partner, a known service, AWS health checks). Everything else starts unticked, scanners, Tor exits and internet sources on risky ports above all. Tick or untick any source: the ranges and the command follow.</p>`;
     if (!X.rules.length) html += `<p>No rule to extract: ${X.apart.length ? "every source listed is refused for a reason a new security group rule would not change (below)." : "no refused source is listed."}</p>`;
     let folded = false;
     const wasOpen = !!document.querySelector("#xrBody details.xr-fold")?.open;
@@ -785,7 +881,15 @@ details.xr-fold > summary { margin: 0 0 10px; }
     }
     const one = e.target.closest("[data-extract]");
     if (one) { openExtract(one.dataset.extract); return; }
-    if (e.target.closest("[data-clear]")) { e.preventDefault(); state.bin = null; tables(); return; }
+    if (e.target.closest("[data-clear]")) { e.preventDefault(); state.bin = null; state.only = null; tables(); return; }
+    const al = e.target.closest("[data-att-list]");
+    if (al) { const it = state.rep.attention[+al.dataset.attList]; showOnly(it); return; }
+    const ax = e.target.closest("[data-att-extract]");
+    if (ax) { const it = state.rep.attention[+ax.dataset.attExtract]; showOnly(it, false); openExtract(null); return; }
+    const ar = e.target.closest("[data-att-restore]");
+    if (ar) { const box = document.getElementById(`attR${ar.dataset.attRestore}`); box.hidden = !box.hidden; return; }
+    const cp = e.target.closest("[data-copy]");
+    if (cp) { const ta = document.getElementById(cp.dataset.copy); const done = () => (cp.textContent = "Copied"); if (navigator.clipboard?.writeText) navigator.clipboard.writeText(ta.value).then(done, () => { ta.select(); document.execCommand("copy"); done(); }); else { ta.select(); document.execCommand("copy"); done(); } return; }
     if (e.target.closest("[data-unmark]")) { e.preventDefault(); state.mark = null; tables(); return; }
     const ap = e.target.closest("[data-approved]");
     if (ap) download(JSON.stringify(DATA.approved[ap.dataset.approved], null, 2), `approved-${DATA.account}-${ap.dataset.approved}.json`, "application/json");

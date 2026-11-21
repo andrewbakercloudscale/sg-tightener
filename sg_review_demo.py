@@ -55,6 +55,8 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
                                  "rules": [rule("6", 22, 22, ["203.0.113.0/24"], {"203.0.113.0/24": "partner"})]},
         "sg-0bat0000000000005": {"name": "batch-workers", "vpc": "vpc-0demo", "tag": "",
                                  "rules": [rule("6", 8080, 8080, ["10.0.0.0/8"])]},
+        "sg-0leg0000000000008": {"name": "legacy-admin", "vpc": "vpc-0demo", "tag": "",
+                                 "rules": [rule("6", 3389, 3389, ["0.0.0.0/0"], {"0.0.0.0/0": "temporary, vendor support"})]},
         "sg-0ops0000000000006": {"name": "ops-ssh", "vpc": "vpc-0demo", "tag": "",
                                  "rules": [rule("6", 22, 22, ["10.200.0.0/16"])]},
         "sg-0old0000000000007": {"name": "unused-sg", "vpc": "vpc-0demo", "tag": "",
@@ -73,6 +75,7 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
         "eni-0alb1": eni(h(1 * 256 + 30), ["sg-0alb0000000000003"], sub["pub"], "Load balancer", "ELB app/public"),
         "eni-0sftp": eni(h(1 * 256 + 40), ["sg-0sftp000000000004"], sub["pub"], public="198.51.100.7"),
         "eni-0bat1": eni(h(6 * 256 + 50), ["sg-0bat0000000000005"], sub["app"]),
+        "eni-0leg1": eni(h(1 * 256 + 60), ["sg-0leg0000000000008"], sub["pub"], public="198.51.100.9"),
         "eni-0nat1": eni(h(1 * 256 + 5), [], sub["pub"], "NAT gateway", "Interface for NAT Gateway"),
     }
     nacl = {"id": "acl-0demo", "entries": [
@@ -115,6 +118,8 @@ def history(now: float) -> dict:
              "sg-0ops0000000000006", "added": [], "removed": [["6", 22, 22, "10.0.0.0/8"]], "unknown": False},
             {"t": now - 20 * DAY, "name": "AuthorizeSecurityGroupIngress", "who": "batch-pipeline", "group":
              "sg-0bat0000000000005", "added": [["6", 8080, 8080, "10.0.0.0/8"]], "removed": [], "unknown": False},
+            {"t": now - 4 * DAY - 5 * HOUR, "name": "RevokeSecurityGroupIngress", "who": "jsmith", "group":
+             "sg-0app0000000000001", "added": [], "removed": [["6", 8443, 8443, "10.40.0.0/16"]], "unknown": False},
         ],
     }  # fmt: skip
 
@@ -128,6 +133,7 @@ def _patterns(vpc: str, other: tuple | None) -> list[dict]:
     alb = ("eni-0alb1", h(256 + 30))
     sftp = ("eni-0sftp", h(256 + 40))
     bat = ("eni-0bat1", h(6 * 256 + 50))
+    leg = ("eni-0leg1", h(256 + 60))
     pats = []
     # internal callers of the app servers: this VPC's load balancer and another account
     for i in range(6):
@@ -160,6 +166,22 @@ def _patterns(vpc: str, other: tuple | None) -> list[dict]:
     pats.append({"src": "203.0.113.10", "to": sftp, "port": 22, "ok": True, "p": 0.6, "rate": 6, "before": 6})
     pats.append({"src": "203.0.113.11", "to": sftp, "port": 22, "ok": True, "p": 0.2, "rate": 3})
     pats.append({"src": "165.225.12.40", "to": sftp, "port": 22, "ok": False, "p": 0.6, "rate": 6, "after": 6})
+    # a rule change that broke something: jsmith revoked 8443 from Payments prod four days ago, which its two
+    # settlement callers still use
+    for i in range(2):
+        pats.append({"src": o(3 * 256 + 20 + i), "to": app[0], "port": 8443, "ok": True, "p": 0.9, "rate": 25,
+                     "before": 4})  # fmt: skip
+        pats.append({"src": o(3 * 256 + 20 + i), "to": app[0], "port": 8443, "ok": False, "p": 0.9, "rate": 25,
+                     "after": 4})  # fmt: skip
+    # a host inside the VPC sweeping ports on its neighbours for the last two days
+    for i, port in enumerate((22, 23, 445, 3389, 6379, 9200, 27017, 2375, 10250, 1433, 5900, 11211)):
+        pats.append({"src": h(3 * 256 + 77), "to": (app[0], app[1], bat)[i % 3], "port": port, "ok": False,
+                     "p": 0.6, "rate": 3, "after": 2})  # fmt: skip
+    # a vendor-support rule left open to the internet: scanners and a Tor exit found it
+    for i in range(3):
+        pats.append({"src": _host("162.142.125.0/24", 10 + 17 * i), "to": leg, "port": 3389, "ok": True, "p": 0.3,
+                     "rate": 2})  # fmt: skip
+    pats.append({"src": "185.220.101.33", "to": leg, "port": 3389, "ok": True, "p": 0.15, "rate": 3})
     # refused inside: a new service in another account trying the database, and a data centre host the ACL turns away
     pats.append({"src": o(4 * 256 + 44), "to": db, "port": 5432, "ok": False, "p": 0.9, "rate": 40, "after": 3})
     pats.append({"src": "10.200.9.9", "to": app[0], "port": 22, "ok": False, "p": 0.5, "rate": 4})

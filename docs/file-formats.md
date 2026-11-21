@@ -242,7 +242,7 @@ applied.
 
 ## Names file (`~/.sg-tightener/names.yaml`)
 
-Read by `sg_review.py report` (`--names FILE` for another path). YAML or, with a `.json` suffix,
+Read by `sg_review.py report`, `watch` and `org` (`--names FILE` for another path). YAML or, with a `.json` suffix,
 JSON: a list of entries (or `{"names": [...]}`).
 
 ```yaml
@@ -261,6 +261,40 @@ JSON: a list of entries (or `{"names": [...]}`).
 
 A source named by the file carries `source_type` (the `type`) and `provider` (the `name`) in the
 extracted-rules JSON.
+
+
+## `org.json` (`sg-tightener.review-org/v1`)
+
+Written by `sg_review.py org` next to `index.html` and one `sg-review-<account>.html` per account.
+
+```json
+{
+  "schema": "sg-tightener.review-org/v1",
+  "generated_at": "2026-11-21T08:00:00Z",
+  "accounts": 2, "failed": 1,
+  "attention": {"critical": 3, "high": 2, "medium": 6},
+  "rows": [
+    {"account": "123456789012", "name": "payments", "status": "ok", "error": "",
+     "page": "sg-review-123456789012.html", "refused": 41,
+     "attention": {"critical": 3, "high": 2, "medium": 6, "low": 0, "info": 0},
+     "verdicts": {"critical": 2, "high": 3, "medium": 8, "low": 4, "info": 25},
+     "items": [{"sev": "high", "label": "Broken by a change", "title": "Stopped working after a rule change",
+                "target": "tcp 8443 to app-servers (EC2 instance)", "reason": "...", "action": "...",
+                "flows": 4275, "srcs": ["10.40.3.20", "10.40.3.21"]}]},
+    {"account": "210987654321", "name": "locked", "status": "not read", "error": "AccessDenied ...", "items": []}
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `rows[].status` | `ok`, `not read` (the role could not be assumed) or `no flow logs` |
+| `rows[].attention` | **Needs attention** items per severity, in the range counted |
+| `rows[].verdicts` | Every source's verdict per severity, refused and let in |
+| `rows[].items` | The items, worst first: severity, verdict label, title, target, reason, action, flows, sources |
+
+`<account>.watch.json`, next to each read in `~/.sg-tightener/review`, records which items `watch`
+posted and when: `{"sent": {"<item id>": <epoch seconds>}}`.
 
 ## Reports
 

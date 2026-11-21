@@ -1212,6 +1212,16 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
     rules = _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_first, cut_regions, end)
     open_rules = [r for r in rules if r["status"] == "open"]
 
+    # ---- verdicts: why each source was refused, and which let-in sources look wrong
+    ctx = _Ctx(lab, enis, groups, snaps, ev_by_group, accepted_rows, rej, end)
+    ctx.act, ctx.start = act, start
+    verdicts = {src: refused_verdict(ctx, src, r) for src, r in rej.items()}
+    let_in = {src: v for src, a in act.items() if a["bins"] and (v := active_verdict(ctx, src, a))}
+    attention = needs_attention(ctx, verdicts, let_in)
+    for m in markers:
+        m["caused"] = sorted({src for src, v in verdicts.items() if (v.get("event") or {}).get("t") == m["t"]
+                              and v["event"]["group"] == m["group"]})[:50]  # fmt: skip
+
     # ---- tables
     def src_row(src, x):
         lb = lab(src)
@@ -1229,8 +1239,9 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
                             "region": e.get("region", ""), "vpc": e.get("vpc", ""), "subnet": e.get("subnet", ""),
                             "desc": e.get("desc", ""), "public": e.get("public", ""), "pc": port_class(proto, port),
                             "by": _refused_by(src, e, groups, snaps, proto, port)})  # fmt: skip
-        row.update(targets=targets, ports=r.get("ports", len({t[2] for t in r["targets"]})), dsts=r.get("dsts", 1))
-        row["sweep"] = row["ports"] >= 10 or row["dsts"] >= 5
+        row.update(targets=targets, ports=_n_ports(r), dsts=_n_dsts(r))
+        row["sweep"] = _sweeps(r)
+        row["verdict"] = verdicts[src]
         refused.append(row)
     suggestions = _suggest(rej, enis, groups, snaps, lab)
 
@@ -1239,6 +1250,8 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         if not a["bins"]:
             continue
         row = src_row(src, a)
+        if src in let_in:
+            row["verdict"] = let_in[src]
         row.update(today=a["today"], days=len(a["days"]),
                    targets=[{"eni": k[0], "proto": k[1], "port": k[2], "flows": v, "pc": port_class(k[1], k[2]),
                              "groups": (enis.get(k[0]) or {}).get("groups", [])}
@@ -1281,7 +1294,10 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
                          "rules": [{"ports": ports_label(r), "sources": _entries(r)} for r in g["rules"]]}
                    for gid, g in groups.items()},
         "markers": markers,
+        "attention": attention,
         "summary": {
+            "verdicts": {k: sum(1 for v in verdicts.values() if v["sev"] == k) for k in SEVERITIES},
+            "attention": {k: sum(1 for a in attention if a["sev"] == k) for k in SEVERITIES},
             "refused": len(rej),
             "refused_internal": sum(1 for s in rej if lab(s)["cat"] in ("internal", "datacentre")),
             "active": sum(1 for a in act.values() if a["bins"]),
@@ -1386,12 +1402,335 @@ def _rule_covers(groups: dict, eni: dict | None, proto, port: int) -> bool:
 
 
 def _refused(rej: dict, src: str, b: int, c: dict, flows: int, target: tuple) -> dict:
-    r = rej.setdefault(src, {"bins": set(), "flows": 0, "first": c["s"], "last": c["e"], "targets": {}})
+    r = rej.setdefault(src, {"bins": set(), "flows": 0, "first": c["s"], "last": c["e"], "targets": {}, "tt": {}})
     r["bins"].add(b)
     r["flows"] += flows
     r["first"], r["last"] = min(r["first"], c["s"]), max(r["last"], c["e"])
     r["targets"][target] = r["targets"].get(target, 0) + flows
+    tt = r["tt"].get(target)
+    r["tt"][target] = (min(tt[0], c["s"]), max(tt[1], c["e"])) if tt else (c["s"], c["e"])
     return r
+
+
+def _n_ports(r: dict) -> int:
+    return r.get("ports", len({t[2] for t in r["targets"]}))
+
+
+def _n_dsts(r: dict) -> int:
+    return r.get("dsts", len({t[3] for t in r["targets"]}))
+
+
+def _sweeps(r: dict) -> bool:
+    return _n_ports(r) >= 10 or _n_dsts(r) >= 5
+
+
+# ---------------------------------------------------------------------------------------------- verdicts
+# Why a source was refused, read from what was collected anyway: the flows (let in before? refused since?), the
+# rule history (what changed, when, by whom), the network ACLs, and who the source is. A verdict is a severity,
+# a chip label, one line of reason with the evidence, and one action.
+SEVERITIES = ("critical", "high", "medium", "low", "info")
+SEV_RANK = {k: i for i, k in enumerate(SEVERITIES)}
+ATTENTION = ("critical", "high", "medium")
+WANTED = frozenset({"changed", "stopped", "moved", "provider", "partner", "service", "internal", "health"})
+HEALTH_SERVICES = frozenset({"ROUTE53_HEALTHCHECKS", "ROUTE53_HEALTHCHECKS_PUBLISHING"})
+MOVE_WINDOW = 2 * DAY  # a source let in that stopped within this of a new one being refused on the same port
+
+
+class _Ctx:
+    """What the verdicts look up, built once per timeline."""
+
+    def __init__(self, lab, enis, groups, snaps, ev_by_group, accepted_rows, rej, end):
+        self.lab, self.enis, self.groups, self.snaps, self.evs, self.rej, self.end = (
+            lab, enis, groups, snaps, ev_by_group, rej, end)  # fmt: skip
+        self.acc: dict[tuple, list] = {}  # (src, eni, proto, port) -> [first, last, flows]
+        self.by_tgt: dict[tuple, dict] = {}  # (eni, proto, port) -> src -> [first, last, flows]
+        for src, _dst, eni, proto, dport, flows, c in accepted_rows:
+            k = (eni, str(proto), dport)
+            x = self.by_tgt.setdefault(k, {}).get(src)
+            if x is None:
+                x = self.by_tgt[k][src] = [c["s"], c["e"], 0]
+                self.acc[(src, *k)] = x
+            x[0], x[1], x[2] = min(x[0], c["s"]), max(x[1], c["e"]), x[2] + flows
+        self.ip_eni = {ip: eid for eid, e in enis.items() for ip in e["ips"]}
+
+    def gname(self, gid: str) -> str:
+        return (self.groups.get(gid) or {}).get("name") or gid
+
+    def where(self, eni: str) -> str:
+        e = self.enis.get(eni) or {}
+        g = (e.get("groups") or [""])[0]
+        return f"{self.gname(g)} ({e.get('kind', 'deleted interface')})" if g else e.get("kind", "deleted interface")
+
+
+def _day(t: float) -> str:
+    d = datetime.fromtimestamp(t, timezone.utc)
+    return f"{d.day} {d:%b}"
+
+
+def _restore(ctx, ev: dict, entry) -> dict | None:
+    """The revoked entry as the AWS CLI's --ip-permissions, to put it back exactly."""
+    if not entry:
+        return None
+    proto, lo, hi, source = entry
+    perm = {"IpProtocol": {"6": "tcp", "17": "udp", "1": "icmp"}.get(str(proto), str(proto))}
+    if str(proto) in ("6", "17", "1", "58"):
+        perm.update(FromPort=lo, ToPort=hi)
+    desc = f"restored by sg_review: revoked {_day(ev['t'])} by {ev.get('who') or 'unknown'}"[:255]
+    if str(source).startswith("pl-"):
+        perm["PrefixListIds"] = [{"PrefixListId": source, "Description": desc}]
+    else:
+        perm["IpRanges"] = [{"CidrIp": source, "Description": desc}]
+    g = ctx.groups.get(ev["group"]) or {}
+    return {"group": ev["group"], "group_name": g.get("name", ""), "region": g.get("region", ""), "perms": [perm],
+            "entry": f"{ports_label({'proto': str(proto), 'from': lo, 'to': hi})} from {source}"}  # fmt: skip
+
+
+def _removal(ctx, groups_of: list, src: str, proto: str, port: int, lo: float, hi: float):
+    """The rule change on one of the interface's groups, between lo and hi, that took away what let src in:
+    (event, the revoked entry) or (event, None) for a change whose detail CloudTrail does not give."""
+    n = _ip(src)
+    vague = None
+    for gid in groups_of:
+        for ev in ctx.evs.get(gid, []):
+            if not lo <= ev["t"] <= hi:
+                continue
+            for x in ev["removed"]:
+                rp, a, b, source = x
+                if not port_matches({"proto": str(rp), "from": a, "to": b}, proto, port):
+                    continue
+                iv = sg_ipintel.cidr_iv(source) if not str(source).startswith("pl-") else None
+                if str(source).startswith("pl-") or (iv and n is not None and iv[0] <= n <= iv[1]):
+                    return ev, x
+            if ev["unknown"] and vague is None:
+                vague = (ev, None)
+    return vague or (None, None)
+
+
+def refused_verdict(ctx, src: str, r: dict) -> dict:
+    lb = ctx.lab(src)
+    cat, group, name = lb["cat"], lb.get("group", lb["cat"]), lb["name"]
+    tgts = sorted(r["targets"].items(), key=lambda kv: -kv[1])
+    periods, flows = len(r["bins"]), r["flows"]
+    since = f"{_day(r['first'])}" + (f" to {_day(r['last'])}" if r["last"] - r["first"] > DAY else "")
+    retries = f"{flows:,} flows in {periods} period{'s' if periods != 1 else ''}, {since}"
+    if _sweeps(r):
+        if cat in ("internal", "datacentre"):
+            return {"key": "internal-scan", "sev": "critical", "label": "Internal scan",
+                    "title": "A host inside your network is scanning",
+                    "reason": f"{src}{f' ({name})' if name != src else ''} tried {_n_ports(r)} ports on {_n_dsts(r)} addresses ({retries}). Refused, "
+                              "but scanning from inside is how a compromised host looks for its next step.",
+                    "action": f"Find out what runs on {src}. If nothing there should scan, isolate it and look for "
+                              "compromise.", "wanted": False}  # fmt: skip
+        who = {"scanner": "a known internet scanner", "anon": "a Tor or VPN exit"}.get(group, "a scan")
+        return {"key": "scan", "sev": "info", "label": "Defence working", "title": "Scan refused",
+                "reason": f"{who[0].upper() + who[1:]} sweeping {_n_ports(r)} ports on {_n_dsts(r)} addresses: "
+                          "refused, nothing got in.", "action": "None.", "wanted": False}  # fmt: skip
+    if group in ("scanner", "anon"):
+        what = "A known internet scanner" if group == "scanner" else "A Tor or VPN exit"
+        return {"key": "scan", "sev": "info", "label": "Defence working", "title": "Scanner refused",
+                "reason": f"{what} ({name}): refused, nothing got in.", "action": "None.", "wanted": False}
+    for (eni, proto, port, dst), _f in tgts[:5]:
+        e = ctx.enis.get(eni)
+        if not e:
+            continue
+        by = _refused_by(src, e, ctx.groups, ctx.snaps, proto, port)
+        tf, tl = r["tt"][(eni, proto, port, dst)]
+        plabel, where = _port_label(proto, port), ctx.where(eni)
+        if "added since" in by:
+            return {"key": "resolved", "sev": "info", "label": "Fixed since", "title": "Refused, since let in",
+                    "reason": f"Refused on {plabel} to {where} until {_day(tl)}; a rule added since lets it in.",
+                    "action": "None: check it is let in now.", "wanted": False}  # fmt: skip
+        a = ctx.acc.get((src, eni, proto, port))
+        if a and a[1] <= tf + DAY:
+            ev, entry = _removal(ctx, e["groups"], src, proto, port, a[1] - DAY, tf + DAY)
+            base = f"Let in on {plabel} to {where} until {_day(a[1])}, refused since {_day(tf)} ({retries})"
+            if by.startswith("Network ACL"):
+                return {"key": "stopped", "sev": "high", "label": "Stopped working", "title": "Was let in, now the network ACL refuses it",
+                        "reason": f"{base}. {by} refuses it now.", "action": f"Check recent changes to {by.split(' rule')[0]}.",
+                        "wanted": True}  # fmt: skip
+            if ev:
+                who = ev.get("who") or "unknown"
+                change = f"{ev['name']} by {who} on {_day(ev['t'])}"
+                rest = _restore(ctx, ev, entry)
+                return {"key": "changed", "sev": "high", "label": "Broken by a change",
+                        "title": "Stopped working after a rule change",
+                        "reason": f"{base}, right after {change}" + (f" removed {rest['entry']}." if rest else "."),
+                        "action": "Restore the revoked rule if the change was not meant to cut this off; otherwise "
+                                  "tell the owner of the source.",
+                        "event": {"t": ev["t"], "group": ev["group"], "name": ev["name"], "who": who},
+                        "restore": rest, "wanted": True}  # fmt: skip
+            return {"key": "stopped", "sev": "high", "label": "Stopped working", "title": "Was let in, now refused",
+                    "reason": f"{base}. No rule change in the history explains it (an interface or group swap?).",
+                    "action": f"Compare {where}'s security groups with what they were on {_day(a[1])}.",
+                    "wanted": True}  # fmt: skip
+        if by.startswith("Network ACL"):
+            wanted = cat in ("internal", "datacentre") or group in ("partner", "saas", "security")
+            return {"key": "nacl", "sev": "medium" if wanted else "info", "label": "Network ACL",
+                    "title": "Refused by a network ACL", "wanted": False,
+                    "reason": f"{by} refuses {name} on {plabel} to {where} ({retries}). A security group rule would "
+                              "not change that.",
+                    "action": f"If it is wanted, change {by.split(' rule')[0]}, not the security group."}  # fmt: skip
+        mover = _mover(ctx, src, (eni, proto, port), tf)
+        if mover:
+            m, (_mf, ml, _mfl) = mover
+            mn = ctx.lab(m)["name"]
+            return {"key": "moved", "sev": "high", "label": "New address?",
+                    "title": "A client that is let in may have moved address",
+                    "reason": f"{mn} ({m}) was let in on {plabel} to {where} until {_day(ml)}; {name} ({src}) "
+                              f"started being refused there {_day(tf)} ({retries}).",
+                    "action": f"Confirm with {mn}, then add {src}/32 and remove {m} once it is gone.",
+                    "wanted": True, "moved_from": m}  # fmt: skip
+        kin = _same_provider(ctx, src, lb, (eni, proto, port))
+        if kin:
+            return {"key": "provider", "sev": "medium", "label": "Same provider let in",
+                    "title": "Another address of a provider that is let in",
+                    "reason": f"{lb.get('provider') or name} is let in on {plabel} to {where} from {kin}, but not from "
+                              f"{src} ({retries}).",
+                    "action": f"If {lb.get('provider') or name} added an address, add it (prefer its published "
+                              "ranges, or a prefix list).", "wanted": True}  # fmt: skip
+        if cat == "aws" and lb.get("service") in HEALTH_SERVICES:
+            return {"key": "health", "sev": "medium", "label": "Health check refused",
+                    "title": "AWS health checks are refused",
+                    "reason": f"Route 53 health checkers are refused on {plabel} to {where} ({retries}): to them the "
+                              "target looks down.",
+                    "action": f"Allow Route 53's health-check ranges on {plabel}, or point the check at a port that "
+                              "is open.", "wanted": True}  # fmt: skip
+        if cat in ("internal", "datacentre"):
+            mine = ctx.enis.get(ctx.ip_eni.get(src, "")) or {}
+            allow = (f"its security group {ctx.gname(mine['groups'][0])} ({mine['groups'][0]})"
+                     if mine.get("groups") else f"{src}/32")  # fmt: skip
+            return {"key": "internal", "sev": "medium", "label": "Own traffic blocked",
+                    "title": "Your own traffic is refused",
+                    "reason": f"{name} ({src}) keeps trying {plabel} on {where} ({retries}).",
+                    "action": f"If it is a new or moved service, allow {allow} on {plabel}; if not, find what is "
+                              "calling.", "wanted": True}  # fmt: skip
+        if group == "partner":
+            return {"key": "partner", "sev": "high", "label": "Partner refused", "title": "A named partner is refused",
+                    "reason": f"{name} ({src}, from your names file) is refused on {plabel} to {where} ({retries}).",
+                    "action": f"Add {src}/32 if {name} should reach {plabel}; check their addresses with them.",
+                    "wanted": True}  # fmt: skip
+        if group in ("saas", "security") and periods >= 2:
+            return {"key": "service", "sev": "medium", "label": "Service refused",
+                    "title": "A known service is refused",
+                    "reason": f"{name} ({lb.get('what') or 'a known service'}) keeps trying {plabel} on {where} "
+                              f"({retries}): a webhook or integration may be failing.",
+                    "action": f"If you use {name} with this host, allow its published ranges on {plabel}.",
+                    "wanted": True}  # fmt: skip
+        break
+    if periods >= 3 and len(r["targets"]) == 1 and cat == "internet":
+        return {"key": "retry", "sev": "low", "label": "Keeps retrying", "title": "An internet client keeps retrying",
+                "reason": f"{name} tries one port on one address again and again ({retries}): it behaves like a "
+                          "client, not a scanner.", "action": "Find out who it is before letting it in.",
+                "wanted": False}  # fmt: skip
+    return {"key": "refused", "sev": "info", "label": "Refused", "title": "Refused",
+            "reason": f"Nothing suggests it was wanted ({retries}).", "action": "None.", "wanted": False}
+
+
+def _mover(ctx, src: str, tgt: tuple, tf: float):
+    """A source let in on the same interface and port that stopped about when src started being refused."""
+    best = None
+    for m, x in (ctx.by_tgt.get(tgt) or {}).items():
+        if m == src or x[1] > ctx.end - DAY or abs(x[1] - tf) > MOVE_WINDOW:
+            continue
+        if best is None or abs(x[1] - tf) < abs(best[1][1] - tf):
+            best = (m, x)
+    return best
+
+
+def _same_provider(ctx, src: str, lb: dict, tgt: tuple) -> str:
+    if lb.get("group") not in ("partner", "saas", "security", "cdn"):
+        return ""
+    key = lb.get("provider") or lb["name"]
+    for m in ctx.by_tgt.get(tgt) or {}:
+        if m != src and (ctx.lab(m).get("provider") or ctx.lab(m)["name"]) == key:
+            return m
+    return ""
+
+
+def _allowed_by(ctx, e: dict, src: str, proto: str, port: int) -> list[str]:
+    """The entries of the interface's groups that let src in on the port."""
+    n = _ip(src)
+    out = []
+    for gid in e.get("groups") or []:
+        for rule in (ctx.groups.get(gid) or {}).get("rules") or []:
+            if port_matches(rule, proto, port):
+                out += [f"{ctx.gname(gid)}: {ports_label(rule)} from {c}" for c in rule.get("cidrs") or []
+                        if (iv := sg_ipintel.cidr_iv(c)) and n is not None and iv[0] <= n <= iv[1]]  # fmt: skip
+    return out
+
+
+def active_verdict(ctx, src: str, a: dict) -> dict | None:
+    """A let-in source that looks wrong: a scanner, a Tor exit or anyone's server on a port that is not the
+    public web, or a source that swept refused ports and found one let in."""
+    lb = ctx.lab(src)
+    group, name = lb.get("group", lb["cat"]), lb["name"]
+    swept = src in ctx.rej and _sweeps(ctx.rej[src])
+    if not (group in ("scanner", "anon") or swept or (group == "hosting" and lb["cat"] == "internet")):
+        return None
+    worst = None
+    for (eni, proto, port), flows in sorted(a["targets"].items(), key=lambda kv: -kv[1]):
+        pc = port_class(proto, port)
+        if pc["cls"] == "web":
+            continue  # a public site is meant to be reached by anyone
+        if group == "hosting" and not pc["risky"]:
+            continue
+        sev = "critical" if pc["risky"] else "high"
+        if worst is None or SEV_RANK[sev] < SEV_RANK[worst[0]]:
+            worst = (sev, eni, proto, port, flows, pc)
+    if not worst:
+        return None
+    sev, eni, proto, port, flows, pc = worst
+    e = ctx.enis.get(eni) or {}
+    rules = _allowed_by(ctx, e, src, proto, port)
+    who = {"scanner": "A known internet scanner", "anon": "A Tor or VPN exit",
+           "hosting": "A server on anyone's hosting"}.get(group, "A source that scanned refused ports")  # fmt: skip
+    return {"key": "let-in", "sev": sev, "label": "Scan got in" if group != "hosting" else "Let in: unknown server",
+            "title": f"{who} was let in on {pc['name'].lower()}",
+            "reason": f"{who} ({name}) was let in on {_port_label(proto, port)} ({pc['svc']}) to {ctx.where(eni)}, "
+                      f"{flows:,} flows" + (f", by {rules[0]}" if rules else "") + ".",
+            "action": "Narrow that rule to the sources that need it (Rules, and what to change), or remove it.",
+            "rule": rules[0] if rules else "", "target": f"{_port_label(proto, port)} to {ctx.where(eni)}",
+            "wanted": False}  # fmt: skip
+
+
+def needs_attention(ctx, verdicts: dict, let_in: dict) -> list[dict]:
+    """The verdicts that look like something broke, or got in that should not have: one item per kind of verdict,
+    named source and target, busiest and longest first."""
+    items: dict[tuple, dict] = {}
+    for kind, vs in (("refused", verdicts), ("active", let_in)):
+        for src, v in vs.items():
+            if v["sev"] not in ATTENTION:
+                continue
+            lb = ctx.lab(src)
+            x = ctx.rej.get(src) if kind == "refused" else ctx.act.get(src)
+            tgt = max(x["targets"].items(), key=lambda kv: kv[1])[0] if x and kind == "refused" else None
+            who = (f"{v['event']['group']}@{v['event']['t']}" if v["key"] == "changed"
+                   else src if v["key"] in ("internal", "moved", "internal-scan", "stopped")
+                   else lb.get("provider") or lb["name"])  # fmt: skip
+            key = (kind, v["key"], who, (ctx.where(tgt[0]), tgt[1], tgt[2]) if tgt else v.get("target"))
+            it = items.get(key)
+            if it is None:
+                it = items[key] = {**{k: v[k] for k in ("key", "sev", "label", "title", "reason", "action")},
+                                   "kind": kind, "name": lb["name"], "cat": lb["cat"], "group": lb.get("group", ""),
+                                   "srcs": [], "flows": 0, "first": None, "last": None,
+                                   "target": "" if v["key"] == "internal-scan" else
+                                   f"{_port_label(tgt[1], tgt[2])} to {ctx.where(tgt[0])}" if tgt else v.get("target", ""),
+                                   "restore": v.get("restore"), "event": v.get("event")}  # fmt: skip
+            it["srcs"].append(src)
+            it["flows"] += x["flows"] if x else 0
+            if x:
+                it["first"] = min(filter(None, (it["first"], max(x["first"], ctx.start))))
+                it["last"] = max(filter(None, (it["last"], x["last"])))
+    out = list(items.values())
+    for it in out:
+        it["srcs"].sort(key=lambda s: -(ctx.rej[s]["flows"] if s in ctx.rej else 0))
+        dur = ((it["last"] or 0) - (it["first"] or 0)) / DAY
+        it["days"] = max(1, round(dur))
+        it["weight"] = it["flows"] * max(1.0, dur) + len(it["srcs"])
+    out.sort(key=lambda it: (SEV_RANK[it["sev"]], -it["weight"]))
+    for it in out:
+        it["srcs"] = it["srcs"][:25]
+    return out[:60]
 
 
 def _allows_now(groups: dict, e: dict, src: str, proto: str, port: int) -> list[str]:
@@ -1858,6 +2197,369 @@ def cmd_forget(args) -> int:
     return 0
 
 
+# ------------------------------------------------------------------------------------ watch and alert
+WATCH_REPEAT = DAY  # an item still open is posted again after a day, not every hour
+SEV_ICON = {"critical": ":red_circle:", "high": ":large_orange_circle:", "medium": ":large_yellow_circle:"}
+
+
+def _sev_at_least(sev: str, floor: str) -> bool:
+    return SEV_RANK[sev] <= SEV_RANK[floor]
+
+
+def attention_id(it: dict) -> str:
+    """What makes one "Needs attention" item the same item from one watch to the next."""
+    ev = it.get("event") or {}
+    return "|".join(str(p) for p in (it["key"], it.get("target") or "", it.get("name") or "", it.get("group") or "",
+                                     ev.get("t", "")))  # fmt: skip
+
+
+def _watch_path(account: str) -> Path:
+    if not _ACCT_RE.fullmatch(account or ""):
+        raise KeyError(account)
+    return _dir() / f"{account}.watch.json"
+
+
+def load_watch(account: str) -> dict:
+    try:
+        with open(_watch_path(account)) as f:
+            got = json.load(f)
+        return got if isinstance(got.get("sent"), dict) else {"sent": {}}
+    except (OSError, ValueError):
+        return {"sent": {}}
+
+
+def save_watch(account: str, state: dict) -> None:
+    path = _watch_path(account)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f, indent=1)
+    os.replace(tmp, path)
+
+
+def fresh_items(items: list[dict], state: dict, now: float, floor: str = "medium",
+                repeat: float = WATCH_REPEAT) -> list[dict]:  # fmt: skip
+    """The items at or above ``floor`` not posted in the last ``repeat`` seconds; ``state`` records them as posted.
+    Items no longer open are dropped from ``state``, so one that comes back is posted at once."""
+    sent = state.setdefault("sent", {})
+    open_ids = set()
+    out = []
+    for it in items:
+        if not _sev_at_least(it["sev"], floor):
+            continue
+        k = attention_id(it)
+        open_ids.add(k)
+        if k not in sent or now - sent[k] >= repeat:
+            out.append(it)
+            sent[k] = now
+    for k in [k for k in sent if k not in open_ids]:
+        del sent[k]
+    return out
+
+
+def alert_text(account: str, name: str, items: list[dict], markdown: bool = True) -> str:
+    """The message: one paragraph per item, worst first."""
+    who = f"{name} ({account})" if name else account
+    head = f"sg_review: {len(items)} item{'s' if len(items) != 1 else ''} need{'s' if len(items) == 1 else ''} attention in {who}"
+    out = [f"*{head}*" if markdown else head, ""]
+    for it in items:
+        srcs = ", ".join(it["srcs"][:5]) + (f" and {len(it['srcs']) - 5} more" if len(it["srcs"]) > 5 else "")
+        title = f"{it['sev'].upper()} · {it['label']}: {it['title']}" + (f" ({it['target']})" if it.get("target") else "")
+        out.append(f"{SEV_ICON.get(it['sev'], '')} *{title}*" if markdown else title)
+        out.append(it["reason"])
+        out.append(f"Do: {it['action']}")
+        out.append(f"Sources: {srcs} · {it['flows']:,} flows")
+        if it.get("restore"):
+            r = it["restore"]
+            out.append(f"Restore: aws ec2 authorize-security-group-ingress --region {r['region']} --group-id {r['group']} "
+                       f"--ip-permissions '{json.dumps(r['perms'], separators=(',', ':'))}'")  # fmt: skip
+        out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def post_slack(url: str, text: str, timeout: float = 15) -> None:
+    import urllib.request
+
+    if not url.startswith("https://"):
+        raise ValueError("the Slack webhook must be an https:// URL")
+    req = urllib.request.Request(url, data=json.dumps({"text": text}).encode(), method="POST",
+                                 headers={"Content-Type": "application/json"})  # fmt: skip
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        resp.read()
+
+
+def send_email(host: str, port: int, sender: str, to: list[str], subject: str, text: str, user: str = "",
+               password: str = "", starttls: bool = True) -> None:  # fmt: skip
+    import smtplib
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg["Subject"], msg["From"], msg["To"] = subject, sender, ", ".join(to)
+    msg.set_content(text)
+    with smtplib.SMTP(host, port, timeout=30) as smtp:
+        if starttls:
+            smtp.starttls()
+        if user:
+            smtp.login(user, password)
+        smtp.send_message(msg)
+
+
+def _read_cost(doc: dict, account: str, regions: list[str], tasks: list[tuple], now: float) -> float | None:
+    est = estimate(doc, account, regions, now)
+    hours = sum(e - s for _, s, e, _, _ in tasks) / HOUR
+    return est["rate"] * hours * HOUR / 1e9 * INSIGHTS_PER_GB if est["rate"] is not None else None
+
+
+def _report_opts(args) -> tuple[str, str, list]:
+    return getattr(args, "onprem", ""), getattr(args, "internal", ""), load_names(getattr(args, "names", None))
+
+
+def watch_once(sess, args, now: float | None = None) -> dict:
+    """Read what is new in the last day, build the last 24 hours and post the items not posted yet."""
+    now = now or time.time()
+    regions = [r.strip() for r in args.regions.split(",") if r.strip()]
+    account = with_backoff(lambda: sess.client("sts", config=BOTO_CONFIG).get_caller_identity())["Account"]
+    doc = load(account) or new_doc(account, args.name or "")
+    if args.name:
+        doc["name"] = args.name
+    tasks = plan_read(sess, doc, regions, 1, now, say=LOG.debug)
+    save(doc)
+    out = {"account": account, "read": 0, "bytes": 0, "items": 0, "posted": 0, "skipped": ""}
+    if tasks:
+        cost = _read_cost(doc, account, regions, tasks, now)
+        if cost is not None and cost > args.max_cost:
+            out["skipped"] = f"the read would cost {_cost(cost)}, over --max-cost US${args.max_cost:.2f}"
+            LOG.warning("not read: %s", out["skipped"])
+        else:
+            st = run_read(sess, doc, tasks, 1, now)
+            out["read"], out["bytes"] = st["done"], st["bytes"]
+    if not any(c["st"] in ("ok", "cut") for c in doc["chunks"]):
+        LOG.warning("nothing read yet for %s: no flow log in CloudWatch Logs in %s?", account, ", ".join(regions))
+        return out
+    onprem, internal, names = _report_opts(args)
+    rep = build(doc, "24h", onprem, internal, names)
+    items = rep.get("attention", [])
+    out["items"] = len(items)
+    state = load_watch(account)
+    new = fresh_items(items, state, now, args.min_severity, args.repeat * HOUR)
+    if new:
+        text = alert_text(account, doc.get("name", ""), new, markdown=True)
+        sent = False
+        slack = args.slack or os.environ.get("SG_REVIEW_SLACK_WEBHOOK", "")
+        if slack:
+            post_slack(slack, text)
+            sent = True
+        if args.email_to:
+            plain = alert_text(account, doc.get("name", ""), new, markdown=False)
+            send_email(args.smtp_host or os.environ.get("SG_REVIEW_SMTP_HOST", "localhost"), args.smtp_port,
+                       args.email_from or os.environ.get("SG_REVIEW_EMAIL_FROM", "sg-review@localhost"),
+                       [a.strip() for a in args.email_to.split(",") if a.strip()],
+                       plain.splitlines()[0], plain, os.environ.get("SG_REVIEW_SMTP_USER", ""),
+                       os.environ.get("SG_REVIEW_SMTP_PASSWORD", ""), not args.smtp_plain)  # fmt: skip
+            sent = True
+        if not sent:
+            print(text, end="")
+        out["posted"] = len(new)
+    save_watch(account, state)
+    LOG.info("%s: %d slice(s) read (%s), %d item(s) need attention, %d new posted", account, out["read"],
+             _gb(out["bytes"]), out["items"], out["posted"])  # fmt: skip
+    return out
+
+
+def cmd_watch(args) -> int:
+    if args.min_severity not in ATTENTION:
+        raise SystemExit(f"--min-severity must be one of {', '.join(ATTENTION)}")
+    if not args.offline:
+        sg_ipintel.refresh()
+    sess = _session(args.profile)
+    while True:
+        try:
+            watch_once(sess, args)
+        except (ClientError, BotoCoreError, OSError, ValueError) as exc:  # a loop must survive one bad hour
+            if not args.loop:
+                raise
+            LOG.error("this watch failed, trying again next time: %s",
+                      describe_error(exc) if isinstance(exc, (ClientError, BotoCoreError)) else exc)  # fmt: skip
+        if not args.loop:
+            return 0
+        time.sleep(args.every * 60)
+        if not args.offline:
+            sg_ipintel.refresh()
+
+
+# ----------------------------------------------------------------------------------------- org roll-up
+def _assume(sess, account: str, role: str, external_id: str = ""):
+    import boto3
+
+    kw = {"RoleArn": f"arn:aws:iam::{account}:role/{role}", "RoleSessionName": "sg-review"}
+    if external_id:
+        kw["ExternalId"] = external_id
+    c = sess.client("sts", config=BOTO_CONFIG).assume_role(**kw)["Credentials"]
+    return boto3.Session(aws_access_key_id=c["AccessKeyId"], aws_secret_access_key=c["SecretAccessKey"],
+                         aws_session_token=c["SessionToken"])  # fmt: skip
+
+
+def org_accounts(sess, ou_id: str | None) -> list[dict]:
+    """The active accounts in the OU and every OU under it, or in the whole organisation."""
+    org = sess.client("organizations", config=BOTO_CONFIG)
+    out = []
+    if not ou_id:
+        for page in org.get_paginator("list_accounts").paginate():
+            out += page.get("Accounts", [])
+    else:
+        queue = [ou_id]
+        while queue:
+            cur = queue.pop()
+            for page in org.get_paginator("list_accounts_for_parent").paginate(ParentId=cur):
+                out += page.get("Accounts", [])
+            for page in org.get_paginator("list_organizational_units_for_parent").paginate(ParentId=cur):
+                queue += [o["Id"] for o in page.get("OrganizationalUnits", [])]
+    return sorted((a for a in out if a.get("Status") == "ACTIVE"), key=lambda a: a.get("Name", ""))
+
+
+def org_row(account: str, name: str, rep: dict | None, status: str, page: str = "", error: str = "") -> dict:
+    """One account in the roll-up: its verdict counts and its "Needs attention" items."""
+    rep = rep or {}
+    att = rep.get("attention", [])
+    return {"account": account, "name": name, "status": status, "error": error, "page": page,
+            "attention": (rep.get("summary") or {}).get("attention", {}),
+            "verdicts": (rep.get("summary") or {}).get("verdicts", {}),
+            "refused": (rep.get("summary") or {}).get("refused", 0),
+            "items": [{k: it.get(k) for k in ("sev", "label", "title", "target", "reason", "action", "flows", "srcs")}
+                      for it in att]}  # fmt: skip
+
+
+def org_summary(rows: list[dict]) -> dict:
+    tot = {s: 0 for s in ATTENTION}
+    for r in rows:
+        for s in ATTENTION:
+            tot[s] += r["attention"].get(s, 0)
+
+    def worst(r):
+        return tuple(-r["attention"].get(s, 0) for s in ATTENTION)
+
+    return {"schema": "sg-tightener.review-org/v1",
+            "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "accounts": len(rows), "failed": sum(1 for r in rows if r["status"] != "ok"), "attention": tot,
+            "rows": sorted(rows, key=lambda r: (r["status"] != "ok", worst(r), r["name"]))}  # fmt: skip
+
+
+def org_page(summary: dict, range_key: str) -> str:
+    """A small self-contained page: one row per account, worst first, each linking to its own page."""
+    e = html.escape
+    sev_col = {"critical": "var(--crit)", "high": "var(--high)", "medium": "var(--med)"}
+    rows = []
+    for r in summary["rows"]:
+        counts = " ".join(f'<span class="pill" style="--p:{sev_col[s]}">{r["attention"][s]} {s}</span>'
+                          for s in ATTENTION if r["attention"].get(s)) or '<span class="muted">nothing</span>'  # fmt: skip
+        items = "".join(f'<li><span class="pill" style="--p:{sev_col.get(it["sev"], "var(--muted)")}">{e(it["label"])}</span> '
+                        f'{e(it["title"])}{" · " + e(it["target"]) if it.get("target") else ""}'
+                        f'<div class="muted small">{e(it["reason"])}</div></li>' for it in r["items"][:5])  # fmt: skip
+        more = f'<li class="muted">and {len(r["items"]) - 5} more on its page</li>' if len(r["items"]) > 5 else ""
+        name = e(r["name"] or r["account"])
+        link = f'<a href="{e(r["page"])}">{name}</a>' if r["page"] else name
+        status = "" if r["status"] == "ok" else f'<div class="small warn">{e(r["status"])}: {e(r["error"])}</div>'
+        rows.append(f'<tr><td>{link}<div class="muted small"><code>{e(r["account"])}</code></div>{status}</td>'
+                    f'<td>{counts}</td><td><ul>{items}{more}</ul></td></tr>')  # fmt: skip
+    t = summary["attention"]
+    head = " ".join(f'<span class="pill" style="--p:{sev_col[s]}">{t[s]} {s}</span>' for s in ATTENTION)
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security Group Review, all accounts</title>
+<style>
+:root {{ --bg: #f7f6f2; --surface: #fff; --ink: #0b0b0b; --muted: #7a7873; --grid: #e1e0d9;
+  --crit: #d03b3b; --high: #e0673a; --med: #b7791f; color-scheme: light; }}
+@media (prefers-color-scheme: dark) {{ :root {{ --bg: #141413; --surface: #1d1d1b; --ink: #f0efec; --muted: #898781;
+  --grid: #2c2c2a; --crit: #e05555; --high: #ec835a; --med: #e3a93c; color-scheme: dark; }} }}
+body {{ margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }}
+main {{ max-width: 1200px; margin: 0 auto; padding: 24px 16px; }}
+table {{ width: 100%; border-collapse: collapse; background: var(--surface); border-radius: 10px; overflow: hidden; }}
+th, td {{ text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--grid); }}
+ul {{ margin: 0; padding-left: 18px; }} li {{ margin-bottom: 6px; }}
+.muted {{ color: var(--muted); }} .small {{ font-size: 12.5px; }} .warn {{ color: var(--high); }}
+.pill {{ display: inline-block; font-size: 11px; font-weight: 650; padding: 1px 7px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--p) 45%, transparent); background: color-mix(in srgb, var(--p) 14%, var(--surface));
+  color: color-mix(in srgb, var(--p) 75%, var(--ink)); }}
+a {{ color: inherit; font-weight: 600; }}
+@media (max-width: 700px) {{ td:nth-child(2), th:nth-child(2) {{ display: none; }} }}
+</style></head><body><main>
+<h1>Security Group Review, all accounts</h1>
+<p class="muted">{summary["accounts"]} accounts, the last {e(range_key)}, worst first{f', {summary["failed"]} not read' if summary["failed"] else ''}.
+Needs attention across them: {head}. Each account's page has the evidence, the verdict on every source and the commands.</p>
+<table><thead><tr><th>Account</th><th>Needs attention</th><th>Worst items</th></tr></thead><tbody>
+{"".join(rows)}
+</tbody></table>
+<p class="muted small">Written {e(summary["generated_at"])} by sg-tightener sg_review.py org.</p>
+</main></body></html>
+"""
+
+
+def cmd_org(args) -> int:
+    if args.days not in READ_DAYS:
+        raise SystemExit(f"--days must be one of {', '.join(map(str, READ_DAYS))}")
+    regions = [r.strip() for r in args.regions.split(",") if r.strip()]
+    sess = _session(args.profile)
+    accounts = org_accounts(sess, args.ou_id)
+    if args.accounts:
+        keep = {a.strip() for a in args.accounts.split(",")}
+        accounts = [a for a in accounts if a["Id"] in keep]
+    if not accounts:
+        raise SystemExit("no active account found")
+    LOG.info("%d account(s): taking each one's security groups and rule history first (Describe calls, free)", len(accounts))
+    now = time.time()
+    plans, failed = [], []
+    for a in accounts:
+        try:
+            s = _assume(sess, a["Id"], args.role_name, args.external_id)
+            doc = load(a["Id"]) or new_doc(a["Id"], a.get("Name", ""))
+            doc["name"] = a.get("Name", "") or doc.get("name", "")
+            tasks = plan_read(s, doc, regions, args.days, now, say=LOG.debug)
+            save(doc)
+            plans.append((a, s, doc, tasks, _read_cost(doc, a["Id"], regions, tasks, now) if tasks else 0.0))
+        except (ClientError, BotoCoreError) as exc:  # one account out of reach must not stop the others
+            failed.append(org_row(a["Id"], a.get("Name", ""), None, "not read", error=describe_error(exc)[:300]))
+            LOG.warning("%s (%s) not read: %s", a["Id"], a.get("Name", ""), failed[-1]["error"])
+    known = [c for *_, c in plans if c is not None]
+    unknown = sum(1 for *_, c in plans if c is None)
+    slices = sum(len(t) for _, _, _, t, _ in plans)
+    LOG.info("%d slice(s) to read in %d account(s): %s%s", slices, len(plans), _cost(sum(known)) if known else "",
+             f" plus {unknown} account(s) not measured yet" if unknown else "")  # fmt: skip
+    if slices and not args.yes and not _confirm("Read the flow logs of these accounts?"):
+        LOG.info("not read")
+        return 1
+    stop = threading.Event()
+    previous = signal.signal(signal.SIGINT, lambda *_: stop.set())
+    try:
+        for a, s, doc, tasks, _ in plans:
+            if tasks and not stop.is_set():
+                LOG.info("reading %s (%s)", a["Id"], a.get("Name", ""))
+                run_read(s, doc, tasks, args.days, now, stop.is_set)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    if not args.offline:
+        sg_ipintel.refresh()
+    onprem, internal, names = _report_opts(args)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = list(failed)
+    for a, _, doc, _, _ in plans:
+        if not any(c["st"] in ("ok", "cut") for c in doc["chunks"]):
+            rows.append(org_row(a["Id"], doc.get("name", ""), None, "no flow logs", error="no flow log read in "
+                                + ", ".join(regions)))  # fmt: skip
+            continue
+        page = f"sg-review-{a['Id']}.html"
+        data = page_data(doc, onprem, internal, names=names)
+        write_page(data, str(out_dir / page))
+        key = args.range if args.range in data["ranges"] else data["default"]
+        rows.append(org_row(a["Id"], doc.get("name", ""), data["ranges"][key], "ok", page))
+    summary = org_summary(rows)
+    (out_dir / "org.json").write_text(json.dumps(summary, indent=1))
+    (out_dir / "index.html").write_text(org_page(summary, args.range))
+    t = summary["attention"]
+    LOG.info("wrote %s: %d account(s), %d critical, %d high, %d medium", out_dir / "index.html", summary["accounts"],
+             t["critical"], t["high"], t["medium"])  # fmt: skip
+    return 130 if stop.is_set() else 2 if summary["failed"] else 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sg_review.py", description=__doc__.splitlines()[0],
                                 formatter_class=argparse.RawDescriptionHelpFormatter)  # fmt: skip
@@ -1892,6 +2594,41 @@ def _build_parser() -> argparse.ArgumentParser:
     n = sub.add_parser("names", help="check the names file, or write an example one if there is none")
     n.add_argument("--out", help="the names file (default ~/.sg-tightener/names.yaml)")
     n.set_defaults(fn=cmd_names)
+    w = sub.add_parser("watch", help="read the newest flow logs and post what needs attention to Slack or email "
+                       "(alert mode: run it hourly, or with --loop)")
+    g = sub.add_parser("org", help="read every account in an OU (assuming a role in each) and write a roll-up of what "
+                       "needs attention in each")
+    for q in (w, g):
+        q.add_argument("--regions", required=True, help="comma-separated regions")
+        q.add_argument("--profile", help="AWS profile (default: the usual credential chain)")
+        q.add_argument("--onprem", default="", help="data centre ranges to name, as for report")
+        q.add_argument("--internal", default="", help="your other accounts' ranges, as for report")
+        q.add_argument("--names", help="names file, as for report")
+        q.add_argument("--offline", action="store_true", help="do not refresh the public address lists")
+    w.add_argument("--name", help="a name for the account in the alerts (default: as read before)")
+    w.add_argument("--slack", help="Slack incoming-webhook URL (or SG_REVIEW_SLACK_WEBHOOK)")
+    w.add_argument("--email-to", help="comma-separated addresses to email (SMTP; see --smtp-host)")
+    w.add_argument("--email-from", help="sender address (or SG_REVIEW_EMAIL_FROM)")
+    w.add_argument("--smtp-host", help="SMTP server (or SG_REVIEW_SMTP_HOST; default localhost); login from "
+                   "SG_REVIEW_SMTP_USER and SG_REVIEW_SMTP_PASSWORD")
+    w.add_argument("--smtp-port", type=int, default=587)
+    w.add_argument("--smtp-plain", action="store_true", help="do not use STARTTLS (a local relay)")
+    w.add_argument("--min-severity", default="high", help="post items at or above: critical, high or medium (default high)")
+    w.add_argument("--repeat", type=float, default=24, help="post an item still open again after this many hours (default 24)")
+    w.add_argument("--max-cost", type=float, default=0.50, help="skip a read estimated above this many US$ (default 0.50)")
+    w.add_argument("--loop", action="store_true", help="keep running, once every --every minutes")
+    w.add_argument("--every", type=float, default=60, help="minutes between watches with --loop (default 60)")
+    w.set_defaults(fn=cmd_watch)
+    g.add_argument("--role-name", default="OrganizationAccountAccessRole", help="role to assume in each account")
+    g.add_argument("--external-id", default="", help="external id for the role, if it needs one")
+    g.add_argument("--ou-id", help="read the accounts in this OU and the OUs under it (default: the whole organisation)")
+    g.add_argument("--accounts", help="only these comma-separated account ids")
+    g.add_argument("--days", type=int, default=1, help="read back this far: 1, 7, 30, 90 or 180 (default 1)")
+    g.add_argument("--range", default="1w", help="the range the roll-up counts: 24h, 1w, 1m, 3m or 6m (default 1w, or "
+                   "the longest read when shorter)")
+    g.add_argument("--out-dir", default="sg-review-org", help="where the roll-up and the account pages go")
+    g.add_argument("--yes", action="store_true", help="skip the typed confirmation")
+    g.set_defaults(fn=cmd_org)
     f = sub.add_parser("forget", help="delete what was read for an account")
     f.add_argument("--account")
     f.set_defaults(fn=cmd_forget)

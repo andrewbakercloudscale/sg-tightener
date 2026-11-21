@@ -318,6 +318,27 @@ kind. Ports are classed from a fixed table of common services (`PORT_CLASSES`
 and `PORT_SERVICES` in `sg_review.py`). A class names what a port usually
 carries, not what listens on it.
 
+**Verdicts.** Built from what `read` already collected, with no further AWS call. Each refused
+source keeps the first and last time it was refused per target. It is then matched, in order:
+sweeping many ports or targets (critical from your own ranges, info from outside); nothing refused in
+the last periods (fixed since); let in on that interface and port before, refused after
+(a CloudTrail change on one of its groups within two days of the first refusal that removed an entry
+covering it is the cause, and the entry is rebuilt as `--ip-permissions` to restore it; otherwise
+stopped working); refused by a network ACL; a new address of a client (another source with the same
+name or provider let in on that interface and port, last seen within `MOVE_WINDOW`, two days, of the
+first refusal); the same provider let in elsewhere; AWS health checks; your own ranges; a partner;
+a known service over two or more periods; retries. Sources let in are checked against the scanner
+and Tor lists and the hosting type, on the port class. **Needs attention** groups the critical, high
+and medium verdicts by key and by the change, source or provider, and ranks them by severity, then
+flows times days. Each marker on the timeline whose change caused refusals carries those sources
+(`caused`), so the refused graph can mark it.
+
+**`watch` and `org`.** `watch` reads the gap in the last day (`plan_read` and `run_read`, as `read`
+does), builds the 24-hour range and keeps an id per item (key, target, name, group, change time) with
+when it was posted. `org` lists the accounts through Organizations, assumes a role in each, plans every
+read first so the cost is confirmed once, then writes each account's page and a roll-up of the
+`summary.attention` counts and items.
+
 **Extract rule.** This runs in the page, without the network. It groups the
 refused sources listed by the first security group of the interface that
 refused them, the protocol and the port. It covers each group's ticked sources

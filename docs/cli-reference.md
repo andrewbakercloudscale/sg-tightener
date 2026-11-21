@@ -185,6 +185,10 @@ python sg_review.py approved --region eu-west-1 [--account ID] [--out approved.j
 python sg_review.py demo     [--offline] [--out sg-review-demo.html]
 python sg_review.py names    [--out FILE]
 python sg_review.py forget   --account ID
+python sg_review.py watch    --regions R [--slack URL] [--email-to A,B] [--min-severity high] [--repeat 24] \
+                             [--max-cost 0.50] [--loop [--every 60]]
+python sg_review.py org      --regions R [--ou-id OU] [--role-name OrganizationAccountAccessRole] [--days 1] \
+                             [--accounts ID,ID] [--range 1w] [--out-dir sg-review-org] [--yes]
 ```
 
 | Flag | Default | Meaning |
@@ -198,6 +202,16 @@ python sg_review.py forget   --account ID
 | `report --onprem` | | Data centre ranges to name, comma separated, each `CIDR name` |
 | `report --internal` | | Your other accounts' ranges, named like `--onprem`, counted as internal |
 | `report --names` | `~/.sg-tightener/names.yaml` if it exists | Names file (YAML or JSON): partners and other networks named by range or AS number. See [Your names file](security-group-review.md#your-names-file) |
+| `watch --slack` / `--email-to` | `SG_REVIEW_SLACK_WEBHOOK` | Where new **Needs attention** items go; printed when neither is given. SMTP from `--smtp-host`, `--smtp-port` (587), `--email-from`, `SG_REVIEW_SMTP_USER`/`_PASSWORD`, `--smtp-plain` |
+| `watch --min-severity` | `high` | Post items at or above `critical`, `high` or `medium` |
+| `watch --repeat` | `24` | Hours before an item still open is posted again |
+| `watch --max-cost` | `0.50` | Skip a read estimated above this many US$ |
+| `watch --loop`, `--every` | off, `60` | Keep running, once every so many minutes |
+| `org --ou-id` | whole organisation | Accounts in this OU and every OU under it |
+| `org --role-name` | `OrganizationAccountAccessRole` | Role assumed in each account (`--external-id` if it needs one) |
+| `org --days`, `--range` | `1`, `1w` | How far back to read; the range the roll-up counts |
+| `org --out-dir` | `sg-review-org` | `index.html`, `org.json` and one page per account |
+| `org --yes` | off | Skip the one typed `yes` after the combined cost |
 | `report --offline` | off | Do not refresh the AWS, SaaS, Tor exit and AS-number lists (refreshed daily, weekly for AS numbers) |
 | `report --out` | `sg-review-<account>.html` | The page: open it in any browser, offline. It describes your network: treat it as confidential |
 | `approved --region` | required | The region whose approved.json to write (the page offers the same file per region) |

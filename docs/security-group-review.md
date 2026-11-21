@@ -76,6 +76,8 @@ Ranges are separated by commas. Each one is a CIDR, then a space, then a name.
 | `demo [--offline] [--out FILE]` | The page for a made-up account |
 | `names [--out FILE]` | Checks the names file and lists what it names, or writes an example one if there is none |
 | `forget --account ID` | Deletes what was read for that account |
+| `watch --regions R [--slack URL] [--email-to A]` | Alert mode: reads only the newest flow logs and posts the new **Needs attention** items. See [Alert mode](#alert-mode-watch) |
+| `org --regions R [--ou-id OU] [--role-name ROLE]` | Reads every account in an OU and writes a roll-up of what needs attention in each. See [Every account in an OU](#every-account-in-an-ou-org) |
 | `--data-dir DIR` (before the command) | Where reads and address lists are kept (default `~/.sg-tightener`) |
 
 ---
@@ -85,6 +87,46 @@ Ranges are separated by commas. Each one is a CIDR, then a space, then a name.
 The **Timeline** buttons switch the graphs between 24 hours (hourly bars), 1 week (6-hour bars),
 and 1, 3 or 6 months (daily bars). The **Show** chips switch each kind of source on or off in every
 graph and table. The kinds are internal, data centre, AWS, SaaS and other networks.
+
+### Needs attention
+
+![Needs attention: an internal scanner, scanners and a Tor exit let in on RDP, a rule change that cut off two callers, a partner's new address](images/sg-review-needs-attention.png)
+
+The first box on the page lists what looks wrong, worst first, then by flows times how long it has
+lasted. Each item has a severity, what was seen, the evidence and one action. **List these sources**
+filters the table below to them, and **Extract rule** opens the dialog for them.
+
+Every refused source gets a verdict from what was already read: flows, CloudTrail rule history, network
+ACLs, attribution and your names file. No extra AWS call is made. The first match wins:
+
+| Verdict | Severity | When |
+|---|---|---|
+| Internal scan | Critical | A host in your VPCs or data centre sweeps many ports or targets. Refused, but that is how a compromised host looks for its next step |
+| Scan | Info | An internet source sweeps many ports or targets and is refused: the defences working. Never listed in the box |
+| Fixed since | Info | Refused earlier in the range, nothing since |
+| Broken by a change | High | Let in before, refused right after a CloudTrail rule change on that group. The item names who made the change and offers **Restore the revoked rule** |
+| Stopped working | High | Let in before, refused since, no change found |
+| Network ACL | Medium | A network ACL refused it first: change the ACL, not the security group |
+| New address? | High | Another source of the same client was let in on that interface and port, and stopped within two days of this one being refused (a partner moving to Zscaler, say) |
+| Same provider | Medium | The provider is let in elsewhere in the account |
+| Health check refused | Medium | AWS health checkers (Route 53, ELB) are refused, so the target looks down |
+| Own traffic blocked | Medium | Your own internal or data centre traffic keeps trying |
+| Partner refused | High | A partner in your names file is refused |
+| Service refused | Medium | A known SaaS service keeps trying (webhooks, integrations) over two or more periods |
+| Retrying | Low | Anything else that keeps trying |
+| Refused | Info | The rest |
+
+Sources **let in** are checked as well. A known scanner or Tor exit let in on a risky port (remote
+admin, database, Windows, containers) is **critical**, and high on any other non-web port. A hosting
+provider let in on a risky port is high. These mean a rule is too open, usually `0.0.0.0/0`: the item
+names the rule.
+
+![A change that broke traffic: the revoked entry and the command that puts it back](images/sg-review-restore.png)
+
+When a rule change caused refusals, a red triangle on the refused graph marks it. Select the triangle
+to list the sources it cut off.
+
+![The refused graph with a red triangle at the change that cut off two callers](images/sg-review-refused-after-change.png)
 
 ### Who each address is
 
@@ -264,6 +306,12 @@ python sg_tightener.py plan --region eu-west-1 --approved approved.json --out pl
 
 ### Extract rule
 
+The verdicts set the starting ticks. Sources whose verdict says the traffic is wanted (broken by a
+change, stopped working, a new address of a client, your own traffic, a partner, a known service,
+health checks) start ticked; scanners, Tor exits and internet sources on risky ports start unticked.
+When a rule change caused the refusal, the dialog first offers **Restore the revoked rule**: the exact
+entry back, which is simpler than adding the sources one by one.
+
 **Extract rule**, above the refused graph, turns the refused sources listed into inbound rules that
 would let them in. What it uses is exactly what the list below the graph shows: the **Show** chips,
 the bar selected, and the colour selected in it. With nothing selected, it uses every refused source
@@ -312,6 +360,53 @@ sources left out with the reason. To undo a rule, run the same command with
 `revoke-security-group-ingress`.
 
 ---
+
+## Alert mode (`watch`)
+
+```bash
+# Hourly from cron: read only what is new, post the items not posted yet.
+python sg_review.py watch --regions eu-west-1 --slack https://hooks.slack.com/services/...
+
+# Or keep it running, and email as well.
+python sg_review.py watch --regions eu-west-1 --email-to secops@example.com \
+    --smtp-host smtp.example.com --min-severity medium --loop
+```
+
+Each run reads the flow logs not read yet in the last day (an hour, when run hourly), builds the
+last 24 hours and posts only the **Needs attention** items at or above `--min-severity` (default
+`high`) that were not posted in the last `--repeat` hours (default 24). An item that closes is
+forgotten, so it is posted at once if it comes back. A read estimated above `--max-cost` (default
+US$0.50) is skipped and logged. With neither `--slack` nor `--email-to`, the alert is printed.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--slack` | `SG_REVIEW_SLACK_WEBHOOK` | Slack incoming-webhook URL (https only) |
+| `--email-to` | | Comma-separated recipients |
+| `--email-from` | `SG_REVIEW_EMAIL_FROM` | Sender |
+| `--smtp-host`, `--smtp-port` | `SG_REVIEW_SMTP_HOST` or localhost, 587 | SMTP server; login from `SG_REVIEW_SMTP_USER` and `SG_REVIEW_SMTP_PASSWORD`; `--smtp-plain` skips STARTTLS |
+| `--min-severity` | `high` | `critical`, `high` or `medium` |
+| `--repeat` | `24` | Hours before an item still open is posted again |
+| `--max-cost` | `0.50` | US$ cap per read |
+| `--loop`, `--every` | off, 60 | Keep running, once every so many minutes |
+
+What was posted is kept in `~/.sg-tightener/review/<account>.watch.json`.
+
+## Every account in an OU (`org`)
+
+```bash
+python sg_review.py org --regions eu-west-1,us-east-1 --ou-id ou-ab12-cdef3456 \
+    --role-name OrganizationAccountAccessRole --days 7
+# -> sg-review-org/index.html, org.json and one page per account
+```
+
+Run it from the management or delegated admin account. It lists the active accounts in the OU and
+every OU under it (or the whole organisation without `--ou-id`), assumes the role in each, takes each
+account's security groups and rule history, then shows one combined cost for all the flow log reads
+and asks once (`--yes` skips it). It writes each account's own page, and `index.html`: one row per
+account, worst first, with its counts and worst items, linking to its page. `org.json` holds the same
+(`sg-tightener.review-org/v1`). An account whose role cannot be assumed is listed as not read, and the
+exit code is 2. `--accounts` limits the run to some ids; `--range` picks the range counted (default
+`1w`, or the longest read).
 
 ## Where things are kept
 
