@@ -1979,7 +1979,7 @@ def _write_json(path: str, payload: dict, by: str | None = None) -> None:
         json.dump(payload, fh, indent=2)
 
 
-def apply_plan(plan: dict, region: str, *, manifest_path: str) -> None:
+def apply_plan(plan: dict, region: str, *, manifest_path: str, tool: str = "sg_tightener apply") -> None:
     """Apply ``plan`` group by group, recording each call that succeeded.
 
     The manifest is rewritten after every successful AWS call, so it always
@@ -1995,7 +1995,9 @@ def apply_plan(plan: dict, region: str, *, manifest_path: str) -> None:
             "Re-run plan and review again."
         )
 
-    ec2 = _client("ec2", region)
+    import sg_db  # every change is recorded in the security group database
+
+    ec2 = sg_db.track(_client("ec2", region), region, tool, reason=f"plan of {plan.get('generated_at', 'unknown date')}")
     by = caller_arn()
     manifest = {
         "schema": "sg-tightener.manifest/v1",
@@ -2035,11 +2037,14 @@ def apply_plan(plan: dict, region: str, *, manifest_path: str) -> None:
     LOG.info("apply complete; manifest written to %s", manifest_path)
 
 
-def revert_from_manifest(manifest_path: str, *, allow_modified: bool = False) -> None:
+def revert_from_manifest(manifest_path: str, *, allow_modified: bool = False, tool: str = "sg_tightener revert") -> None:
+    import sg_db
+
     with open(manifest_path, "r", encoding="utf-8") as fh:
         manifest = json.load(fh)
     check_integrity(manifest, "manifest", manifest_path, allow_modified=allow_modified)
-    ec2 = _client("ec2", manifest["region"])
+    ec2 = sg_db.track(_client("ec2", manifest["region"]), manifest["region"], tool,
+                      reason=f"revert of {os.path.basename(manifest_path)}", strict=False)
     aws_errors = (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError)
     failures = 0
     for grp in reversed(manifest["groups"]):

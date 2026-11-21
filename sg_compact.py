@@ -432,13 +432,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.exit("region not present in plan and AWS_REGION is not set")
         ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         manifest_path = f"sg_compact-manifest-{ts}.json"
-        apply_plan(plan, region, manifest_path=manifest_path)
+        apply_plan(plan, region, manifest_path=manifest_path, tool="sg_compact apply")
         return 0
 
     if args.mode == "revert":
         if not args.yes:
             _confirm("revert from manifest")
-        revert_from_manifest(args.manifest, allow_modified=args.allow_modified)
+        revert_from_manifest(args.manifest, allow_modified=args.allow_modified, tool="sg_compact revert")
         return 0
 
     return 2

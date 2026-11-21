@@ -849,6 +849,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     manifest_path = f"sg_extend-manifest-{ts}.json"
 
     by = caller_arn()
+    import sg_db  # break-glass changes are recorded in the database too; it does not wait for reconcile
+
+    ec2 = sg_db.track(ec2, args.region, "sg_extend", reason=args.description or "break-glass", strict=False)
 
     def write_manifest() -> None:
         sign(manifest, by)

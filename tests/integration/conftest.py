@@ -55,6 +55,7 @@ def aws(monkeypatch, tmp_path):
         monkeypatch.setenv(k, v)
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.setenv("SG_TIGHTENER_DB", str(tmp_path / "sg.db"))  # every change lands in a test database
     monkeypatch.chdir(tmp_path)  # manifests land here
     with moto.mock_aws():
         yield
