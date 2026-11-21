@@ -1,5 +1,13 @@
 # How sg-tightener works
 
+> **Why this exists.** Security groups written once and frozen in Terraform end up letting in whole
+> corporate or data centre blocks (`10.0.0.0/8` is 16.7 million addresses) because nobody knows who
+> really calls each service. With attackers working from any one compromised host inside the
+> network, trusting a whole CIDR block is a high-risk strategy. sg-tightener treats every allowed
+> IP address as risk: it takes security group sources out of static configuration and, from VPC flow
+> log evidence, fits each group's limited rules to the fewest addresses that cover the real callers.
+> See [The shift: IP addresses are risk, not configuration](../README.md#the-shift-ip-addresses-are-risk-not-configuration).
+
 This page explains what each stage does, how the replacement CIDRs are chosen,
 and which safety checks stand between a plan and your production network.
 

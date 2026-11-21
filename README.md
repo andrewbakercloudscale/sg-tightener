@@ -1,6 +1,7 @@
-# sg-tightener
+# sg-tightener: least-privilege AWS security groups from VPC flow logs
 
-**Evidence-based tightening of AWS security groups, driven by VPC flow logs.**
+**Tighten AWS security group inbound rules to the addresses that actually connect, driven by VPC flow
+log evidence, not by a CIDR block someone typed into Terraform years ago.**
 
 [![Tests](https://github.com/andrewbakercloudscale/sg-tightener/actions/workflows/test.yml/badge.svg)](https://github.com/andrewbakercloudscale/sg-tightener/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -8,21 +9,92 @@
 
 Website: <https://cloudtorepo.com/tightener.html>
 
-Most enterprise AWS estates allow inbound traffic from broad private ranges such
-as `10.0.0.0/16` because that is what the corporate network was once assumed to
-need. Nobody knows which of those addresses still connect, so nobody dares
-narrow the rule.
+---
 
-sg-tightener answers that question with evidence. It reads your VPC flow logs,
-records which private source addresses actually connected to which network
-interface, and replaces each group's broad rules with the CIDR blocks that
-cover the sources that reached *that group*, choosing, within the 60-rule limit
-of a security group, the blocks that open the fewest addresses nobody was seen
-using. Every change is planned, reviewed, applied with a manifest, and can be
-reverted.
+## The shift: IP addresses are risk, not configuration
 
-It is a companion to [CloudtoRepo](https://cloudtorepo.com), which turns an AWS
-estate into Terraform.
+### The old world: security groups written by hand, frozen in Terraform
+
+Most organisations treat AWS security groups as static configuration. An engineer writes the inbound
+rules once, usually in Terraform, CloudFormation or the console, and they stay there for years. Nobody
+knows ahead of time exactly which servers, data centre hosts, VPN users or partner systems will call a
+service, and a security group holds only about 60 rules. So people do the one thing that is sure to
+work. They let in whole blocks:
+
+```hcl
+ingress {
+  from_port   = 5432
+  to_port     = 5432
+  protocol    = "tcp"
+  cidr_blocks = ["10.0.0.0/8"]   # "the corporate network": 16.7 million addresses
+}
+```
+
+That habit is the problem:
+
+- **The pools are enormous.** `10.0.0.0/8` is 16.7 million addresses. A `/16` for "the data centre" is
+  65,536. The database above may have a dozen real callers.
+- **The rules only ever grow.** Removing a range might break something nobody can name, so nobody
+  removes it. Each new caller adds another broad block.
+- **Terraform makes it permanent.** A rule in code is reviewed once, then copied into every
+  environment and every module that uses it. Narrowing it by hand is reverted on the next
+  `terraform apply`. Infrastructure as code is excellent for infrastructure, but a security group's
+  sources are not infrastructure. They are a fact about who talks to whom, and that changes every week.
+- **Trust follows the network, not the caller.** "Anything from the data centre" means any one
+  compromised laptop, build server, printer or forgotten VM in that range can reach your databases,
+  admin ports and internal APIs directly.
+
+With ransomware crews, supply chain compromises and state actors all working from a first foothold
+inside the network, trusting an entire data centre or corporate CIDR block is an extremely high-risk
+strategy. A flat trust zone is what turns one compromised host into a breach of the whole estate:
+the attacker does not need an exploit, only an address in a range you already allow.
+
+### The new world: every allowed address is a risk to keep as small as possible
+
+sg-tightener treats each IP address a security group lets in as **risk to be minimised**, and each
+security group's limited rule slots as a **budget to spend well**:
+
+1. **Take security group sources out of Terraform.** Keep the security groups themselves (and their
+   attachments) in code, but stop hard-coding the source CIDR blocks, for example with
+   `lifecycle { ignore_changes = [ingress] }` or by moving the rules to separately managed
+   `aws_vpc_security_group_ingress_rule` resources you leave to this tool. The rules become living
+   data, refreshed from evidence.
+2. **Let evidence decide who gets in.** VPC flow logs show which source addresses actually reached
+   which network interface, on which port, over weeks or months. Only those are kept.
+3. **Let an algorithm spend the rule budget.** When the real callers do not fit in the rules a group
+   has, sg-tightener chooses, exactly, the CIDR blocks that cover every caller while opening **the
+   fewest addresses nobody was seen using**, and shares each group's slots among its rules where they
+   save the most. A `/8` with sixteen million addresses can become a handful of `/28`s and
+   `/32`s.
+4. **Make it safe and repeatable.** Every change is planned, reviewed, applied with a manifest and can
+   be reverted. `sg_diagnose` finds anything the tightening cut off and prints the command that
+   restores it. `sg_review` shows, per rule, what is used and what is not, and alerts when something
+   breaks or a rule is too open.
+
+| | Old world | New world |
+|---|---|---|
+| Who decides the sources | A person, once, guessing | Flow log evidence, refreshed |
+| Where the sources live | Hard-coded in Terraform | Data managed by sg-tightener, outside Terraform |
+| Typical rule | `10.0.0.0/8` or a data centre `/16` | The fewest exact blocks covering the real callers |
+| Addresses let in | Millions | Tens to hundreds |
+| What one compromised host can reach | Everything that trusts its network | Only what it was already talking to |
+| Over time | Rules grow, never shrink | Unused access is found and removed |
+
+The result is least-privilege network access for AWS security groups, without guessing and without
+breaking production.
+
+---
+
+## How it works
+
+sg-tightener reads your VPC flow logs, records which private source addresses actually connected to
+which network interface, and replaces each security group's broad rules with the CIDR blocks that
+cover the sources that reached *that group*. Within the rule limit of a security group, it chooses
+the blocks that open the fewest addresses nobody was seen using. Every change is planned, reviewed,
+applied with a manifest, and can be reverted.
+
+It is a companion to [CloudtoRepo](https://cloudtorepo.com), which turns an AWS estate into
+Terraform.
 
 ---
 
