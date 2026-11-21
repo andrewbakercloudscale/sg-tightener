@@ -174,3 +174,11 @@ def test_overview_shows_each_accounts_mode_and_assets(console):
     assert state["accounts"][0]["mode"] == "enforce"
     assert _req(p, "GET", f"/api/assets?account={ACCOUNT}&region={REGION}")[1] == []
     assert _req(p, "GET", "/api/asset-history?eni=eni-1")[1] == []
+
+
+def test_rejected_traffic_tab_has_new_ipv6_and_origin_filters():
+    import pathlib
+
+    page = pathlib.Path(__file__).resolve().parents[2].joinpath("assets", "sg_console.html").read_text()
+    for needle in ('id="fNew"', 'id="fWhere"', "r.new", "r.v6", "r.internal", "r.scan", "first seen"):
+        assert needle in page, needle
