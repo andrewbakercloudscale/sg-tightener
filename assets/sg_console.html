@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Security Group Console</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #eeede8; --surface: #ffffff; --surface-2: #f1f0ec;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #7a7873; --grid: #e1e0d9;
+  --border: rgba(11, 11, 11, 0.10); --accent: #2a78d6; --accent-ink: #ffffff; --accent-hover: #1f68c0;
+  --control-line: #cfcdc4; --good: #2f9e5b; --warn: #b7791f; --bad: #d03b3b; --high: #e0673a;
+  --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
+  --radius: 10px; --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
+    --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781; --grid: #2c2c2a;
+    --border: rgba(255,255,255,0.10); --accent: #3987e5; --accent-hover: #4b95ec; --control-line: #43423e;
+    --good: #45b36f; --warn: #e3a93c; --bad: #e05555; --high: #ec835a; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
+  --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781; --grid: #2c2c2a;
+  --border: rgba(255,255,255,0.10); --accent: #3987e5; --accent-hover: #4b95ec; --control-line: #43423e;
+  --good: #45b36f; --warn: #e3a93c; --bad: #e05555; --high: #ec835a; --shadow: none;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.5 var(--font); }
+header { background: var(--surface); border-bottom: 1px solid var(--border); }
+.bar { max-width: 1280px; margin: 0 auto; padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; }
+.bar h1 { font-size: 17px; margin: 0; }
+.who { font-size: 12.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+nav { display: flex; gap: 4px; flex-wrap: wrap; max-width: 1280px; margin: 0 auto; padding: 0 16px; }
+nav button { border: 0; background: none; color: var(--ink-2); font: inherit; font-weight: 600; padding: 10px 12px; border-bottom: 2px solid transparent; cursor: pointer; }
+nav button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+nav .count { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 999px; background: var(--high); color: #fff; font-size: 11px; }
+main { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; }
+h2 { font-size: 19px; margin: 0 0 6px; }
+h3 { font-size: 15px; margin: 18px 0 6px; }
+.lede { color: var(--ink-2); margin: 0 0 14px; max-width: 90ch; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow); margin-bottom: 14px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.stat b { display: block; font-size: 24px; }
+.stat span { color: var(--ink-2); font-size: 12.5px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--grid); }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); }
+.scroll { overflow-x: auto; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; overflow-wrap: anywhere; }
+.muted { color: var(--ink-2); } .small { font-size: 12.5px; }
+.pill { display: inline-block; font-size: 11px; font-weight: 650; padding: 1px 8px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--p, var(--muted)) 45%, transparent);
+  background: color-mix(in srgb, var(--p, var(--muted)) 14%, var(--surface)); color: color-mix(in srgb, var(--p, var(--muted)) 75%, var(--ink)); }
+.tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 12px; }
+input, select, textarea { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--control-line); border-radius: 8px; padding: 6px 10px; min-width: 0; }
+textarea { width: 100%; min-height: 60px; }
+.btn { font: inherit; font-weight: 600; border: 1px solid var(--control-line); background: var(--surface); color: var(--ink); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { background: var(--accent-hover); }
+.btn.danger { color: var(--bad); }
+.btn[disabled] { opacity: .5; cursor: not-allowed; }
+.rule-both { } .rule-want { background: color-mix(in srgb, var(--good) 10%, transparent); } .rule-have { background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--border); background: var(--surface-2); }
+.flash.err { border-color: var(--bad); color: var(--bad); }
+.form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; align-items: end; }
+.form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink-2); font-weight: 600; }
+.form .wide { grid-column: 1 / -1; }
+details summary { cursor: pointer; font-weight: 600; }
+[hidden] { display: none !important; }
+@media (max-width: 640px) { th, td { padding: 6px; } .bar h1 { font-size: 15px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar"><h1>Security Group Console</h1><span class="who" id="who"></span><span class="who" id="mode"></span></div>
+  <nav role="tablist">
+    <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+    <button role="tab" data-tab="groups" aria-selected="false">Security groups</button>
+    <button role="tab" data-tab="requests" aria-selected="false">Change requests<span class="count" id="pendingCount" hidden></span></button>
+    <button role="tab" data-tab="audit" aria-selected="false">Audit trail</button>
+    <button role="tab" data-tab="refused" aria-selected="false">Rejected traffic</button>
+  </nav>
+</header>
+<main>
+  <div id="flash" hidden></div>
+
+  <section id="tab-overview">
+    <h2>Every account in the database</h2>
+    <p class="lede">The database is the source of truth for security groups: every group and rule, as wanted and as AWS last held it. Changes are change requests: one person proposes, a different person approves, then they are applied. Changes made in AWS outside the tool are found by Reconcile.</p>
+    <div class="grid" id="stats"></div>
+    <div class="card scroll"><table><thead><tr><th>Account</th><th>Region</th><th>Groups</th><th>Rules</th><th>To apply</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table></div>
+  </section>
+
+  <section id="tab-groups" hidden>
+    <h2>Security groups</h2>
+    <p class="lede">Rules marked <span class="pill" style="--p:var(--good)">to add</span> are approved but not in AWS yet; <span class="pill" style="--p:var(--bad)">to remove</span> are in AWS but not wanted (approved for removal, or added outside the tool). Apply makes AWS match.</p>
+    <div class="tools">
+      <select id="gWhere" aria-label="Account and region"></select>
+      <input id="gFilter" type="search" placeholder="Filter groups and rules…" aria-label="Filter groups">
+      <button class="btn" id="gReconcile">Reconcile with AWS</button>
+      <button class="btn primary" id="gApply">Apply approved changes</button>
+      <button class="btn" id="gAdopt">Propose keeping what AWS holds</button>
+    </div>
+    <div class="card" id="proposeCard">
+      <details id="proposeBox"><summary>Propose a change</summary>
+        <div class="form" style="margin-top:10px">
+          <label>Group<select id="pGroup"></select></label>
+          <label>Change<select id="pOp"><option value="add">Add rule</option><option value="remove">Remove rule</option></select></label>
+          <label>Direction<select id="pDir"><option value="in">Inbound</option><option value="out">Outbound</option></select></label>
+          <label>Protocol<select id="pProto"><option>tcp</option><option>udp</option><option>icmp</option><option value="-1">all</option></select></label>
+          <label>Ports<input id="pPort" placeholder="443 or 8000-8100"></label>
+          <label>Source or destination<input id="pSource" placeholder="10.20.0.0/24, sg-…, pl-…"></label>
+          <label class="wide">Description (kept on the rule)<input id="pDesc"></label>
+          <label class="wide">Why (required, kept in the audit trail)<textarea id="pReason"></textarea></label>
+          <label>Ticket<input id="pTicket" placeholder="CHG-1234"></label>
+          <div><button class="btn primary" id="pSend">Propose</button></div>
+        </div>
+      </details>
+    </div>
+    <div id="groupList"></div>
+  </section>
+
+  <section id="tab-requests" hidden>
+    <h2>Change requests</h2>
+    <p class="lede">A request changes nothing until a different person approves it. Approved requests reach AWS when someone applies them; they are marked applied once AWS holds every change.</p>
+    <div class="tools"><select id="rStatus" aria-label="Status"><option value="pending">Waiting for approval</option><option value="approved">Approved, not applied</option><option value="applied">Applied</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option><option value="">All</option></select></div>
+    <div id="requestList"></div>
+  </section>
+
+  <section id="tab-audit" hidden>
+    <h2>Audit trail</h2>
+    <p class="lede" id="verifyLine"></p>
+    <div class="tools">
+      <input id="aQ" type="search" placeholder="Search who, why, group, rule…" aria-label="Search the audit trail">
+      <select id="aSince" aria-label="Since"><option value="">All time</option><option value="24">Last 24 hours</option><option value="168" selected>Last 7 days</option><option value="720">Last 30 days</option></select>
+      <select id="aOrigin" aria-label="Origin"><option value="">Every origin</option><option value="external">Outside the tool</option><option value="apply">Applied</option><option value="tool">Requests and decisions</option><option value="approved">Approved changes</option></select>
+      <span class="muted small" id="aN"></span>
+    </div>
+    <div class="card scroll"><table><thead><tr><th>#</th><th>When</th><th>Who</th><th>What</th><th>Where</th><th>Why</th></tr></thead><tbody id="auditRows"></tbody></table></div>
+  </section>
+
+  <section id="tab-refused" hidden>
+    <h2>Rejected traffic across the accounts</h2>
+    <p class="lede">Every source the security groups and network ACLs turned away, in every account <code>sg_review.py</code> has read (all of an OU with <code>sg_review.py org</code>, kept fresh by <code>sg_review.py watch --org --loop</code>), worst verdict first.</p>
+    <div class="tools">
+      <select id="fRange" aria-label="Range"><option value="24h">Last 24 hours</option><option value="1w">Last week</option><option value="1m">Last month</option><option value="3m">Last 3 months</option><option value="6m">Last 6 months</option></select>
+      <input id="fQ" type="search" placeholder="Filter: account, source, owner, port, verdict…" aria-label="Filter rejected traffic">
+      <select id="fSev" aria-label="Severity"><option value="">Every severity</option><option>critical</option><option>high</option><option>medium</option><option>low</option><option>info</option></select>
+      <select id="fAcct" aria-label="Account"><option value="">Every account</option></select>
+      <label class="small"><input id="fRisky" type="checkbox"> risky ports only</label>
+      <span class="muted small" id="fN"></span>
+    </div>
+    <div class="grid" id="fAccounts"></div>
+    <div class="card scroll"><table><thead><tr><th>Severity</th><th>Account</th><th>Source</th><th>Refused on</th><th>Flows</th><th>Last seen</th><th>Verdict</th><th></th></tr></thead><tbody id="refusedRows"></tbody></table></div>
+  </section>
+</main>
+<script nonce="{{NONCE}}">
+(() => {
+  "use strict";
+  const TOKEN = "{{TOKEN}}";
+  const $ = (id) => document.getElementById(id);
+  const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[c]);
+  const SEV = {critical: "var(--bad)", high: "var(--high)", medium: "var(--warn)", low: "var(--muted)", info: "var(--muted)"};
+  const STATUS = {pending: "var(--warn)", approved: "var(--accent)", applied: "var(--good)", rejected: "var(--bad)", cancelled: "var(--muted)"};
+  const PROTO = {"6": "tcp", "17": "udp", "1": "icmp"};
+  const who = (a) => esc(String(a || "").split(" (")[0].replace(/^arn:aws:(sts|iam)::\d+:/, ""));
+  const when = (t) => t ? (typeof t === "number" ? new Date(t * 1000).toISOString() : t).slice(0, 16).replace("T", " ") : "";
+  let S = null, groupsCache = [], refusedData = null;
+
+  async function api(path, body) {
+    const opts = body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json", "X-SG-Token": TOKEN}, body: JSON.stringify(body)};
+    const r = await fetch(path, opts);
+    const j = await r.json().catch(() => ({error: `HTTP ${r.status}`}));
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    return j;
+  }
+  function flash(msg, err) {
+    const f = $("flash");
+    f.hidden = false; f.className = "flash" + (err ? " err" : ""); f.textContent = msg;
+    window.scrollTo({top: 0, behavior: "smooth"});
+  }
+  async function act(btn, fn) {
+    if (btn) btn.disabled = true;
+    try { await fn(); } catch (e) { flash(e.message, true); } finally { if (btn) btn.disabled = false; }
+  }
+
+  // ---- tabs
+  for (const b of document.querySelectorAll("nav button")) b.addEventListener("click", () => show(b.dataset.tab));
+  function show(tab) {
+    for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
+    for (const s of document.querySelectorAll("main > section")) s.hidden = s.id !== "tab-" + tab;
+    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, overview: loadState})[tab]?.())
+      .catch((e) => flash(e.message, true));
+  }
+
+  // ---- overview
+  async function loadState() {
+    S = await api("/api/state");
+    $("who").textContent = `Acting as ${S.me_principal}`;
+    $("mode").innerHTML = S.approvals ? '<span class="pill" style="--p:var(--good)">two-person approval on</span>' : '<span class="pill" style="--p:var(--bad)">approvals off</span>';
+    $("pendingCount").hidden = !S.pending_requests; $("pendingCount").textContent = S.pending_requests;
+    const regions = S.accounts.flatMap((a) => a.regions.map((r) => ({...r, account: a.account, name: a.name})));
+    const sum = (k) => regions.reduce((n, r) => n + r[k], 0);
+    $("stats").innerHTML = [
+      [S.accounts.length, "accounts"], [sum("groups"), "security groups"], [sum("rules"), "rules"],
+      [sum("pending"), "changes to apply"], [S.pending_requests, "requests waiting for approval"],
+      [S.verify.ok ? `${S.verify.entries.toLocaleString()} ✓` : "BROKEN", S.verify.ok ? "audit entries, chain intact" : S.verify.why],
+    ].map(([n, l]) => `<div class="card stat"><b>${esc(n)}</b><span>${esc(l)}</span></div>`).join("");
+    $("regions").innerHTML = regions.map((r, i) => `<tr><td>${esc(r.name || r.account)}<div class="muted small"><code>${esc(r.account)}</code></div></td>
+      <td>${esc(r.region)}</td><td>${r.groups}</td><td>${r.rules}</td><td>${r.pending ? `<span class="pill" style="--p:var(--warn)">${r.pending}</span>` : "0"}</td>
+      <td class="small">${esc(when(r.synced_at))}</td><td><button class="btn" data-open="${i}">Open</button></td></tr>`).join("")
+      || '<tr><td colspan="7" class="muted">Nothing yet: run <code>sg_db.py import --regions … [--ou-id …]</code>.</td></tr>';
+    for (const b of document.querySelectorAll("[data-open]")) b.addEventListener("click", () => {
+      const r = regions[+b.dataset.open]; $("gWhere").value = `${r.account}|${r.region}`; show("groups");
+    });
+    const sel = $("gWhere"), keep = sel.value;
+    sel.innerHTML = regions.map((r) => `<option value="${esc(r.account)}|${esc(r.region)}">${esc(r.name || r.account)} · ${esc(r.region)}</option>`).join("");
+    if (keep) sel.value = keep;
+    const fa = $("fAcct"), fk = fa.value;
+    fa.innerHTML = '<option value="">Every account</option>' + S.accounts.map((a) => `<option value="${esc(a.account)}">${esc(a.name || a.account)}</option>`).join("");
+    fa.value = fk;
+  }
+
+  // ---- groups
+  const where = () => { const [account, region] = ($("gWhere").value || "|").split("|"); return {account, region}; };
+  async function loadGroups() {
+    if (!S) await loadState();
+    const w = where();
+    if (!w.account) { $("groupList").innerHTML = '<p class="muted">No account in the database yet.</p>'; return; }
+    groupsCache = await api(`/api/groups?account=${encodeURIComponent(w.account)}&region=${encodeURIComponent(w.region)}`);
+    $("pGroup").innerHTML = groupsCache.map((g) => `<option value="${esc(g.id)}">${esc(g.name)} (${esc(g.id)})</option>`).join("");
+    drawGroups();
+  }
+  function drawGroups() {
+    const q = $("gFilter").value.toLowerCase().trim();
+    const shown = groupsCache.filter((g) => !q || JSON.stringify(g).toLowerCase().includes(q));
+    $("groupList").innerHTML = shown.map((g) => {
+      const rows = g.rules.map((r, i) => `<tr class="rule-${r.state}"><td>${r.state === "want" ? '<span class="pill" style="--p:var(--good)">to add</span>' : r.state === "have" ? '<span class="pill" style="--p:var(--bad)">to remove</span>' : ""}</td>
+        <td>${esc(r.direction === "in" ? "in" : "out")}</td><td><code>${esc(r.proto === "-1" ? "all" : r.proto)} ${r.proto === "-1" ? "" : esc(r.from === r.to ? r.from : `${r.from}-${r.to}`)}</code></td>
+        <td><code>${esc(r.source)}</code></td><td class="muted small">${esc(r.description)}</td>
+        <td>${r.state !== "have" ? `<button class="btn danger" data-rm="${esc(g.id)}|${i}">Propose removing</button>` : ""}</td></tr>`).join("");
+      return `<div class="card"><h3 style="margin-top:0">${esc(g.name)} <code class="muted small">${esc(g.id)}</code></h3>
+        <div class="muted small">${esc(g.vpc)} · ${esc(g.description)}</div>
+        <div class="scroll"><table><thead><tr><th></th><th>Dir</th><th>Ports</th><th>Source / destination</th><th>Description</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No rules.</td></tr>'}</tbody></table></div>
+        <div class="tools"><button class="btn" data-add="${esc(g.id)}">Propose a rule here</button></div></div>`;
+    }).join("") || '<p class="muted">No group matches.</p>';
+    for (const b of document.querySelectorAll("[data-add]")) b.addEventListener("click", () => openPropose({group: b.dataset.add, op: "add"}));
+    for (const b of document.querySelectorAll("[data-rm]")) b.addEventListener("click", () => {
+      const [gid, i] = b.dataset.rm.split("|"); const r = groupsCache.find((g) => g.id === gid).rules[+i];
+      openPropose({group: gid, op: "remove", rule: r});
+    });
+  }
+  function openPropose({group, op, rule, reason}) {
+    $("proposeBox").open = true;
+    if (group) $("pGroup").value = group;
+    $("pOp").value = op || "add";
+    if (rule) {
+      $("pDir").value = rule.direction; $("pProto").value = rule.proto;
+      $("pPort").value = rule.proto === "-1" ? "" : (rule.from === rule.to ? rule.from : `${rule.from}-${rule.to}`);
+      $("pSource").value = rule.source; $("pDesc").value = rule.description || "";
+    }
+    if (reason) $("pReason").value = reason;
+    $("proposeCard").scrollIntoView({behavior: "smooth"});
+    $("pReason").focus();
+  }
+  $("gWhere").addEventListener("change", loadGroups);
+  $("gFilter").addEventListener("input", drawGroups);
+  $("pSend").addEventListener("click", (e) => act(e.target, async () => {
+    const w = where(), proto = $("pProto").value, port = $("pPort").value.trim();
+    let from = -1, to = -1;
+    if (proto !== "-1") {
+      const m = port.match(/^(\d+)(?:-(\d+))?$/);
+      if (!m) throw new Error("Ports: a number such as 443, or a range such as 8000-8100");
+      from = +m[1]; to = +(m[2] || m[1]);
+    }
+    const res = await api("/api/propose", {account: w.account, region: w.region, reason: $("pReason").value, ticket: $("pTicket").value,
+      changes: [{group: $("pGroup").value, op: $("pOp").value, rule: {direction: $("pDir").value, proto, from, to, source: $("pSource").value, description: $("pDesc").value}}]});
+    flash(res.id ? `Change request #${res.id}: ${res.status}${res.status === "pending" ? " (a different person must approve it)" : ""}.` : "Nothing to change: the database already says that.");
+    $("pReason").value = ""; await loadState(); await loadGroups();
+  }));
+  $("gReconcile").addEventListener("click", (e) => act(e.target, async () => {
+    const res = await api("/api/reconcile", where());
+    flash(res.changes.length ? `${res.changes.length} group(s) changed outside sg-tightener: recorded in the audit trail. Apply puts them back; "Propose keeping what AWS holds" keeps them.` : `AWS matches what was last read.${res.pending ? ` ${res.pending} change(s) to apply.` : ""}`);
+    await loadState(); await loadGroups();
+  }));
+  $("gApply").addEventListener("click", (e) => act(e.target, async () => {
+    const w = where();
+    if (!confirmInline(e.target)) return;
+    const res = await api("/api/apply", w);
+    flash(`${res.done} change(s) made in AWS${res.failed.length ? `, ${res.failed.length} failed: ${res.failed.join("; ")}` : ""}${res.settled?.length ? `. Request(s) applied: ${res.settled.map((i) => "#" + i).join(", ")}` : ""}.`, res.failed.length > 0);
+    await loadState(); await loadGroups();
+  }));
+  $("gAdopt").addEventListener("click", (e) => act(e.target, async () => {
+    const reason = $("pReason").value.trim();
+    if (!reason) { openPropose({}); throw new Error("Write why in the Why box first, then press the button again."); }
+    const res = await api("/api/adopt", {...where(), reason, ticket: $("pTicket").value});
+    flash(res.id ? `Change request #${res.id}: ${res.status}.` : "Nothing to adopt: the database already wants what AWS holds.");
+    await loadState(); await loadGroups();
+  }));
+  // A second press within 5 seconds confirms (no browser dialogs).
+  function confirmInline(btn) {
+    if (btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = btn.dataset.label; return true; }
+    btn.dataset.label = btn.textContent; btn.dataset.armed = "1"; btn.textContent = "Press again to apply";
+    setTimeout(() => { if (btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = btn.dataset.label; } }, 5000);
+    return false;
+  }
+
+  // ---- requests
+  async function loadRequests() {
+    if (!S) await loadState();
+    const rows = await api(`/api/requests?status=${encodeURIComponent($("rStatus").value)}`);
+    $("requestList").innerHTML = rows.map((r) => {
+      const mine = r.proposer.split(" (")[0] === S.me_principal;
+      const changes = r.changes.map((c) => `<li><span class="pill" style="--p:${c.op === "add" ? "var(--good)" : "var(--bad)"}">${c.op}</span> <code>${esc(c.group)}</code> ${esc(c.rule.direction === "in" ? "inbound" : "outbound")} <code>${esc(c.rule.proto === "-1" ? "all traffic" : `${c.rule.proto} ${c.rule.from === c.rule.to ? c.rule.from : c.rule.from + "-" + c.rule.to}`)}</code> ${c.rule.direction === "in" ? "from" : "to"} <code>${esc(c.rule.source)}</code> <span class="muted small">${esc(c.rule.description)}</span></li>`).join("");
+      const buttons = r.status === "pending" ? (mine
+        ? `<button class="btn" data-dec="cancel|${r.id}">Withdraw</button><span class="muted small">A different person must approve it.</span>`
+        : `<input placeholder="Note (required to reject)" data-note="${r.id}"><button class="btn primary" data-dec="approve|${r.id}">Approve</button><button class="btn danger" data-dec="reject|${r.id}">Reject</button>`)
+        : r.status === "approved" ? `<button class="btn primary" data-applyreq="${esc(r.account)}|${esc(r.region)}">Apply in ${esc(r.region)}</button>` : "";
+      return `<div class="card"><div class="tools" style="margin:0 0 6px"><b>#${r.id}</b><span class="pill" style="--p:${STATUS[r.status]}">${esc(r.status)}</span>
+        <span>${esc(r.account)} · ${esc(r.region)}</span><span class="muted small">proposed by ${who(r.proposer)} at ${esc(when(r.at))}</span>${r.ticket ? `<code>${esc(r.ticket)}</code>` : ""}</div>
+        <div>${esc(r.reason)}</div><ul>${changes}</ul>
+        ${r.decided_by ? `<div class="muted small">${esc(r.status === "cancelled" ? "withdrawn" : r.status === "rejected" ? "rejected" : "approved")} by ${who(r.decided_by)} at ${esc(when(r.decided_at))}${r.note ? `: ${esc(r.note)}` : ""}${r.applied_at ? ` · applied ${esc(when(r.applied_at))}` : ""}</div>` : ""}
+        <div class="tools">${buttons}</div></div>`;
+    }).join("") || '<p class="muted">No change requests here.</p>';
+    for (const b of document.querySelectorAll("[data-dec]")) b.addEventListener("click", () => act(b, async () => {
+      const [action, id] = b.dataset.dec.split("|");
+      const note = document.querySelector(`[data-note="${id}"]`)?.value || "";
+      const res = await api("/api/decide", {id: +id, action, note});
+      flash(`Change request #${res.id}: ${res.status}.${res.status === "approved" ? " Apply it to make it in AWS." : ""}`);
+      await loadState(); await loadRequests();
+    }));
+    for (const b of document.querySelectorAll("[data-applyreq]")) b.addEventListener("click", () => act(b, async () => {
+      if (!confirmInline(b)) return;
+      const [account, region] = b.dataset.applyreq.split("|");
+      const res = await api("/api/apply", {account, region});
+      flash(`${res.done} change(s) made in AWS${res.failed.length ? `, ${res.failed.length} failed` : ""}.`, res.failed.length > 0);
+      await loadState(); await loadRequests();
+    }));
+  }
+  $("rStatus").addEventListener("change", loadRequests);
+
+  // ---- audit
+  async function loadAudit() {
+    if (!S) await loadState();
+    $("verifyLine").innerHTML = S.verify.ok
+      ? `Append-only and hash-chained: <b>${S.verify.entries.toLocaleString()} entries, chain intact</b>. Nobody has edited, removed or reordered an entry.`
+      : `<b style="color:var(--bad)">The audit trail is broken after ${S.verify.entries} entries: ${esc(S.verify.why)}</b>`;
+    const h = $("aSince").value;
+    const since = h ? new Date(Date.now() - h * 3600e3).toISOString().slice(0, 19) + "+00:00" : "";
+    let rows = await api(`/api/audit?limit=2000&q=${encodeURIComponent($("aQ").value)}&since=${encodeURIComponent(since)}`);
+    const origin = $("aOrigin").value;
+    if (origin) rows = rows.filter((e) => e.origin === origin);
+    $("aN").textContent = `${rows.length.toLocaleString()} entries`;
+    $("auditRows").innerHTML = rows.map((e) => {
+      const d = e.detail || {};
+      const lines = [...(d.added || []).map((r) => ["+", r]), ...(d.removed || []).map((r) => ["−", r])]
+        .slice(0, 12).map(([m, r]) => `<div class="small"><code>${m} ${esc(r.group ? r.group + " " : "")}${esc(r.direction)} ${esc(r.proto === "-1" ? "all" : `${r.proto} ${r.from === r.to ? r.from : r.from + "-" + r.to}`)} ${esc(r.source)}</code></div>`).join("");
+      const ext = e.origin === "external";
+      return `<tr><td class="small">${e.seq}</td><td class="small">${esc(when(e.at))}</td><td class="small">${who(e.actor)}${d.changed_by ? `<div><b>changed by</b> ${esc(d.changed_by)}</div>` : ""}</td>
+        <td><span class="pill" style="--p:${ext ? "var(--bad)" : e.origin === "apply" ? "var(--good)" : "var(--accent)"}">${esc(e.origin)}</span> ${esc(e.action)}${d.request ? ` <b>#${d.request}</b>` : ""}${lines}</td>
+        <td class="small">${esc(e.account)} ${esc(e.region)}<div><code>${esc(e.group_id)}</code></div></td>
+        <td class="small">${esc(e.reason)}${e.ticket ? ` <code>${esc(e.ticket)}</code>` : ""}</td></tr>`;
+    }).join("") || '<tr><td colspan="6" class="muted">Nothing in this window.</td></tr>';
+  }
+  let aT = null;
+  $("aQ").addEventListener("input", () => { clearTimeout(aT); aT = setTimeout(loadAudit, 250); });
+  $("aSince").addEventListener("change", loadAudit);
+  $("aOrigin").addEventListener("change", loadAudit);
+
+  // ---- rejected traffic
+  async function loadRefused() {
+    if (!S) await loadState();
+    $("refusedRows").innerHTML = '<tr><td colspan="8" class="muted">Reading…</td></tr>';
+    refusedData = await api(`/api/refused?range=${encodeURIComponent($("fRange").value)}`);
+    const fa = $("fAcct"), keep = fa.value;
+    fa.innerHTML = '<option value="">Every account</option>' + refusedData.accounts.map((a) => `<option value="${esc(a.account)}">${esc(a.name || a.account)}</option>`).join("");
+    fa.value = keep;
+    $("fAccounts").innerHTML = refusedData.accounts.map((a) => `<div class="card stat"><b>${a.refused.toLocaleString()}</b><span>refused sources in ${esc(a.name || a.account)}${a.attention.critical ? ` · <span style="color:var(--bad)">${a.attention.critical} critical</span>` : ""}${a.attention.high ? ` · ${a.attention.high} high` : ""}</span></div>`).join("")
+      || '<p class="muted">Nothing read yet: <code>sg_review.py org --regions … --ou-id …</code> reads every account in an OU.</p>';
+    drawRefused();
+  }
+  function drawRefused() {
+    if (!refusedData) return;
+    const q = $("fQ").value.toLowerCase().trim(), sev = $("fSev").value, acct = $("fAcct").value, risky = $("fRisky").checked;
+    const shown = refusedData.rows.filter((r) => (!sev || r.sev === sev) && (!acct || r.account === acct) && (!risky || r.risky) && (!q ||
+      [r.account, r.account_name, r.src, r.name, r.type, r.port, r.port_class, r.verdict, r.reason, r.kind, r.region, r.eni, r.dst].join(" ").toLowerCase().includes(q)));
+    $("fN").textContent = `${shown.length.toLocaleString()} of ${refusedData.rows.length.toLocaleString()}`;
+    $("refusedRows").innerHTML = shown.slice(0, 2000).map((r, i) => `<tr><td><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span></td>
+      <td>${esc(r.account_name || r.account)}<div class="muted small"><code style="white-space:nowrap">${esc(r.account)}</code></div></td>
+      <td><code>${esc(r.src)}</code><div class="muted small">${esc(r.name)}${r.type ? " · " + esc(r.type) : ""}</div></td>
+      <td><code>${esc(PROTO[r.proto] || r.proto)} ${esc(r.port)}</code>${r.risky ? " ⚠" : ""} <span class="muted small">${esc(r.port_class)}</span>
+        <div class="muted small">${esc(r.kind)} ${esc(r.dst)} · ${esc(r.region)}${r.ports > 1 ? ` · ${r.ports} ports` : ""}</div></td>
+      <td>${Number(r.flows).toLocaleString()}</td><td class="small">${esc(when(r.last))}</td>
+      <td>${esc(r.verdict)}<div class="muted small">${esc(r.reason)}</div></td>
+      <td>${r.groups?.length && ["6", "17"].includes(String(r.proto)) ? `<button class="btn" data-allow="${shown.indexOf(r)}">Propose allowing</button>` : ""}</td></tr>`).join("")
+      || '<tr><td colspan="8" class="muted">Nothing matches.</td></tr>';
+    for (const b of document.querySelectorAll("[data-allow]")) b.addEventListener("click", () => {
+      const r = shown[+b.dataset.allow];
+      const target = `${r.account}|${r.region}`;
+      if (![...$("gWhere").options].some((o) => o.value === target)) { flash(`${r.account} ${r.region} is not in the database: sg_db.py import --regions ${r.region} --accounts ${r.account} --org`, true); return; }
+      $("gWhere").value = target;
+      show("groups").then(() => {
+        const gid = r.groups.find((g) => groupsCache.some((x) => x.id === g));
+        openPropose({group: gid, op: "add", rule: {direction: "in", proto: PROTO[r.proto] || r.proto, from: r.port, to: r.port, source: r.src.includes("/") ? r.src : r.src + (r.src.includes(":") ? "/128" : "/32"), description: `${r.name || r.src}`.slice(0, 200)},
+          reason: `Refused ${Number(r.flows).toLocaleString()} flows from ${r.name || r.src} on ${PROTO[r.proto] || r.proto} ${r.port} (${r.verdict}).`});
+        if (!gid) flash(`None of the target's groups (${r.groups.join(", ")}) is in the database: reconcile ${r.region}, or pick the group.`, true);
+      });
+    });
+  }
+  $("fRange").addEventListener("change", loadRefused);
+  for (const id of ["fQ", "fSev", "fAcct", "fRisky"]) $(id).addEventListener("input", drawRefused);
+
+  loadState().catch((e) => flash(e.message, true));
+})();
+</script>
+</body>
+</html>
