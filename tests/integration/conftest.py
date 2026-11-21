@@ -114,3 +114,18 @@ def window(hours: int = 48) -> tuple[dt.datetime, dt.datetime]:
 
 
 __all__ = ["Estate", "REGION", "LOG_GROUP", "add_cloudwatch_flow_log", "window", "generate_records"]
+
+
+@pytest.fixture(autouse=True)
+def _moto_gaps(monkeypatch):
+    """moto has no DescribeStaleSecurityGroups: answer as an account with no stale references would."""
+    import sg_review
+
+    real = sg_review._pages
+
+    def pages(client, op, key, **kw):
+        if op == "describe_stale_security_groups":
+            return []
+        return real(client, op, key, **kw)
+
+    monkeypatch.setattr(sg_review, "_pages", pages)

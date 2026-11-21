@@ -317,6 +317,27 @@ def public_query(log_format: str | None, vpc_ranges: list[str]) -> str | None:
     )
 
 
+def egress_query(log_format: str | None, vpc_ranges: list[str]) -> str | None:
+    """Accepted outbound connections from the account's interfaces, by source, target, interface, protocol and
+    port. Only with `read --egress`: it is a third query per slice. Ports from EPHEMERAL up are left out (they are
+    replies to inbound connections when the format has no flow direction)."""
+    fields = fields_of(log_format)
+    if not set(NEEDED) <= set(fields):
+        return None
+    src = "f_pkt_srcaddr" if "pkt_srcaddr" in fields else "f_srcaddr"
+    dst = "f_pkt_dstaddr" if "pkt_dstaddr" in fields else "f_dstaddr"
+    head = f'parse @message "{" ".join("*" for _ in fields)}" as {", ".join("f_" + f for f in fields)}'
+    head += f' | filter {src} != "-" and {dst} != "-" and f_action = "ACCEPT" and f_dstport < {EPHEMERAL}'
+    if "flow_direction" in fields:
+        head += ' and f_flow_direction = "egress"'
+    elif vpc_ranges and len(vpc_ranges) <= VPC_FILTER_MAX:
+        head += " and (" + " or ".join(f'isIpv4InSubnet({src}, "{c}")' for c in vpc_ranges) + ")"
+    else:
+        return None  # no way to tell outbound from inbound
+    return (f"{head} | stats count(*) as flows by {src} as src, {dst} as dst, f_interface_id as eni,"
+            f" f_protocol as proto, f_dstport as dport | limit {ROWS}")
+
+
 def run_query(logs, groups: list[str], query: str, start: int, end: int, wait: float = 900,
               cancelled=lambda: False) -> tuple[list[dict] | None, int, str]:  # fmt: skip
     """(rows or None, bytes scanned, status) of one Logs Insights query over [start, end)."""
@@ -360,7 +381,57 @@ def _rule(perm: dict) -> dict:
         "pls": [p["PrefixListId"] for p in perm.get("PrefixListIds") or [] if p.get("PrefixListId")],
         "refs": [p.get("GroupId", "") for p in perm.get("UserIdGroupPairs") or []],
         "any6": any(r.get("CidrIpv6") == "::/0" for r in perm.get("Ipv6Ranges") or []),
+        "cidrs6": [r["CidrIpv6"] for r in perm.get("Ipv6Ranges") or [] if r.get("CidrIpv6")],
+        "xrefs": [{"group": p.get("GroupId", ""), "account": p.get("UserId", ""), "peering": p.get("VpcPeeringConnectionId", "")}
+                  for p in perm.get("UserIdGroupPairs") or [] if p.get("UserId")],
     }
+
+
+def _internet_routes(ec2, errors: list) -> dict:
+    """Which subnets route the internet to an internet gateway: {"subnets": {id: {...}}, "main": {vpc: {...}}},
+    each {"igw4": bool, "igw6": bool, "table": id}. Subnets with no table of their own use their VPC's main one."""
+    out: dict = {"subnets": {}, "main": {}, "read": True}
+    try:
+        tables = _pages(ec2, "describe_route_tables", "RouteTables")
+    except (ClientError, BotoCoreError) as exc:
+        errors.append(f"route tables: {describe_error(exc)}")
+        return {"subnets": {}, "main": {}, "read": False}
+    for t in tables:
+        igw4 = igw6 = False
+        for r in t.get("Routes") or []:
+            gw = r.get("GatewayId") or ""
+            if not gw.startswith("igw-") or r.get("State", "active") != "active":
+                continue
+            igw4 = igw4 or r.get("DestinationCidrBlock") == "0.0.0.0/0"
+            igw6 = igw6 or r.get("DestinationIpv6CidrBlock") == "::/0"
+        row = {"igw4": igw4, "igw6": igw6, "table": t.get("RouteTableId", "")}
+        for a in t.get("Associations") or []:
+            if a.get("Main"):
+                out["main"][t.get("VpcId", "")] = row
+            elif a.get("SubnetId"):
+                out["subnets"][a["SubnetId"]] = row
+    return out
+
+
+def _stale_refs(ec2, vpc_ids: list[str], errors: list) -> list[dict]:
+    """Rules that reference a security group which no longer exists (or a peer that went away)."""
+    out = []
+    for vpc in vpc_ids:
+        try:
+            sets = _pages(ec2, "describe_stale_security_groups", "StaleSecurityGroupSet", VpcId=vpc)
+        except (ClientError, BotoCoreError) as exc:
+            errors.append(f"stale security group references in {vpc}: {describe_error(exc)}")
+            return out
+        for g in sets:
+            for direction, key in (("in", "StaleIpPermissions"), ("out", "StaleIpPermissionsEgress")):
+                for p in g.get(key) or []:
+                    for pair in p.get("UserIdGroupPairs") or []:
+                        out.append({"group": g.get("GroupId", ""), "name": g.get("GroupName", ""), "vpc": vpc,
+                                    "direction": direction, "proto": str(p.get("IpProtocol", "-1")),
+                                    "from": p.get("FromPort"), "to": p.get("ToPort"),
+                                    "ref": pair.get("GroupId", ""), "account": pair.get("UserId", ""),
+                                    "peering": pair.get("VpcPeeringConnectionId", "")})  # fmt: skip
+    return out
 
 
 def snapshot(session, region: str) -> dict:
@@ -373,7 +444,9 @@ def snapshot(session, region: str) -> dict:
             "name": g.get("GroupName", ""),
             "vpc": g.get("VpcId", ""),
             "tag": _name(g.get("Tags")),
+            "owner": g.get("OwnerId", ""),
             "rules": [_rule(p) for p in g.get("IpPermissions") or []],
+            "egress": [_rule(p) for p in g.get("IpPermissionsEgress") or []],
         }  # fmt: skip
         for g in _pages(ec2, "describe_security_groups", "SecurityGroups")
     }
@@ -390,8 +463,11 @@ def snapshot(session, region: str) -> dict:
             "desc": (e.get("Description") or "")[:80],
             "instance": (e.get("Attachment") or {}).get("InstanceId", ""),
             "public": (e.get("Association") or {}).get("PublicIp", ""),
+            "ipv6": [a["Ipv6Address"] for a in e.get("Ipv6Addresses") or [] if a.get("Ipv6Address")],
         }
     out["enis"] = enis
+    out["routes"] = _internet_routes(ec2, out["errors"])
+    out["stale"] = _stale_refs(ec2, [v["id"] for v in out["vpcs"]], out["errors"])
     pls: dict = {}
     for pid in sorted({p for g in out["groups"].values() for r in g["rules"] for p in r["pls"]}):
         try:
@@ -412,8 +488,15 @@ def snapshot(session, region: str) -> dict:
             ),
             key=lambda x: x["n"],
         )  # fmt: skip
+        entries6 = sorted(
+            ({"n": x.get("RuleNumber", 32767), "proto": str(x.get("Protocol", "-1")),
+              "allow": x.get("RuleAction") == "allow", "cidr": x["Ipv6CidrBlock"],
+              "from": (x.get("PortRange") or {}).get("From", 0), "to": (x.get("PortRange") or {}).get("To", 65535)}
+             for x in n.get("Entries") or [] if not x.get("Egress") and x.get("Ipv6CidrBlock")),
+            key=lambda x: x["n"],
+        )  # fmt: skip
         for a in n.get("Associations") or []:
-            nacls[a.get("SubnetId", "")] = {"id": n.get("NetworkAclId", ""), "entries": entries}
+            nacls[a.get("SubnetId", "")] = {"id": n.get("NetworkAclId", ""), "entries": entries, "entries6": entries6}
     out["nacls"] = nacls
     try:
         out["vpns"] = [{"name": _name(v.get("Tags")) or v["VpnConnectionId"],
@@ -647,9 +730,10 @@ def _stamp(t: float) -> str:
     return datetime.fromtimestamp(t, timezone.utc).strftime("%d %b %H:%M")
 
 
-def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cancelled=lambda: False) -> list[dict]:
+def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cancelled=lambda: False,
+               egress: bool = False) -> list[dict]:
     """One slice read (split in halves, down to an hour, while the detail query hits the row limit)."""
-    rows, pub, nbytes, cut, pub_cut, errors = [], [], 0, False, False, []
+    rows, pub, egr, nbytes, cut, pub_cut, errors = [], [], [], 0, False, False, []
     for q in qsets:
         rs, b, status = None, 0, ""
         for fold in (True, False):
@@ -665,8 +749,8 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
             if e - s > HOUR:
                 mid = s + _floor((e - s) // 2, HOUR) if e - s >= 2 * HOUR else (s + e) // 2
                 parts = [
-                    *read_chunk(logs, region, mid, e, qsets, vpcs, cancelled),
-                    *read_chunk(logs, region, s, mid, qsets, vpcs, cancelled),
+                    *read_chunk(logs, region, mid, e, qsets, vpcs, cancelled, egress),
+                    *read_chunk(logs, region, s, mid, qsets, vpcs, cancelled, egress),
                 ]
                 parts[0]["b"] += nbytes  # the full slice's query was billed too
                 return parts  # fmt: skip
@@ -682,9 +766,21 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
         pub_cut = pub_cut or len(ps) >= ROWS
         pub += [[r.get("src"), _int(r.get("flows")), _int(r.get("ports")), _int(r.get("dsts")), r.get("dst"),
                  r.get("eni"), _int(r.get("port")), r.get("proto")] for r in ps]  # fmt: skip
+        eq = egress_query(q["format"], vpcs) if egress else None
+        if eq:
+            es, b, status = run_query(logs, q["groups"], eq, s, e, cancelled=cancelled)
+            nbytes += b
+            if es is None:
+                errors.append(f"outbound query {status}")
+            else:
+                egr += [[r.get("src"), r.get("dst"), r.get("eni"), r.get("proto"), _int(r.get("dport")),
+                         _int(r.get("flows"))] for r in es]  # fmt: skip
     st = "failed" if errors and not rows and not pub else ("cut" if cut else "ok")
-    return [{"r": region, "s": s, "e": e, "st": st, "b": nbytes, "rows": rows, "pub": pub, "pc": pub_cut,
-             "err": "; ".join(errors)}]  # fmt: skip
+    out = {"r": region, "s": s, "e": e, "st": st, "b": nbytes, "rows": rows, "pub": pub, "pc": pub_cut,
+           "err": "; ".join(errors)}
+    if egress:
+        out["egr"] = egr
+    return [out]
 
 
 def _int(v) -> int:
@@ -701,6 +797,8 @@ def estimate(doc: dict | None, account: str, regions: list[str] = (), now: float
     secs = sum(c["e"] - c["s"] for c in doc["chunks"] if c["st"] in ("ok", "cut"))
     nbytes = sum(c["b"] for c in doc["chunks"])
     rate = nbytes / secs if secs else None
+    if rate is not None and doc.get("egress") and not any("egr" in c for c in doc["chunks"]):
+        rate *= 1.5  # measured without the outbound query, which scans the same log again
     out = []
     regions = [r for r, x in doc["regions"].items() if x.get("query_sets")] or list(regions)
     for days in READ_DAYS:
@@ -1091,6 +1189,8 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         use = port_use.setdefault((str(proto), port), {"refused": {}, "active": {}})
         use[kind].setdefault(cat, set()).add(src)
     accepted_rows = []  # (src, dst, eni, proto, dport, flows, chunk)
+    egress_seen: dict[str, dict] = {}  # eni -> (proto, port) -> destination -> flows, from `read --egress`
+    egress_read = 0
     region_first: dict[str, int] = {}
     cut_regions, pub_cut = set(), 0
     for c in chunks:
@@ -1124,6 +1224,12 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
             elif in_view and dport < EPHEMERAL:
                 _refused(rej, src, b, c, flows, (eni, str(proto), dport, dst))
                 note_port("refused", src, b, proto, dport)
+        if in_view and "egr" in c:
+            egress_read += 1
+            for src, dst, eni, proto, dport, flows in c["egr"]:
+                if src and dst and eni:
+                    d = egress_seen.setdefault(eni, {}).setdefault((str(proto), dport), {})
+                    d[dst] = d.get(dst, 0) + flows
         for src, flows, ports, dsts, dst, eni, port, proto in c.get("pub") or []:
             if not src:
                 continue
@@ -1220,7 +1326,15 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
     let_in = {src: v for src, a in act.items() if a["bins"] and (v := active_verdict(ctx, src, a))}
     attention = needs_attention(ctx, verdicts, let_in)
     privatelink = privatelink_findings(doc, rules)
-    attention = sorted(attention + [p for p in privatelink if p["sev"] in ATTENTION], key=lambda it: SEV_RANK[it["sev"]])
+    inet_in: dict[tuple, set] = {}
+    for src, a in act.items():
+        if lab(src)["cat"] in ("internal", "datacentre"):
+            continue
+        for (eni, proto, port) in a["targets"]:
+            inet_in.setdefault((eni, proto, port), set()).add(src)
+    posture = posture_findings(doc, inet_in, egress_seen, lab)
+    attention = sorted(attention + [p for p in privatelink + posture if p["sev"] in ATTENTION],
+                       key=lambda it: SEV_RANK[it["sev"]])  # fmt: skip
     for m in markers:
         m["caused"] = sorted({src for src, v in verdicts.items() if (v.get("event") or {}).get("t") == m["t"]
                               and v["event"]["group"] == m["group"]})[:50]  # fmt: skip
@@ -1299,8 +1413,11 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         "markers": markers,
         "attention": attention,
         "privatelink": privatelink,
+        "posture": posture,
+        "egress_read": {"slices": egress_read, "on": bool(doc.get("egress"))},
         "summary": {
             "privatelink": {k: sum(1 for p in privatelink if p["sev"] == k) for k in SEVERITIES},
+            "posture": {k: sum(1 for p in posture if p["sev"] == k) for k in SEVERITIES},
             "verdicts": {k: sum(1 for v in verdicts.values() if v["sev"] == k) for k in SEVERITIES},
             "attention": {k: sum(1 for a in attention if a["sev"] == k) for k in SEVERITIES},
             "refused": len(rej),
@@ -1929,6 +2046,337 @@ def privatelink_findings(doc: dict, rules: list[dict]) -> list[dict]:
     return out
 
 
+# --------------------------------------------------------------------------------- exposure and hygiene
+# Checks on the configuration itself, read alongside the flow logs: is an open rule actually reachable from the
+# internet, IPv6 rules (which IPv4-only reviews miss), outbound rules, and group hygiene. Each item has the same
+# shape as a "Needs attention" item (kind "posture", and an "area"), so the medium and worse ones join that list.
+WIDE_V6 = 32  # a global IPv6 range this wide or wider is an ISP-sized allocation
+SAMPLE_INTERNET = int(ipaddress.IPv4Address("8.8.8.8"))  # a typical internet address, for the network ACL check
+EGRESS_FIT_MAX = 15  # more fitted outbound rules than this and the fit is offered, not urged
+POSTURE_AREAS = {"exposure": "Internet exposure", "ipv6": "IPv6", "egress": "Outbound", "hygiene": "Group hygiene"}
+
+
+def _pt_item(area, key, sev, label, title, reason, action, region, name, cli="", group="", target="", extra=None):
+    return {**_pl_item(key, sev, label, title, reason, action, region, name, cli, group, target, extra),
+            "kind": "posture", "area": area}  # fmt: skip
+
+
+def _perm_arg(proto: str, lo: int, hi: int, cidr: str = "", ref: str = "") -> str:
+    p = {"6": "tcp", "17": "udp", "1": "icmp", "58": "icmpv6"}.get(str(proto), str(proto))
+    ports = "" if p == "-1" else f",FromPort={lo if p in ('tcp', 'udp') else -1},ToPort={hi if p in ('tcp', 'udp') else -1}"
+    if ref:
+        src = f",UserIdGroupPairs=[{{GroupId={ref}}}]"
+    elif ":" in cidr:
+        src = f",Ipv6Ranges=[{{CidrIpv6={cidr}}}]"
+    else:
+        src = f",IpRanges=[{{CidrIp={cidr}}}]"
+    return f"IpProtocol={p}{ports}{src}"
+
+
+def _revoke_cli(region: str, gid: str, rule: dict, cidr: str = "", ref: str = "", egress: bool = False) -> str:
+    verb = "revoke-security-group-egress" if egress else "revoke-security-group-ingress"
+    return (f"aws ec2 {verb} --region {region} --group-id {gid} "
+            f"--ip-permissions '{_perm_arg(rule['proto'], rule['from'], rule['to'], cidr, ref)}'")
+
+
+def _route(snap: dict, eni: dict) -> dict | None:
+    routes = snap.get("routes") or {}
+    if not routes.get("read", "subnets" in routes):
+        return None
+    return (routes.get("subnets") or {}).get(eni.get("subnet", "")) or (routes.get("main") or {}).get(eni.get("vpc", ""))
+
+
+def internet_path(snap: dict, eni: dict, rule: dict, v6: bool = False) -> tuple[bool | None, str]:
+    """Whether the internet can reach `eni` on `rule`'s first port: a public address, a route to an internet
+    gateway, and a network ACL that lets it in. (None, why) when that cannot be told."""
+    if v6:
+        if not eni.get("ipv6"):
+            return False, "it has no IPv6 address"
+    elif not eni.get("public"):
+        return False, "it has no public address"
+    r = _route(snap, eni)
+    if r is None:
+        return None, "the route tables were not read"
+    if not r.get("igw6" if v6 else "igw4"):
+        return False, f"its subnet has no {'::/0' if v6 else '0.0.0.0/0'} route to an internet gateway"
+    if not v6:
+        nacl = (snap.get("nacls") or {}).get(eni.get("subnet", ""))
+        if nacl and nacl_verdict(nacl, SAMPLE_INTERNET, str(rule["proto"]), rule["from"]):
+            v = nacl_verdict(nacl, SAMPLE_INTERNET, str(rule["proto"]), rule["from"])
+            return False, f"network ACL {v['acl']} rule {v['rule']} refuses the internet"
+    addr = eni["ipv6"][0] if v6 else eni["public"]
+    return True, f"{addr} is public and routed to an internet gateway"
+
+
+def _wide_v6(c: str) -> ipaddress.IPv6Network | None:
+    try:
+        net = ipaddress.ip_network(c, strict=False)
+    except ValueError:
+        return None
+    if net.version != 6 or net.prefixlen > WIDE_V6 or (net.prefixlen and net.is_private):
+        return None
+    return net
+
+
+def posture_findings(doc: dict, inet_in: dict | None = None, egress_seen: dict | None = None, lab=None) -> list[dict]:
+    """Internet exposure, IPv6, outbound and group hygiene, from each region's snapshot.
+
+    `inet_in` is (interface, protocol, port) -> internet sources let in during the range, the evidence that an
+    exposed rule is used. `egress_seen` is interface -> {(protocol, port): {destination: flows}} from
+    `read --egress`; without it the outbound checks are on the rules alone."""
+    inet_in = inet_in or {}
+    out: list[dict] = []
+    account = doc.get("account", "")
+    for region, x in sorted(doc["regions"].items()):
+        snap = x.get("snapshot") or {}
+        groups = snap.get("groups") or {}
+        enis = snap.get("enis") or {}
+        members: dict[str, list[str]] = {}
+        for eid, e in enis.items():
+            for gid in e.get("groups") or []:
+                members.setdefault(gid, []).append(eid)
+        stale_seen = set()
+        for gid, g in sorted(groups.items()):
+            gname = g.get("name") or gid
+            mine = members.get(gid, [])
+            for rule in g.get("rules") or []:
+                pc = rule_port_class(rule)
+                ports = ports_label(rule)
+                opens = [c for c in rule.get("cidrs") or [] if c == "0.0.0.0/0"]
+                opens += [c for c in rule.get("cidrs6") or [] if c == "::/0"]
+                for c in opens:
+                    v6 = ":" in c
+                    paths = [(eid, *internet_path(snap, enis[eid], rule, v6)) for eid in mine]
+                    live = [(eid, why) for eid, ok, why in paths if ok]
+                    unknown = [eid for eid, ok, _ in paths if ok is None]
+                    used = sum(len(inet_in.get((eid, str(rule["proto"]), p), ()))
+                               for eid in mine for p in {rule["from"], rule["to"]})
+                    kinds = sorted({enis[eid]["kind"] for eid, _ in live})
+                    if live:
+                        if pc["cls"] == "web" and kinds == ["load balancer"]:
+                            continue  # a public load balancer on a web port: what it is for
+                        sev = "critical" if pc["risky"] or pc["cls"] == "all" else "low" if pc["cls"] == "web" else "high"
+                        ex = live[0]
+                        out.append(_pt_item(
+                            "exposure", "exposed", sev, "Reachable from the internet",
+                            f"{gname} lets the internet reach {len(live)} interface(s) on {ports}"
+                            + (f" ({pc['svc']})" if pc.get("svc") else ""),
+                            f"The rule allows {c}, and the path is open: {ex[1]} ({enis[ex[0]]['kind']} {ex[0]})"
+                            + (f", and {len(live) - 1} more" if len(live) > 1 else "")
+                            + (f". {used} internet source(s) connected in the range." if used else
+                               ". No internet source connected in the range, so nothing would notice it closing."),
+                            "Remove the open rule, or narrow it to the addresses that need it (a VPN, a bastion's "
+                            "group, or the partner's range)." if pc["cls"] != "web" else
+                            "Put the service behind a load balancer, or narrow the rule if it is not public.",
+                            region, gname, _revoke_cli(region, gid, rule, c), group=gid, target=ports,
+                            extra={"interfaces": [e for e, _ in live][:20], "source": c, "v6": v6}))
+                    elif pc["risky"] or pc["cls"] == "all":
+                        why = (f"{len(unknown)} interface(s) could not be checked" if unknown else
+                               paths[0][2] if paths else "no interface uses the group yet")
+                        out.append(_pt_item(
+                            "ipv6" if v6 else "exposure", "latent-open", "medium" if v6 and mine else "low",
+                            "Open, not reachable yet",
+                            f"{gname} allows {c} on {ports}, but nothing is reachable today",
+                            f"The rule allows {c} on {pc['svc']}; {why}. "
+                            + ("Turning on IPv6 for the subnet, or giving an interface an IPv6 address, exposes it "
+                               "at once, and reviews that look only at IPv4 miss it." if v6 else
+                               "A public address or a route to an internet gateway later exposes it at once."),
+                            "Remove the rule now, while nothing depends on it.", region, gname,
+                            _revoke_cli(region, gid, rule, c), group=gid, target=ports, extra={"source": c, "v6": v6}))
+                for c in rule.get("cidrs6") or []:
+                    net = _wide_v6(c)
+                    if net is None or net.prefixlen == 0:
+                        continue
+                    out.append(_pt_item(
+                        "ipv6", "v6-wide", "medium" if pc["risky"] or pc["cls"] == "all" else "low", "Wide IPv6 range",
+                        f"{gname} lets in {c} on {ports}",
+                        f"{c} is a global IPv6 range of 2^{128 - net.prefixlen} addresses (an ISP-sized "
+                        f"allocation or wider) on {pc['svc']}. IPv6 rules are easy to miss in an IPv4 review.",
+                        "Narrow it to the /64s or /56s that need it.", region, gname,
+                        _revoke_cli(region, gid, rule, c), group=gid, target=ports, extra={"source": c, "v6": True}))
+                for xr in rule.get("xrefs") or []:
+                    if not xr["account"] or xr["account"] in (account, g.get("owner")):
+                        continue
+                    out.append(_pt_item(
+                        "hygiene", "cross-account", "medium", "Trusts another account",
+                        f"{gname} lets in group {xr['group']} from account {xr['account']} on {ports}",
+                        f"Every interface account {xr['account']} puts in {xr['group']} reaches this group on "
+                        f"{pc['svc']}" + (f", over peering {xr['peering']}" if xr.get("peering") else "")
+                        + ". Who joins that group is decided in the other account.",
+                        "Check the other account is still meant to have this; narrow it to its subnets if its "
+                        "group is broad.", region, gname, _revoke_cli(region, gid, rule, ref=xr["group"]),
+                        group=gid, target=ports, extra={"account": xr["account"]}))
+            # default group
+            if gname == "default" and g.get("name") == "default":
+                others = [r for r in g.get("rules") or []
+                          if r.get("cidrs") or r.get("cidrs6") or r.get("pls") or any(ref != gid for ref in r.get("refs") or [])]
+                if mine or others:
+                    sev = "medium" if mine and others else "low"
+                    out.append(_pt_item(
+                        "hygiene", "default-group", sev, "Default group",
+                        f"The default security group of {g.get('vpc') or 'its VPC'} "
+                        + (f"is used by {len(mine)} interface(s)" if mine else "has rules"),
+                        ("Anything launched without a group chosen lands in it, and " if mine else
+                         "Anything launched without a group chosen will land in it, and ")
+                        + ("it lets in more than its own members" if others else
+                           "its members reach each other on every port")
+                        + ". CIS AWS 5.4: the default group should allow nothing.",
+                        "Move the interfaces to groups made for them, then remove every rule from the default group.",
+                        region, gname,
+                        f"aws ec2 revoke-security-group-ingress --region {region} --group-id {gid} --ip-permissions "
+                        f"\"$(aws ec2 describe-security-groups --region {region} --group-ids {gid} "
+                        f"--query 'SecurityGroups[0].IpPermissions')\"",
+                        group=gid, extra={"interfaces": mine[:20]}))  # fmt: skip
+            # one group across unrelated tiers
+            tiers = sorted({enis[e]["kind"] for e in mine} & {"EC2 instance", "RDS database", "load balancer",
+                                                              "ECS task", "lambda", "vpc endpoint"})
+            if len(tiers) >= 2 and gname != "default":
+                out.append(_pt_item(
+                    "hygiene", "shared-tiers", "low", "One group, several tiers",
+                    f"{gname} is used by {', '.join(tiers)}",
+                    f"Every rule in it applies to all of them: a port opened for one tier is open on the others "
+                    f"({len(mine)} interfaces). Separate groups per tier keep a database port off the web servers.",
+                    "Give each tier its own group, and let tiers in by group reference.", region, gname,
+                    group=gid, extra={"interfaces": mine[:20]}))
+            # unused but open
+            if not mine and gname != "default":
+                risky = [r for r in g.get("rules") or [] if ("0.0.0.0/0" in (r.get("cidrs") or [])
+                         or "::/0" in (r.get("cidrs6") or [])) and (rule_port_class(r)["risky"])]
+                if risky:
+                    out.append(_pt_item(
+                        "hygiene", "unused-open", "low", "Unused, but open",
+                        f"{gname} is not used, and lets the internet in on {ports_label(risky[0])}",
+                        "Whatever is put in it next is exposed on the day it is launched.",
+                        "Delete the group if nothing needs it.", region, gname,
+                        f"aws ec2 delete-security-group --region {region} --group-id {gid}", group=gid))
+            # outbound
+            out += _egress_items(region, gid, g, mine, enis, groups, (egress_seen or {}), lab)
+        if lab is not None:
+            out += _egress_bad(region, enis, groups, egress_seen or {}, lab)
+        for st in snap.get("stale") or []:
+            k = (st["group"], st["ref"], st["direction"], st["proto"], st["from"])
+            if k in stale_seen:
+                continue
+            stale_seen.add(k)
+            rule = {"proto": st["proto"], "from": st["from"] if st["from"] is not None else 0,
+                    "to": st["to"] if st["to"] is not None else 65535}
+            out.append(_pt_item(
+                "hygiene", "stale-ref", "low", "Stale reference",
+                f"{st['name'] or st['group']} {'lets in' if st['direction'] == 'in' else 'sends to'} group "
+                f"{st['ref']}, which no longer exists",
+                "The referenced group was deleted, or its peering connection went away. The rule does nothing "
+                "today, but a new group or peering can bring it back to life.",
+                "Remove the stale rule.", region, st["name"] or st["group"],
+                _revoke_cli(region, st["group"], rule, ref=st["ref"], egress=st["direction"] == "out"),
+                group=st["group"]))  # fmt: skip
+    out.sort(key=lambda it: (SEV_RANK[it["sev"]], it["area"], it["region"], it["name"]))
+    return out
+
+
+def _bad_dest(lab, d: str) -> dict | None:
+    lb = lab(d) if lab is not None else {}
+    return lb if lb.get("group") in ("anon", "scanner") else None
+
+
+def _egress_bad(region, enis, groups, egress_seen, lab) -> list[dict]:
+    """One item per interface that connected out to a Tor or VPN exit or a scanner."""
+    out = []
+    for eid in sorted(egress_seen):
+        e = enis.get(eid)
+        if e is None:
+            continue
+        bad: dict = {}
+        for (_proto, port), dsts in egress_seen[eid].items():
+            for d, n in dsts.items():
+                lb = _bad_dest(lab, d)
+                if lb:
+                    b = bad.setdefault(d, [lb, set(), 0])
+                    b[1].add(port)
+                    b[2] += n
+        if not bad:
+            continue
+        ds = sorted(bad, key=lambda d: -bad[d][2])
+        lb = bad[ds[0]][0]
+        names = ", ".join((groups.get(g) or {}).get("name") or g for g in e.get("groups") or [])
+        out.append(_pt_item(
+            "egress", "egress-bad", "high", "Outbound to Tor or a scanner",
+            f"{e['kind']} {eid} connected out to {len(ds)} Tor, VPN or scanner address(es)",
+            f"{ds[0]} ({lb.get('name', '')}) on port(s) {', '.join(map(str, sorted(bad[ds[0]][1])))}, "
+            f"{sum(b[2] for b in bad.values()):,} flows" + (f", and {len(ds) - 1} more address(es)" if len(ds) > 1 else "")
+            + f". Groups: {names}. Servers rarely have reason to; it is how malware calls home and how data leaves.",
+            "Find the process on the host that made the connection, and restrict outbound rules to what the "
+            "workload needs.", region, eid, group=(e.get("groups") or [""])[0], target=", ".join(ds[:3]),
+            extra={"dests": ds[:20], "interfaces": [eid]}))  # fmt: skip
+    return out
+
+
+def _egress_items(region, gid, g, mine, enis, groups, egress_seen, lab) -> list[dict]:
+    out: list[dict] = []
+    gname = g.get("name") or gid
+    eg = g.get("egress") or []
+    open_all = [r for r in eg if str(r["proto"]) == "-1" and ("0.0.0.0/0" in (r.get("cidrs") or [])
+                                                             or "::/0" in (r.get("cidrs6") or []))]
+    if not mine:
+        return out
+    seen: dict = {}
+    for eid in mine:
+        for k, dsts in (egress_seen.get(eid) or {}).items():
+            for d, n in dsts.items():
+                if _bad_dest(lab, d):
+                    continue  # never fitted into a rule: reported on its own
+                seen.setdefault(k, {})[d] = seen.setdefault(k, {}).get(d, 0) + n
+    if not open_all:
+        return out
+    if not seen:
+        if any(enis[e]["kind"] == "RDS database" for e in mine):
+            out.append(_pt_item(
+                "egress", "egress-open", "low", "Outbound open",
+                f"{gname} (used by a database) may connect anywhere",
+                "Its outbound rule allows every protocol to every address. A database seldom needs more than its "
+                "replicas and AWS services; open outbound is how stolen data leaves.",
+                "Read with --egress to see what it connects to, then narrow the outbound rule.", region, gname,
+                group=gid))
+        return out
+    rules = []
+    for (proto, port), dsts in sorted(seen.items(), key=lambda kv: (str(kv[0][0]), kv[0][1])):
+        pub = [d for d in dsts if _ip(d) is not None and not any(a <= _ip(d) <= b for a, b in PRIVATE)]
+        if port in (80, 443) and len(pub) > 10:
+            rules.append((proto, port, ["0.0.0.0/0"], f"{len(pub)} internet destinations"))
+            continue
+        v4 = sorted(d for d in dsts if _ip(d) is not None)
+        if not v4:
+            continue
+        cidrs = sg_tightener.collapse_ips_to_cidrs(v4, 10, sg_tightener.DEFAULT_TOLERANCE)
+        rules.append((proto, port, cidrs, f"{len(dsts)} destination(s)"))
+    if not rules:
+        return out
+    n = sum(len(c) for *_, c, _ in rules)
+    also = sorted({(groups.get(o) or {}).get("name") or o for e in mine for o in enis[e]["groups"] if o != gid
+                   and any(str(r["proto"]) == "-1" and "0.0.0.0/0" in (r.get("cidrs") or [])
+                           for r in (groups.get(o) or {}).get("egress") or [])})  # fmt: skip
+    desc = "; ".join(f"{PROTO_NAME.get(str(p), p)} {port} to {', '.join(c[:3])}{' …' if len(c) > 3 else ''}"
+                     for p, port, c, _ in rules[:6])  # fmt: skip
+    cli = "\n".join(f"aws ec2 authorize-security-group-egress --region {region} --group-id {gid} --ip-permissions "
+                    f"'{_perm_arg(str(p), port, port, c)}'" for p, port, cs, _ in rules for c in cs)  # fmt: skip
+    for r in open_all:
+        for c in [*(r.get("cidrs") or []), *(r.get("cidrs6") or [])]:
+            if c in ("0.0.0.0/0", "::/0"):
+                cli += "\n" + _revoke_cli(region, gid, r, c, egress=True)
+    out.append(_pt_item(
+        "egress", "egress-fit", "medium" if n <= EGRESS_FIT_MAX else "low", "Outbound wider than used",
+        f"{gname} may connect anywhere, but used {len(rules)} port(s)",
+        f"Its outbound rule allows every protocol to every address. Flow logs saw: {desc}"
+        + (f", and {len(rules) - 6} more port(s)" if len(rules) > 6 else "")
+        + ". Amazon DNS, the time service and instance metadata are not logged and not filtered, so narrowing "
+          "leaves them alone."
+        + (f" Its interfaces are also in {', '.join(also)}, whose outbound is open too: outbound rules add up, so "
+           "narrow those as well." if also else ""),
+        f"Replace the open outbound rule with these {n} rule(s), after checking a full business cycle was read "
+        "(month-end jobs, backups).", region, gname, cli, group=gid,
+        extra={"fit": [{"proto": str(p), "port": port, "cidrs": c, "note": note} for p, port, c, note in rules]}))
+    return out
+
+
 def _refused_by(src: str, e: dict, groups: dict, snaps: dict, proto: str, port: int) -> str:
     if not e:
         return "Interface since deleted"
@@ -2129,6 +2577,8 @@ def plan_read(sess, doc: dict, regions: Sequence[str], days: int, now: float, sa
         if not qsets:
             LOG.warning("%s: no VPC flow log in CloudWatch Logs with source, target, port, action and interface", region)
             continue
+        if doc.get("egress"):  # slices read before outbound was asked for are read again, with it
+            doc["chunks"] = [c for c in doc["chunks"] if c["r"] != region or "egr" in c]
         have = [(c["s"], c["e"]) for c in doc["chunks"] if c["r"] == region and c["st"] in ("ok", "cut")]
         vpcs = _vpc_ranges(entry["snapshot"])
         tasks += [(region, s, e, qsets, vpcs) for s, e in plan(now, days, have)]
@@ -2149,7 +2599,7 @@ def run_read(sess, doc: dict, tasks: list[tuple], days: int, now: float, cancell
             logs = clients.get(region) or clients.setdefault(
                 region, sess.client("logs", region_name=region, config=BOTO_CONFIG)
             )
-        for chunk in read_chunk(logs, region, s, e, qsets, vpcs, cancelled):
+        for chunk in read_chunk(logs, region, s, e, qsets, vpcs, cancelled, bool(doc.get("egress"))):
             with lock:
                 doc["chunks"].append(chunk)
                 state["bytes"] += chunk["b"]
@@ -2285,6 +2735,10 @@ def cmd_read(args) -> int:
             name = ""
     doc = load(account) or new_doc(account, name)
     doc["name"] = name or doc.get("name", "")
+    if getattr(args, "egress", False) and not doc.get("egress"):
+        doc["egress"] = True
+        LOG.info("outbound connections are read from now on (a third query per slice, about half as much again); "
+                 "slices read before without them are read again")
     now = time.time()
     tasks = plan_read(sess, doc, regions, args.days, now)
     save(doc)
@@ -2757,6 +3211,9 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--days", type=int, default=1, help="read back this far: 1, 7, 30, 90 or 180 (default 1)")
     r.add_argument("--profile", help="AWS profile (default: the usual credential chain)")
     r.add_argument("--name", help="a name for the account in the report (default: its alias)")
+    r.add_argument("--egress", action="store_true", help="also read outbound connections, so the report can fit "
+                   "outbound rules and flag connections to Tor or scanners (about half as much again per read; "
+                   "stays on for this account)")
     r.add_argument("--yes", action="store_true", help="skip the typed confirmation")
     r.set_defaults(fn=cmd_read)
     o = sub.add_parser("report", help="write the self-contained HTML page")

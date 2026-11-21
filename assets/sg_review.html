@@ -223,8 +223,15 @@ details.xr-fold > summary { margin: 0 0 10px; }
     <div id="privatelink"></div>
   </section>
 
+  <section class="section" id="postureWrap">
+    <h2><span class="num">6</span>Exposure and hygiene</h2>
+    <p class="muted section-lede">The configuration itself, beside the traffic. <strong>Internet exposure:</strong> an open rule is only an exposure when the internet can get there: a public address, a route to an internet gateway and a network ACL that lets it in. Each is checked, with the internet sources that connected. <strong>IPv6:</strong> <code>::/0</code> and wide global ranges, which IPv4 reviews miss. <strong>Outbound:</strong> open outbound rules, fitted to the destinations the flow logs saw (with <code>read --egress</code>), and connections out to Tor exits or scanners. <strong>Group hygiene:</strong> the default group in use, trust in another account's group, references to deleted groups, and one group across several tiers.</p>
+    <div id="postureFilter" class="tools"></div>
+    <div id="posture"></div>
+  </section>
+
   <section class="section">
-    <h2><span class="num">6</span>How it is read</h2>
+    <h2><span class="num">7</span>How it is read</h2>
     <div class="card" id="method"></div>
   </section>
   <footer id="footer"></footer>
@@ -352,6 +359,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     $("#chips").innerHTML = `<span class="muted small">Show:</span>` + rep.categories.map((c) => `<button type="button" class="chip" data-cat="${c.key}" aria-pressed="${state.cats.has(c.key)}" style="--c:${COLOR[c.key]}">${esc(c.name)}</button>`).join("");
     attention();
     privatelink();
+    posture();
     charts();
     tables();
     $("#method").innerHTML = `<p><strong>Read, per region, live and read-only:</strong> the security groups, network interfaces, VPCs, network ACLs, VPN routes and flow logs (ec2 Describe calls, and GetManagedPrefixListEntries for prefix lists); 90 days of inbound rule changes (cloudtrail:LookupEvents); and the VPC flow logs in CloudWatch Logs (logs:StartQuery, GetQueryResults, StopQuery). All are in sg-tightener's <code>iam-policy.json</code>.</p>
@@ -362,7 +370,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
       <p><strong>Who an address is:</strong> this account's VPCs, the internal and data centre ranges given to the report, VPN routes, AWS's published ranges (ip-ranges.json, with the service and region), SaaS providers' published ranges, and every routed network's AS number, owner, country and announced block (iptoasn.com). Each provider network is then given a source type from a built-in list of AS numbers and owner names: a CDN, a secure access service (whose shared addresses serve every customer), a SaaS or big-tech service, anyone's hosting, a known internet scanner, a Tor or VPN exit (with the Tor Project's own list of exit relays), or another network.${DATA.names ? ` ${num(DATA.names)} ${DATA.names === 1 ? "network is" : "networks are"} named from your names file, over every list.` : ""} The lists were downloaded to the computer that wrote this page and looked up there: no address left it.</p>
       <p><strong>What a port is for:</strong> each destination port is matched against a list of common services and put in a class (web, remote admin, database, Windows and directory, containers, file transfer, mail, messaging, network and monitoring, or other by port range). It names what the port usually carries, not what is actually listening.</p>
       <p><strong>Extract rule:</strong> the refused sources listed (by the chips, the period and the colour selected) turned into inbound rules: one per security group, protocol and port, on the first security group of the interface refused, with the sources as the fewest exact ranges. Sources a network ACL refused, sources a rule added since already allows, and interfaces since deleted are listed apart, since a new rule would not change them. Nothing is applied: the page writes the AWS CLI command and the rules as JSON. Sources start ticked when their verdict says the traffic is wanted; when a rule change caused the refusal, the box offers the command that puts the revoked entry back.</p>
-      <p><strong>Verdicts, from what is already read:</strong> each refused source is matched, in order, against: a scan (many ports or targets; from inside your network it is critical, from outside it is the defences working), traffic that stopped by the end of the range (fixed since), traffic let in before and refused right after a CloudTrail rule change (broken by a change, with the revoked entry to restore) or refused since with no change found (stopped working), a network ACL, a new address for a client let in on the same interface and port within two days (Zscaler, a partner moving egress), the same provider elsewhere, AWS health checks, your own internal or data centre traffic, a partner in the names file, a known service, retries, and anything else (info). Sources let in are checked too: a known scanner or Tor exit let in is critical on a risky port and high otherwise, and hosting providers on a risky port are high. <strong>PrivateLink</strong> findings (endpoint services open to any account or not filtering PrivateLink traffic, interface endpoints letting in a whole network) join them. <strong>Needs attention</strong> lists critical, high and medium verdicts, grouped by the change, source or provider, ranked by severity, then flows times days. No extra AWS call is made.</p>`;
+      <p><strong>Verdicts, from what is already read:</strong> each refused source is matched, in order, against: a scan (many ports or targets; from inside your network it is critical, from outside it is the defences working), traffic that stopped by the end of the range (fixed since), traffic let in before and refused right after a CloudTrail rule change (broken by a change, with the revoked entry to restore) or refused since with no change found (stopped working), a network ACL, a new address for a client let in on the same interface and port within two days (Zscaler, a partner moving egress), the same provider elsewhere, AWS health checks, your own internal or data centre traffic, a partner in the names file, a known service, retries, and anything else (info). Sources let in are checked too: a known scanner or Tor exit let in is critical on a risky port and high otherwise, and hosting providers on a risky port are high. <strong>PrivateLink</strong> findings (endpoint services open to any account or not filtering PrivateLink traffic, interface endpoints letting in a whole network) join them. So do <strong>exposure and hygiene</strong> findings: an open rule the internet can actually reach (public address, internet-gateway route and network ACL checked), IPv6 rules, outbound rules fitted to what was used (outbound is read only with <code>read --egress</code>, a third query), connections out to Tor or scanners, the default group in use, trust in another account's group and stale references. <strong>Needs attention</strong> lists critical, high and medium verdicts, grouped by the change, source or provider, ranked by severity, then flows times days. No extra AWS call is made.</p>`;
     $("#footer").textContent = `Written ${new Date(DATA.generated_at).toLocaleString("en-GB", { timeZone: "UTC" })} UTC by sg-tightener sg_review.py · account ${rep.account}`;
   }
 
@@ -610,7 +618,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
         <div class="att-top">${sevPill(it.sev, `${SEV_NAME[it.sev]} · ${it.label}`)}<strong>${esc(it.title)}</strong>${it.target ? `<span class="small muted">${esc(it.target)}</span>` : ""}</div>
         <p>${esc(it.reason)}</p>
         <p><strong>Do:</strong> ${esc(it.action)}</p>
-        ${it.srcs.length ? `<p class="small muted">${plural(it.srcs.length, "source")}: ${srcList(it)} · ${num(it.flows)} flows${dates ? ` · ${esc(dates)}` : ""}${it.days > 1 ? ` · ${plural(it.days, "day")}` : ""}</p>` : it.kind === "privatelink" ? `<p class="small muted">PrivateLink · ${esc(it.region || "")} · <a href="#privatelinkWrap">all PrivateLink</a></p>` : ""}
+        ${it.srcs.length ? `<p class="small muted">${plural(it.srcs.length, "source")}: ${srcList(it)} · ${num(it.flows)} flows${dates ? ` · ${esc(dates)}` : ""}${it.days > 1 ? ` · ${plural(it.days, "day")}` : ""}</p>` : it.kind === "privatelink" ? `<p class="small muted">PrivateLink · ${esc(it.region || "")} · <a href="#privatelinkWrap">all PrivateLink</a></p>` : it.kind === "posture" ? `<p class="small muted">${esc(AREA[it.area] || "")} · ${esc(it.region || "")} · <a href="#postureWrap">all exposure and hygiene</a></p>` : ""}
         <div class="tools">${it.srcs.length ? `<button type="button" class="btn" data-att-list="${i}">List these sources</button>` : ""}${it.kind === "refused" && !["internal-scan", "nacl"].includes(it.key) ? `<button type="button" class="btn" data-att-extract="${i}">Extract rule</button>` : ""}${it.restore ? `<button type="button" class="btn primary" data-att-restore="${i}">Restore the revoked rule</button>` : it.cli ? `<button type="button" class="btn primary" data-att-restore="${i}">Show the fix</button>` : ""}</div>
         ${restore}
       </div>`;
@@ -634,6 +642,29 @@ details.xr-fold > summary { margin: 0 0 10px; }
         : e ? `<div class="small muted">Endpoint <code>${esc(e.id)}</code> · ${esc(e.service)} · ${esc(e.vpc)}</div>` : "";
       return `<tr><td>${sevPill(it.sev, `${SEV_NAME[it.sev]} · ${it.label}`)}</td><td><strong>${esc(it.title)}</strong>${facts}</td><td class="small">${esc(it.reason)}</td><td class="small">${esc(it.action)}${it.cli ? `<textarea id="plT${i}" readonly spellcheck="false" style="width:100%;min-height:80px;font:12px/1.4 ui-monospace,Menlo,monospace;margin-top:6px">${esc(it.cli)}</textarea><button type="button" class="btn" data-copy="plT${i}">Copy</button>` : ""}</td></tr>`;
     }).join("")}</tbody></table></div>`;
+  }
+
+  const AREA = { exposure: "Internet exposure", ipv6: "IPv6", egress: "Outbound", hygiene: "Group hygiene" };
+  function posture() {
+    const rep = state.rep;
+    const all = rep.posture || [];
+    const er = rep.egress_read || {};
+    const egressNote = er.slices ? `<p class="small muted">Outbound read in ${plural(er.slices, "slice")} of this range.</p>` : `<p class="small muted">Outbound connections were not read: run <code>sg_review.py read --egress</code> to fit outbound rules and catch connections out to Tor or scanners.</p>`;
+    if (!all.length) {
+      $("#postureFilter").innerHTML = "";
+      $("#posture").innerHTML = `<p class="muted">Nothing found: no open rule reachable from the internet, no wide IPv6 rule, no default group in use, no trust in another account's group and no stale reference.</p>${egressNote}`;
+      return;
+    }
+    const areas = Object.keys(AREA).filter((a) => all.some((it) => it.area === a));
+    const pick = state.postureArea && areas.includes(state.postureArea) ? state.postureArea : "";
+    $("#postureFilter").innerHTML = [["", `All (${all.length})`], ...areas.map((a) => [a, `${AREA[a]} (${all.filter((it) => it.area === a).length})`])].map(([a, label]) => `<button type="button" class="btn mini${a === pick ? " primary" : ""}" data-area="${a}">${esc(label)}</button>`).join(" ");
+    $("#postureFilter").querySelectorAll("[data-area]").forEach((b) => b.addEventListener("click", () => { state.postureArea = b.dataset.area; posture(); }));
+    const items = all.filter((it) => !pick || it.area === pick);
+    $("#posture").innerHTML = `<div class="table-wrap"><table class="data"><thead><tr><th>Severity</th><th>What</th><th>Why</th><th>Fix</th></tr></thead><tbody>${items.map((it, i) => {
+      const facts = `<div class="small muted">${esc(AREA[it.area] || "")}${it.group ? ` · <code>${esc(it.group)}</code>` : ""} · ${esc(it.region || "")}${it.interfaces?.length ? ` · ${plural(it.interfaces.length, "interface")}` : ""}</div>`;
+      const fit = it.fit ? `<div class="small">${it.fit.map((f) => `${esc(f.proto === "6" ? "tcp" : f.proto === "17" ? "udp" : f.proto)} ${f.port} → <code>${f.cidrs.map(esc).join("</code>, <code>")}</code> <span class="muted">(${esc(f.note)})</span>`).join("<br>")}</div>` : "";
+      return `<tr><td>${sevPill(it.sev, `${SEV_NAME[it.sev]} · ${it.label}`)}</td><td><strong>${esc(it.title)}</strong>${facts}</td><td class="small">${esc(it.reason)}${fit}</td><td class="small">${esc(it.action)}${it.cli ? `<textarea id="ptT${i}" readonly spellcheck="false" style="width:100%;min-height:80px;font:12px/1.4 ui-monospace,Menlo,monospace;margin-top:6px">${esc(it.cli)}</textarea><button type="button" class="btn" data-copy="ptT${i}">Copy</button>` : ""}</td></tr>`;
+    }).join("")}</tbody></table></div>${egressNote}`;
   }
 
   function refusedShown() {

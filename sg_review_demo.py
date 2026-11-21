@@ -38,9 +38,11 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
     h = lambda o: _host(vpc, o)
     sub = {"app": "subnet-0a11", "db": "subnet-0b22", "pub": "subnet-0c33", "ops": "subnet-0d44"}
 
-    def rule(proto, lo, hi, cidrs, descs=None):
-        return {"proto": proto, "from": lo, "to": hi, "cidrs": cidrs, "descs": descs or {}, "pls": [], "refs": [],
-                "any6": False}  # fmt: skip
+    def rule(proto, lo, hi, cidrs, descs=None, v6=(), refs=(), xrefs=()):
+        return {"proto": proto, "from": lo, "to": hi, "cidrs": cidrs, "descs": descs or {}, "pls": [],
+                "refs": list(refs), "any6": "::/0" in v6, "cidrs6": list(v6), "xrefs": list(xrefs)}  # fmt: skip
+
+    out_all = [rule("-1", 0, 65535, ["0.0.0.0/0"])]  # every group's outbound: the AWS default
 
     groups = {
         "sg-0app0000000000001": {"name": "app-servers", "vpc": "vpc-0demo", "tag": "",
@@ -48,11 +50,15 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
                                            rule("6", 9100, 9100, [_host(vpc, 7 * 256) + "/24"],
                                                 {_host(vpc, 7 * 256) + "/24": "monitoring"})]},
         "sg-0db00000000000002": {"name": "payments-db", "vpc": "vpc-0demo", "tag": "",
-                                 "rules": [rule("6", 5432, 5432, [vpc, "172.16.0.0/12"])]},
+                                 "rules": [rule("6", 5432, 5432, [vpc, "172.16.0.0/12"]),
+                                           rule("6", 5432, 5432, [], refs=["sg-0rep0000000000077"],
+                                                xrefs=[{"group": "sg-0rep0000000000077", "account": "444455556666",
+                                                        "peering": "pcx-0demo"}])]},
         "sg-0alb0000000000003": {"name": "public-alb", "vpc": "vpc-0demo", "tag": "",
                                  "rules": [rule("6", 443, 443, ["0.0.0.0/0"])]},
         "sg-0sftp000000000004": {"name": "partner-sftp", "vpc": "vpc-0demo", "tag": "",
-                                 "rules": [rule("6", 22, 22, ["203.0.113.0/24"], {"203.0.113.0/24": "partner"})]},
+                                 "rules": [rule("6", 22, 22, ["203.0.113.0/24"], {"203.0.113.0/24": "partner"},
+                                                v6=["::/0"])]},
         "sg-0bat0000000000005": {"name": "batch-workers", "vpc": "vpc-0demo", "tag": "",
                                  "rules": [rule("6", 8080, 8080, ["10.0.0.0/8"])]},
         "sg-0leg0000000000008": {"name": "legacy-admin", "vpc": "vpc-0demo", "tag": "",
@@ -62,10 +68,16 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
         "sg-0nlb0000000000010": {"name": "payments-api-nlb", "vpc": "vpc-0demo", "tag": "",
                                  "rules": [rule("6", 443, 443, ["10.0.0.0/8"])]},
         "sg-0ops0000000000006": {"name": "ops-ssh", "vpc": "vpc-0demo", "tag": "",
-                                 "rules": [rule("6", 22, 22, ["10.200.0.0/16"])]},
+                                 "rules": [rule("6", 22, 22, ["10.200.0.0/16"], v6=["2c0f:fb50::/32"])]},
         "sg-0old0000000000007": {"name": "unused-sg", "vpc": "vpc-0demo", "tag": "",
                                  "rules": [rule("-1", 0, 65535, ["10.0.0.0/8"])]},
+        "sg-0def000000000011": {"name": "default", "vpc": "vpc-0demo", "tag": "",
+                                "rules": [rule("-1", 0, 65535, [], refs=["sg-0def000000000011"]),
+                                          rule("6", 22, 22, ["10.0.0.0/8"])]},
     }  # fmt: skip
+    for g in groups.values():
+        g["owner"] = ACCOUNT
+        g["egress"] = out_all
 
     def eni(ip, groups_, subnet, kind="EC2 instance", desc="", public=""):
         return {"ips": [ip], "prefixes": [], "groups": groups_, "subnet": subnet, "vpc": "vpc-0demo", "kind": kind,
@@ -78,12 +90,14 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
         "eni-0db01": eni(h(4 * 256 + 20), ["sg-0db00000000000002"], sub["db"], "RDS database", "RDSNetworkInterface"),
         "eni-0alb1": eni(h(1 * 256 + 30), ["sg-0alb0000000000003"], sub["pub"], "Load balancer", "ELB app/public"),
         "eni-0sftp": eni(h(1 * 256 + 40), ["sg-0sftp000000000004"], sub["pub"], public="198.51.100.7"),
-        "eni-0bat1": eni(h(6 * 256 + 50), ["sg-0bat0000000000005"], sub["app"]),
+        "eni-0bat1": eni(h(6 * 256 + 50), ["sg-0bat0000000000005", "sg-0def000000000011"], sub["app"]),
         "eni-0leg1": eni(h(1 * 256 + 60), ["sg-0leg0000000000008"], sub["pub"], public="198.51.100.9"),
         "eni-0nat1": eni(h(1 * 256 + 5), [], sub["pub"], "NAT gateway", "Interface for NAT Gateway"),
         "eni-0vpce1": eni(h(2 * 256 + 90), ["sg-0vpce000000000009"], sub["app"], "VPC endpoint",
                           "VPC Endpoint Interface vpce-0secrets"),
     }
+    enis["eni-0sftp"]["ipv6"] = ["2a05:d018:0abc:0c33::40"]
+    enis["eni-0db01"]["groups"].append("sg-0bat0000000000005")  # the batch group, reused on the database
     nacl = {"id": "acl-0demo", "entries": [
         {"n": 90, "proto": "6", "allow": False, "cidr": "10.200.9.0/24", "from": 22, "to": 22},
         {"n": 100, "proto": "-1", "allow": True, "cidr": "0.0.0.0/0", "from": 0, "to": 65535},
@@ -96,6 +110,11 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
         "prefix_lists": {},
         "nacls": {s: nacl for s in sub.values()},
         "vpns": [{"name": "Johannesburg DC", "routes": ["10.200.0.0/16"]}],
+        "routes": {"read": True, "subnets": {sub["pub"]: {"igw4": True, "igw6": True, "table": "rtb-0pub"}},
+                   "main": {"vpc-0demo": {"igw4": False, "igw6": False, "table": "rtb-0main"}}},
+        "stale": [{"group": "sg-0app0000000000001", "name": "app-servers", "vpc": "vpc-0demo", "direction": "in",
+                   "proto": "6", "from": 8443, "to": 8443, "ref": "sg-0gone000000000099", "account": ACCOUNT,
+                   "peering": ""}],
         "privatelink": {
             "read": True,
             "services": [{
@@ -277,11 +296,28 @@ def chunk(region: str, s: int, e: int, pats: list, now: float, rnd: random.Rando
     eni, dst = pats[0]["to"]
     rows.append(["52.95.110.1", dst, eni, "6", 32768, "ACCEPT", max(1, int(50 * hours))])
     return {"r": region, "s": s, "e": e, "st": "ok", "b": int(DEMO_BYTES_PER_HOUR * hours), "rows": rows, "pub": pub,
-            "pc": False, "err": ""}  # fmt: skip
+            "pc": False, "err": "", "egr": _egress(s, e, now, rnd)}  # fmt: skip
+
+
+def _egress(s: int, e: int, now: float, rnd: random.Random) -> list:
+    """Outbound connections (read with --egress): the app servers call the database, Secrets Manager through
+    its endpoint, S3 and a payments API; and a batch worker has been calling a Tor relay for the last three days."""
+    h = lambda o: _host(VPC, o)
+    hours = (e - s) / HOUR
+    app = [("eni-0app1", h(2 * 256 + 11)), ("eni-0app2", h(2 * 256 + 12)), ("eni-0app3", h(2 * 256 + 13))]
+    out = []
+    for eni, ip in app:
+        for dst, port, rate in ((h(4 * 256 + 20), 5432, 200), (h(2 * 256 + 90), 443, 40), ("52.218.48.10", 443, 30),
+                                ("52.218.52.77", 443, 20), ("203.0.113.80", 443, 6)):
+            out.append([ip, dst, eni, "6", port, max(1, int(rate * hours * rnd.uniform(0.6, 1.4)))])
+    if now - e < 3 * DAY:
+        out.append([h(6 * 256 + 50), "185.220.101.33", "eni-0bat1", "6", 9001, max(1, int(4 * hours))])
+    return out
 
 
 def build_doc(account: str, now: float, days: int, existing: dict | None = None) -> dict:
     doc = existing if existing and existing.get("mode") == "demo" else sg_review.new_doc(account, NAME, "demo")
+    doc["egress"] = True
     qsets = [{"format": sg_review.DEFAULT_FORMAT, "groups": ["/vpc/flow-logs"]}]
     doc["regions"][REGION] = {"snapshot": snapshot(REGION, VPC, now), "history": history(now), "taken": now,
                               "query_sets": qsets}  # fmt: skip
