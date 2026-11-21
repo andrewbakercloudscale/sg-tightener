@@ -82,6 +82,9 @@ ports view, and a table of what to tighten, with CSV and approved.json downloads
 - **Attribution:** every source is named: your VPCs and named ranges, your data centres, the AWS
   service and region, the SaaS provider, or the AS number, owner and country. The graphs can be
   coloured by kind, by network (AS number) or by port class.
+- **Source type:** each SaaS or internet source is typed from a built-in list of AS numbers and
+  owner names: CDN, secure access service (Zscaler, Netskope and the like), SaaS, anyone's hosting,
+  internet scanner (Censys, Shodan and others), or Tor or VPN exit.
 - **Ports:** the busiest refused and let-in ports, each with its service and class (web, remote
   admin, database, Windows and directory, containers and more). Risky classes are marked ⚠.
 - **Extract rule:** on the refused graph, this turns the sources selected into the inbound rules
@@ -91,8 +94,8 @@ ports view, and a table of what to tighten, with CSV and approved.json downloads
 | Refused sources | Over-provisioned addresses | Active sources |
 |---|---|---|
 | [![Refused sources](docs/images/sg-review-refused-sources.png)](docs/images/sg-review-refused-sources.png) | [![Over-provisioned addresses](docs/images/sg-review-over-provisioned.png)](docs/images/sg-review-over-provisioned.png) | [![Active sources](docs/images/sg-review-active-sources.png)](docs/images/sg-review-active-sources.png) |
-| **By network (AS number)** | **By port class** | **Ports** |
-| [![Refused sources by network](docs/images/sg-review-refused-by-network.png)](docs/images/sg-review-refused-by-network.png) | [![Refused sources by port class](docs/images/sg-review-refused-by-port-class.png)](docs/images/sg-review-refused-by-port-class.png) | [![Ports](docs/images/sg-review-ports.png)](docs/images/sg-review-ports.png) |
+| **By source type** | **By port class** | **Ports** |
+| [![Refused sources by source type](docs/images/sg-review-refused-by-source-type.png)](docs/images/sg-review-refused-by-source-type.png) | [![Refused sources by port class](docs/images/sg-review-refused-by-port-class.png)](docs/images/sg-review-refused-by-port-class.png) | [![Ports](docs/images/sg-review-ports.png)](docs/images/sg-review-ports.png) |
 
 [![Extract rule](docs/images/sg-review-extract-rule.png)](docs/images/sg-review-extract-rule.png)
 

@@ -24,6 +24,7 @@ import io
 import ipaddress
 import json
 import logging
+import re
 import threading
 import time
 import urllib.request
@@ -52,11 +53,182 @@ SAAS_FEEDS = [
     ("Oracle Cloud (a customer's server)", "https://docs.oracle.com/en-us/iaas/tools/public_ip_ranges.json", "walk"),
 ]
 GITHUB_KEYS = ("hooks", "web", "api", "git", "packages", "pages", "importer", "dependabot")
-# Networks owned by a SaaS or cloud provider, named when no published list matched.
-SAAS_ASNS = {
-    8075: "Microsoft", 15169: "Google", 14340: "Salesforce", 13335: "Cloudflare", 20940: "Akamai", 16625: "Akamai",
-    54113: "Fastly", 36459: "GitHub", 22616: "Zscaler", 62044: "Zscaler", 53813: "Zscaler", 32934: "Meta", 19679: "Dropbox", 2635: "Automattic",
+# ------------------------------------------------------------------------------------- who runs a network
+# Each source outside your ranges and AWS's is put in one of these groups. "kind" is the page's kind of source:
+# saas for a provider's own service (its traffic is the provider acting for you or for a partner), internet for
+# networks where anyone can be behind the address (rented servers, scanners, anonymisers, ISPs).
+GROUPS = {
+    "cdn": ("CDN and edge", "saas"),
+    "security": ("Secure access and security service", "saas"),
+    "saas": ("SaaS and big-tech service", "saas"),
+    "hosting": ("Hosting and cloud servers (anyone's)", "internet"),
+    "scanner": ("Internet scanner", "internet"),
+    "anon": ("Tor or VPN exit", "internet"),
+    "other": ("Other network (ISP, business)", "internet"),
+}
+# What each group means for a rule that lets it in.
+GROUP_NOTE = {
+    "cdn": "A CDN's addresses carry every one of its customers' traffic: allowing them allows any site or worker on it.",
+    "security": "A secure access service (Zscaler, Netskope and the like) sends every customer's users out from the "
+                "same addresses: allowing them allows every customer of that service, not only your partner.",
+    "saas": "A provider's own service, for example a webhook or an integration.",
+    "hosting": "Anyone can rent a server here: the address says nothing about who is behind it.",
+    "scanner": "Scans the whole internet for open ports. Never needs a rule.",
+    "anon": "An anonymising exit: whoever is behind it cannot be known.",
+    "other": "An ISP or business network.",
+}
+# AS numbers known well enough to name by number: (provider, group, service type).
+ORG_ASNS = {
+    **{a: ("Microsoft", "saas", "Microsoft 365, Azure services") for a in (8075, 12076, 8068, 8069)},
+    **{a: ("Google", "saas", "Google services") for a in (15169, 19527, 36040)},
+    396982: ("Google Cloud", "hosting", "Google Cloud customer servers"),
+    **{a: ("Cloudflare", "cdn", "CDN, proxy and Workers") for a in (13335, 209242)},
+    **{a: ("Akamai", "cdn", "CDN and edge") for a in (20940, 16625, 21342, 32787)},
+    63949: ("Akamai Connected Cloud (Linode)", "hosting", "Cloud servers"),
+    54113: ("Fastly", "cdn", "CDN and edge"),
+    36459: ("GitHub", "saas", "Developer platform"),
+    **{a: ("Zscaler", "security", "Secure web gateway (SASE)") for a in (22616, 62044, 53813)},
+    14340: ("Salesforce", "saas", "CRM"),
+    32934: ("Meta", "saas", "Social"),
+    14413: ("LinkedIn", "saas", "Social"),
+    19679: ("Dropbox", "saas", "File sharing"),
+    2635: ("Automattic", "saas", "WordPress.com"),
+    30103: ("Zoom", "saas", "Video meetings"),
+    11377: ("SendGrid (Twilio)", "saas", "Email delivery"),
+    14061: ("DigitalOcean", "hosting", "Cloud servers"),
+    16276: ("OVHcloud", "hosting", "Cloud servers"),
+    24940: ("Hetzner", "hosting", "Cloud servers"),
+    20473: ("Vultr", "hosting", "Cloud servers"),
+    31898: ("Oracle Cloud", "hosting", "Oracle Cloud customer servers"),
+    **{a: ("Alibaba Cloud", "hosting", "Cloud servers") for a in (45102, 37963)},
+    132203: ("Tencent Cloud", "hosting", "Cloud servers"),
+    36351: ("IBM Cloud", "hosting", "Cloud servers"),
+    12876: ("Scaleway", "hosting", "Cloud servers"),
+    51167: ("Contabo", "hosting", "Cloud servers"),
+    **{a: ("Censys", "scanner", "Internet-wide scanning") for a in (398324, 398705, 398722)},
+    211298: ("Driftnet", "scanner", "Internet-wide scanning"),
+    208843: ("Alpha Strike Labs", "scanner", "Internet-wide scanning"),
 }  # fmt: skip
+# Otherwise, by words in the network owner's registered name: (pattern, provider, group, service type).
+ORG_NAMES = [(re.compile(rx, re.IGNORECASE), *rest) for rx, *rest in (
+    (r"\bshodan\b", "Shodan", "scanner", "Internet-wide scanning"),
+    (r"\bcensys\b", "Censys", "scanner", "Internet-wide scanning"),
+    (r"\bonyphe\b", "ONYPHE", "scanner", "Internet-wide scanning"),
+    (r"\bshadowserver\b", "Shadowserver", "scanner", "Internet-wide scanning"),
+    (r"\brapid7\b", "Rapid7", "scanner", "Internet-wide scanning"),
+    (r"\bbinaryedge\b", "BinaryEdge", "scanner", "Internet-wide scanning"),
+    (r"\bleakix\b", "LeakIX", "scanner", "Internet-wide scanning"),
+    (r"\bstretchoid\b", "Stretchoid", "scanner", "Internet-wide scanning"),
+    (r"\brecyber\b", "Recyber", "scanner", "Internet-wide scanning"),
+    (r"\bdriftnet\b", "Driftnet", "scanner", "Internet-wide scanning"),
+    (r"\balpha ?strike\b", "Alpha Strike Labs", "scanner", "Internet-wide scanning"),
+    (r"\btorservers\b|\btor exit\b|\btor-exit\b|\bfor-privacy\b|\bemerald onion\b", "Tor exit", "anon", "Anonymising relay"),
+    (r"\bmullvad\b", "Mullvad VPN", "anon", "VPN exit"),
+    (r"\bnordvpn\b|\bpackethub\b", "NordVPN", "anon", "VPN exit"),
+    (r"\bproton ?(ag|vpn)\b", "Proton VPN", "anon", "VPN exit"),
+    (r"\bm247\b", "M247", "hosting", "Servers and VPN exits"),
+    (r"\bdatacamp\b|\bcdn77\b", "Datacamp (CDN77)", "hosting", "Servers and VPN exits"),
+    (r"\bzscaler\b", "Zscaler", "security", "Secure web gateway (SASE)"),
+    (r"\bnetskope\b", "Netskope", "security", "Secure web gateway (SASE)"),
+    (r"\bpalo ?alto networks\b|\bpaloaltonetworks\b", "Palo Alto Networks", "security", "Prisma Access and Cortex Xpanse"),
+    (r"\bcato ?networks\b", "Cato Networks", "security", "SASE"),
+    (r"\bopendns\b|\bcisco umbrella\b", "Cisco Umbrella", "security", "Secure web gateway"),
+    (r"\bforcepoint\b", "Forcepoint", "security", "Secure web gateway"),
+    (r"\biboss\b", "iboss", "security", "Secure web gateway"),
+    (r"\bmenlo ?security\b", "Menlo Security", "security", "Secure browsing"),
+    (r"\bcrowdstrike\b", "CrowdStrike", "security", "Endpoint security"),
+    (r"\bmimecast\b", "Mimecast", "security", "Email security"),
+    (r"\bproofpoint\b", "Proofpoint", "security", "Email security"),
+    (r"\bcloudflare\b", "Cloudflare", "cdn", "CDN, proxy and Workers"),
+    (r"\bakamai\b", "Akamai", "cdn", "CDN and edge"),
+    (r"\bfastly\b", "Fastly", "cdn", "CDN and edge"),
+    (r"\bimperva\b|\bincapsula\b", "Imperva", "cdn", "CDN and WAF"),
+    (r"\bedgecast\b|\bedgio\b", "Edgio", "cdn", "CDN and edge"),
+    (r"\bstackpath\b", "StackPath", "cdn", "CDN and edge"),
+    (r"\bgithub\b", "GitHub", "saas", "Developer platform"),
+    (r"\bgitlab\b", "GitLab", "saas", "Developer platform"),
+    (r"\batlassian\b", "Atlassian", "saas", "Jira, Confluence, Bitbucket"),
+    (r"\bslack\b", "Slack", "saas", "Messaging"),
+    (r"\bzoom[- ]video\b", "Zoom", "saas", "Video meetings"),
+    (r"\bdropbox\b", "Dropbox", "saas", "File sharing"),
+    (r"\bbox,? inc\b", "Box", "saas", "File sharing"),
+    (r"\bdatadog\b", "Datadog", "saas", "Monitoring"),
+    (r"\bnew ?relic\b", "New Relic", "saas", "Monitoring"),
+    (r"\bpagerduty\b", "PagerDuty", "saas", "Incident response"),
+    (r"\bsplunk\b", "Splunk", "saas", "Logging and SIEM"),
+    (r"\bsumo ?logic\b", "Sumo Logic", "saas", "Logging"),
+    (r"\bsendgrid\b", "SendGrid (Twilio)", "saas", "Email delivery"),
+    (r"\bmailgun\b", "Mailgun", "saas", "Email delivery"),
+    (r"\brocket science group\b|\bmailchimp\b", "Mailchimp", "saas", "Email delivery"),
+    (r"\btwilio\b", "Twilio", "saas", "Messaging API"),
+    (r"\bokta\b", "Okta", "saas", "Identity"),
+    (r"\bsalesforce\b|\bexacttarget\b", "Salesforce", "saas", "CRM"),
+    (r"\bservicenow\b", "ServiceNow", "saas", "IT service management"),
+    (r"\bworkday\b", "Workday", "saas", "HR and finance"),
+    (r"\badobe\b", "Adobe", "saas", "Creative and document services"),
+    (r"\bdocusign\b", "DocuSign", "saas", "E-signature"),
+    (r"\bstripe\b", "Stripe", "saas", "Payments"),
+    (r"\bpaypal\b", "PayPal", "saas", "Payments"),
+    (r"\bshopify\b", "Shopify", "saas", "E-commerce"),
+    (r"\bautomattic\b", "Automattic", "saas", "WordPress.com"),
+    (r"\bfacebook\b|\bmeta platforms\b", "Meta", "saas", "Social"),
+    (r"\blinkedin\b", "LinkedIn", "saas", "Social"),
+    (r"\btwitter\b", "X (Twitter)", "saas", "Social"),
+    (r"\bapple\b", "Apple", "saas", "Apple services"),
+    (r"\bmicrosoft\b", "Microsoft", "saas", "Microsoft 365, Azure services"),
+    (r"\bgoogle-cloud\b|\bgoogle cloud\b", "Google Cloud", "hosting", "Google Cloud customer servers"),
+    (r"\bgoogle\b", "Google", "saas", "Google services"),
+    (r"\boracle\b", "Oracle Cloud", "hosting", "Oracle Cloud customer servers"),
+    (r"\bdigitalocean\b", "DigitalOcean", "hosting", "Cloud servers"),
+    (r"\bovh\b", "OVHcloud", "hosting", "Cloud servers"),
+    (r"\bhetzner\b", "Hetzner", "hosting", "Cloud servers"),
+    (r"\blinode\b", "Akamai Connected Cloud (Linode)", "hosting", "Cloud servers"),
+    (r"\bvultr\b|\bchoopa\b", "Vultr", "hosting", "Cloud servers"),
+    (r"\bscaleway\b|\bonline s\.?a\.?s\b", "Scaleway", "hosting", "Cloud servers"),
+    (r"\bcontabo\b", "Contabo", "hosting", "Cloud servers"),
+    (r"\bleaseweb\b", "Leaseweb", "hosting", "Servers"),
+    (r"\bhostinger\b", "Hostinger", "hosting", "Web hosting"),
+    (r"\bionos\b|\b1&1\b", "IONOS", "hosting", "Servers"),
+    (r"\bgodaddy\b|\bunified ?layer\b", "GoDaddy (Newfold)", "hosting", "Web hosting"),
+    (r"\balibaba\b|\baliyun\b", "Alibaba Cloud", "hosting", "Cloud servers"),
+    (r"\btencent\b", "Tencent Cloud", "hosting", "Cloud servers"),
+    (r"\bsoftlayer\b|\bibm cloud\b", "IBM Cloud", "hosting", "Cloud servers"),
+    (r"\bcloud\.ru\b|\bcloudru\b", "Cloud.ru", "hosting", "Cloud servers"),
+    (r"\bip volume\b", "IP Volume", "hosting", "Servers (often scanners)"),
+    (r"\bcarinet\b", "CariNet", "hosting", "Servers (hosts Shodan's scanners)"),
+)]  # fmt: skip
+# The published lists each provider name comes from, and its group.
+FEED_GROUP = {"Cloudflare": "cdn", "Fastly": "cdn", "Zscaler": "security", "Google Cloud (a customer's server)": "hosting",
+              "Oracle Cloud (a customer's server)": "hosting"}  # fmt: skip
+SAAS_ASNS = {a: v[0] for a, v in ORG_ASNS.items() if GROUPS[v[1]][1] == "saas"}  # kept for older callers
+
+
+# Every pattern starts a word with a fixed three characters: an owner none of whose words start with one of
+# them is skipped without trying the patterns (there are some 80,000 owners, and few match).
+_WORD = re.compile(r"\w[\w&.]*")
+_ORG_KEYS = {_WORD.match(alt.replace("\\b", "").replace("\\", "")).group()[:3].lower()
+             for rx, *_r in ORG_NAMES for alt in rx.pattern.split("|")}  # fmt: skip
+
+
+def org_of(asn: int | None, owner: str = "") -> tuple[str, str, str] | None:
+    """(provider, group, service type) of a network, by AS number first, then by its owner's name."""
+    if asn in ORG_ASNS:
+        return ORG_ASNS[asn]
+    if not owner:
+        return None
+    if not any(w[:3].lower() in _ORG_KEYS for w in _WORD.findall(owner)):
+        return None
+    for rx, *rest in ORG_NAMES:
+        if rx.search(owner):
+            return tuple(rest)
+    return None
+
+
+def feed_group(name: str) -> str:
+    """The group of a name from a published list ("GitHub (hooks)" is GitHub's)."""
+    return FEED_GROUP.get(name) or FEED_GROUP.get(name.split(" (")[0]) or "saas"
+
+
 # Until the lists are first read: a few ranges whose owner is well known.
 SEED_SAAS = [
     ("104.16.0.0/13", "Cloudflare"), ("172.64.0.0/13", "Cloudflare"), ("140.82.112.0/20", "GitHub (hooks)"),
@@ -247,6 +419,7 @@ class Intel:
                 best[cidr] = (svc, region)
         self.aws = PrefixIndex(best.items())
         self.saas = PrefixIndex(saas_rows)
+        self._saas_kind_rows = [(c, n) for c, n in saas_rows if GROUPS[feed_group(n)][1] == "saas"]
         self.asn_start = array("I")
         self.asn_end = array("I")
         self.asn_meta: list[tuple] = []
@@ -260,6 +433,26 @@ class Intel:
             self.asn_meta.append((asn, cc, owner))
         self.counts = {"aws": len(best), "saas": len(saas_rows), "asn": len(self.asn_meta)}
         self._aws_iv: list | None = None
+        self._saas_iv: list | None = None
+        self._org: dict[tuple, tuple | None] = {}
+
+    def org(self, asn, owner: str) -> tuple | None:
+        k = (asn, owner)
+        if k not in self._org:
+            self._org[k] = org_of(asn, owner)
+        return self._org[k]
+
+    def saas_intervals(self) -> list[tuple[int, int]]:
+        """Every address a provider's own service uses: its published ranges, and the blocks of networks named
+        as a SaaS, CDN or secure access provider."""
+        if self._saas_iv is None:
+            iv = PrefixIndex(self._saas_kind_rows).intervals()
+            for i, (asn, _cc, owner) in enumerate(self.asn_meta):
+                o = self.org(asn, owner)
+                if o and GROUPS[o[1]][1] == "saas":
+                    iv.append((self.asn_start[i], self.asn_end[i]))
+            self._saas_iv = merge(iv)
+        return self._saas_iv
 
     def asn(self, ip: int) -> dict | None:
         i = bisect_right(self.asn_start, ip) - 1
@@ -291,11 +484,17 @@ class Intel:
                     "name": f"AWS {name}" + (f", {region}" if region and region != "GLOBAL" else "")}  # fmt: skip
         hit = self.saas.match(n)
         if hit:
-            return {**out, "kind": "saas", "name": hit[1], "prefix": hit[0]}
-        if a.get("asn") in SAAS_ASNS:
-            return {**out, "kind": "saas", "name": SAAS_ASNS[a["asn"]]}
+            group = feed_group(hit[1])
+            return {**out, "kind": GROUPS[group][1], "name": hit[1], "prefix": hit[0], "provider": hit[1].split(" (")[0],
+                    "group": group, "group_name": GROUPS[group][0]}  # fmt: skip
         owner = a.get("owner") or ""
-        return {**out, "kind": "internet", "name": f"AS{a['asn']} {owner}".strip() if a else "Unknown network"}
+        org = self.org(a.get("asn"), owner) if a else None
+        if org:
+            provider, group, what = org
+            return {**out, "kind": GROUPS[group][1], "name": provider, "provider": provider, "group": group,
+                    "group_name": GROUPS[group][0], "what": what}  # fmt: skip
+        return {**out, "kind": "internet", "group": "other", "group_name": GROUPS["other"][0],
+                "name": f"AS{a['asn']} {owner}".strip() if a else "Unknown network"}  # fmt: skip
 
 
 def get() -> Intel:

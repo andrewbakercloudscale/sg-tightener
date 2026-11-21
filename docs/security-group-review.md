@@ -96,12 +96,35 @@ Every source address is attributed, on the computer that writes the page, from t
 | **SaaS** | Providers' published ranges (GitHub, Cloudflare, Google, Atlassian, Okta, Datadog, Fastly and others), then well-known provider AS numbers | The provider, the published prefix, and the AS number |
 | **Other networks** | Everything else | The **AS number and owner**, the country, and the block that network announces |
 
-### Colour by: kind, network or port class
+### Source type: who is behind a provider's address
+
+A SaaS or internet address is then given a **source type** from a built-in list of some 100 AS
+numbers and 80 owner-name patterns (`ORG_ASNS` and `ORG_NAMES` in `sg_ipintel.py`), so the page can
+say "Censys, internet scanner" rather than "AS398324":
+
+| Source type | Kind | Examples | What it means for a rule |
+|---|---|---|---|
+| **CDN** | SaaS | Cloudflare, Akamai, Fastly, Imperva, Edgio | The addresses carry every customer's traffic: allowing them allows any site or worker on the CDN |
+| **Secure access** | SaaS | Zscaler, Netskope, Palo Alto Prisma Access, Cato, Cisco Umbrella, Forcepoint, iboss, Mimecast, Proofpoint | Every customer's users leave from the same addresses: allowing them allows every customer of that service, not only your partner |
+| **SaaS** | SaaS | GitHub, Atlassian, Slack, Okta, Datadog, Salesforce, Microsoft, Google, Stripe, Twilio | The provider's own service, such as a webhook or an integration |
+| **Anyone's hosting** | Other networks | DigitalOcean, OVHcloud, Hetzner, Linode, Vultr, Contabo, Google Cloud and Oracle Cloud customers' servers | Anyone can rent a server there: the address says nothing about who is behind it |
+| **Scanner** | Other networks | Shodan, Censys, Shadowserver, Rapid7, BinaryEdge, Onyphe, Driftnet | Scans the whole internet for open ports, and never needs a rule |
+| **Tor or VPN** | Other networks | Tor exit operators, Mullvad, NordVPN, Proton VPN, M247 | Whoever is behind it cannot be known |
+| **Other** | Other networks | Every other ISP or business network | |
+
+A published range wins over the AS number. Over-provisioned "SaaS" addresses count only the
+providers' own ranges and networks, not anyone's hosting. Microsoft's and Google's main AS numbers
+also carry Azure and some Google Cloud services, so a source named "Microsoft" may still be a
+customer's server.
+
+### Colour by: kind, source type, network or port class
 
 The refused and active graphs each have a **Colour by** switch:
 
 - **Kind**: the five kinds above. On the active graph, **Last 24 hours** instead splits sources
   seen in the last day from those not seen in it.
+- **Source type**: the types above, so scanners, anyone's hosting and Tor or VPN exits stand apart
+  from SaaS and secure access services.
 - **Network (AS number)**: the ten busiest networks among the kinds shown, each one named: an AS
   number and its owner, an AWS service, a SaaS provider, or one of your named ranges. Each kind
   keeps its own colour, in darker and lighter shades, and the remaining networks of each kind are
@@ -110,7 +133,10 @@ The refused and active graphs each have a **Colour by** switch:
   control of a host or its data when reached.
 
 Selecting a bar lists that period's sources. Selecting one colour in a bar narrows the list to that
-kind, network or port class.
+kind, source type, network or port class. Each SaaS or internet source carries its type as a chip
+(for example **Scanner** or **Anyone's hosting**).
+
+![Refused sources coloured by source type: scanners, anyone's hosting, Tor or VPN, SaaS and secure access](images/sg-review-refused-by-source-type.png)
 
 ![Refused sources coloured by network: AS numbers, AWS services and named ranges](images/sg-review-refused-by-network.png)
 
@@ -231,12 +257,14 @@ At the top, the window totals the rules, addresses, kinds, AS numbers, countries
 Two boxes flag what to check before adding:
 
 - **Check before adding**: internet sources on remote admin, database, Windows or container ports,
-  and scanners.
+  scanners (known scanning services, and sources sweeping many ports or targets), and Tor or VPN
+  exits.
 - **Worth knowing**: AWS EC2 addresses, which can belong to any AWS customer; risky ports reached
-  from outside your VPCs; interfaces with several security groups; and whether the page lists only
+  from outside your VPCs; CDN and secure access addresses, which every customer of that service
+  shares; anyone's hosting; interfaces with several security groups; and whether the page lists only
   the busiest refused sources.
 
-Scanners, and internet sources on ⚠ ports, start **unticked**. Rules with nothing ticked are folded
+Scanners, Tor and VPN exits, and internet sources on ⚠ ports, start **unticked**. Rules with nothing ticked are folded
 away at the bottom. Sources a new security group rule would not let in are listed separately with the
 reason: a network ACL refused them first, a rule added since already allows them, the interface was
 deleted, or the port is 32768 or higher, where ports are read as one.

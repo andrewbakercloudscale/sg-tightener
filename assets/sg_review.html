@@ -157,7 +157,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   <section class="section">
     <h2><span class="num">1</span>Refused sources</h2>
     <p class="muted section-lede">Distinct addresses turned away per period, by kind. A refused address needs a rule only if the traffic is wanted: internal and data centre sources usually are (a new service, a moved server), AWS and SaaS sometimes (health checks, webhooks, a partner's new egress), other networks rarely (scanners), so they are drawn in grey as the defences working, and in amber only in a period far above the usual level, which can mean a probe. Select a bar, or one colour in it, to list those sources; <strong>Extract rule</strong> then turns what is listed into the inbound rules that would let it in, with everything known about each source and port.</p>
-    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Colour by</span><div class="seg" id="refusedBy" role="group" aria-label="Colour the refused sources by"><button type="button" data-by="kind">Kind</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="scope" id="extractScope"></span><button type="button" class="btn primary" id="btnExtract">Extract rule</button></div></div><div class="chart-box"><canvas id="chRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div><p id="refusedJump" class="small jump" hidden></p></figure>
+    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Colour by</span><div class="seg" id="refusedBy" role="group" aria-label="Colour the refused sources by"><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="scope" id="extractScope"></span><button type="button" class="btn primary" id="btnExtract">Extract rule</button></div></div><div class="chart-box"><canvas id="chRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div><p id="refusedJump" class="small jump" hidden></p></figure>
     <div id="suggestWrap">
       <h3>Rules that would let in the refused internal and data centre sources</h3>
       <p class="muted small">Per security group and port, the refused private sources as the fewest exact ranges. Add them only if the traffic is wanted; sources a network ACL refused are left out (the ACL decides first).</p>
@@ -184,7 +184,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   <section class="section">
     <h2><span class="num">3</span>Active sources</h2>
     <p class="muted section-lede">Distinct addresses let in per period. Dark: also let in during the last 24 hours. Light: not seen in the last 24 hours, the sources a rule change would hurt without warning (DR tests, failovers, month-end batches). Replies to the account's own outbound connections are left out. Select a bar to list its sources.</p>
-    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Colour by</span><div class="seg" id="activeBy" role="group" aria-label="Colour the active sources by"><button type="button" data-by="recency">Last 24 hours</button><button type="button" data-by="kind">Kind</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div></div><div class="chart-box"><canvas id="chActive" role="img" aria-label="Stacked bars of active source addresses per period, split into those also seen in the last 24 hours and those not"></canvas></div></figure>
+    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Colour by</span><div class="seg" id="activeBy" role="group" aria-label="Colour the active sources by"><button type="button" data-by="recency">Last 24 hours</button><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div></div><div class="chart-box"><canvas id="chActive" role="img" aria-label="Stacked bars of active source addresses per period, split into those also seen in the last 24 hours and those not"></canvas></div></figure>
     <p class="filter muted small" id="activeFilter"></p>
     <div class="table-wrap"><table class="data" id="active"></table></div>
   </section>
@@ -218,6 +218,10 @@ details.xr-fold > summary { margin: 0 0 10px; }
   const CATS = ["internal", "datacentre", "aws", "saas", "internet"];
   const COLOR = { internal: "#2a78d6", datacentre: "#7357c9", aws: "#e8a317", saas: "#2f9e5b", internet: "#d03b3b" };
   const CLASS_COLOR = { web: "#2a78d6", admin: "#d03b3b", database: "#7357c9", windows: "#e0673a", containers: "#8a5a2b", transfer: "#0f9d9a", mail: "#b7791f", messaging: "#c2489a", network: "#2f9e5b", low: "#8f8d86", registered: "#b1afa6", high: "#d3d1c8", range: "#6b6a65", all: "#0b0b0b" };
+  const TYPES = DATA.source_types || [];
+  const TYPE = Object.fromEntries(TYPES.map((t) => [t.key, t]));
+  const TYPE_COLOR = { internal: "#2a78d6", datacentre: "#7357c9", aws: "#e8a317", cdn: "#0f9d9a", security: "#1f6f43", saas: "#2f9e5b", hosting: "#e0673a", scanner: "#8f8d86", anon: "#5b2a86", other: "#d03b3b" };
+  const TYPE_SHORT = { cdn: "CDN", security: "Secure access", saas: "SaaS", hosting: "Anyone's hosting", scanner: "Scanner", anon: "Tor or VPN" };
   const CLASSES = DATA.port_classes || [];
   const CLASS = Object.fromEntries(CLASSES.map((c) => [c.key, c]));
   const STATUS = { tighten: "Tighten", unused: "Unused", open: "Open to all", watch: "Too early", incomplete: "Incomplete", "not logged": "Not logged", used: "In use" };
@@ -242,8 +246,9 @@ details.xr-fold > summary { margin: 0 0 10px; }
   }
   const catName = (cat) => (state.rep.categories || []).find((c) => c.key === cat)?.name || cat;
   const catChip = (cat) => `<span class="cat" style="--c:${COLOR[cat] || "#888"}">${esc(catName(cat))}</span>`;
+  const typeChip = (x) => (TYPE_SHORT[x.group] ? `<span class="pc${x.group === "scanner" || x.group === "anon" ? " risky" : ""}" style="--c:${TYPE_COLOR[x.group]}" title="${esc(TYPE[x.group]?.note || "")}">${esc(TYPE_SHORT[x.group])}</span>` : "");
   const pcChip = (pc) => (pc ? `<span class="pc${pc.risky ? " risky" : ""}" style="--c:${CLASS_COLOR[pc.cls] || "#888"}" title="${esc(CLASS[pc.cls]?.note || "")}">${esc(pc.name)}</span>` : "");
-  const srcCell = (x) => `<div><code>${esc(x.src)}</code> ${catChip(x.cat)}</div><div class="small">${esc(x.name)}${x.asn && !String(x.name).startsWith("AS") ? ` <span class="muted">· ${esc(x.asn)}</span>` : ""}${x.cc && String(x.name).startsWith("AS") ? ` <span class="muted">(${esc(x.cc)})</span>` : ""}</div>`;
+  const srcCell = (x) => `<div><code>${esc(x.src)}</code> ${catChip(x.cat)} ${typeChip(x)}</div><div class="small">${esc(x.name)}${x.asn && !String(x.name).startsWith("AS") ? ` <span class="muted">· ${esc(x.asn)}</span>` : ""}${x.cc && String(x.name).startsWith("AS") ? ` <span class="muted">(${esc(x.cc)})</span>` : ""}</div>`;
   function download(text, name, type) {
     const url = URL.createObjectURL(new Blob([text], { type }));
     const a = document.createElement("a");
@@ -324,7 +329,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
       <p><strong>Inbound only:</strong> by the flow-direction field where the log format has it, otherwise the target inside the VPC; then records an interface logged for its own outbound traffic, through traffic (NAT gateways) and interfaces with no security group are dropped. Ports from 32768 up are read together as one: they are mostly replies to the account's own outbound connections, which security groups always let back in, and they are left out of Active unless a rule allows them.</p>
       <p><strong>Over-provisioned:</strong> for each group with flow logs (accepted traffic) on every interface, the addresses its rules allow less every address seen anywhere in the account in the whole read, let in or refused, summed over groups. Seen in the group means a connection to one of its interfaces matching the rule's protocol and ports, as <code>sg_tightener.py plan</code> counts it. Unattributed: connections to an interface since deleted, in the same VPC. A rule is called unused or ready to tighten only with 30 days of flow logs or more.</p>
       <p><strong>Suggested ranges:</strong> sg-tightener's own fitting: each address seen widened only while at most 30% of the wider block was never seen, never past its private block, at most 60 rules, inside the original rule. Public ranges: only the addresses seen. Download approved.json per region and run <code>sg_tightener.py plan</code> against the same evidence to get a plan you can apply and revert.</p>
-      <p><strong>Who an address is:</strong> this account's VPCs, the internal and data centre ranges given to the report, VPN routes, AWS's published ranges (ip-ranges.json, with the service and region), SaaS providers' published ranges, and every routed network's AS number, owner, country and announced block (iptoasn.com). The lists were downloaded to the computer that wrote this page and looked up there: no address left it.</p>
+      <p><strong>Who an address is:</strong> this account's VPCs, the internal and data centre ranges given to the report, VPN routes, AWS's published ranges (ip-ranges.json, with the service and region), SaaS providers' published ranges, and every routed network's AS number, owner, country and announced block (iptoasn.com). Each provider network is then given a source type from a built-in list of AS numbers and owner names: a CDN, a secure access service (whose shared addresses serve every customer), a SaaS or big-tech service, anyone's hosting, a known internet scanner, a Tor or VPN exit, or another network. The lists were downloaded to the computer that wrote this page and looked up there: no address left it.</p>
       <p><strong>What a port is for:</strong> each destination port is matched against a list of common services and put in a class (web, remote admin, database, Windows and directory, containers, file transfer, mail, messaging, network and monitoring, or other by port range). It names what the port usually carries, not what is actually listening.</p>
       <p><strong>Extract rule:</strong> the refused sources listed (by the chips, the period and the colour selected) turned into inbound rules: one per security group, protocol and port, on the first security group of the interface refused, with the sources as the fewest exact ranges. Sources a network ACL refused, sources a rule added since already allows, and interfaces since deleted are listed apart, since a new rule would not change them. Nothing is applied: the page writes the AWS CLI command and the rules as JSON.</p>`;
     $("#footer").textContent = `Written ${new Date(DATA.generated_at).toLocaleString("en-GB", { timeZone: "UTC" })} UTC by sg-tightener sg_review.py · account ${rep.account}`;
@@ -357,6 +362,12 @@ details.xr-fold > summary { margin: 0 0 10px; }
       }
     }
     return sets;
+  }
+
+  // The datasets for one timeline coloured by source type: a CDN, a secure access service, anyone's hosting, a scanner...
+  function groupSets(kind) {
+    const m = state.rep.series.by_group?.[kind] || {};
+    return TYPES.filter((t) => m[t.key] && state.cats.has(t.kind)).map((t) => ({ label: t.name, data: m[t.key], backgroundColor: TYPE_COLOR[t.key] || "#888", borderWidth: 0, filter: { mode: "group", key: t.key, label: t.name } }));
   }
 
   function classSets(kind) {
@@ -402,7 +413,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     $("#refusedJump").hidden = !sel.has("internet") || !jumps.length;
     $("#refusedJump").innerHTML = jumps.length ? `<strong>Jump in internet sources turned away</strong> (amber): ${jumps.slice(0, 5).map((i) => `${esc(binLabel(rep.bins[i], rep.step))} ${num(inet[i])}`).join(", ")}${jumps.length > 5 ? ` and ${num(jumps.length - 5)} more` : ""}, against a usual ${num(usual)} a period. Still refused, so nothing got in, but it can mean the account is being probed: select the bar to see who.` : "";
     const rby = state.by.refused;
-    const refusedSets = rby === "net" ? netSets("refused") : rby === "class" ? classSets("refused")
+    const refusedSets = rby === "net" ? netSets("refused") : rby === "class" ? classSets("refused") : rby === "group" ? groupSets("refused")
       : CATS.filter((c) => sel.has(c)).map((c) => ({ label: catName(c) + (c === "internet" ? " (defended)" : ""), data: rep.series.refused[c], backgroundColor: c === "internet" ? jump.map((j) => css(j ? "--sev-warning" : "--muted")) : COLOR[c], borderWidth: 0, filter: { mode: "kind", key: c, label: catName(c) } }));
     chart("chRefused", {
       type: "bar",
@@ -444,6 +455,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     let activeSets;
     if (aby === "net") activeSets = netSets("active");
     else if (aby === "class") activeSets = classSets("active");
+    else if (aby === "group") activeSets = groupSets("active");
     else if (aby === "kind") activeSets = CATS.filter((c) => sel.has(c)).map((c) => ({ label: catName(c), data: rep.bins.map((_, i) => (rep.series.active_today[c]?.[i] || 0) + (rep.series.active_older[c]?.[i] || 0)), backgroundColor: COLOR[c], borderWidth: 0, filter: { mode: "kind", key: c, label: catName(c) } }));
     else activeSets = [
       { label: "Also let in during the last 24 hours", data: rep.bins.map((_, i) => sum(rep.series.active_today, i)), backgroundColor: css("--accent"), borderWidth: 0, filter: { mode: "recency", key: "today", label: "sources also seen in the last 24 hours" } },
@@ -495,6 +507,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     if (!f) return true;
     if (f.mode === "kind") return x.cat === f.key;
     if (f.mode === "net") return x.net === f.key;
+    if (f.mode === "group") return x.group === f.key;
     if (f.mode === "net-other") return x.cat === f.key && !state.netTop[kind].has(x.net);
     if (f.mode === "class") return x.targets.some((t) => t.pc?.cls === f.key);
     if (f.mode === "recency") return f.key === "today" ? x.today : !x.today;
@@ -609,7 +622,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
         t.groups.forEach((g) => r.groups.add(g));
         const a = r.assets.get(t.eni) || { eni: t.eni, kind: t.kind, dst: new Set(), public: t.public, subnet: t.subnet, desc: t.desc, flows: 0 };
         a.dst.add(t.dst); a.flows += t.flows; r.assets.set(t.eni, a);
-        const s = r.sources.get(x.src) || { x, flows: 0, on: !(x.sweep || (x.cat === "internet" && t.pc?.risky)) };
+        const s = r.sources.get(x.src) || { x, flows: 0, on: !(x.sweep || x.group === "scanner" || x.group === "anon" || (x.cat === "internet" && t.pc?.risky)) };
         s.flows += t.flows; r.sources.set(x.src, s);
         rules.set(key, r);
       }
@@ -627,6 +640,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
 
   function attrFacts(x) {
     const out = [];
+    if (TYPE_SHORT[x.group]) out.push([x.provider && `<strong>${esc(x.provider)}</strong>`, esc(TYPE_SHORT[x.group]), x.what && esc(x.what)].filter(Boolean).join(" · "));
     if (x.range) out.push(`${x.cat === "aws" || x.cat === "saas" ? "Published range" : "Range"} <code>${esc(x.range)}</code>`);
     if (x.service) out.push(`AWS service <strong>${esc(x.service)}</strong>${x.aws_region ? `, ${esc(x.aws_region)}` : ""}`);
     if (x.as_num && !String(x.name).startsWith(`AS${x.as_num}`)) out.push(`<strong>AS${esc(x.as_num)}</strong> ${esc(x.owner || "")}`);
@@ -665,6 +679,12 @@ details.xr-fold > summary { margin: 0 0 10px; }
       if (o.r.pc?.risky && inet.length) warn.push(`${plural(inet.length, "internet source")} on ${esc(port)}, a ${esc(o.r.pc.name.toLowerCase())} port, into ${esc(rep.groups?.[o.r.group]?.name || o.r.group)}.`);
       const sweep = o.on.filter((s) => s.x.sweep);
       if (sweep.length) warn.push(`${plural(sweep.length, "source")} ticked on ${esc(port)} ${sweep.length === 1 ? "is" : "are"} sweeping many ports or targets: a scanner, not a client.`);
+      for (const g of ["scanner", "anon", "security", "cdn", "hosting"]) {
+        const mine = o.on.filter((s) => s.x.group === g);
+        if (!mine.length) continue;
+        const who = uniq(mine.map((s) => s.x.provider || s.x.name));
+        (g === "scanner" || g === "anon" ? warn : soft).push(`${plural(mine.length, "source")} on ${esc(port)} from ${esc(who.slice(0, 3).join(", "))}${who.length > 3 ? ` and ${num(who.length - 3)} more` : ""} (${esc(TYPE_SHORT[g])}): ${esc(TYPE[g]?.note || "")}`);
+      }
       const ec2 = o.on.filter((s) => s.x.service === "EC2" || s.x.service === "AMAZON");
       if (ec2.length) soft.push(`${plural(ec2.length, "AWS source")} on ${esc(port)} ${ec2.length === 1 ? "is" : "are"} in AWS's general EC2 or Amazon ranges: any AWS customer's server can hold these addresses, not only yours.`);
       if (o.r.pc?.risky && !inet.length && o.on.some((s) => s.x.cat !== "internal")) soft.push(`${esc(port)} is a ${esc(o.r.pc.name.toLowerCase())} port: check each source outside your VPCs is meant to reach it.`);
@@ -680,7 +700,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     </dl>`;
     if (warn.length) html += `<div class="xr-warn"><strong>Check before adding</strong><ul>${warn.map((w) => `<li>${w}</li>`).join("")}</ul></div>`;
     if (soft.length) html += `<div class="xr-warn soft"><strong>Worth knowing</strong><ul>${soft.map((w) => `<li>${w}</li>`).join("")}</ul></div>`;
-    html += `<p class="small muted">Unticked to start with: scanners (sources sweeping many ports or targets) and internet sources on remote admin, database, Windows and container ports. Tick or untick any source: the ranges and the command follow.</p>`;
+    html += `<p class="small muted">Unticked to start with: scanners (known scanning services, and sources sweeping many ports or targets), Tor and VPN exits, and internet sources on remote admin, database, Windows and container ports. Tick or untick any source: the ranges and the command follow.</p>`;
     if (!X.rules.length) html += `<p>No rule to extract: ${X.apart.length ? "every source listed is refused for a reason a new security group rule would not change (below)." : "no refused source is listed."}</p>`;
     let folded = false;
     const wasOpen = !!document.querySelector("#xrBody details.xr-fold")?.open;
@@ -702,7 +722,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
           <div><dt>Its inbound rules today</dt><dd class="small">${(g.rules || []).length ? g.rules.map((x) => `${esc(x.ports)} from ${x.sources.map((s) => `<code>${esc(s)}</code>`).join(", ") || "another group"}`).join("<br>") : "none"}</dd></div>
           <div><dt>Applies to</dt><dd class="small">${assets.map((a) => `${esc(a.kind)} <code>${esc(a.eni)}</code> at <code>${[...a.dst].map(esc).join(", ")}</code>${a.public ? ` (public <code>${esc(a.public)}</code>)` : ""}${a.subnet ? ` · ${esc(a.subnet)}` : ""}${a.desc ? ` · <span class="muted">${esc(a.desc)}</span>` : ""} · ${num(a.flows)} refused flows`).join("<br>")}</dd></div>
         </dl>
-        <div class="table-wrap"><table class="data"><thead><tr><th></th><th>Source</th><th>Who it is</th><th>Network</th><th class="num-cell">Refused flows</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${[...r.sources.values()].sort((a, b) => b.flows - a.flows).map((s) => `<tr class="${s.on ? "" : "off"}"><td><input type="checkbox" data-xr-src="${ri}|${esc(s.x.src)}" ${s.on ? "checked" : ""} aria-label="Include ${esc(s.x.src)}"></td><td><code>${esc(s.x.src)}</code><div>${catChip(s.x.cat)}${s.x.sweep ? ` <span class="pill recon">sweeping ${num(s.x.ports)} ports, ${num(s.x.dsts)} targets</span>` : ""}</div></td><td class="small"><strong>${esc(s.x.name)}</strong></td><td class="small">${attrFacts(s.x) || EMPTY}</td><td class="num-cell">${num(s.flows)}</td><td class="small">${esc(when(s.x.first))}</td><td class="small">${esc(when(s.x.last))}</td></tr>`).join("")}</tbody></table></div>
+        <div class="table-wrap"><table class="data"><thead><tr><th></th><th>Source</th><th>Who it is</th><th>Network</th><th class="num-cell">Refused flows</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${[...r.sources.values()].sort((a, b) => b.flows - a.flows).map((s) => `<tr class="${s.on ? "" : "off"}"><td><input type="checkbox" data-xr-src="${ri}|${esc(s.x.src)}" ${s.on ? "checked" : ""} aria-label="Include ${esc(s.x.src)}"></td><td><code>${esc(s.x.src)}</code><div>${catChip(s.x.cat)} ${typeChip(s.x)}${s.x.sweep ? ` <span class="pill recon">sweeping ${num(s.x.ports)} ports, ${num(s.x.dsts)} targets</span>` : ""}</div></td><td class="small"><strong>${esc(s.x.name)}</strong></td><td class="small">${attrFacts(s.x) || EMPTY}</td><td class="num-cell">${num(s.flows)}</td><td class="small">${esc(when(s.x.first))}</td><td class="small">${esc(when(s.x.last))}</td></tr>`).join("")}</tbody></table></div>
         <p class="small" style="margin:10px 0 0"><strong>Ranges to add:</strong> ${o.cidrs.length ? o.cidrs.map((c) => `<code>${esc(c.cidr)}</code>`).join(", ") + ` <span class="muted">(${plural(o.cidrs.reduce((t, c) => t + c.last - c.first + 1, 0), "address", "addresses")}, exactly the sources ticked)</span>` : `<span class="muted">none ticked</span>`}</p>
       </section>`;
     });
@@ -726,7 +746,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
         region: o.r.region, vpc: o.r.vpc, group_id: o.r.group, group_name: rep.groups?.[o.r.group]?.name || "", protocol: protoName(o.r.proto), port: o.r.port,
         port_class: o.r.pc, assets: [...o.r.assets.values()].map((a) => ({ eni: a.eni, kind: a.kind, addresses: [...a.dst], public: a.public || null, subnet: a.subnet, refused_flows: a.flows })),
         ranges: o.cidrs.map((c) => ({ cidr: c.cidr, description: c.desc, sources: c.members.map((s) => s.x.src) })),
-        sources: o.on.map((s) => ({ address: s.x.src, kind: s.x.cat, name: s.x.name, range: s.x.range || null, aws_service: s.x.service || null, aws_region: s.x.aws_region || null, asn: s.x.as_num || null, owner: s.x.owner || null, country: s.x.cc || null, announced_block: s.x.block || null, refused_flows: s.flows, first_seen: s.x.first, last_seen: s.x.last, sweeping: !!s.x.sweep })),
+        sources: o.on.map((s) => ({ address: s.x.src, kind: s.x.cat, name: s.x.name, source_type: s.x.group || null, provider: s.x.provider || null, range: s.x.range || null, aws_service: s.x.service || null, aws_region: s.x.aws_region || null, asn: s.x.as_num || null, owner: s.x.owner || null, country: s.x.cc || null, announced_block: s.x.block || null, refused_flows: s.flows, first_seen: s.x.first, last_seen: s.x.last, sweeping: !!s.x.sweep })),
       })),
       not_extracted: X.apart.map(({ x, t, why }) => ({ address: x.src, eni: t.eni, protocol: protoName(t.proto), port: t.port, reason: why })),
       ip_permissions: Object.values(byGroup).map((g) => ({ region: g.region, group_id: g.group, IpPermissions: g.perms })),

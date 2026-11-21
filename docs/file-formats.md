@@ -218,7 +218,7 @@ applied.
                 "description": "sg_review 2026-11-21: Behind VPN Johannesburg DC - Kafka, MSK",
                 "sources": ["10.200.4.30"]}],
     "sources": [{"address": "10.200.4.30", "kind": "datacentre", "name": "Behind VPN Johannesburg DC",
-                 "range": "10.200.0.0/16", "aws_service": null, "aws_region": null, "asn": null,
+                 "source_type": "datacentre", "provider": null, "range": "10.200.0.0/16", "aws_service": null, "aws_region": null, "asn": null,
                  "owner": null, "country": null, "announced_block": null, "refused_flows": 4896,
                  "first_seen": 1793059200, "last_seen": 1795237200, "sweeping": false}]
   }],
@@ -236,7 +236,7 @@ applied.
 | `rules[].port_class` | The port's class, its service, and whether the class is risky (remote admin, database, Windows and directory, containers) |
 | `rules[].assets` | The interfaces that refused the sources, which the rule would apply to |
 | `rules[].ranges` | The fewest CIDR blocks that hold exactly the ticked sources, each with its description and members |
-| `rules[].sources` | Each ticked source and its attribution. `kind` is `internal`, `datacentre`, `aws`, `saas` or `internet`. `range` is the named or published range it falls in. `asn`, `owner`, `country` and `announced_block` come from the AS number list. Times are Unix seconds |
+| `rules[].sources` | Each ticked source and its attribution. `kind` is `internal`, `datacentre`, `aws`, `saas` or `internet`. `source_type` is the kind for the first three, else `cdn`, `security`, `saas`, `hosting`, `scanner`, `anon` or `other`; `provider` names the company when known. `range` is the named or published range it falls in. `asn`, `owner`, `country` and `announced_block` come from the AS number list. Times are Unix seconds |
 | `not_extracted` | Sources a new security group rule would not let in, with the reason |
 | `ip_permissions` | Per group, the `IpPermissions` for `aws ec2 authorize-security-group-ingress` (and `revoke-security-group-ingress` to undo) |
 

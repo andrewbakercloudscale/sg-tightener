@@ -304,7 +304,12 @@ against the account's VPCs, the `--internal` and `--onprem` ranges and the VPN
 routes; then against AWS's published prefixes (longest match, so a service
 prefix wins over the general AMAZON one), the SaaS providers' published
 prefixes, and the AS number table, which gives the owner, country and announced
-block. Each source is counted once per period in its kind, its network and
+block. A SaaS or internet source then gets a source type (CDN, secure access,
+SaaS, hosting, scanner, Tor or VPN, other) from `sg_ipintel.ORG_ASNS` by AS
+number, or else from the first of `ORG_NAMES`' owner-name patterns that
+matches; an owner none of whose words starts like a pattern is skipped without
+trying them, which keeps the 80,000 owners to about a second. Each source is
+counted once per period in its kind, its source type, its network and
 each port class it reached, so the graphs can be coloured any of those ways.
 The page lists the 150 busiest networks per timeline and sums the rest per
 kind. Ports are classed from a fixed table of common services (`PORT_CLASSES`

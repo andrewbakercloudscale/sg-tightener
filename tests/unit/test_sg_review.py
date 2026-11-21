@@ -265,6 +265,7 @@ def test_build_attributes_sources_and_classifies_ports(report):
     scanner = next(x for x in rep["refused"] if x["src"].startswith("162.142.125."))
     assert scanner["cat"] == "internet" and scanner["as_num"] == 398324 and scanner["cc"] == "US"
     assert scanner["net"] == f"internet|{scanner['name']}"
+    assert scanner["group"] == "scanner" and scanner["provider"] == "Censys" and scanner["name"] == "Censys"
     hc = by_src["54.228.16.8"]
     assert hc["cat"] == "aws" and hc["service"] == "ROUTE53_HEALTHCHECKS" and hc["range"]
     dc = by_src["10.200.4.30"]
@@ -279,6 +280,11 @@ def test_build_attributes_sources_and_classifies_ports(report):
     assert sum(n["sources"] for n in nets) == rep["summary"]["refused"]
     for i in range(len(rep["bins"])):
         assert sum(n["data"][i] for n in nets) == sum(rep["series"]["refused"][c][i] for c in sg_review.CATS)
+    groups = rep["series"]["by_group"]["refused"]
+    assert "scanner" in groups and "internal" in groups
+    for i in range(len(rep["bins"])):
+        assert sum(d[i] for d in groups.values()) == sum(rep["series"]["refused"][c][i] for c in sg_review.CATS)
+    assert all(n["group"] for n in nets if not n["key"].endswith("|*"))
     ports = {(p["proto"], p["port"]): p for p in rep["ports"]}
     assert ports[("6", 3389)]["refused"].get("internet") and ports[("6", 3389)]["risky"]
     assert ports[("6", 443)]["active"]
@@ -289,5 +295,58 @@ def test_page_carries_the_port_classes_and_extract_dialog(tmp_path):
     doc = demo_sg.build_doc(ACCT, time.time(), 7)
     data = sg_review.page_data(doc, "", demo_sg.INTERNAL)
     assert {c["key"] for c in data["port_classes"]} == set(sg_review.PORT_CLASSES)
+    types = {t["key"]: t for t in data["source_types"]}
+    assert set(types) == set(sg_review.SOURCE_TYPES) and types["security"]["kind"] == "saas" and types["security"]["note"]
     page = sg_review.render_page(data)
     assert 'id="btnExtract"' in page and 'id="xr"' in page and 'id="chPortsRefused"' in page
+
+
+# ------------------------------------------------------------------------------------- source types
+@pytest.mark.parametrize("asn,owner,want", [
+    (398324, "CENSYS-ARIN-01 - Censys, Inc.", ("Censys", "scanner")),
+    (None, "SHODAN-SCAN Shodan LLC", ("Shodan", "scanner")),
+    (53813, "ZSCALER-INC", ("Zscaler", "security")),
+    (1, "ZSCALER-EMEA Zscaler Switzerland GmbH", ("Zscaler", "security")),
+    (1, "TORSERVERS-NET Stiftung Erneuerbare Freiheit", ("Tor exit", "anon")),
+    (1, "DIGITALOCEAN-ASN - DigitalOcean, LLC", ("DigitalOcean", "hosting")),
+    (1, "CLOUDFLARENET - Cloudflare, Inc.", ("Cloudflare", "cdn")),
+    (1, "GITHUB - GitHub, Inc.", ("GitHub", "saas")),
+    (1, "INT-NETWORK IP Volume inc", ("IP Volume", "hosting")),
+    (1, "GOOGLE-CLOUD-PLATFORM - Google LLC", ("Google Cloud", "hosting")),
+    (1, "GOOGLE - Google LLC", ("Google", "saas")),
+])  # fmt: skip
+def test_org_of_names_common_providers(asn, owner, want):
+    org = ipintel.org_of(asn, owner)
+    assert org and org[:2] == want and org[2]
+
+
+@pytest.mark.parametrize("owner", ["COMCAST-7922 - Comcast Cable", "Zoomtel Networks", "Constant Contact",
+                                   "Umbrella Telecom Ltd", "Palo Alto Unified School District", ""])
+def test_org_of_leaves_unknown_and_lookalike_networks_alone(owner):
+    assert ipintel.org_of(64512, owner) is None
+
+
+def test_feed_group_and_every_group_has_a_kind_and_note():
+    assert ipintel.feed_group("Cloudflare") == "cdn" and ipintel.feed_group("GitHub (hooks)") == "saas"
+    assert ipintel.feed_group("Google Cloud (a customer's server)") == "hosting"
+    for g, (name, kind) in ipintel.GROUPS.items():
+        assert name and kind in ("saas", "internet") and ipintel.GROUP_NOTE[g]
+    for provider, group, what in ipintel.ORG_ASNS.values():
+        assert provider and group in ipintel.GROUPS and what
+    assert all(g in ipintel.GROUPS for _rx, _p, g, _w in ipintel.ORG_NAMES)
+
+
+def test_label_gives_the_source_type_and_hosting_feeds_are_internet():
+    intel = ipintel.Intel([], [("192.0.2.0/24", "Cloudflare"), ("198.51.100.0/24", "Google Cloud (a customer's server)")],
+                          [("203.0.113.0", "203.0.113.255", 398324, "US", "CENSYS-ARIN-01 - Censys, Inc."),
+                           ("100.64.0.0", "100.64.0.255", 64512, "GB", "Some ISP")])  # fmt: skip
+    cf = intel.label("192.0.2.9")
+    assert (cf["kind"], cf["group"], cf["provider"]) == ("saas", "cdn", "Cloudflare")
+    gc = intel.label("198.51.100.9")
+    assert (gc["kind"], gc["group"]) == ("internet", "hosting")
+    sc = intel.label("203.0.113.9")
+    assert (sc["kind"], sc["group"], sc["name"]) == ("internet", "scanner", "Censys") and sc["what"]
+    isp = intel.label("100.64.0.9")
+    assert (isp["kind"], isp["group"]) == ("internet", "other") and isp["name"].startswith("AS64512")
+    # the saas share of over-provisioned holds the provider's own ranges, not anyone's hosting
+    assert intel.saas_intervals() == [(ipintel.cidr_iv("192.0.2.0/24"))]

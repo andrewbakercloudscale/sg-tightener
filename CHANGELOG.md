@@ -41,8 +41,19 @@
   - Extract rule writes the `aws ec2 authorize-security-group-ingress`
     commands and a JSON file (`sg-tightener.extracted-rules/v1`). Nothing is
     applied.
-  - The rules table and CSV gain the port class and service. AS62044 and
-    AS53813 (Zscaler) are named as SaaS.
+  - The rules table and CSV gain the port class and service.
+- **`sg_review.py` source types.** Every SaaS or internet source is given a
+  type from a built-in list of AS numbers and owner-name patterns
+  (`sg_ipintel.ORG_ASNS`, `ORG_NAMES`): CDN, secure access service, SaaS,
+  anyone's hosting, internet scanner, Tor or VPN exit, or other. Sources are
+  named by provider ("Censys", "DigitalOcean") with the AS number kept beside.
+  - Both graphs gain **Colour by: Source type**; sources carry a type chip.
+  - Extract rule starts known scanners and Tor or VPN exits unticked, and warns
+    about CDN and secure access addresses (shared by every customer) and
+    anyone's hosting. The JSON gains `source_type` and `provider`.
+  - Google Cloud and Oracle Cloud customer ranges, and hosting networks, are
+    now "other networks", not SaaS, so they no longer count as SaaS in the
+    over-provisioned split.
 
 ## 2.3.0 - 2026-11-20
 

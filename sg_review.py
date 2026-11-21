@@ -677,7 +677,7 @@ class Labeller:
         internal = sg_ipintel.merge(own + others)
         private = sg_ipintel.subtract(sg_ipintel.merge(PRIVATE + dc), internal)
         aws = sg_ipintel.subtract(self.intel.aws_intervals(), sg_ipintel.merge(internal + private))
-        saas = sg_ipintel.subtract(self.intel.saas.intervals(), sg_ipintel.merge(internal + private + aws))
+        saas = sg_ipintel.subtract(self.intel.saas_intervals(), sg_ipintel.merge(internal + private + aws))
         rest = sg_ipintel.subtract(ALL, sg_ipintel.merge(internal + private + aws + saas))
         self.cat_iv = {"internal": internal, "datacentre": private, "aws": aws, "saas": saas, "internet": rest}
         self._memo: dict[str, dict] = {}
@@ -713,6 +713,10 @@ class Labeller:
                 out["range"] = lab["prefix"]
             if lab.get("service"):
                 out.update(service=lab["service"], aws_region=lab.get("region", ""))
+            for k in ("group", "provider", "what"):
+                if lab.get(k):
+                    out[k] = lab[k]
+        out.setdefault("group", out["cat"])  # internal, datacentre and aws are their own type
         out["net"] = f"{out['cat']}|{out['name']}"
         self._memo[ip] = out
         return out
@@ -1026,6 +1030,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         for kind, m in by_class.items()
     }
     net_series = {"refused": _net_series(rej, lab, nbins), "active": _net_series(act, lab, nbins)}
+    group_series = {"refused": _group_series(rej, lab, nbins), "active": _group_series(act, lab, nbins)}
     ports = []
     for (proto, port), use in port_use.items():
         pc = port_class(proto, port)
@@ -1145,7 +1150,8 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         "end": end,
         "categories": [{"key": k, "name": CAT_NAME[k]} for k in CATS],
         "series": {"refused": rej_series, "over": over_series, "active_today": act_today, "active_older": act_older,
-                   "by_class": class_series, "by_net": net_series},
+                   "by_class": class_series, "by_net": net_series,
+                   "by_group": group_series},
         "ports": ports[:60],
         "groups": {gid: {"name": g["name"], "region": g["region"], "vpc": g["vpc"],
                          "rules": [{"ports": ports_label(r), "sources": _entries(r)} for r in g["rules"]]}
@@ -1209,7 +1215,7 @@ def _net_series(srcs: dict, lab, nbins: int) -> list[dict]:
         if not x["bins"]:
             continue
         lb = lab(src)
-        n = nets.setdefault(lb["net"], {"key": lb["net"], "name": lb["name"], "cat": lb["cat"],
+        n = nets.setdefault(lb["net"], {"key": lb["net"], "name": lb["name"], "cat": lb["cat"], "group": lb["group"],
                                         "asn": lb.get("asn", ""), "data": [0] * nbins, "sources": 0})  # fmt: skip
         n["sources"] += 1
         for b in x["bins"]:
@@ -1221,9 +1227,26 @@ def _net_series(srcs: dict, lab, nbins: int) -> list[dict]:
         mine = [n for n in rest if n["cat"] == cat]
         if mine:
             out.append({"key": f"{cat}|*", "name": f"{len(mine)} more {CAT_NAME[cat]} networks", "cat": cat,
-                        "asn": "", "sources": sum(n["sources"] for n in mine),
+                        "group": "", "asn": "", "sources": sum(n["sources"] for n in mine),
                         "data": [sum(n["data"][i] for n in mine) for i in range(nbins)]})  # fmt: skip
     return out
+
+
+# Source types, in the order the page stacks them: the three kinds that need no provider, then the providers'
+# groups (see sg_ipintel.GROUPS).
+SOURCE_TYPES = {"internal": (CAT_NAME["internal"], "internal"), "datacentre": (CAT_NAME["datacentre"], "datacentre"),
+                "aws": (CAT_NAME["aws"], "aws"), **sg_ipintel.GROUPS}  # fmt: skip
+
+
+def _group_series(srcs: dict, lab, nbins: int) -> dict[str, list[int]]:
+    """Distinct sources per period for each source type (a CDN, a scanner, anyone's hosting, ...)."""
+    out: dict[str, list[int]] = {}
+    for src, x in srcs.items():
+        if x["bins"]:
+            d = out.setdefault(lab(src)["group"], [0] * nbins)
+            for b in x["bins"]:
+                d[b] += 1
+    return {g: out[g] for g in SOURCE_TYPES if g in out}
 
 
 def _in(ip: str, cidr: str) -> bool:
@@ -1537,6 +1560,8 @@ def page_data(doc: dict, onprem: str = "", internal: str = "", now: float | None
         "end": end,
         "default": keys[-1],
         "ranges": ranges,
+        "source_types": [{"key": k, "name": n, "kind": kind, "note": sg_ipintel.GROUP_NOTE.get(k, "")}
+                         for k, (n, kind) in SOURCE_TYPES.items()],
         "port_classes": [{"key": k, "name": n, "note": note, "risky": k in RISKY_CLASSES}
                          for k, (n, note) in PORT_CLASSES.items()],
         "estimate": estimate(doc, doc["account"], list(doc["regions"]), now),
