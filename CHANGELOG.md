@@ -1,5 +1,36 @@
 # Changelog
 
+## 4.0.0 - 2026-11-21
+
+Breaking: two-person approval is on by default. `sg_db.py add`, `remove`,
+`exec` and `adopt` record a change request instead of changing the database
+at once, and `sg_tightener apply` and `sg_compact apply` refuse until the plan
+is proposed and approved. `sg_db.py approvals off --reason "…"` restores the
+3.0.0 behaviour for a single operator.
+
+- **Security group console (`sg_console.py serve`).** A local web page over the
+  database: every account's groups and rules (marked to add / to remove),
+  change requests to propose, approve, reject and withdraw, apply and
+  reconcile buttons, the audit trail with search and filters and the state
+  of its hash chain, and every rejected flow across the accounts
+  `sg_review` has read, with **Propose allowing** to turn a refused flow into
+  a request. It listens on 127.0.0.1 only; a one-time token sets an HttpOnly,
+  SameSite=Strict cookie, every change also needs the token in a header and
+  JSON, the Host header is checked, and the page runs under a nonce CSP.
+  `docs/console.md`.
+- **Two-person approval.** A change is a request (who, why, ticket, the
+  changes). A different AWS principal must approve it; a rejection needs a
+  note; only the proposer can withdraw it. Approved changes become desired
+  and are applied with `sg_db.py apply` (or the console); the request is
+  marked applied once AWS holds them. Every step is in the audit trail.
+  `sg_extend` (break-glass) and `revert` go straight through. New commands:
+  `propose --plan`, `requests`, `approve`, `reject`, `cancel`, `approvals`.
+- **Across an OU.** `sg_db.py import` and `reconcile` take `--ou-id`, `--org`
+  and `--accounts` and assume `--role-name` in each account; other commands
+  take `--account`. `sg_review.py watch --ou-id|--org` alerts on rejected
+  traffic in every account. The org page (`sg_review.py org`) has an
+  **All rejected traffic** table across every account.
+
 ## 3.0.0 - 2026-11-21
 
 Breaking: security groups are managed through a local database, Terraform

@@ -37,6 +37,8 @@ aws sts assume-role --role-arn arn:aws:iam::ACCOUNT_ID:role/sg-tightener-write \
 | `plan` | `ec2:DescribeSecurityGroups`, `ec2:DescribeNetworkInterfaces` (to map each destination to its groups), `ec2:DescribeVpcEndpointServiceConfigurations` and `elasticloadbalancing:DescribeLoadBalancers` (to find NLBs behind PrivateLink endpoint services; without them every group on a load balancer interface is held back) |
 | `apply`, `revert` | `ec2:DescribeSecurityGroups` plus the write statement (every change is also recorded in the database) |
 | `sg_db.py import`, `reconcile`, `show`, `diff`, `log`, `verify` | `sts:GetCallerIdentity`, `ec2:DescribeSecurityGroups`; `reconcile` also `cloudtrail:LookupEvents` to name who made a change (optional: `--no-cloudtrail`). `show`, `diff`, `log` and `verify` make no AWS call |
+| `sg_db.py --ou-id`/`--org`/`--accounts`, `sg_console.py` in other accounts | As the command, in each account via the assumed role; in the account it runs from `sts:AssumeRole` on `--role-name`, and for `--ou-id`/`--org` `organizations:ListAccounts`, `organizations:ListAccountsForParent`, `organizations:ListOrganizationalUnitsForParent` |
+| `sg_console.py` | As `sg_db.py`: `reconcile` and `apply` from the page need what those commands need; the other tabs read the database and `sg_review`'s saved reads, with no AWS call. Proposing, approving and rejecting make no AWS call |
 | `sg_db.py apply`, `exec`, `create-group` | As `reconcile`, plus the write statement; `exec` with `--security-group-rule-ids` also `ec2:DescribeSecurityGroupRules`; `create-group` `ec2:CreateSecurityGroup` |
 | `sg_diagnose` | As `analyse`, plus `ec2:DescribeSecurityGroups` |
 | `sg_extend` | As `analyse` (minus `DescribeFlowLogs`), `ec2:DescribeNetworkInterfaces`, `ec2:DescribeSecurityGroups`, `ec2:AuthorizeSecurityGroupIngress` |
@@ -54,7 +56,7 @@ on the write statement, for example `aws:ResourceTag` or `ec2:Vpc`.
 
 ## Cross-account
 
-The organization commands (`sg_ou_report`, `sg_transfer_audit`, `sg_review org`) assume `--role-name` (default
+The organization commands (`sg_ou_report`, `sg_transfer_audit`, `sg_review org`, `sg_review watch --ou-id`, `sg_db.py --ou-id`, and `sg_console.py` for other accounts) assume `--role-name` (default
 `OrganizationAccountAccessRole`) in each account. That default role has
 administrator access; for routine scans create a narrower read-only role with
 the member-account permissions above and pass its name.

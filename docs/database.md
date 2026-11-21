@@ -62,11 +62,52 @@ python sg_db.py verify                            # audit trail intact: 1,204 en
 
 ---
 
+## Change requests and two-person approval
+
+Every change is a **request** (`requests` table): who proposed it, why, the ticket, the changes, and
+its status: `pending`, `approved`, `rejected`, `cancelled`, `applied`. Approval is on by default
+(`meta.approvals`).
+
+```bash
+python sg_db.py add --region eu-west-1 --group sg-0db… --proto tcp --port 5432 --source 10.4.9.0/24 \
+    --reason "ETL reads the replica" --ticket CHG-2044
+# change request #12 recorded, waiting for a second person: sg_db.py approve 12; then sg_db.py apply --region eu-west-1
+python sg_db.py requests                      # what is waiting (another person, their own credentials)
+python sg_db.py approve 12 --note "checked"   # or: reject 12 --note "why"
+python sg_db.py apply --region eu-west-1      # request 12 is marked applied once AWS holds it
+```
+
+- The approver must be a different AWS principal from the proposer; rejecting needs a note; only the
+  proposer can cancel. Each step is an audit entry (`request-proposed`, `request-approved`,
+  `request-rejected`, `request-cancelled`, then `desired-changed` and `applied`).
+- `add`, `remove`, `exec` and `adopt` create requests. A plan from `sg_tightener plan` or
+  `sg_compact plan` becomes one request with `propose --plan plan.json --reason "…"`.
+- While approval is on, `sg_tightener apply` and `sg_compact apply` refuse and say to propose the
+  plan. `sg_extend` (break-glass) and `revert` go straight through and are recorded as such.
+- `approvals off --reason "…"` (audited) makes the proposer's request approved at once, for a single
+  operator.
+
+The [console](console.md) does all of this from a web page.
+
+## Across an OU
+
+One database holds every account. `import` and `reconcile` take `--ou-id ou-…` (every active account
+in that OU and those under it), `--org` (the whole organisation) or `--accounts id1,id2`, and assume
+`--role-name` (default `OrganizationAccountAccessRole`, `--external-id` if it needs one) in each.
+Other commands take `--account ID`. An account whose role cannot be assumed is reported and the rest
+carry on; `reconcile` then exits 2.
+
+```bash
+python sg_db.py import    --regions eu-west-1,us-east-1 --ou-id ou-ab12-cdef3456
+python sg_db.py reconcile --regions eu-west-1,us-east-1 --ou-id ou-ab12-cdef3456 --slack https://hooks.slack.com/…
+python sg_db.py show --region eu-west-1 --account 444455556666
+```
+
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `import --regions R1,R2` | Takes every group and rule in those regions into the database (the other tools import a region on first use) |
+| `import --regions R1,R2 [--ou-id OU \| --org \| --accounts IDS]` | Takes every group and rule in those regions into the database (the other tools import a region on first use) |
 | `reconcile --regions R1,R2 [--slack URL] [--no-cloudtrail]` | Records and reports changes made outside the tool; exit 1 when there are any, or changes not applied |
 | `show --region R [--group G]` | Every rule the database holds (`+` wanted but not in AWS yet, `-` in AWS but not wanted) |
 | `diff --region R [--group G]` | What `apply` would change; exit 1 when there is something |
@@ -78,6 +119,10 @@ python sg_db.py verify                            # audit trail intact: 1,204 en
 | `create-group --region R --vpc V --name N --description D --reason "…"` | Creates a group in AWS and the database |
 | `log [--since 24h\|7d] [--region R] [--group G] [--json]` | The audit trail |
 | `verify` | Checks the hash chain |
+| `propose --plan plan.json --reason "…"` | An `sg_tightener` or `sg_compact` plan as one change request |
+| `requests [--status pending] [--json]` | Change requests |
+| `approve ID [--note "…"]`, `reject ID --note "…"`, `cancel ID` | Decide a request (a different person), or withdraw your own |
+| `approvals on\|off --reason "…"` | Two-person approval (on by default) |
 
 ---
 

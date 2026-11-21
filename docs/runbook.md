@@ -83,7 +83,20 @@ a planned tightening, a post-change check, and a live incident.
    - Delete groups you are not ready to change from the `groups` array.
      Removing a group does not invalidate the plan.
 
-   Have a second engineer review production plans.
+   Have a second engineer review production plans. With two-person approval on (the default)
+   this is enforced: propose the plan, and a different person approves it.
+
+   ```bash
+   python sg_db.py propose --plan plan.json --reason "quarterly tightening" --ticket CHG-2101
+   # the second engineer, with their own credentials, on the same host:
+   python sg_db.py requests
+   python sg_db.py approve 14 --note "reviewed plan.json"     # or in sg_console.py
+   python sg_db.py apply --region eu-west-1                   # in the change window
+   ```
+
+   To undo, propose the reverse (`sg_db.py add …` for what was removed) or, mid-incident, use
+   `sg_extend` (break-glass, no approval needed). The audit trail shows every rule the request changed.
+   Steps 6 and 7 apply when approvals are off (`sg_db.py approvals off --reason "…"`).
 
 6. **Apply in a change window,** with someone watching the services involved.
    First `python sg_db.py reconcile --regions eu-west-1`: `apply` refuses while a change made

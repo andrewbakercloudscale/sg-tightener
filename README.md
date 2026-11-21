@@ -119,6 +119,21 @@ How it works:
 - `python sg_db.py log` shows the audit trail; `python sg_db.py verify` proves nobody edited or
   removed an entry.
 
+### One console for every account, with two-person approval
+
+`python sg_console.py serve` opens a local web console (127.0.0.1 only, one-time token) over the
+database: every account's groups and rules, change requests to propose and approve, the audit trail
+to search, and **every rejected flow across an OU** in one table. Every change is a request with a
+reason and ticket, and **a different person must approve it** before it is applied. Proposal,
+approval and apply are each audited; break-glass (`sg_extend`) still goes straight through, flagged.
+See [the console](docs/console.md).
+
+![The console: every rejected flow across the accounts](docs/images/sg-console-rejected-traffic.png)
+
+Across an OU: `sg_db.py import|reconcile --ou-id ou-…` takes and checks every account's groups (a role
+assumed in each), `sg_review.py org --ou-id ou-…` reads their flow logs, and
+`sg_review.py watch --ou-id ou-… --loop` alerts on rejected traffic in any of them every 5 minutes.
+
 If your groups are in Terraform today, [move them out once](docs/terraform.md): import them into the
 database, remove them from Terraform state without destroying them, refer to them with data sources,
 and deny Terraform's role the security group write calls. The database is described in
@@ -161,6 +176,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **4.0.0** | **Security group console** (`sg_console.py serve`): one local web page for every account's groups and rules, change requests, the audit trail, and every rejected flow across an OU, with "Propose allowing" from a refused flow. **Two-person approval, on by default**: every change is a request with a reason and ticket that a different person approves before it is applied; `sg_tightener apply` and `sg_compact apply` now propose (`sg_db.py propose --plan`), break-glass still goes through. **Across an OU**: `sg_db.py import`/`reconcile --ou-id`, `sg_review.py watch --ou-id`, and an **All rejected traffic** table on the org page |
 | **3.0.0** | **Security groups live in a local database** (`sg_db.py`): every group and rule in SQLite, every change with who, why and ticket in an append-only, hash-chained audit trail. `reconcile` records changes made outside the tool (console, CLI, Terraform), names who from CloudTrail, and offers to put them back. sg_tightener, sg_compact, sg_extend and the fixes `sg_review` prints all go through it. **Terraform cannot manage security groups with this solution**: [move out once](docs/terraform.md). **Real-time alerts are for rejected traffic**: `watch --loop` every 5 minutes reads up to five minutes ago. The 2.8.0 drift Lambda is removed |
 | **2.8.0** | Real-time drift alerts by EventBridge and Lambda (removed in 3.0.0: alerts are on rejected traffic, and changes made outside the tool are found by `sg_db.py reconcile`). It alerted within seconds when a security group rule is opened wide, naming who and from where, to SNS, Slack and Security Hub, and can revoke it automatically (`AutoRevoke`, with a tag to exempt groups meant to be public) |
 | **2.7.0** | Security posture. `sg_review` finds rules the internet can actually reach (public address, internet-gateway route, network ACLs), wide IPv6 ranges, the default group in use, cross-account and stale references, and, with `read --egress`, outbound connections to Tor or scanners and outbound rules fitted to what was used. A rule opened wide in the last day is a **Needs attention** item at once, so `watch` alerts within the hour. Findings go to **AWS Security Hub** (`securityhub`, `--securityhub`). `sg_ou_report` adds reachability notes, IPv6 and hygiene rows. **SSO**: `--profile` on every tool and a one-line `aws sso login` hint. Least-privilege `iam-policy-read.json` / `iam-policy-write.json`, and signed plans and manifests that `apply` and `revert` check |
@@ -179,14 +195,15 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
 
 | Script | Job | Writes to AWS? |
 |---|---|---|
-| [`sg_db.py`](sg_db.py) | The security group database: `import`, `reconcile`, `add`/`remove`/`exec`, `apply`, `adopt`, `create-group`, `log`, `verify` | `apply`, `exec`, `create-group`; every change recorded |
+| [`sg_console.py`](sg_console.py) | Local web console over the database: every account's groups, change requests to propose and approve, the audit trail, rejected traffic across an OU | Apply and reconcile from the page, recorded in the database |
+| [`sg_db.py`](sg_db.py) | The security group database: `import`, `reconcile` (one account or an OU), change requests (`add`/`remove`/`exec`/`propose`, `approve`/`reject`/`cancel`), `apply`, `adopt`, `create-group`, `log`, `verify` | `apply`, `exec`, `create-group`; every change recorded |
 | [`sg_tightener.py`](sg_tightener.py) | Main loop: `analyse` → `plan` → `apply` → `revert` | `apply` and `revert` only, recorded in the database |
 | [`sg_diagnose.py`](sg_diagnose.py) | After an apply: find private sources the destination's groups now refuse, mark what the tightening caused, print the command that restores them | No |
 | [`sg_extend.py`](sg_extend.py) | Break-glass: add rules for rejected traffic during an incident (additive only) | Yes, adds only, recorded in the database |
 | [`sg_compact.py`](sg_compact.py) | Merge narrow CIDRs into wider ones to get back under the rule limit | `apply` and `revert` only, recorded in the database |
 | [`sg_ou_report.py`](sg_ou_report.py) | Rank every account in an AWS Organization by permissive SG and NACL rules; exit 1 on CRITICAL, 2 if any account could not be scanned | No |
 | [`sg_transfer_audit.py`](sg_transfer_audit.py) | Find AWS Transfer Family servers (SFTP/FTPS/FTP/AS2) open to the internet; same exit codes | No |
-| [`sg_review.py`](sg_review.py) | One account's inbound rules against months of flow logs, as one HTML page with what needs attention, three timelines and what to change; `watch` alerts to Slack or email, `org` rolls up an OU; `sg_review.py demo` shows it without AWS | No |
+| [`sg_review.py`](sg_review.py) | One account's inbound rules against months of flow logs, as one HTML page with what needs attention, three timelines and what to change; `watch` alerts on rejected traffic to Slack or email (one account or an OU), `org` rolls up an OU with every rejected flow; `sg_review.py demo` shows it without AWS | No |
 | [`sg_viz.py`](sg_viz.py) | Export who talked to what, accepted or rejected, per time bucket, with the rule that allowed it and what a plan would block | No |
 | [`tests/`](tests) | Offline test suite (unit + moto integration), no AWS credentials needed | No |
 
@@ -301,6 +318,7 @@ python sg_tightener.py revert --manifest manifest-<timestamp>.json
 | Document | Read it when |
 |---|---|
 | [Moving security groups out of Terraform](docs/terraform.md) | Your security groups are in Terraform: this solution cannot work with that. How to move them into the database once, without an outage |
+| [The console](docs/console.md) | You want the web console: its tabs, two-person approval, who acts, and its security model |
 | [The security group database](docs/database.md) | You want the schema, the audit trail, desired and synced rules, reconcile, and backups |
 | [How it works](docs/how-it-works.md) | You want to understand the algorithm and the safety design |
 | [Runbook](docs/runbook.md) | You are about to tighten a real account, or are mid-incident |

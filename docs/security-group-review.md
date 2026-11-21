@@ -467,6 +467,16 @@ US$0.50) is skipped and logged. With neither `--slack` nor `--email-to`, the ale
 | `--alerts` | `refused` | `refused` (rejected traffic only) or `all` |
 | `--loop`, `--every` | off, 5 | Keep running, once every so many minutes |
 | `--no-tail` | off | Read only to the last full hour |
+| `--ou-id`, `--org`, `--accounts` | | Watch every account in an OU or the organisation, assuming `--role-name` (default `OrganizationAccountAccessRole`, `--external-id` if needed) in each, fresh every loop |
+
+To watch a whole OU for rejected traffic, run it from the management or delegated admin account:
+
+```bash
+python sg_review.py watch --regions eu-west-1 --ou-id ou-ab12-cdef3456 --slack https://hooks.slack.com/... --loop
+```
+
+Each loop reads every account in turn; an account whose role cannot be assumed is logged and skipped
+until the next loop. Each alert names the account.
 
 What was posted is kept in `~/.sg-tightener/review/<account>.watch.json`.
 
@@ -486,6 +496,11 @@ account, worst first, with its counts and worst items, linking to its page. `org
 (`sg-tightener.review-org/v1`). An account whose role cannot be assumed is listed as not read, and the
 exit code is 2. `--accounts` limits the run to some ids; `--range` picks the range counted (default
 `1w`, or the longest read).
+
+`index.html` also has **All rejected traffic**: every refused source in every account (up to 200 per
+account), worst verdict first, with its account, target, port, flows and verdict, filtered by text,
+severity and risky ports. The same table, with a button to propose allowing a source, is the
+**Rejected traffic** tab of [the console](console.md).
 
 ## Security Hub
 

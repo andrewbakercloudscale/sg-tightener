@@ -62,7 +62,19 @@ python sg_db.py adopt     --region R [--group sg-…] --reason "…"
 python sg_db.py create-group --region R --vpc vpc-… --name N --description D --reason "…"
 python sg_db.py log       [--region R] [--group sg-…] [--since 7d] [--json]
 python sg_db.py verify
+python sg_db.py propose   --plan plan.json --reason "…" [--ticket T]
+python sg_db.py requests  [--status pending|approved|applied|rejected|cancelled] [--json]
+python sg_db.py approve   ID [--note "…"]
+python sg_db.py reject    ID --note "…"
+python sg_db.py cancel    ID
+python sg_db.py approvals on|off --reason "…"
 ```
+
+`import` and `reconcile` also take `--ou-id OU`, `--org` or `--accounts IDS`, with `--role-name`
+(default `OrganizationAccountAccessRole`) and `--external-id`; `show`, `diff`, `apply`, `exec` and
+`create-group` take `--account ID`. With two-person approval on (the default), `add`, `remove`,
+`exec` and `adopt` record a change request that a different person approves before `apply`
+([change requests](database.md#change-requests-and-two-person-approval)).
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -73,11 +85,24 @@ python sg_db.py verify
 
 Exit codes: `reconcile` 1 when AWS changed outside the tool or the database has changes not applied;
 `diff` 1 when there is something to apply; `verify` 1 when the audit trail is broken; `apply` and
-`exec` 1 when a change failed.
+`exec` 1 when a change failed; `reconcile` across accounts 2 when an account could not be read;
+`approve`, `reject` and `cancel` exit with an error when the rule (a different person, a note) is not met.
 
 `sg_tightener apply`/`revert`, `sg_compact apply`/`revert` and `sg_extend` record every change in the
 database. `apply` refuses while AWS has changes not yet reviewed (`reconcile`) or the database has
 changes not applied; `revert` and `sg_extend` go ahead and warn.
+
+---
+
+## `sg_console.py`
+
+A local web console over the database. See [the console](console.md).
+
+```bash
+python sg_console.py serve [--port 8765] [--profile P] [--db FILE] [--role-name R] [--external-id X] [--data-dir D]
+```
+
+It listens on 127.0.0.1 and prints a URL with a one-time token. It acts as the AWS identity it runs as.
 
 ---
 
@@ -316,6 +341,7 @@ python sg_review.py securityhub [--account ID] [--range 1w] [--profile P] [--out
 | `watch --alerts` | `refused` | Post rejected-traffic items only, or `all` items |
 | `watch --loop`, `--every` | off, `5` | Keep running, once every so many minutes |
 | `watch --no-tail` | off | Read only to the last full hour: alerts up to 75 minutes late, about half the cost |
+| `watch --ou-id`, `--org`, `--accounts` | | Watch every account in an OU or the organisation (a role assumed in each, `--role-name`, `--external-id`); an account out of reach is logged and the rest carry on |
 | `org --ou-id` | whole organisation | Accounts in this OU and every OU under it |
 | `org --role-name` | `OrganizationAccountAccessRole` | Role assumed in each account (`--external-id` if it needs one) |
 | `org --days`, `--range` | `1`, `1w` | How far back to read; the range the roll-up counts |
