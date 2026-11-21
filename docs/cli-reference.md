@@ -2,7 +2,40 @@
 
 Every tool prints its own help with `--help`. Defaults below are taken from the
 code. All tools use your normal AWS credential chain (`AWS_PROFILE`, SSO,
-instance role, and so on).
+instance role, and so on), and every command that calls AWS takes `--profile`.
+
+## SSO and profiles
+
+AWS IAM Identity Center (SSO) works with every tool. Set up a profile once,
+log in, and pass it:
+
+```bash
+aws configure sso --profile sec-prod          # once: start URL, region, account, permission set
+aws sso login --profile sec-prod              # each working day (the session lasts 1-12 hours)
+python sg_review.py read --regions eu-west-1 --profile sec-prod
+python sg_tightener.py plan --region eu-west-1 --approved approved.json --profile sec-prod
+```
+
+`--profile P` is the same as `AWS_PROFILE=P` for that one run. When the SSO
+session has expired, or the profile does not exist, the tool prints one line
+with the fix instead of a traceback, and exits 1:
+
+```text
+ERROR AWS login needed: the SSO session has expired or was never started. Run: aws sso login --profile sec-prod
+```
+
+Permission sets: create one from [`iam-policy-read.json`](../iam-policy-read.json)
+(as an inline policy) for everyone, and a second from
+[`iam-policy-write.json`](../iam-policy-write.json) for change windows. See
+[permissions](permissions.md).
+
+Across an organisation (`sg_ou_report`, `sg_transfer_audit`, `sg_review org`):
+log in with an SSO profile for the management (or delegated administrator)
+account. The tools then assume `--role-name` in each member account. The
+`AWSReservedSSO_...` roles SSO creates cannot be assumed by name from another
+account, so keep `--role-name` pointing at `OrganizationAccountAccessRole` or,
+better, a read-only role you deploy to every account (StackSets) whose trust
+policy allows the management account's SSO role.
 
 Flow-log source, used by `analyse`, `sg_diagnose` and `sg_extend`: give
 **either** `--log-group` **or** `--s3-bucket` (with an optional `--s3-prefix`).
@@ -47,6 +80,13 @@ Build replacement rules. Reads AWS, writes nothing to it.
 | `--plan` | required | The reviewed `plan.json` |
 | `--region` | from the plan | Only for plans written before the region was recorded. If given for a newer plan it must match, or `apply` refuses |
 | `--yes` | off | Skip the typed `yes` confirmation |
+| `--allow-modified` | off | Apply a plan whose contents changed after `plan` wrote it (see below) |
+
+`plan` signs `plan.json` and `apply` signs the manifest (see
+[file formats](file-formats.md#integrity)). `apply` refuses a plan edited after
+it was written, and `revert` a manifest edited after `apply` wrote it, unless
+`--allow-modified` is given. Files written before 2.7.0 have no signature and
+are used with a warning.
 
 The region is read from the plan; `AWS_REGION` is ignored for plans that record one.
 The manifest is rewritten after every successful AWS call, so it always lists
@@ -59,6 +99,7 @@ Writes `manifest-<YYYYMMDDTHHMMSSZ>.json` in the current directory.
 |---|---|---|
 | `--manifest` | required | A manifest from `apply` |
 | `--yes` | off | Skip the typed `yes` confirmation |
+| `--allow-modified` | off | Revert from a manifest whose contents changed after `apply` wrote it |
 
 Region is read from the manifest.
 
@@ -131,6 +172,8 @@ falling back to `AWS_REGION`. Writes `sg_compact-manifest-<ts>.json`.
 | `--out` | `report.xlsx` | Excel report |
 | `--json` | `report.json` | JSON report |
 | `--max-workers` | `16` | Parallel account/region scans |
+| `--securityhub` | off | Also send each account's findings to its Security Hub (ASFF), and archive the ones no longer found |
+| `--securityhub-state` | `securityhub-state.json` | What was sent last time, used to archive |
 
 Exit codes: `0` every account and region scanned, nothing CRITICAL; `1` a
 CRITICAL finding; `2` the scan was incomplete (see `errors` in the JSON and
@@ -144,6 +187,20 @@ filter PrivateLink traffic (`PrivateLink NLB`, MEDIUM). Security group findings
 on an interface endpoint's groups are labelled `SG (PrivateLink endpoint)`. A
 PrivateLink check the role may not make is listed in `errors` with
 `"optional": true` and does not make the account incomplete.
+
+Also reported:
+
+- a global IPv6 range of `/32` or wider: HIGH on critical ports, MEDIUM
+  otherwise (`::/0` is rated like `0.0.0.0/0`);
+- `SG (default, in use)` (MEDIUM): a default security group with rules that
+  interfaces still use (CIS AWS Foundations 5.4);
+- `SG (cross-account reference)` (MEDIUM): a rule that trusts another
+  account's security group;
+- on every `0.0.0.0/0` and `::/0` finding, a `note` saying whether it is
+  reachable from the internet today: how many interfaces have a public address
+  in a subnet routed to an internet gateway. Reachability is read with
+  `ec2:DescribeNetworkInterfaces` and `ec2:DescribeRouteTables`; without them
+  the note is missing and the error is optional.
 
 ---
 
@@ -198,6 +255,7 @@ python sg_review.py watch    --regions R [--slack URL] [--email-to A,B] [--min-s
                              [--max-cost 0.50] [--loop [--every 60]]
 python sg_review.py org      --regions R [--ou-id OU] [--role-name OrganizationAccountAccessRole] [--days 1] \
                              [--accounts ID,ID] [--range 1w] [--out-dir sg-review-org] [--yes]
+python sg_review.py securityhub [--account ID] [--range 1w] [--profile P] [--out findings.json]
 ```
 
 | Flag | Default | Meaning |
@@ -206,6 +264,7 @@ python sg_review.py org      --regions R [--ou-id OU] [--role-name OrganizationA
 | `read --days` | `1` | `1`, `7`, `30`, `90` or `180`. Only time not read before is read. Start with `1`: it measures the bytes per second, and longer reads are estimated from it |
 | `read --profile` | credential chain | AWS profile, for example an `aws sso login` one |
 | `read --name` | account alias | Name shown in the report |
+| `read --egress` | off | Also read outbound connections, so the report can fit outbound rules and flag connections to Tor exits or scanners. Each read costs about half as much again. Once given it stays on for that account |
 | `read --yes` | off | Skip the typed `yes` after the cost estimate |
 | `report --account` | the only one read | Which account's read to report |
 | `report --onprem` | | Data centre ranges to name, comma separated, each `CIDR name` |
@@ -221,6 +280,9 @@ python sg_review.py org      --regions R [--ou-id OU] [--role-name OrganizationA
 | `org --days`, `--range` | `1`, `1w` | How far back to read; the range the roll-up counts |
 | `org --out-dir` | `sg-review-org` | `index.html`, `org.json` and one page per account |
 | `org --yes` | off | Skip the one typed `yes` after the combined cost |
+| `watch --securityhub`, `org --securityhub` | off | Also send the findings to Security Hub in each account read |
+| `securityhub --range` | `1w` | The range the findings come from (`24h`, `1w`, `1m`, `3m`, `6m`). Sends critical to low findings (Needs attention, rules opened wide, PrivateLink, exposure and hygiene) to Security Hub in their regions, as ASFF, and archives the ones sent before that are no longer found. Needs `securityhub:BatchImportFindings` |
+| `securityhub --out` | | Write the ASFF JSON to this file instead of sending it |
 | `report --offline` | off | Do not refresh the AWS, SaaS, Tor exit and AS-number lists (refreshed daily, weekly for AS numbers) |
 | `report --out` | `sg-review-<account>.html` | The page: open it in any browser, offline. It describes your network: treat it as confidential |
 | `approved --region` | required | The region whose approved.json to write (the page offers the same file per region) |

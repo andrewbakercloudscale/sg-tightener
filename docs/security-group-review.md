@@ -57,6 +57,7 @@ python sg_review.py demo            # -> sg-review-demo.html
 | `--days` | `1`, `7`, `30`, `90`, `180` (default `1`) | How far back is read. It decides which **Timeline** buttons work: `1` gives 24 hours; `7` adds 1 week; `30` adds 1 month; `90` adds 3 months; `180` adds 6 months. Buttons for ranges not read are greyed out. Rules are only called *unused* or *Tighten* after 30 days of evidence |
 | `--profile` | an AWS profile | The credentials to read with. The account is whichever one those credentials belong to |
 | `--name` | text | The account name shown in the header (default: the account alias) |
+| `--egress` | flag | Also read outbound connections: fills the outbound findings in [Exposure and hygiene](#exposure-and-hygiene). About half as much again per read; stays on for the account |
 | `--yes` | flag | Skip typing `yes` after the cost estimate, for scheduled runs |
 
 You can run `read` again at any time. Only the gap since the last read is read, so a daily run
@@ -136,6 +137,23 @@ to list the sources it cut off.
 
 ![The refused graph with a red triangle at the change that cut off two callers](images/sg-review-refused-after-change.png)
 
+**Rules opened wide.** A rule added in the last 24 hours (from CloudTrail: `AuthorizeSecurityGroupIngress`
+and `ModifySecurityGroupRules`) that lets in a wide range becomes an item at once, before any traffic
+uses it, naming who added it, from which address, and when:
+
+| Added | Severity |
+|---|---|
+| `0.0.0.0/0` or `::/0` on a risky port (remote admin, database, Windows, containers) | Critical |
+| `0.0.0.0/0` or `::/0` on another non-web port | High |
+| `0.0.0.0/0` or `::/0` on 80 or 443 | Medium |
+| A public `/16` or wider (IPv6 `/32` or wider) | High on a risky port, medium otherwise |
+| A private `/8` on a risky port | Medium |
+| Any of these, already removed again | Low |
+
+The item gives the `revoke-security-group-ingress` command (by rule id when CloudTrail recorded it).
+Run `watch` hourly and these are posted within the hour, so a rule opened by mistake, or by someone
+who should not have, is seen the same day.
+
 ### PrivateLink
 
 ![PrivateLink: an endpoint service any account may connect to, a load balancer that does not filter PrivateLink traffic, an interface endpoint open to 10.0.0.0/8](images/sg-review-privatelink.png)
@@ -152,6 +170,30 @@ Both sides of PrivateLink are checked, from the same read:
 Critical, high and medium findings join **Needs attention**, so `watch` posts them and `org` counts
 them. `sg_ou_report.py` makes the same provider checks across an organisation, and names security
 group findings on an interface endpoint's groups as `SG (PrivateLink endpoint)`.
+
+### Exposure and hygiene
+
+![Exposure and hygiene: two rules the internet can reach, a Tor connection out, outbound rules fitted to what was used, a default group in use](images/sg-review-posture.png)
+
+The sixth section checks the configuration itself, whatever traffic flowed. Filter it by area:
+
+| Area | Finding | Severity |
+|---|---|---|
+| Exposure | **Reachable from the internet**: a rule lets in `0.0.0.0/0` or `::/0` and at least one interface using the group has a public address, in a subnet routed to an internet gateway, with network ACLs that let the traffic in | Critical on a risky port or all traffic, high on another port, low on 80/443. A load balancer on a web port is left out |
+| Exposure | **Open, not reachable today**: the same rule, but no interface is reachable (private subnets, no public address). One change away | Low |
+| IPv6 | **Wide IPv6 range**: a global range of `/32` or wider (`::/0` is treated as `0.0.0.0/0` throughout) | Medium; low when no interface has an IPv6 address |
+| Outbound | **Connected to Tor, a VPN or a scanner**: an interface connected out to one (needs `read --egress`) | High |
+| Outbound | **Fit outbound rules**: a group may connect anywhere, but used a few destinations and ports. Gives the `authorize-security-group-egress` commands for what was used, then the revoke of the open rule. More than 10 public destinations on 80/443 keep `0.0.0.0/0` on those ports | Medium when 15 rules or fewer, low otherwise |
+| Outbound | **Open outbound on a database** (no outbound data read) | Low |
+| Hygiene | **Default group in use**: interfaces use a VPC's default security group (CIS AWS Foundations 5.4) | Medium |
+| Hygiene | **Trusts another account**: a rule lets in a security group from another account (or through peering) | Medium |
+| Hygiene | **Reference to a deleted group**: a stale rule from `DescribeStaleSecurityGroups` | Low |
+| Hygiene | **Shared across tiers**: one group used by, say, both instances and a database | Low |
+| Hygiene | **Unused open group**: a group open to the internet that no interface uses | Low |
+
+Critical, high and medium findings join **Needs attention**. Outbound data costs about half as much
+again per read, so it is off by default: `read --egress` turns it on for that account, and the next
+`read` reads the slices it already has again with outbound added.
 
 ### Who each address is
 
@@ -433,11 +475,31 @@ account, worst first, with its counts and worst items, linking to its page. `org
 exit code is 2. `--accounts` limits the run to some ids; `--range` picks the range counted (default
 `1w`, or the longest read).
 
+## Security Hub
+
+```bash
+python sg_review.py securityhub --range 1w                 # send this account's findings
+python sg_review.py securityhub --out findings.json        # or write them (ASFF) to look at first
+python sg_review.py watch --regions eu-west-1 --securityhub
+python sg_review.py org --regions eu-west-1 --securityhub  # each account into its own Security Hub
+python sg_ou_report.py --regions eu-west-1 --securityhub
+```
+
+Sends every critical to low finding (Needs attention, rules opened wide, PrivateLink, exposure and
+hygiene) to AWS Security Hub in the region it is in, in the AWS Security Finding Format, as the
+account's own default product. Each finding has a stable id, so sending again updates it rather than
+adding a copy, and a finding sent before that is no longer found is archived (`RESOLVED`). What was
+sent is kept in `~/.sg-tightener/review/<account>.securityhub.json` (`--securityhub-state` for
+`sg_ou_report`). Security Hub must be enabled in that region, and the caller needs
+`securityhub:BatchImportFindings`. From there, Security Hub's own rules, EventBridge and integrations
+route them to tickets or a SIEM.
+
 ## Where things are kept
 
 | Path | Contents |
 |---|---|
-| `~/.sg-tightener/review/<account>.json.gz` | What was read: flow-log slices, security groups, interfaces, VPCs, rule changes. Mode 0600 in a 0700 directory |
+| `~/.sg-tightener/review/<account>.json.gz` | What was read: flow-log slices, security groups, interfaces, VPCs, route tables, rule changes. Mode 0600 in a 0700 directory |
+| `~/.sg-tightener/review/<account>.securityhub.json` | The findings last sent to Security Hub, so the ones gone can be archived |
 | `~/.sg-tightener/ipintel/` | The public address lists (AWS, SaaS providers, Tor exits, AS numbers), refreshed daily (AS numbers weekly) |
 | `~/.sg-tightener/names.yaml` | Your names file, if you keep one there |
 | `sg-review-<account>.html` | The page. It describes your network, so treat it as confidential |

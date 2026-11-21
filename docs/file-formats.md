@@ -150,6 +150,35 @@ authorise then failed).
 per group. It is a record for the next tightening cycle, not an input to
 `revert`: to undo a break-glass change, revoke those rules by hand.
 
+### Integrity
+
+Since 2.7.0 every plan (`plan.json`, `sg_compact` plans) and manifest ends
+with an `integrity` block:
+
+```json
+"integrity": {
+  "sha256": "9f2c…",
+  "by": "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_SecOps_ab12/alice",
+  "at": "2026-11-21T10:00:00+00:00",
+  "hmac_sha256": "41d0…"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `sha256` | SHA-256 of the file's JSON without this block, keys sorted, no spaces |
+| `by` | The caller that wrote it (`sts get-caller-identity`); empty if that could not be read |
+| `at` | When it was written |
+| `hmac_sha256` | HMAC-SHA256 of the same bytes with the key in `SG_TIGHTENER_SIGNING_KEY`, present only when that variable was set |
+
+`apply` checks the plan and `revert` the manifest before any AWS call. A
+changed file is refused unless `--allow-modified` is given. The SHA-256 alone
+catches accidental edits; anyone can recompute it. To catch deliberate ones,
+keep the key in a secret store, set it in the environment of whoever plans
+and applies, and an edited file then fails the HMAC. If the file has an HMAC
+but the key is not set (or the other way round), the tool warns and checks the
+SHA-256 only, so a revert during an incident is never blocked by a missing key.
+
 ---
 
 ## `viz-data.json` (`sg-tightener.viz/v1`)

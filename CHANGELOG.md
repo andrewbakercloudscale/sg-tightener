@@ -1,5 +1,51 @@
 # Changelog
 
+## 2.7.0 - 2026-11-21
+
+- **SSO everywhere.** Every tool that calls AWS takes `--profile` (an
+  `aws configure sso` profile works). An expired or missing SSO session, or an
+  unknown profile, prints one line with the fix (`aws sso login --profile X`)
+  and exits 1, instead of a traceback. The CLI reference has an SSO section:
+  permission sets, and how the organisation commands assume roles from an SSO
+  login.
+- **Internet exposure, not just open rules.** `sg_review` reads route tables
+  and works out, per rule open to `0.0.0.0/0` or `::/0`, whether any interface
+  using it has a public address in a subnet routed to an internet gateway, with
+  network ACLs that let the traffic in. Reachable is critical on a risky port,
+  high on others, low on 80/443 (load balancers on web ports left out); open
+  but unreachable is low. New page section **6 Exposure and hygiene**.
+- **IPv6.** IPv6 ranges, interface addresses and network ACL entries are read;
+  a global range of `/32` or wider is a finding, and `::/0` is treated like
+  `0.0.0.0/0`.
+- **Outbound (`read --egress`).** Optional, about +50% per read. Flags
+  interfaces that connected out to Tor exits, VPNs or scanners (high), and
+  fits outbound rules to the destinations and ports used, with the
+  `authorize-security-group-egress` and revoke commands. Without it, open
+  outbound on database groups is listed (low).
+- **Group hygiene.** Default security group in use (CIS 5.4), rules that trust
+  another account's group, references to deleted groups, one group shared
+  across tiers, and open groups no interface uses.
+- **Drift alerts.** A rule added in the last 24 hours that lets in `0.0.0.0/0`,
+  `::/0`, a public `/16` (IPv6 `/32`) or wider, or a private `/8` on a risky
+  port becomes a **Needs attention** item straight away, naming who added it,
+  from which address and when, with the revoke command. `watch` posts it.
+- **AWS Security Hub.** `sg_review securityhub` (or `--out` for ASFF JSON),
+  `--securityhub` on `watch`, `org` and `sg_ou_report`. Stable ids update
+  findings in place; findings no longer found are archived.
+- **`sg_ou_report`** adds a reachability `note` to every `0.0.0.0/0` and `::/0`
+  finding, rates wide IPv6 ranges, and reports `SG (default, in use)` and
+  `SG (cross-account reference)`.
+- **Least privilege.** `iam-policy-read.json` (with Security Hub as a separate
+  optional statement) and `iam-policy-write.json` (ingress and egress writes
+  limited to one VPC, denied on groups tagged `sg-tightener=protected`).
+  `iam-policy.json` gains `ec2:DescribeRouteTables`,
+  `ec2:DescribeStaleSecurityGroups` and `securityhub:BatchImportFindings`.
+- **Signed plans and manifests.** Plans and manifests carry an `integrity`
+  block (SHA-256, the signer's ARN, the time, and an HMAC-SHA256 when
+  `SG_TIGHTENER_SIGNING_KEY` is set). `apply` and `revert` refuse an edited
+  file unless `--allow-modified`; older unsigned files work with a warning.
+  `sg_extend` manifests are signed too.
+
 ## 2.6.0 - 2026-11-21
 
 - **PrivateLink that is too open, on both sides.** `sg_review.py` reads the
