@@ -72,6 +72,28 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
+## Security Group Review
+
+`sg_review.py` writes one account's inbound rules, set against months of flow logs, as a single HTML
+page. The page has three timelines (refused sources, over-provisioned addresses, active sources) and
+a table of what to tighten, with CSV and approved.json downloads. Try it with
+`python sg_review.py demo`, which needs no AWS access.
+
+| Refused sources | Over-provisioned addresses | Active sources |
+|---|---|---|
+| [![Refused sources](docs/images/sg-review-refused-sources.png)](docs/images/sg-review-refused-sources.png) | [![Over-provisioned addresses](docs/images/sg-review-over-provisioned.png)](docs/images/sg-review-over-provisioned.png) | [![Active sources](docs/images/sg-review-active-sources.png)](docs/images/sg-review-active-sources.png) |
+
+| Parameter | What it changes |
+|---|---|
+| `read --regions eu-west-1,us-east-1` | Regions read; one page covers them all |
+| `read --days 1\|7\|30\|90\|180` | How far back. This decides which timeline buttons (24 h, 1 week, 1/3/6 months) work. Start with `1`, which measures the cost of longer reads; each read asks before spending |
+| `read --profile P` / `--name N` / `--yes` | Credentials, the account name shown on the page, and skipping the `yes` prompt |
+| `report --onprem "10.200.0.0/16 Johannesburg DC"` | Names your data centres (purple in the graphs) |
+| `report --internal "10.40.0.0/16 Payments prod"` | Counts your other accounts' ranges as internal (blue) |
+| `report --offline` / `--out FILE` | Skips refreshing the public address lists; sets the output file |
+
+The full guide, with each graph explained, is [docs/security-group-review.md](docs/security-group-review.md).
+
 ## Quick start
 
 ```bash
@@ -128,6 +150,7 @@ python sg_tightener.py revert --manifest manifest-<timestamp>.json
 | [Runbook](docs/runbook.md) | You are about to tighten a real account, or are mid-incident |
 | [CLI reference](docs/cli-reference.md) | You need every flag and default for every tool |
 | [Flow-log requirements](docs/flow-logs.md) | Before your first `analyse`, especially behind a transit gateway |
+| [Security Group Review](docs/security-group-review.md) | You want the HTML report: its parameters, its three graphs and how to read them |
 | [File formats](docs/file-formats.md) | You are reviewing a `plan.json`, editing an `approved.json` or reading `viz-data.json` |
 | [Permissions](docs/permissions.md) | You are creating the IAM role the tools run as |
 

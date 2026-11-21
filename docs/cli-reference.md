@@ -198,6 +198,13 @@ python sg_review.py forget   --account ID
 | `report --internal` | | Your other accounts' ranges, named like `--onprem`, counted as internal |
 | `report --offline` | off | Do not refresh the AWS, SaaS and AS-number lists (refreshed daily, weekly for AS numbers) |
 | `report --out` | `sg-review-<account>.html` | The page: open it in any browser, offline. It describes your network: treat it as confidential |
+| `approved --region` | required | The region whose approved.json to write (the page offers the same file per region) |
+| `approved --out` | `approved.json` | Output file, for `sg_tightener.py plan --approved` |
+| `demo --out` | `sg-review-demo.html` | The page for a made-up account; no AWS call |
+| `forget --account` | | Delete what was read for that account |
+| `--data-dir` (before the command) | `~/.sg-tightener` | Where reads and the address-naming lists are kept |
+
+What each flag does to the graphs, with example images: [Security Group Review](security-group-review.md).
 
 Ctrl-C during `read` stops after the slices in flight and keeps what was read.
 `read` exits 1 if not confirmed, 130 when stopped.
