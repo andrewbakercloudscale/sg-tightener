@@ -208,6 +208,34 @@ Every source address is attributed, on the computer that writes the page, from t
 | **SaaS** | Providers' published ranges (GitHub, Cloudflare, Google, Atlassian, Okta, Datadog, Fastly and others), then well-known provider AS numbers | The provider, the published prefix, and the AS number |
 | **Other networks** | Everything else | The **AS number and owner**, the country, and the block that network announces |
 
+**IPv6 sources** are attributed the same way, from the IPv6 ranges in the same lists: AWS's
+`ipv6_prefixes`, Cloudflare's, Google's and the other providers' IPv6 ranges, iptoasn's IPv6 AS list
+(`ip2asn-v6.tsv.gz`, read weekly) and the Tor Project's IPv6 exits. Inside means the VPCs' IPv6 blocks
+and each interface's own IPv6 address; unique local (`fc00::/7`) and link-local (`fe80::/10`)
+addresses are private, like `10.0.0.0/8`, so they count as data centre unless a VPN route,
+`--internal`, `--onprem` or your names file says otherwise (each takes IPv6 ranges too). IPv6 sources
+get the same verdicts, scan detection, port classes and network ACL checks (the ACL's IPv6 entries),
+and an **IPv6** chip. A copy of the lists downloaded by an older version has no IPv6 ranges until its
+daily refresh.
+
+### New addresses: seen before or not
+
+![New only: four refused sources never seen before, one of them an IPv6 scanner](images/sg-review-new-addresses.png)
+
+Every source carries the first time it appears in **anything the account's cache holds**, whatever
+range the page shows, so the page can answer "have we seen this address before?":
+
+- **new**: first seen in the last 7 days, after at least 14 days of flow logs read without it. With
+  less history nothing is called new (the filter says how many days have been read).
+- **seen before**: first seen before the range shown starts; the First seen column adds "seen before:
+  first …".
+
+Refused and active sources show a **new · first seen …** chip, and **New only** and **IPv6 only**
+filters sit above each table. A verdict about a new source ends "First seen 15 Nov: never before in 85
+days of flow logs", and a "New address?" verdict whose source was in fact seen weeks ago says "Not a
+new address though". Needs attention items count their new sources, and so do `watch` alerts
+("1 new (never seen before)").
+
 ### Source type: who is behind a provider's address
 
 A SaaS or internet address is then given a **source type** from a built-in list of some 100 AS
@@ -360,6 +388,9 @@ Each rule gets one of these statuses:
 
 - **Tighten**: a private rule wider than /24, or a public range, with addresses never seen. The
   suggested ranges come from sg-tightener's fitting and keep every address seen, with headroom.
+  An IPv6 range is counted in **/64 subnets** (one client network each, since a client's own IPv6
+  address changes within its /64): it is to tighten when wider than a /64 with subnets never seen,
+  and the suggestion keeps the /64 of every address seen. `::/0` is listed as open to all.
 - **Unused**: nothing matched the rule in the evidence window.
 - **Open to all**
 - **In use**
@@ -499,7 +530,8 @@ exit code is 2. `--accounts` limits the run to some ids; `--range` picks the ran
 
 `index.html` also has **All rejected traffic**: every refused source in every account (up to 200 per
 account), worst verdict first, with its account, target, port, flows and verdict, filtered by text,
-severity and risky ports. The same table, with a button to propose allowing a source, is the
+severity, risky ports, **new addresses only** and **IPv6 only**; each source says whether it is internal
+or external, scanning, and when it was first seen. The same table, with a button to propose allowing a source, is the
 **Rejected traffic** tab of [the console](console.md).
 
 ## Security Hub

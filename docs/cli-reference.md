@@ -137,6 +137,10 @@ Build replacement rules. Reads AWS, writes nothing to it.
 | `--prefix-threshold` | `24` | Only rules wider than this prefix are eligible |
 | `--out` | `plan.json` | Output file |
 
+IPv6 rules wider than a `/64` are planned too when they are unique local (`fc00::/7`) or inside one of
+the region's VPC IPv6 blocks: each IPv6 source is kept as its `/64`. `::/0` and other public IPv6
+ranges are left alone. See [How the replacement CIDRs are chosen](how-it-works.md#how-the-replacement-cidrs-are-chosen).
+
 ### `apply`
 
 | Flag | Default | Meaning |
@@ -331,14 +335,14 @@ python sg_review.py securityhub [--account ID] [--range 1w] [--profile P] [--out
 | `read --egress` | off | Also read outbound connections, so the report can fit outbound rules and flag connections to Tor exits or scanners. Each read costs about half as much again. Once given it stays on for that account |
 | `read --yes` | off | Skip the typed `yes` after the cost estimate |
 | `report --account` | the only one read | Which account's read to report |
-| `report --onprem` | | Data centre ranges to name, comma separated, each `CIDR name` |
+| `report --onprem` | | Data centre ranges to name, comma separated, each `CIDR name` (IPv4 or IPv6) |
 | `report --internal` | | Your other accounts' ranges, named like `--onprem`, counted as internal |
 | `report --names` | `~/.sg-tightener/names.yaml` if it exists | Names file (YAML or JSON): partners and other networks named by range or AS number. See [Your names file](security-group-review.md#your-names-file) |
 | `watch --slack` / `--email-to` | `SG_REVIEW_SLACK_WEBHOOK` | Where new **Needs attention** items go; printed when neither is given. SMTP from `--smtp-host`, `--smtp-port` (587), `--email-from`, `SG_REVIEW_SMTP_USER`/`_PASSWORD`, `--smtp-plain` |
 | `watch --min-severity` | `high` | Post items at or above `critical`, `high` or `medium` |
 | `watch --repeat` | `24` | Hours before an item still open is posted again |
 | `watch --max-cost` | `0.50` | Skip a read estimated above this many US$ |
-| `watch --alerts` | `refused` | Post rejected-traffic items only, or `all` items |
+| `watch --alerts` | `refused` | Post rejected-traffic items only, or `all` items. Each item says how many of its sources are new (never seen in the flow logs read before) |
 | `watch --loop`, `--every` | off, `5` | Keep running, once every so many minutes |
 | `watch --no-tail` | off | Read only to the last full hour: alerts up to 75 minutes late, about half the cost |
 | `watch --ou-id`, `--org`, `--accounts` | | Watch every account in an OU or the organisation (a role assumed in each, `--role-name`, `--external-id`); an account out of reach is logged and the rest carry on |

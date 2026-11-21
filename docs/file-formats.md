@@ -35,7 +35,7 @@ Written by `analyse`, extended by `sg_diagnose`, read by `plan`.
 | Field | Meaning |
 |---|---|
 | `flow_log_check.resources` | The VPCs, subnets or interfaces the analysed flow logs capture. `plan` will not touch a group outside them. `null` when the flow logs could not be found (for example delivered from another account): then nothing is held back, and `plan` warns |
-| `ips` | Every observed source address (the `src` values of `flows`, plus anything added by hand or by `sg_diagnose`) |
+| `ips` | Every observed source address, IPv4 then IPv6 (the `src` values of `flows`, plus anything added by hand or by `sg_diagnose`) |
 | `flows` | One entry per distinct accepted ingress (source, destination address, destination port, protocol, logging interface). `dst` prefers `pkt-dstaddr`; `protocol` is the IANA number (`"6"` TCP, `"17"` UDP); `interface` is the `interface-id` that logged it, which ties the flow to one interface even where VPCs reuse addresses. Any of `dst`, `dstport`, `protocol`, `interface` is `null` when the record had none |
 
 `plan` maps each `dst` to the network interface that owns it
@@ -277,7 +277,7 @@ JSON: a list of entries (or `{"names": [...]}`).
 ```yaml
 - name: Acme payroll        # required
   type: partner             # optional, default partner
-  ranges: [203.0.113.0/24]  # IPv4 CIDRs; ranges or asn (or both) required
+  ranges: [203.0.113.0/24, "2001:db8:acce::/48"]  # IPv4 or IPv6 CIDRs; ranges or asn (or both) required
   asn: [64500, AS64501]     # AS numbers, with or without "AS"
   note: SFTP drop           # optional, shown on the page
 ```
@@ -321,10 +321,14 @@ Written by `sg_review.py org` next to `index.html` and one `sg-review-<account>.
 | `rows[].attention` | **Needs attention** items per severity, in the range counted |
 | `rows[].verdicts` | Every source's verdict per severity, refused and let in |
 | `rows[].items` | The items, worst first: severity, verdict label, title, target, reason, action, flows, sources |
+| `rows[].refused_rows` | The account's refused sources, flat (up to 200): `account`, `src`, `name`, `cat`, `type`, `flows`, `first`, `last` (in the range), `ports`, `dsts`, `sev`, `verdict`, `reason`, the busiest target (`region`, `eni`, `kind`, `dst`, `proto`, `port`, `port_class`, `risky`, `groups`), and `first_ever` (first seen in anything read, epoch seconds), `seen_before` (seen before the range began), `new` (first seen in the last 7 days after at least 14 days of flow logs without it), `v6`, `internal` (your VPCs or data centre) and `scan` (sweeping many ports or targets) |
+| `refused` | Every account's `refused_rows`, worst verdict first |
 
 `<account>.watch.json`, next to each read in `~/.sg-tightener/review`, records which items `watch`
 posted and when: `{"sent": {"<item id>": <epoch seconds>}}`. In the read itself, chunks with
-`"tail": true` were read by `watch` past the last full hour; they are replaced by the hourly read.
+`"tail": true` were read by `watch` past the last full hour; they are replaced by the hourly read. Each
+region's snapshot holds the VPCs' IPv6 blocks (`vpcs[].cidrs6`) and each interface's IPv6 addresses and
+prefixes (`enis[].ipv6`, `enis[].prefixes6`); chunk rows hold IPv6 source addresses as they are read.
 
 ## The security group database
 
