@@ -38,6 +38,14 @@ Usage:
   sg_db.py cancel    ID
   sg_db.py propose   --plan plan.json --reason "…"   (an sg_tightener or sg_compact plan)
   sg_db.py approvals on|off --reason "…"
+  sg_db.py mode      [show | surveillance | enforce] (--account ID | --all) --reason "…"
+  sg_db.py check     --regions R [--ou-id …] [--assets]        (DryRun: can this identity apply here?)
+  sg_db.py assets    --region R [--account ID] [--json]        (every network interface and its groups)
+  sg_db.py asset-plan  --region R (--eni eni-… | --instance i-…) --approved approved.json [--out F]
+  sg_db.py asset-propose --plan asset-plan.json --reason "…"
+  sg_db.py asset-apply ID          (an approved asset request: its own group, then the swap)
+  sg_db.py asset-revert --region R --eni eni-… --reason "…"
+  sg_db.py asset-log   (--eni eni-… | --instance i-…)
   sg_db.py verify
 """
 
@@ -95,11 +103,31 @@ CREATE TABLE IF NOT EXISTS requests (
   decided_by TEXT NOT NULL DEFAULT '', decided_at TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
   applied_at TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS requests_status ON requests (status, account, region);
+CREATE TABLE IF NOT EXISTS modes (
+  account TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK (mode IN ('surveillance', 'enforce')),
+  set_by TEXT NOT NULL, set_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS permissions (
+  account TEXT NOT NULL, region TEXT NOT NULL, checked_at TEXT NOT NULL, actor TEXT NOT NULL,
+  ok INTEGER NOT NULL, result TEXT NOT NULL, PRIMARY KEY (account, region));
+CREATE TABLE IF NOT EXISTS assets (
+  account TEXT NOT NULL, region TEXT NOT NULL, eni TEXT NOT NULL, instance TEXT NOT NULL DEFAULT '',
+  asg TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', vpc_id TEXT NOT NULL DEFAULT '',
+  ips TEXT NOT NULL DEFAULT '[]', groups TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '',
+  observed_at TEXT NOT NULL, PRIMARY KEY (account, region, eni));
 CREATE TRIGGER IF NOT EXISTS audit_append_only_u BEFORE UPDATE ON audit
   BEGIN SELECT RAISE(ABORT, 'the audit trail is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_append_only_d BEFORE DELETE ON audit
   BEGIN SELECT RAISE(ABORT, 'the audit trail is append-only'); END;
 """
+
+SURVEILLANCE, ENFORCE = "surveillance", "enforce"
+ANY_ACCOUNT = "*"  # the default mode, for accounts without their own
+# What applying needs, tried with DryRun before any change: (call, what it is for).
+RULE_CALLS = ("authorize_security_group_ingress", "revoke_security_group_ingress",
+              "authorize_security_group_egress", "revoke_security_group_egress")  # fmt: skip
+ASSET_CALLS = ("create_security_group", "modify_network_interface_attribute", "create_tags")
+PROBE_PERM = {"IpProtocol": "tcp", "FromPort": 9, "ToPort": 9,
+              "IpRanges": [{"CidrIp": "192.0.2.9/32", "Description": "sg-tightener permission check"}]}  # fmt: skip
 
 # A rule: (direction, proto, from_port, to_port, source). Source is an IPv4 or IPv6 range, a prefix
 # list id, a group id in the same account, or "<account>/<group id>" for another account's group.
@@ -476,6 +504,55 @@ class Store:
     def account_names(self) -> dict[str, str]:
         return dict(self.db.execute("SELECT account, name FROM accounts"))
 
+    # ---------------------------------------------------------------- modes
+    def mode(self, account: str) -> str:
+        """surveillance (the default: find and propose, never change AWS) or enforce (apply is allowed)."""
+        for a in (account, ANY_ACCOUNT):
+            row = self.db.execute("SELECT mode FROM modes WHERE account = ?", (a,)).fetchone()
+            if row:
+                return row[0]
+        return SURVEILLANCE
+
+    def modes(self) -> dict[str, str]:
+        return dict(self.db.execute("SELECT account, mode FROM modes"))
+
+    def set_mode(self, account: str, mode: str, actor: str, reason: str) -> None:
+        """``account`` "*" sets the default for every account without its own mode."""
+        if mode not in (SURVEILLANCE, ENFORCE):
+            raise Refused("the mode is surveillance or enforce")
+        if not reason.strip():
+            raise Refused("a reason is required: it goes in the audit trail")
+        before = self.mode(account)
+        self.db.execute("INSERT INTO modes (account, mode, set_by, set_at) VALUES (?, ?, ?, ?) ON CONFLICT (account) "
+                        "DO UPDATE SET mode = excluded.mode, set_by = excluded.set_by, set_at = excluded.set_at",
+                        (account, mode, actor, _now()))  # fmt: skip
+        self.audit(actor, "tool", f"mode-{mode}", "" if account == ANY_ACCOUNT else account, "", "",
+                   {"mode": mode, "before": before, "scope": "default" if account == ANY_ACCOUNT else "account"}, reason)  # fmt: skip
+
+    def require_enforce(self, account: str, what: str) -> None:
+        if self.mode(account) != ENFORCE:
+            raise Refused(f"{account} is in surveillance mode: sg-tightener reports what to change and records change "
+                          f"requests, but does not {what}. When the organisation is ready: sg_db.py check --account "
+                          f"{account} --regions R (permissions), then sg_db.py mode enforce --account {account} "
+                          f"--reason \"…\".")  # fmt: skip
+
+    def record_permissions(self, account: str, region: str, actor: str, result: dict) -> None:
+        ok = all(not v["denied"] and not v["unknown"] for v in result.values())
+        self.db.execute("INSERT INTO permissions (account, region, checked_at, actor, ok, result) VALUES (?, ?, ?, ?, ?, ?) "
+                        "ON CONFLICT (account, region) DO UPDATE SET checked_at = excluded.checked_at, actor = "
+                        "excluded.actor, ok = excluded.ok, result = excluded.result",
+                        (account, region, _now(), actor, int(ok), json.dumps(result, sort_keys=True)))  # fmt: skip
+        self.audit(actor, "tool", "permissions-checked", account, region, "",
+                   {"ok": ok, "denied": {k: v["denied"] for k, v in result.items() if v["denied"]},
+                    "unknown": {k: v["unknown"] for k, v in result.items() if v["unknown"]}}, "permission check (DryRun)")  # fmt: skip
+
+    def permissions(self, account: str = "", region: str = "") -> list[dict]:
+        q, args = "SELECT account, region, checked_at, actor, ok, result FROM permissions", []
+        if account:
+            q, args = q + " WHERE account = ?" + (" AND region = ?" if region else ""), [account] + ([region] if region else [])
+        cols = ("account", "region", "checked_at", "actor", "ok", "result")
+        return [{**dict(zip(cols, r)), "ok": bool(r[4]), "result": json.loads(r[5])} for r in self.db.execute(q, args)]
+
     # ---------------------------------------------------------------- change requests
     def approvals(self) -> bool:
         row = self.db.execute("SELECT value FROM meta WHERE key = 'approvals'").fetchone()
@@ -533,7 +610,10 @@ class Store:
             q += " WHERE " + " AND ".join(where)
         cols = ("id", "at", "account", "region", "proposer", "reason", "ticket", "changes", "status", "decided_by",
                 "decided_at", "note", "applied_at")  # fmt: skip
-        return [{**dict(zip(cols, r)), "changes": json.loads(r[7])} for r in self.db.execute(q + " ORDER BY id DESC", args)]
+        out = [{**dict(zip(cols, r)), "changes": json.loads(r[7])} for r in self.db.execute(q + " ORDER BY id DESC", args)]
+        for r in out:  # an asset request (sg_assets) holds one plan, not a list of rule changes
+            r["kind"] = "asset" if isinstance(r["changes"], dict) else "rules"
+        return out
 
     def _request(self, rid: int) -> dict:
         got = self.requests(rid=rid)
@@ -563,8 +643,11 @@ class Store:
         self.db.execute("UPDATE requests SET status = 'approved', decided_by = ?, decided_at = ?, note = ? WHERE id = ?",
                         (actor, _now(), note, rid))  # fmt: skip
         self.audit(actor, "tool", "request-approved", r["account"], r["region"], _groups_of_json(r["changes"]),
-                   {"request": rid, "proposer": r["proposer"]}, note or "approved", r["ticket"])  # fmt: skip
+                   {"request": rid, "proposer": r["proposer"], **({"eni": r["changes"]["eni"]} if r["kind"] == "asset" else {})},
+                   note or "approved", r["ticket"])  # fmt: skip
         out = {"added": [], "removed": []}
+        if r["kind"] == "asset":  # carried out by sg_db.py asset-apply, not through desired
+            return out
         by_group: dict[str, list] = {}
         for c in r["changes"]:
             by_group.setdefault(c["group"], []).append(c)
@@ -591,6 +674,8 @@ class Store:
         """Mark approved requests whose every change AWS now holds as applied."""
         done = []
         for r in self.requests("approved", account, region):
+            if r["kind"] == "asset":
+                continue
             ok = True
             for c in r["changes"]:
                 have = self.rules(account, region, c["group"], "synced")
@@ -633,6 +718,8 @@ def _groups_of(changes) -> str:
 
 
 def _groups_of_json(changes) -> str:
+    if isinstance(changes, dict):  # an asset request
+        return ",".join(changes.get("from_groups", []))
     return ",".join(sorted({c["group"] for c in changes}))
 
 
@@ -666,21 +753,83 @@ def account_of(session=None) -> tuple[str, str]:
     return ident["Account"], ident.get("Arn", "")
 
 
-def ensure_current(store: Store, ec2, account: str, region: str, actor: str, who=None) -> list[dict]:
-    """Import the region on first use; otherwise record any external change. Returns the external changes."""
+def ensure_current(store: Store, ec2, account: str, region: str, actor: str, who=None, assets: bool = False) -> list[dict]:
+    """Import the region on first use; otherwise record any external change. Returns the external changes.
+    With ``assets`` also record every network interface's groups (and any change to them)."""
     live = read_live(ec2, account)
+    found = describe = None
+    if assets:
+        import sg_assets
+
+        describe = sg_assets.describe_assets(ec2)
     with store:
         if not store.imported(account, region):
             n = store.import_region(account, region, live, actor)
             LOG.info("imported %d group(s) and %d rule(s) in %s into %s", len(live), n, region, store.path)
-            return []
-        return store.observe(account, region, live, actor, who)
+            found = []
+        else:
+            found = store.observe(account, region, live, actor, who)
+        if describe is not None:
+            import sg_assets
+
+            moved = sg_assets.observe_assets(store, account, region, describe, actor)
+            found += [{"group": ",".join(m["after"]), "name": f"asset {m['eni']}" + (f" ({m['instance']})" if m["instance"] else ""),
+                       "change": f"groups changed from {', '.join(m['before'])} to {', '.join(m['after'])}", "added": [],
+                       "removed": []} for m in moved]  # fmt: skip
+    return found
+
+
+def _dry(call, **kw) -> str:
+    """allowed, denied or unknown (with why), from one DryRun call."""
+    try:
+        call(DryRun=True, **kw)
+        return "allowed"  # a client without DryRun support: it would have run, so it was allowed
+    except Exception as exc:  # noqa: BLE001 - botocore ClientError or a test double
+        code = (getattr(exc, "response", None) or {}).get("Error", {}).get("Code", "")
+        if code == "DryRunOperation":
+            return "allowed"
+        if code in ("UnauthorizedOperation", "AccessDenied", "AccessDeniedException", "Client.UnauthorizedOperation"):
+            return "denied"
+        return f"unknown: {code or type(exc).__name__}: {str(exc)[:160]}"
+
+
+def check_permissions(ec2, groups: Iterable[str], assets: Iterable[dict] = ()) -> dict:
+    """Can this identity change these groups (and swap these assets' groups)? Every call is a DryRun, so
+    service control policies, permission boundaries and tag or VPC conditions all count, and nothing changes.
+    Returns {group or eni: {"allowed": [...], "denied": [...], "unknown": [...]}}."""
+    out: dict[str, dict] = {}
+    for gid in groups:
+        res = {"allowed": [], "denied": [], "unknown": []}
+        for name in RULE_CALLS:
+            got = _dry(getattr(ec2, name), GroupId=gid, IpPermissions=[PROBE_PERM])
+            res["allowed" if got == "allowed" else "denied" if got == "denied" else "unknown"].append(
+                name if got in ("allowed", "denied") else f"{name} ({got[9:]})")
+        out[gid] = res
+    for a in assets:
+        res = {"allowed": [], "denied": [], "unknown": []}
+        calls = {"create_security_group": {"GroupName": "sg-tightener-permission-check", "Description": "check",
+                                           "VpcId": a.get("vpc_id") or ""},
+                 "modify_network_interface_attribute": {"NetworkInterfaceId": a["eni"], "Groups": a.get("groups") or []},
+                 "create_tags": {"Resources": [a["eni"]], "Tags": [{"Key": "sg-tightener:check", "Value": "1"}]}}  # fmt: skip
+        for name, kw in calls.items():
+            got = _dry(getattr(ec2, name), **kw)
+            res["allowed" if got == "allowed" else "denied" if got == "denied" else "unknown"].append(
+                name if got in ("allowed", "denied") else f"{name} ({got[9:]})")
+        out[a["eni"]] = res
+    return out
+
+
+def _permission_problems(result: dict) -> list[str]:
+    return [f"{k}: " + ", ".join([f"not allowed {d}" for d in v["denied"]] + [f"could not check {u}" for u in v["unknown"]])
+            for k, v in result.items() if v["denied"] or v["unknown"]]
 
 
 def push(store: Store, ec2, account: str, region: str, actor: str, gid: str = "", reason: str = "",
          ticket: str = "") -> dict:  # fmt: skip
     """Make AWS match desired. Refuses if AWS changed outside the tool since it was last read (reconcile
-    first, so a person has seen it). Returns {"done": n, "failed": [...]}."""
+    first, so a person has seen it). Refuses in surveillance mode, and before any change unless a DryRun
+    shows every call needed is allowed. Returns {"done": n, "failed": [...]}."""
+    store.require_enforce(account, "change security groups")
     groups = [gid] if gid else sorted(store.groups(account, region))
     ext = None
     live = read_live(ec2, account, groups)
@@ -692,6 +841,14 @@ def push(store: Store, ec2, account: str, region: str, actor: str, gid: str = ""
                       f"back) or adopt (to keep them).")  # fmt: skip
     out = {"done": 0, "failed": []}
     todo = store.pending(account, region, gid)
+    if todo:
+        perms = check_permissions(ec2, sorted({g for g, _, _, _ in todo}))
+        with store:
+            store.record_permissions(account, region, actor, perms)
+        bad = _permission_problems(perms)
+        if bad:
+            raise Refused("nothing was changed: this identity cannot make every change (checked with DryRun):\n  "
+                          + "\n  ".join(bad))
     by_group: dict[str, list] = {}
     for g, op, rule, desc in todo:
         by_group.setdefault(g, []).append((op, rule, desc))
@@ -723,11 +880,15 @@ class TrackedEC2:
               "authorize_security_group_egress", "revoke_security_group_egress", "modify_security_group_rules")  # fmt: skip
 
     def __init__(self, ec2, region: str, tool: str, reason: str = "", store: Store | None = None,
-                 account: str = "", arn: str = "", strict: bool = True):  # fmt: skip
+                 account: str = "", arn: str = "", strict: bool = True, undo: bool = False):  # fmt: skip
         self._ec2, self._region, self._tool, self._reason = ec2, region, tool, reason
         self._store = store or Store()
         if not account:
             account, arn = account_of()
+        if not undo and self._store.mode(account) != ENFORCE:
+            raise SystemExit(f"{account} is in surveillance mode: {tool} would change security groups. Use the plan "
+                             f"as a report, or propose it (sg_db.py propose --plan …). When the organisation is ready: "
+                             f"sg_db.py check --regions {region}; sg_db.py mode enforce --account {account} --reason \"…\".")  # fmt: skip
         self._account, self._actor = account, actor_name(arn)
         ext = ensure_current(self._store, ec2, account, region, self._actor)
         if ext and not strict:
@@ -766,8 +927,9 @@ class TrackedEC2:
 
 def track(ec2, region: str, tool: str, reason: str = "", strict: bool = True) -> TrackedEC2:
     """Wrap ``ec2`` so every rule change lands in the database. ``strict`` refuses to start while AWS has
-    unreviewed external changes or the database has unapplied ones; revert and break-glass pass False."""
-    return TrackedEC2(ec2, region, tool, reason, strict=strict)
+    unreviewed external changes or the database has unapplied ones; revert and break-glass pass False.
+    Surveillance mode refuses every tool but a revert (undoing a change is always allowed)."""
+    return TrackedEC2(ec2, region, tool, reason, strict=strict, undo="revert" in tool)
 
 
 # ------------------------------------------------------------------------------------------ exec
@@ -983,10 +1145,17 @@ def cmd_import(args, store: Store) -> int:
     def one(t, account, sess, region):
         if store.imported(account, region):
             return [f"{account} {region}: already in the database (reconcile reads it again)"]
-        live = read_live(sess.client("ec2", region_name=region), account)
+        import sg_assets
+
+        ec2 = sess.client("ec2", region_name=region)
+        live = read_live(ec2, account)
+        assets = [] if args.no_assets else sg_assets.describe_assets(ec2)
         with store:
             n = store.import_region(account, region, live, t.actor, args.reason or "first import")
-        return [f"{account} {region}: {len(live)} group(s), {n} rule(s) imported"]
+            if assets:
+                sg_assets.observe_assets(store, account, region, assets, t.actor)
+        return [f"{account} {region}: {len(live)} group(s), {n} rule(s)" + (f", {len(assets)} asset(s)" if assets else "")
+                + " imported"]
 
     lines, failed = _for_each(args, store, one)
     print("\n".join(lines))
@@ -1000,7 +1169,7 @@ def cmd_reconcile(args, store: Store) -> int:
         out = []
         ec2 = sess.client("ec2", region_name=region)
         who = None if args.no_cloudtrail else _who_from_cloudtrail(sess, region)
-        changes = ensure_current(store, ec2, account, region, t.actor, who)
+        changes = ensure_current(store, ec2, account, region, t.actor, who, assets=not args.no_assets)
         pend = store.pending(account, region)
         found["ext"] += len(changes)
         found["pend"] += len(pend)
@@ -1095,6 +1264,9 @@ def cmd_exec(args, store: Store) -> int:
     if rid is None or store._request(rid)["status"] == "pending" or args.no_apply:
         print(_requested(store, rid, region))
         return 0
+    if store.mode(account) != ENFORCE:
+        print(_requested(store, rid, region) + f"\n{account} is in surveillance mode: recorded, not applied")
+        return 0
     res = push(store, ec2, account, region, t.actor, c["group"], args.reason, args.ticket)
     print(f"{res['done']} change(s) made in AWS and recorded" + (f"; {len(res['failed'])} failed" if res["failed"] else ""))
     return 1 if res["failed"] else 0
@@ -1153,8 +1325,13 @@ def cmd_requests(args, store: Store) -> int:
     for r in rows:
         print(f"#{r['id']} {r['status']:<9} {r['at']} {r['account']} {r['region']}  by {principal(r['proposer'])}"
               + (f"  [{r['ticket']}]" if r["ticket"] else "") + f"  {r['reason']}")  # fmt: skip
-        for c in r["changes"]:
-            print(f"    {'+' if c['op'] == 'add' else '-'} {c['group']}: {rule_text(_rule_tuple(c['rule']), c['rule'].get('description', ''))}")
+        if r["kind"] == "asset":
+            import sg_assets
+
+            print("    " + "\n    ".join(sg_assets.plan_text({**r["changes"], "account": r["account"]})))
+        else:
+            for c in r["changes"]:
+                print(f"    {'+' if c['op'] == 'add' else '-'} {c['group']}: {rule_text(_rule_tuple(c['rule']), c['rule'].get('description', ''))}")
         if r["decided_by"]:
             print(f"    {r['status']} by {principal(r['decided_by'])} at {r['decided_at']}" + (f": {r['note']}" if r["note"] else ""))
     if not rows:
@@ -1171,8 +1348,9 @@ def cmd_decide(args, store: Store) -> int:
             return 0
         store.decide(args.id, actor, args.cmd == "approve", args.note or "")
     r = store._request(args.id)
-    print(f"change request #{args.id} {r['status']}" + (f"; sg_db.py apply --account {r['account']} --region {r['region']} "
-                                                        f"makes it in AWS" if r["status"] == "approved" else ""))  # fmt: skip
+    nxt = (f"sg_db.py asset-apply {args.id}" if r["kind"] == "asset"
+           else f"sg_db.py apply --account {r['account']} --region {r['region']}")  # fmt: skip
+    print(f"change request #{args.id} {r['status']}" + (f"; {nxt} makes it in AWS" if r["status"] == "approved" else ""))
     return 0
 
 
@@ -1183,11 +1361,177 @@ def cmd_approvals(args, store: Store) -> int:
     return 0
 
 
+def cmd_mode(args, store: Store) -> int:
+    if args.state in (None, "show"):
+        modes = store.modes()
+        print(f"default: {modes.get(ANY_ACCOUNT, SURVEILLANCE)}")
+        names = store.account_names()
+        for account in sorted({a for a, _ in store.regions()} | (set(modes) - {ANY_ACCOUNT})):
+            print(f"{account}{' (' + names[account] + ')' if names.get(account) else ''}: {store.mode(account)}"
+                  + ("" if account in modes else " (default)"))  # fmt: skip
+        return 0
+    if not args.all and not args.account:
+        raise SystemExit("pass --account ID, or --all for the default of every account without its own mode")
+    account = ANY_ACCOUNT if args.all else args.account
+    if args.state == ENFORCE and not args.all:
+        checked = store.permissions(account)
+        if not checked:
+            raise SystemExit(f"check the permissions first: sg_db.py check --account {account} --regions R "
+                             f"(it proves, with DryRun, that this identity can change {account}'s groups)")  # fmt: skip
+        bad = [p["region"] for p in checked if not p["ok"]]
+        if bad and not args.anyway:
+            raise SystemExit(f"the last permission check failed in {', '.join(bad)}: fix the role, run sg_db.py check "
+                             f"again, or pass --anyway")  # fmt: skip
+    with store:
+        store.set_mode(account, args.state, _caller_actor(args), args.reason)
+    print(f"{'every account without its own mode' if args.all else account}: {args.state}")
+    return 0
+
+
+def cmd_check(args, store: Store) -> int:
+    """DryRun every call apply needs, on every group in the database for these accounts and regions."""
+    worst = {"bad": 0}
+
+    def one(t, account, sess, region):
+        ec2 = sess.client("ec2", region_name=region)
+        ensure_current(store, ec2, account, region, t.actor)
+        groups = sorted(store.groups(account, region))[: args.sample] if args.sample else sorted(store.groups(account, region))
+        assets = []
+        if args.assets:
+            import sg_assets
+
+            assets = [a for a in sg_assets.list_assets(store, account, region) if a["kind"] == "interface"][:1]
+        res = check_permissions(ec2, groups, assets)
+        with store:
+            store.record_permissions(account, region, t.actor, res)
+        bad = _permission_problems(res)
+        worst["bad"] += bool(bad)
+        head = f"{account} {region} ({store.mode(account)} mode): "
+        if not res:
+            return [head + "no security groups"]
+        if not bad:
+            return [head + f"can change all {len(groups)} group(s) checked" + (" and swap an asset's groups" if assets else "")]
+        return [head + f"{len(bad)} of {len(res)} cannot be changed:"] + [f"  {b}" for b in bad[:20]]
+
+    lines, failed = _for_each(args, store, one)
+    print("\n".join(lines))
+    return 2 if failed else 1 if worst["bad"] else 0
+
+
+def cmd_assets(args, store: Store) -> int:
+    import sg_assets
+
+    t = Targets(args)
+    account = args.account or t.account
+    ec2 = t.session(account).client("ec2", region_name=args.region)
+    ensure_current(store, ec2, account, args.region, t.actor, assets=True)
+    rows = sg_assets.list_assets(store, account, args.region)
+    if args.json:
+        print(json.dumps([{**a, "alone": sg_assets.why_not_alone(a) or "yes"} for a in rows], indent=1))
+        return 0
+    names = {g: v["name"] for g, v in store.groups(account, args.region).items()}
+    for a in rows:
+        why = sg_assets.why_not_alone(a)
+        print(f"{a['eni']}  {a['instance'] or '-':<20} {', '.join(a['ips'][:2]):<32} "
+              + ", ".join(f"{g} ({names.get(g, '?')})" for g in a["groups"])
+              + (f"\n    group of its own: no, {why}" if why else ""))  # fmt: skip
+    return 0
+
+
+def cmd_asset_plan(args, store: Store) -> int:
+    import sg_assets
+
+    if not (args.eni or args.instance):
+        raise SystemExit("pass --eni eni-… or --instance i-…")
+    with open(args.approved, encoding="utf-8") as fh:
+        approved = json.load(fh)
+    t = Targets(args)
+    account = args.account or t.account
+    ec2 = t.session(account).client("ec2", region_name=args.region)
+    plans = sg_assets.plan_asset(ec2, account, args.region, approved, args.eni or "", args.instance or "",
+                                 args.max_rules, by=t.actor)  # fmt: skip
+    for p in plans:
+        print("\n".join(sg_assets.plan_text(p)))
+    out = plans[0] if len(plans) == 1 else {"schema": "sg-tightener.asset-plans/v1", "plans": plans}
+    with open(args.out, "w", encoding="utf-8") as fh:
+        json.dump(out, fh, indent=1)
+    print(f"written to {args.out}: review it, then sg_db.py asset-propose --plan {args.out} --reason \"…\" "
+          f"(nothing in AWS has changed)")  # fmt: skip
+    return 0
+
+
+def cmd_asset_propose(args, store: Store) -> int:
+    import sg_assets
+
+    with open(args.plan, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    plans = doc.get("plans") or [doc]
+    actor = _caller_actor(args)
+    for p in plans:
+        with store:
+            rid = sg_assets.propose(store, p, actor, args.reason, args.ticket)
+        st = store._request(rid)["status"]
+        print(f"change request #{rid} for {p['eni']}: {st}" + ("; a different person approves it: sg_db.py approve "
+                                                              f"{rid}; then sg_db.py asset-apply {rid}" if st == "pending"
+                                                              else f"; sg_db.py asset-apply {rid} makes it in AWS"))  # fmt: skip
+    return 0
+
+
+def cmd_asset_apply(args, store: Store) -> int:
+    import sg_assets
+
+    r = store._request(args.id)
+    t = Targets(args)
+    ec2 = t.session(r["account"]).client("ec2", region_name=r["region"])
+    if not args.yes:
+        print("\n".join(sg_assets.plan_text({**r["changes"], "account": r["account"]})))
+        sg_tightener._confirm(f"create {r['changes']['group_name']} and move {r['changes']['eni']} onto it")
+    res = sg_assets.apply(store, ec2, r["account"], args.id, t.actor)
+    if res["swapped"]:
+        print(f"{r['changes']['eni']} now carries {res['group']} only (was {', '.join(res['before'])}); "
+              f"undo: sg_db.py asset-revert --region {r['region']} --eni {r['changes']['eni']} --reason \"…\"")  # fmt: skip
+        return 0
+    print(f"{res['group']} created but {r['changes']['eni']} NOT moved onto it: " + "; ".join(res["failed"]))
+    return 1
+
+
+def cmd_asset_revert(args, store: Store) -> int:
+    import sg_assets
+
+    t = Targets(args)
+    account = args.account or t.account
+    ec2 = t.session(account).client("ec2", region_name=args.region)
+    res = sg_assets.revert(store, ec2, account, args.region, args.eni, t.actor, args.reason)
+    print(f"{res['eni']} carries {', '.join(res['groups'])} again (was {', '.join(res['was'])})")
+    return 0
+
+
+def cmd_asset_log(args, store: Store) -> int:
+    import sg_assets
+
+    if not (args.eni or args.instance):
+        raise SystemExit("pass --eni eni-… or --instance i-…")
+    rows = sg_assets.asset_history(store, args.eni or "", args.instance or "")
+    if args.json:
+        print(json.dumps(rows, indent=1))
+        return 0
+    for e in rows:
+        d = e["detail"]
+        what = (f"{', '.join(d.get('before', []))} -> {', '.join(d.get('after', []))}" if "before" in d
+                else "first seen" if e["action"] == "assets-imported" else e["action"])  # fmt: skip
+        print(f"#{e['seq']} {e['at']} {e['origin']:<8} {e['action']:<22} {what}  {e['actor']}"
+              + (f"  [{e['ticket']}]" if e["ticket"] else "") + (f"  {e['reason']}" if e["reason"] else ""))  # fmt: skip
+    if not rows:
+        print("nothing recorded for it (sg_db.py import or reconcile records every asset's groups)")
+    return 0
+
+
 def cmd_create_group(args, store: Store) -> int:
     if not args.reason.strip():
         raise SystemExit("--reason is required")
     t = Targets(args)
     account = args.account or t.account
+    store.require_enforce(account, "create security groups")
     ec2 = t.session(account).client("ec2", region_name=args.region)
     ensure_current(store, ec2, account, args.region, t.actor)
     gid = ec2.create_security_group(GroupName=args.name, Description=args.description, VpcId=args.vpc)["GroupId"]
@@ -1273,8 +1617,10 @@ def _build_parser() -> argparse.ArgumentParser:
     q = sub.add_parser("import", help="take every group and rule in these accounts and regions into the database")
     org(q)
     q.add_argument("--reason", default="")
+    q.add_argument("--no-assets", action="store_true", help="do not record each network interface's groups")
     q = sub.add_parser("reconcile", help="record and report changes made in AWS outside the tool")
     org(q)
+    q.add_argument("--no-assets", action="store_true", help="do not check each network interface's groups")
     q.add_argument("--slack", default=os.environ.get("SG_REVIEW_SLACK_WEBHOOK", ""), help="post external changes here")
     q.add_argument("--no-cloudtrail", action="store_true", help="do not look up who made each change")
     for name in ("show", "diff"):
@@ -1322,6 +1668,46 @@ def _build_parser() -> argparse.ArgumentParser:
     q.add_argument("state", choices=("on", "off"))
     q.add_argument("--reason", required=True)
     add_profile_arg(q)
+    q = sub.add_parser("mode", help="surveillance (report only, the default) or enforce (apply allowed), per account")
+    q.add_argument("state", nargs="?", choices=("show", SURVEILLANCE, ENFORCE))
+    q.add_argument("--account")
+    q.add_argument("--all", action="store_true", help="set the default for every account without its own mode")
+    q.add_argument("--anyway", action="store_true", help="enforce although the last permission check failed")
+    q.add_argument("--reason", default="")
+    add_profile_arg(q)
+    q = sub.add_parser("check", help="prove with DryRun that this identity can change the groups (nothing changes)")
+    org(q)
+    q.add_argument("--assets", action="store_true", help="also check creating a group and swapping an asset's groups")
+    q.add_argument("--sample", type=int, default=0, help="check only this many groups per region (0: all)")
+    q = sub.add_parser("assets", help="every network interface, what it is attached to, and its groups")
+    where(q)
+    q.add_argument("--json", action="store_true")
+    aws(q)
+    q = sub.add_parser("asset-plan", help="the group one asset should have on its own, from its own flows (changes nothing)")
+    where(q)
+    q.add_argument("--eni")
+    q.add_argument("--instance")
+    q.add_argument("--approved", required=True, help="approved.json from sg_tightener analyse (approved/v2, with flows)")
+    q.add_argument("--max-rules", type=int, default=sg_tightener.DEFAULT_MAX_RULES)
+    q.add_argument("--out", default="asset-plan.json")
+    aws(q)
+    q = sub.add_parser("asset-propose", help="propose an asset plan as a change request")
+    q.add_argument("--plan", required=True)
+    reasoned(q)
+    add_profile_arg(q)
+    q = sub.add_parser("asset-apply", help="carry out an approved asset request (enforce mode)")
+    q.add_argument("id", type=int)
+    q.add_argument("--yes", action="store_true")
+    aws(q)
+    q = sub.add_parser("asset-revert", help="put an asset back on the groups it had before sg-tightener moved it")
+    where(q)
+    q.add_argument("--eni", required=True)
+    q.add_argument("--reason", required=True)
+    aws(q)
+    q = sub.add_parser("asset-log", help="every change to one asset's groups")
+    q.add_argument("--eni")
+    q.add_argument("--instance")
+    q.add_argument("--json", action="store_true")
     q = sub.add_parser("apply", help="make AWS match the database")
     where(q)
     q.add_argument("--group")
@@ -1364,10 +1750,14 @@ def main(argv=None) -> int:
                    "exec": cmd_exec, "apply": cmd_apply, "adopt": cmd_adopt, "create-group": cmd_create_group,
                    "log": cmd_log, "verify": cmd_verify, "propose": cmd_propose, "requests": cmd_requests,
                    "approve": cmd_decide, "reject": cmd_decide, "cancel": cmd_decide,
-                   "approvals": cmd_approvals}.get(args.cmd)  # fmt: skip
+                   "approvals": cmd_approvals, "mode": cmd_mode, "check": cmd_check,
+                   "assets": cmd_assets, "asset-plan": cmd_asset_plan, "asset-propose": cmd_asset_propose,
+                   "asset-apply": cmd_asset_apply, "asset-revert": cmd_asset_revert, "asset-log": cmd_asset_log}.get(args.cmd)  # fmt: skip
         try:
             if args.cmd in ("add", "remove"):
                 return cmd_add_remove(args, store, args.cmd)
+            if args.cmd == "mode" and args.state in (SURVEILLANCE, ENFORCE) and not args.reason.strip():
+                raise SystemExit("--reason is required to change the mode")
             return handler(args, store)
         except Refused as exc:
             raise SystemExit(str(exc))

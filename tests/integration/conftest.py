@@ -61,6 +61,7 @@ def aws(monkeypatch, tmp_path):
     store = sg_db.Store(tmp_path / "sg.db")  # one test identity: approvals off unless a test turns them on
     with store:
         store.set_approvals(False, "tests", "the tests act as one person")
+        store.set_mode("*", "enforce", "tests", "the tests apply")
     store.close()
     monkeypatch.chdir(tmp_path)  # manifests land here
     with moto.mock_aws():

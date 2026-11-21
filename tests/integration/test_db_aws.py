@@ -89,7 +89,7 @@ def test_log_and_verify_commands(estate, capsys):
     assert "audit trail intact" in capsys.readouterr().out
     assert sg_db.main(["log", "--since", "1h", "--json"]) == 0
     rows = json.loads(capsys.readouterr().out)
-    assert rows and {r["action"] for r in rows} == {"approvals-off", "group-imported"}
+    assert rows and {r["action"] for r in rows} == {"approvals-off", "mode-enforce", "group-imported", "assets-imported"}
 
 
 def test_tracked_client_records_tool_changes_and_refuses_unreviewed_drift(estate):
