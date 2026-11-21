@@ -426,6 +426,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--out", default="report.xlsx")
     p.add_argument("--json", default="report.json")
     p.add_argument("--max-workers", type=int, default=16)
+    p.add_argument("--securityhub", action="store_true",
+                   help="also send each account's findings to its AWS Security Hub (ASFF)")
+    p.add_argument("--securityhub-state", default="securityhub-state.json",
+                   help="what was sent last time, so findings no longer open are archived")
     add_profile_arg(p)
     args = p.parse_args(argv)
     use_profile(args.profile)
@@ -486,7 +490,45 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         LOG.info("pandas not installed; wrote JSON only at %s", args.json)
 
+    if args.securityhub:
+        send_to_securityhub(report["findings"], sessions, args.securityhub_state, regions)
     return exit_code(summary, errors)
+
+
+def send_to_securityhub(rows: list[dict], sessions: dict, state_path: str, regions: Sequence[str] = ()) -> dict:
+    """Each account's findings to its own Security Hub (BatchImportFindings must come from that account), with
+    the session assumed in it; findings sent last time that are gone are archived."""
+    import sg_securityhub
+
+    try:
+        with open(state_path, encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, ValueError):
+        state = {}
+    now = sg_securityhub._now()
+    by_acct: dict[str, list[dict]] = {}
+    for r in rows:
+        by_acct.setdefault(r["account_id"], []).append(sg_securityhub.from_ou_finding(r, now))
+    total = {"sent": 0, "failed": 0, "archived": 0}
+    for aid, sess in sessions.items():
+        grouped = sg_securityhub.by_region(by_acct.get(aid, []))
+        for region in sorted(set(grouped) | set(regions)):
+            todo = sg_securityhub.plan(grouped.get(region, []), state, f"{aid}/{region}", now)
+            if not todo:
+                continue
+            try:
+                res = sg_securityhub.send(sess, region, todo)
+            except Exception as exc:  # noqa: BLE001 - one account's Security Hub must not stop the others
+                LOG.warning("%s/%s: not sent to Security Hub: %s", aid, region, exc)
+                continue
+            total["sent"] += res["sent"]
+            total["failed"] += res["failed"]
+            total["archived"] += sum(1 for f in todo if f["RecordState"] == "ARCHIVED")
+    with open(state_path, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=1)
+    LOG.info("Security Hub: %d finding(s) sent, %d archived, %d refused", total["sent"], total["archived"],
+             total["failed"])
+    return total
 
 
 if __name__ == "__main__":

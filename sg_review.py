@@ -64,6 +64,7 @@ from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
 import sg_ipintel
+import sg_securityhub
 import sg_tightener
 
 LOG = logging.getLogger("sg_review")
@@ -3095,6 +3096,10 @@ def watch_once(sess, args, now: float | None = None) -> dict:
             print(text, end="")
         out["posted"] = len(new)
     save_watch(account, state)
+    if getattr(args, "securityhub", False):
+        res = push_hub(sess, account, hub_findings(account, rep), regions)
+        out["hub"] = res
+        LOG.info("Security Hub: %d sent, %d archived, %d refused", res["sent"], res["archived"], res["failed"])
     LOG.info("%s: %d slice(s) read (%s), %d item(s) need attention, %d new posted", account, out["read"],
              _gb(out["bytes"]), out["items"], out["posted"])  # fmt: skip
     return out
@@ -3119,6 +3124,77 @@ def cmd_watch(args) -> int:
         time.sleep(args.every * 60)
         if not args.offline:
             sg_ipintel.refresh()
+
+
+# --------------------------------------------------------------------------------------- Security Hub
+def hub_findings(account: str, rep: dict, now: str | None = None) -> list[dict]:
+    """Everything worth tracking in Security Hub from one report: the "Needs attention" items, and every
+    PrivateLink, exposure and hygiene finding down to low (not the info ones)."""
+    out, seen = [], set()
+    for it in [*rep.get("attention", []), *rep.get("drift", []), *rep.get("privatelink", []), *rep.get("posture", [])]:
+        if it["sev"] == "info":
+            continue
+        k = f"{it.get('kind', '')}|{attention_id(it)}"
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(sg_securityhub.from_review_item(account, it, k, now))
+    return out
+
+
+def _hub_path(account: str) -> Path:
+    if not _ACCT_RE.fullmatch(account or ""):
+        raise KeyError(account)
+    return _dir() / f"{account}.securityhub.json"
+
+
+def push_hub(sess, account: str, findings: list[dict], regions: Sequence[str] = ()) -> dict:
+    """Send `findings` for `account`, archiving the ones sent before that are gone; per region, as Security Hub
+    is regional. The state is kept in <account>.securityhub.json."""
+    try:
+        state = json.loads(_hub_path(account).read_text())
+    except (OSError, ValueError):
+        state = {}
+    now = sg_securityhub._now()
+    grouped = sg_securityhub.by_region(findings)
+    before = {scope.split("/", 1)[1] for scope in (state.get("securityhub") or {}) if scope.startswith(account + "/")}
+    total = {"sent": 0, "failed": 0, "archived": 0, "errors": []}
+    for region in sorted(set(grouped) | before | set(regions)):
+        todo = sg_securityhub.plan(grouped.get(region, []), state, f"{account}/{region}", now)
+        if not todo:
+            continue
+        res = sg_securityhub.send(sess, region, todo)
+        total["archived"] += sum(1 for f in todo if f["RecordState"] == "ARCHIVED")
+        for k in ("sent", "failed", "errors"):
+            total[k] += res[k]
+    path = _hub_path(account)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f, indent=1)
+    os.replace(tmp, path)
+    if total["failed"]:
+        LOG.warning("Security Hub refused %d finding(s): %s", total["failed"], "; ".join(total["errors"][:3]))
+    return total
+
+
+def cmd_securityhub(args) -> int:
+    account = _pick_account(args.account)
+    doc = load(account)
+    if not doc or not doc["chunks"]:
+        raise SystemExit(f"nothing read for {account}: run `sg_review.py read` first")
+    if not args.offline:
+        sg_ipintel.refresh()
+    onprem, internal, names = _report_opts(args)
+    rep = build(doc, args.range, onprem, internal, names)
+    findings = hub_findings(account, rep)
+    if args.out:
+        Path(args.out).write_text(json.dumps(findings, indent=1) + "\n")
+        LOG.info("wrote %d finding(s) in ASFF to %s (nothing sent)", len(findings), args.out)
+        return 0
+    res = push_hub(_session(args.profile), account, findings, list(doc["regions"]))
+    LOG.info("Security Hub: %d finding(s) sent, %d archived (no longer open), %d refused", res["sent"],
+             res["archived"], res["failed"])  # fmt: skip
+    return 1 if res["failed"] else 0
 
 
 # ----------------------------------------------------------------------------------------- org roll-up
@@ -3276,7 +3352,7 @@ def cmd_org(args) -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = list(failed)
-    for a, _, doc, _, _ in plans:
+    for a, s, doc, _, _ in plans:
         if not any(c["st"] in ("ok", "cut") for c in doc["chunks"]):
             rows.append(org_row(a["Id"], doc.get("name", ""), None, "no flow logs", error="no flow log read in "
                                 + ", ".join(regions)))  # fmt: skip
@@ -3286,6 +3362,13 @@ def cmd_org(args) -> int:
         write_page(data, str(out_dir / page))
         key = args.range if args.range in data["ranges"] else data["default"]
         rows.append(org_row(a["Id"], doc.get("name", ""), data["ranges"][key], "ok", page))
+        if getattr(args, "securityhub", False):
+            try:  # each account's findings go to its own Security Hub, sent with the role assumed in it
+                res = push_hub(s, a["Id"], hub_findings(a["Id"], data["ranges"][key]), regions)
+                LOG.info("%s: Security Hub %d sent, %d archived, %d refused", a["Id"], res["sent"], res["archived"],
+                         res["failed"])  # fmt: skip
+            except (ClientError, BotoCoreError) as exc:
+                LOG.warning("%s: not sent to Security Hub: %s", a["Id"], describe_error(exc))
     summary = org_summary(rows)
     (out_dir / "org.json").write_text(json.dumps(summary, indent=1))
     (out_dir / "index.html").write_text(org_page(summary, args.range))
@@ -3343,6 +3426,8 @@ def _build_parser() -> argparse.ArgumentParser:
         q.add_argument("--internal", default="", help="your other accounts' ranges, as for report")
         q.add_argument("--names", help="names file, as for report")
         q.add_argument("--offline", action="store_true", help="do not refresh the public address lists")
+        q.add_argument("--securityhub", action="store_true", help="also send the findings to AWS Security Hub "
+                       "(ASFF; findings no longer open are archived)")
     w.add_argument("--name", help="a name for the account in the alerts (default: as read before)")
     w.add_argument("--slack", help="Slack incoming-webhook URL (or SG_REVIEW_SLACK_WEBHOOK)")
     w.add_argument("--email-to", help="comma-separated addresses to email (SMTP; see --smtp-host)")
@@ -3370,6 +3455,17 @@ def _build_parser() -> argparse.ArgumentParser:
     f = sub.add_parser("forget", help="delete what was read for an account")
     f.add_argument("--account")
     f.set_defaults(fn=cmd_forget)
+    h = sub.add_parser("securityhub", help="send an account's findings to AWS Security Hub (ASFF), archiving the "
+                       "ones no longer open")
+    h.add_argument("--account", help="the account read (default: the only one)")
+    h.add_argument("--range", default="1w", help="the range the findings come from: 24h, 1w, 1m, 3m or 6m (default 1w)")
+    h.add_argument("--profile", help="AWS profile to send with (default: the usual credential chain)")
+    h.add_argument("--onprem", default="", help="data centre ranges to name, as for report")
+    h.add_argument("--internal", default="", help="your other accounts' ranges, as for report")
+    h.add_argument("--names", help="names file, as for report")
+    h.add_argument("--offline", action="store_true", help="do not refresh the public address lists")
+    h.add_argument("--out", help="write the findings (ASFF JSON) to this file instead of sending them")
+    h.set_defaults(fn=cmd_securityhub)
     return p
 
 
