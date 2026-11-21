@@ -27,7 +27,11 @@
         "ec2:DescribeVpcEndpointServiceConfigurations",
         "elasticloadbalancing:DescribeLoadBalancers",
         "transfer:ListServers",
-        "transfer:DescribeServer"
+        "transfer:DescribeServer",
+        "ec2:DescribeVpnConnections",
+        "ec2:GetManagedPrefixListEntries",
+        "cloudtrail:LookupEvents",
+        "iam:ListAccountAliases"
       ],
       "Resource": "*"
     },

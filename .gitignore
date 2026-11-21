@@ -21,3 +21,6 @@ transfer_report.json
 
 # sg_viz output: describes your network
 viz-data*.json
+
+# sg_review output: describes your network
+sg-review*.html

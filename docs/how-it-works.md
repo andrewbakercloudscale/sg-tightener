@@ -261,6 +261,51 @@ per-bucket timeline, and the security-group rules that allow it.
   connection is marked `blocked` if the plan would stop it, or `kept` with the
   rule that still allows it.
 
+### `sg_review.py`: one account's rules against months of traffic
+
+`sg_review` answers the question to ask before a `plan`: what is each rule
+used for, and by whom? It reads one account (the credentials' own) and writes
+one HTML page that needs no server and calls nothing.
+
+**Reading.** Per region it takes a snapshot (groups and rules, prefix lists
+resolved; interfaces with their addresses, delegated prefixes and groups;
+VPCs; network ACLs; VPN static routes; flow logs) and 90 days of inbound rule
+changes from CloudTrail. Flow logs in CloudWatch Logs are then read in UTC
+slices: hourly for the last day, six-hourly for the last week, daily beyond.
+Each slice runs two Logs Insights queries, one for accepted inbound
+connections and refused private ones (by source, target, interface, protocol
+and port), one for refused internet sources, one row each so scanners cannot
+fill the answer. A slice that returns 10,000 rows is split in half down to an
+hour, as `analyse` does; one still full at an hour is marked `cut`, and the
+rules in its region are reported as Incomplete. Ports from 32768 up are folded
+into one, since they are mostly replies to the account's own connections.
+
+**Three timelines.** *Refused*: distinct sources turned away per period, with
+what refused each (a network ACL entry, the security group, or a rule since
+added). *Over-provisioned*: for each group whose every interface is logged,
+the addresses its rules allowed at that time less every address seen anywhere
+in the account, summed; the rules at each time are worked back from today's
+through CloudTrail's changes, and a change made by rule id (whose earlier value
+CloudTrail does not record) freezes that group's history and is said so.
+*Active*: distinct sources let in, split by whether they were also seen in the
+last 24 hours, so DR tests and monthly batches stand out before a tightening
+removes them.
+
+**Rule status.** A rule is called Unused or Tighten only with 30 days of
+evidence or more (Too early otherwise). Tighten applies to a private rule wider
+than /24 (`plan`'s default threshold) or a public range, with never-seen addresses; the
+suggested ranges come from the same `collapse_ips_to_cidrs` that `plan` uses,
+clipped to the original rule, keeping sources seen on interfaces since deleted
+in the same VPC. The page offers the evidence as approved.json per region, so
+`plan` can be run against exactly what was reviewed.
+
+**Naming.** A source is internal (this account's VPCs, or `--internal`
+ranges), data centre (`--onprem`, VPN routes, other private space), AWS (from
+ip-ranges.json, with the service), SaaS (providers' published ranges, then
+known provider AS numbers) or another network by AS number, owner and country
+(iptoasn.com). The lists are downloaded once a day (a week for AS numbers) and
+looked up locally; no address is sent anywhere.
+
 ## Known limitations
 
 Read these before you apply a plan; they are the reason the runbook says to

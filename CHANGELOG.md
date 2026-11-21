@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **New: `sg_review.py`**, moved here from the AWS Cloud Risk Review console,
+  where it was the Cloud Assurance tab "Security Group Review". `read` reads
+  one account's security groups, interfaces, network ACLs, VPN routes, flow
+  logs and 90 days of CloudTrail rule changes, then its flow logs by Logs
+  Insights a slice at a time (hourly, six-hourly, daily, up to 180 days),
+  kept in `~/.sg-tightener/review` so a later read fills only the gap; the
+  cost is estimated from earlier reads and confirmed first. `report` writes one
+  self-contained HTML page with no server and no network: refused sources,
+  over-provisioned addresses and active sources over time, each source named
+  (internal, data centre, AWS service, SaaS, AS number, from lists downloaded to
+  `~/.sg-tightener/ipintel`), every rule's status (Tighten, Unused, Open to all,
+  Too early, Incomplete, Not logged, In use) with ranges from `plan`'s own
+  fitting, and CSV and approved.json downloads. `approved` writes the
+  approved.json from the command line; `demo` writes a made-up account's page.
+  The console's own sign-in is not needed: credentials come from the usual
+  chain (`--profile`, `aws sso login`). `iam-policy.json` gains
+  `ec2:DescribeVpnConnections`, `ec2:GetManagedPrefixListEntries`,
+  `cloudtrail:LookupEvents` and `iam:ListAccountAliases`.
+
 ## 2.3.0 - 2026-11-20
 
 - **Change (`plan`, `sg_extend`): exact rule fitting.** When observed

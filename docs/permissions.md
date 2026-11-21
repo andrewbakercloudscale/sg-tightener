@@ -25,6 +25,7 @@ the people who apply changes, and only for the change window.
 | `sg_compact` | `ec2:DescribeSecurityGroups`; the write statement to apply |
 | `sg_ou_report` | In the management (or delegated admin) account: `organizations:List*`, `organizations:DescribeOrganization`, `sts:GetCallerIdentity`, `sts:AssumeRole`. In each member account, via the assumed role: `ec2:DescribeSecurityGroups`, `ec2:DescribeNetworkAcls` |
 | `sg_transfer_audit` | As `sg_ou_report`, plus in each member account `transfer:ListServers`, `transfer:DescribeServer`, `ec2:DescribeVpcEndpoints` |
+| `sg_review read` | `sts:GetCallerIdentity`; `ec2:DescribeSecurityGroups`, `ec2:DescribeNetworkInterfaces`, `ec2:DescribeVpcs`, `ec2:DescribeNetworkAcls`, `ec2:DescribeVpnConnections`, `ec2:DescribeFlowLogs`, `ec2:GetManagedPrefixListEntries`; `cloudtrail:LookupEvents` (rule changes; without it earlier rules are taken as today's); `logs:StartQuery`, `logs:GetQueryResults`, `logs:StopQuery`; optional `iam:ListAccountAliases` for the account's name. `report`, `approved` and `demo` make no AWS call |
 
 `Resource` is `*` because these describe and query calls do not support
 resource-level restrictions. To limit where writes can land, add a condition

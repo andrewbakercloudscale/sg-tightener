@@ -170,6 +170,40 @@ Large windows are split under the Logs Insights 10,000-row limit, as in `analyse
 
 ---
 
+## `sg_review.py`
+
+One account at a time, read-only. `read` calls AWS; `report`, `approved` and
+`demo` work from what was read and make no AWS call. Everything read is kept
+under `--data-dir` (default `~/.sg-tightener`): `review/<account>.json.gz`
+(mode 0700 directory) and the address-naming lists in `ipintel/`.
+
+```bash
+python sg_review.py read     --regions eu-west-1,us-east-1 [--days 1] [--profile P] [--yes]
+python sg_review.py report   [--account ID] [--onprem "10.200.0.0/16 Johannesburg DC"] \
+                             [--internal "10.40.0.0/16 Payments prod"] [--offline] [--out FILE]
+python sg_review.py approved --region eu-west-1 [--account ID] [--out approved.json]
+python sg_review.py demo     [--offline] [--out sg-review-demo.html]
+python sg_review.py forget   --account ID
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `read --regions` | required | Regions to read. The account is the credentials' own |
+| `read --days` | `1` | `1`, `7`, `30`, `90` or `180`. Only time not read before is read. Start with `1`: it measures the bytes per second, and longer reads are estimated from it |
+| `read --profile` | credential chain | AWS profile, for example an `aws sso login` one |
+| `read --name` | account alias | Name shown in the report |
+| `read --yes` | off | Skip the typed `yes` after the cost estimate |
+| `report --account` | the only one read | Which account's read to report |
+| `report --onprem` | | Data centre ranges to name, comma separated, each `CIDR name` |
+| `report --internal` | | Your other accounts' ranges, named like `--onprem`, counted as internal |
+| `report --offline` | off | Do not refresh the AWS, SaaS and AS-number lists (refreshed daily, weekly for AS numbers) |
+| `report --out` | `sg-review-<account>.html` | The page: open it in any browser, offline. It describes your network: treat it as confidential |
+
+Ctrl-C during `read` stops after the slices in flight and keeps what was read.
+`read` exits 1 if not confirmed, 130 when stopped.
+
+---
+
 ## Tests
 
 ```bash
