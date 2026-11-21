@@ -2,6 +2,9 @@
 
 import time
 
+import pytest
+
+import sg_ipintel as ipintel
 import sg_review
 import sg_review_demo
 from sg_review import internet_path, posture_findings
@@ -149,8 +152,18 @@ def test_internet_path_reasons():
     assert internet_path(d, eni([], public="1.1.1.1"), r) == (True, "1.1.1.1 is public and routed to an internet gateway")
     assert internet_path(d, eni([]), r, v6=True)[0] is False
 
+@pytest.fixture
+def tor_list(tmp_path):
+    """The demo's Tor relay on the Tor exit list, whatever lists this computer has downloaded."""
+    old = ipintel.DATA_DIR
+    ipintel.set_data_dir(tmp_path)
+    (tmp_path / "ipintel").mkdir()
+    (tmp_path / "ipintel" / "tor.json").write_text('["185.220.101.33"]')
+    yield
+    ipintel.set_data_dir(old)
 
-def test_demo_shows_every_area_and_joins_needs_attention():
+
+def test_demo_shows_every_area_and_joins_needs_attention(tor_list):
     rep = sg_review.build(sg_review_demo.build_doc(sg_review_demo.ACCOUNT, time.time(), 30), "1m",
                           internal=sg_review_demo.INTERNAL, names=None)
     areas = {p["area"] for p in rep["posture"]}

@@ -2,6 +2,9 @@
 
 import time
 
+import pytest
+
+import sg_ipintel as ipintel
 import sg_review
 import sg_review_demo
 import sg_securityhub as hub
@@ -40,8 +43,18 @@ def test_plan_archives_findings_that_are_gone_and_only_once():
     assert second[1]["Workflow"] == {"Status": "RESOLVED"} and second[1]["Title"] == "B"
     assert [f["Id"] for f in hub.plan([f1], state, "1/eu-west-1", NOW)] == [f1["Id"]]
 
+@pytest.fixture
+def tor_list(tmp_path):
+    """The demo's Tor relay on the Tor exit list, whatever lists this computer has downloaded."""
+    old = ipintel.DATA_DIR
+    ipintel.set_data_dir(tmp_path)
+    (tmp_path / "ipintel").mkdir()
+    (tmp_path / "ipintel" / "tor.json").write_text('["185.220.101.33"]')
+    yield
+    ipintel.set_data_dir(old)
 
-def test_review_findings_from_the_demo():
+
+def test_review_findings_from_the_demo(tor_list):
     rep = sg_review.build(sg_review_demo.build_doc(sg_review_demo.ACCOUNT, time.time(), 7), "1w",
                           internal=sg_review_demo.INTERNAL)
     fs = sg_review.hub_findings(sg_review_demo.ACCOUNT, rep, NOW)
