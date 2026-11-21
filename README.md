@@ -56,9 +56,10 @@ security group's limited rule slots as a **budget to spend well**:
 
 1. **Take security group sources out of Terraform.** Keep the security groups themselves (and their
    attachments) in code, but stop hard-coding the source CIDR blocks, for example with
-   `lifecycle { ignore_changes = [ingress] }` or by moving the rules to separately managed
-   `aws_vpc_security_group_ingress_rule` resources you leave to this tool. The rules become living
-   data, refreshed from evidence.
+   `lifecycle { ignore_changes = [ingress] }`, or by keeping only security-group references and
+   deliberate public rules as `aws_vpc_security_group_ingress_rule` resources and leaving private
+   CIDR sources to this tool. The rules become living data, refreshed from evidence.
+   [How, without an outage](docs/terraform.md).
 2. **Let evidence decide who gets in.** VPC flow logs show which source addresses actually reached
    which network interface, on which port, over weeks or months. Only those are kept.
 3. **Let an algorithm spend the rule budget.** When the real callers do not fit in the rules a group
@@ -244,6 +245,7 @@ python sg_tightener.py revert --manifest manifest-<timestamp>.json
 
 | Document | Read it when |
 |---|---|
+| [Taking security group sources out of Terraform](docs/terraform.md) | Your security groups are in Terraform: how to stop it putting broad blocks back, and migrate without an outage |
 | [How it works](docs/how-it-works.md) | You want to understand the algorithm and the safety design |
 | [Runbook](docs/runbook.md) | You are about to tighten a real account, or are mid-incident |
 | [CLI reference](docs/cli-reference.md) | You need every flag and default for every tool |
