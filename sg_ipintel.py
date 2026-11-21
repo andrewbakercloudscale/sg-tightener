@@ -7,8 +7,11 @@ from your estate ever leaves the machine:
 * AWS's own ranges (ip-ranges.json), with the service and region of each;
 * the ranges SaaS providers publish (Cloudflare, GitHub, Google, Atlassian, Okta, Datadog, Fastly, Oracle Cloud,
   plus the networks of Zscaler, Salesforce, Akamai and others by AS number);
-* every routed IPv4 range with its AS number, owner and country (iptoasn.com, public domain);
+* every routed IPv4 and IPv6 range with its AS number, owner and country (iptoasn.com, public domain);
 * the Tor Project's list of Tor exit relays (check.torproject.org/torbulkexitlist).
+
+IPv6 addresses are named the same way, from the IPv6 ranges in the same lists. Address-space counts (how many
+addresses a rule opens) stay IPv4: an IPv6 rule's size says nothing useful.
 
 AWS's list, the SaaS lists and the Tor list are read again after a day, the AS list after a week. Until a list has been read
 once, a few well-known ranges stand in, so the report still labels the commonest sources. ``refresh`` downloads;
@@ -40,11 +43,13 @@ DATA_DIR = Path.home() / ".sg-tightener"
 DAY = 86400
 AWS_URL = "https://ip-ranges.amazonaws.com/ip-ranges.json"
 ASN_URL = "https://iptoasn.com/data/ip2asn-v4.tsv.gz"
+ASN6_URL = "https://iptoasn.com/data/ip2asn-v6.tsv.gz"
 TOR_URL = "https://check.torproject.org/torbulkexitlist"
 # (name, url, how to read it). GitHub Actions runs on Azure's shared ranges, so it is left out: it would
 # name every Azure address GitHub.
 SAAS_FEEDS = [
     ("Cloudflare", "https://www.cloudflare.com/ips-v4", "lines"),
+    ("Cloudflare", "https://www.cloudflare.com/ips-v6", "lines"),
     ("GitHub", "https://api.github.com/meta", "github"),
     ("Google Cloud (a customer's server)", "https://www.gstatic.com/ipranges/cloud.json", "google"),
     ("Google", "https://www.gstatic.com/ipranges/goog.json", "google"),
@@ -237,7 +242,7 @@ def feed_group(name: str) -> str:
 SEED_SAAS = [
     ("104.16.0.0/13", "Cloudflare"), ("172.64.0.0/13", "Cloudflare"), ("140.82.112.0/20", "GitHub (hooks)"),
     ("192.30.252.0/22", "GitHub (hooks)"), ("165.225.0.0/17", "Zscaler"), ("13.108.0.0/14", "Salesforce"),
-    ("8.8.8.0/24", "Google"),
+    ("8.8.8.0/24", "Google"), ("2606:4700::/32", "Cloudflare"), ("2001:4860::/32", "Google"),
 ]  # fmt: skip
 SEED_AWS = [
     ("54.228.16.0/26", "ROUTE53_HEALTHCHECKS", "eu-west-1"), ("54.232.40.64/26", "ROUTE53_HEALTHCHECKS", "sa-east-1"),
@@ -250,6 +255,9 @@ SEED_ASN = [
     ("140.82.112.0", "140.82.127.255", 36459, "US", "GITHUB"),
     ("104.16.0.0", "104.23.255.255", 13335, "US", "CLOUDFLARENET"),
     ("13.108.0.0", "13.111.255.255", 14340, "US", "SALESFORCE"),
+]  # fmt: skip
+SEED_ASN6 = [
+    ("2602:80d:1000::", "2602:80d:100f:ffff:ffff:ffff:ffff:ffff", 398324, "US", "CENSYS-ARIN-01"),
 ]  # fmt: skip
 # AWS service names that are more telling than AMAZON, the catch-all every range also carries.
 AWS_SERVICE = {
@@ -292,7 +300,7 @@ def _nets(values) -> list[str]:
             n = ipaddress.ip_network(str(v).strip(), strict=False)
         except ValueError:
             continue
-        if n.version == 4 and n.prefixlen:
+        if n.prefixlen:
             out.append(str(n))
     return out
 
@@ -316,25 +324,25 @@ def parse_feed(name: str, how: str, raw: bytes) -> list[tuple[str, str]]:
     if how == "github":
         return [(c, f"GitHub ({k})") for k in GITHUB_KEYS for c in _nets(doc.get(k) or [])]
     if how == "google":
-        return [(c, name) for c in _nets(p.get("ipv4Prefix") for p in doc.get("prefixes") or [])]
+        return [(c, name) for c in _nets(p.get("ipv4Prefix") or p.get("ipv6Prefix") for p in doc.get("prefixes") or [])]
     if how == "atlassian":
         return [(c, name) for c in _nets(i.get("cidr") for i in doc.get("items") or [])]
     if how == "datadog":
         return [(c, f"Datadog ({k})") for k, v in doc.items() if isinstance(v, dict)
-                for c in _nets(v.get("prefixes_ipv4") or [])]  # fmt: skip
+                for c in _nets((v.get("prefixes_ipv4") or []) + (v.get("prefixes_ipv6") or []))]  # fmt: skip
     found: list = []
     _walk(doc, found)
     return [(c, name) for c in found]
 
 
 def parse_tor(raw: bytes) -> list[str]:
-    """The exit relays' IPv4 addresses, one a line; anything else is skipped."""
+    """The exit relays' addresses (IPv4 and IPv6), one a line; anything else is skipped."""
     out = []
     for line in raw.decode("utf-8", "replace").splitlines():
         line = line.strip()
         try:
-            if line and not line.startswith("#") and ipaddress.ip_address(line).version == 4:
-                out.append(line)
+            if line and not line.startswith("#"):
+                out.append(str(ipaddress.ip_address(line)))
         except ValueError:
             continue
     return out
@@ -366,6 +374,8 @@ def refresh(force: bool = False) -> dict:
         try:
             doc = json.loads(_get(AWS_URL))
             rows = [(p["ip_prefix"], p.get("service", ""), p.get("region", "")) for p in doc.get("prefixes") or []]
+            rows += [(p["ipv6_prefix"], p.get("service", ""), p.get("region", ""))
+                     for p in doc.get("ipv6_prefixes") or [] if p.get("ipv6_prefix")]  # fmt: skip
             (d / "aws.json").write_text(json.dumps(rows))
             got["aws"] = len(rows)
         except (OSError, ValueError, KeyError) as exc:
@@ -396,6 +406,14 @@ def refresh(force: bool = False) -> dict:
             got["asn"] = True
         except (OSError, ValueError, EOFError) as exc:
             log.info("AS number list not read: %s", exc)
+    if force or not _fresh(d / "asn6.tsv.gz", 7 * DAY):
+        try:
+            raw = _get(ASN6_URL, 90)
+            parse_asn(raw)[:1]
+            (d / "asn6.tsv.gz").write_bytes(raw)
+            got["asn6"] = True
+        except (OSError, ValueError, EOFError) as exc:
+            log.info("IPv6 AS number list not read: %s", exc)
     if got:
         with _lock:
             _memo.clear()
@@ -403,39 +421,45 @@ def refresh(force: bool = False) -> dict:
 
 
 class PrefixIndex:
-    """Longest-prefix match over many CIDRs: one dict per prefix length."""
+    """Longest-prefix match over many CIDRs (IPv4 and IPv6): one dict per address family and prefix length."""
 
     def __init__(self, rows) -> None:
-        self.by_len: dict[int, dict[int, object]] = {}
+        self.by_len: dict[int, dict[int, object]] = {}  # IPv4
+        self.by_len6: dict[int, dict[int, object]] = {}
         for cidr, payload in rows:
             try:
-                n = ipaddress.IPv4Network(cidr, strict=False)
+                n = ipaddress.ip_network(cidr, strict=False)
             except ValueError:
                 continue
-            self.by_len.setdefault(n.prefixlen, {}).setdefault(int(n.network_address), payload)
+            (self.by_len if n.version == 4 else self.by_len6).setdefault(n.prefixlen, {}).setdefault(
+                int(n.network_address), payload)
         self.lens = sorted(self.by_len, reverse=True)
+        self.lens6 = sorted(self.by_len6, reverse=True)
 
-    def get(self, ip: int):
-        hit = self.match(ip)
+    def get(self, ip: int, version: int = 4):
+        hit = self.match(ip, version)
         return hit[1] if hit else None
 
-    def match(self, ip: int) -> tuple[str, object] | None:
+    def match(self, ip: int, version: int = 4) -> tuple[str, object] | None:
         """(the longest published prefix holding ip, its payload), or None."""
-        for plen in self.lens:
-            net = ip >> (32 - plen) << (32 - plen) if plen else 0
-            hit = self.by_len[plen].get(net)
+        bits, lens, by_len = (32, self.lens, self.by_len) if version == 4 else (128, self.lens6, self.by_len6)
+        cls = ipaddress.IPv4Address if version == 4 else ipaddress.IPv6Address
+        for plen in lens:
+            net = ip >> (bits - plen) << (bits - plen) if plen else 0
+            hit = by_len[plen].get(net)
             if hit is not None:
-                return f"{ipaddress.IPv4Address(net)}/{plen}", hit
+                return f"{cls(net)}/{plen}", hit
         return None
 
     def intervals(self) -> list[tuple[int, int]]:
+        """The IPv4 addresses covered, as intervals (address-space counts are IPv4 only)."""
         return merge([(k, k + (1 << (32 - p)) - 1) for p, d in self.by_len.items() for k in d])
 
 
 class Intel:
     """Every lookup, built once from the downloaded lists (or the stand-ins)."""
 
-    def __init__(self, aws_rows, saas_rows, asn_rows, tor_rows=()) -> None:
+    def __init__(self, aws_rows, saas_rows, asn_rows, tor_rows=(), asn6_rows=()) -> None:
         # The most telling service wins: AMAZON is every range's catch-all, so it ranks last.
         best: dict[str, tuple] = {}
         for cidr, svc, region in aws_rows:
@@ -448,16 +472,28 @@ class Intel:
         self.asn_start = array("I")
         self.asn_end = array("I")
         self.asn_meta: list[tuple] = []
-        for start, end, asn, cc, owner in sorted(asn_rows, key=lambda r: int(ipaddress.IPv4Address(r[0]))):
-            try:
-                s, e = int(ipaddress.IPv4Address(start)), int(ipaddress.IPv4Address(end))
-            except ValueError:
+        for start, end, asn, cc, owner in sorted(asn_rows, key=lambda r: _v4(r[0]) or 0):
+            s, e = _v4(start), _v4(end)
+            if s is None or e is None:
                 continue
             self.asn_start.append(s)
             self.asn_end.append(e)
             self.asn_meta.append((asn, cc, owner))
+        # IPv6: 128-bit numbers do not fit an array, so plain lists
+        self.asn6_start: list[int] = []
+        self.asn6_end: list[int] = []
+        self.asn6_meta: list[tuple] = []
+        for start, end, asn, cc, owner in sorted(asn6_rows, key=lambda r: _v6(r[0]) or 0):
+            s, e = _v6(start), _v6(end)
+            if s is None or e is None:
+                continue
+            self.asn6_start.append(s)
+            self.asn6_end.append(e)
+            self.asn6_meta.append((asn, cc, owner))
         self.tor = {n for n in map(_v4, tor_rows) if n is not None}
-        self.counts = {"aws": len(best), "saas": len(saas_rows), "asn": len(self.asn_meta), "tor": len(self.tor)}
+        self.tor6 = {n for n in map(_v6, tor_rows) if n is not None}
+        self.counts = {"aws": len(best), "saas": len(saas_rows), "asn": len(self.asn_meta), "tor": len(self.tor),
+                       "asn6": len(self.asn6_meta), "tor6": len(self.tor6)}  # fmt: skip
         self._aws_iv: list | None = None
         self._saas_iv: list | None = None
         self._org: dict[tuple, tuple | None] = {}
@@ -480,13 +516,14 @@ class Intel:
             self._saas_iv = merge(iv)
         return self._saas_iv
 
-    def asn(self, ip: int) -> dict | None:
-        i = bisect_right(self.asn_start, ip) - 1
-        if i < 0 or ip > self.asn_end[i]:
+    def asn(self, ip: int, version: int = 4) -> dict | None:
+        starts, ends, meta, cls = ((self.asn_start, self.asn_end, self.asn_meta, ipaddress.IPv4Address) if version == 4
+                                   else (self.asn6_start, self.asn6_end, self.asn6_meta, ipaddress.IPv6Address))  # fmt: skip
+        i = bisect_right(starts, ip) - 1
+        if i < 0 or ip > ends[i]:
             return None
-        asn, cc, owner = self.asn_meta[i]
-        block = f"{ipaddress.IPv4Address(self.asn_start[i])}-{ipaddress.IPv4Address(self.asn_end[i])}"
-        return {"asn": asn, "country": cc, "owner": owner, "block": block}
+        asn, cc, owner = meta[i]
+        return {"asn": asn, "country": cc, "owner": owner, "block": f"{cls(starts[i])}-{cls(ends[i])}"}
 
     def aws_intervals(self) -> list[tuple[int, int]]:
         if self._aws_iv is None:
@@ -496,22 +533,23 @@ class Intel:
     def label(self, ip: str) -> dict:
         """{kind: aws | saas | internet, name, service, region, asn, country, owner} for a public address."""
         try:
-            n = int(ipaddress.IPv4Address(ip))
+            addr = ipaddress.ip_address(str(ip).strip())
         except ValueError:
             return {"kind": "internet", "name": ip}
-        a = self.asn(n) or {}
+        n, ver = int(addr), addr.version
+        a = self.asn(n, ver) or {}
         out = {"asn": a.get("asn"), "country": a.get("country", ""), "owner": a.get("owner", ""),
                "block": a.get("block", "")}
-        if n in self.tor:  # wherever it is hosted, a Tor exit carries anyone's traffic
+        if n in (self.tor if ver == 4 else self.tor6):  # wherever it is hosted, a Tor exit carries anyone's traffic
             return {**out, "kind": "internet", "name": "Tor exit", "provider": "Tor", "group": "anon",
                     "group_name": GROUPS["anon"][0], "what": "Tor exit relay, on the Tor Project's list"}  # fmt: skip
-        hit = self.aws.match(n)
+        hit = self.aws.match(n, ver)
         if hit:
             prefix, (svc, region) = hit
             name = AWS_SERVICE.get(svc, svc.replace("_", " ").title())
             return {**out, "kind": "aws", "service": svc, "region": region, "prefix": prefix,
                     "name": f"AWS {name}" + (f", {region}" if region and region != "GLOBAL" else "")}  # fmt: skip
-        hit = self.saas.match(n)
+        hit = self.saas.match(n, ver)
         if hit:
             group = feed_group(hit[1])
             return {**out, "kind": GROUPS[group][1], "name": hit[1], "prefix": hit[0], "provider": hit[1].split(" (")[0],
@@ -531,7 +569,7 @@ def get() -> Intel:
     d = _dir()
     key = tuple(
         (p.name, p.stat().st_mtime) if p.exists() else (p.name, 0)
-        for p in (d / "aws.json", d / "saas.json", d / "asn.tsv.gz", d / "tor.json")
+        for p in (d / "aws.json", d / "saas.json", d / "asn.tsv.gz", d / "tor.json", d / "asn6.tsv.gz")
     )
     with _lock:
         if _memo.get("key") == key:
@@ -543,9 +581,15 @@ def get() -> Intel:
         asn_rows = parse_asn((d / "asn.tsv.gz").read_bytes()) or SEED_ASN
     except (OSError, ValueError, EOFError):
         pass
-    intel = Intel(aws_rows, saas_rows, asn_rows, _read_json(d / "tor.json", flat=True) or ())
+    asn6_rows: list = SEED_ASN6
+    try:
+        asn6_rows = parse_asn((d / "asn6.tsv.gz").read_bytes()) or SEED_ASN6
+    except (OSError, ValueError, EOFError):
+        pass
+    intel = Intel(aws_rows, saas_rows, asn_rows, _read_json(d / "tor.json", flat=True) or (), asn6_rows)
     intel.counts["seed"] = [n for n, rows, seed in (("aws", aws_rows, SEED_AWS), ("saas", saas_rows, SEED_SAAS),
-                                                    ("asn", asn_rows, SEED_ASN)) if rows is seed]  # fmt: skip
+                                                    ("asn", asn_rows, SEED_ASN), ("asn6", asn6_rows, SEED_ASN6))
+                          if rows is seed]  # fmt: skip
     with _lock:
         _memo.update(key=key, intel=intel)
     return intel
@@ -562,6 +606,13 @@ def _read_json(path, flat: bool = False):
 def _v4(s) -> int | None:
     try:
         return int(ipaddress.IPv4Address(s))
+    except ValueError:
+        return None
+
+
+def _v6(s) -> int | None:
+    try:
+        return int(ipaddress.IPv6Address(s))
     except ValueError:
         return None
 

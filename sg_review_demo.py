@@ -21,10 +21,12 @@ ACCOUNT = "123456789012"
 NAME = "payments-demo"
 REGION = "eu-west-1"
 VPC = "10.20.0.0/16"
+VPC6 = "2a05:d018:abc:c00::/56"  # the VPC's IPv6 block (Amazon-provided)
+ONPREM6 = "fd12:3456::/48"  # the data centre's unique local IPv6 range, over the VPN
 OTHER = ("Payments prod (111122223333)", "10.40.0.0/16")
 INTERNAL = f"{OTHER[1]} {OTHER[0]}"
 # the demo's names file: the partner behind the SFTP rule, and a network they say is theirs
-NAMES = [{"name": "Acme payroll", "type": "partner", "ranges": ["203.0.113.0/24"],
+NAMES = [{"name": "Acme payroll", "type": "partner", "ranges": ["203.0.113.0/24", "2001:db8:acce::/48"],
           "note": "SFTP drop for payroll files"}]  # fmt: skip
 
 DEMO_BYTES_PER_HOUR = 150_000_000  # what the made-up flow logs "scan" per hour, for the cost estimate
@@ -46,7 +48,8 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
 
     groups = {
         "sg-0app0000000000001": {"name": "app-servers", "vpc": "vpc-0demo", "tag": "",
-                                 "rules": [rule("6", 443, 443, ["10.0.0.0/8"], {"10.0.0.0/8": "internal callers"}),
+                                 "rules": [rule("6", 443, 443, ["10.0.0.0/8"], {"10.0.0.0/8": "internal callers"},
+                                                v6=[ONPREM6]),
                                            rule("6", 9100, 9100, [_host(vpc, 7 * 256) + "/24"],
                                                 {_host(vpc, 7 * 256) + "/24": "monitoring"})]},
         "sg-0db00000000000002": {"name": "payments-db", "vpc": "vpc-0demo", "tag": "",
@@ -97,7 +100,8 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
         "eni-0vpce1": eni(h(2 * 256 + 90), ["sg-0vpce000000000009"], sub["app"], "VPC endpoint",
                           "VPC Endpoint Interface vpce-0secrets"),
     }
-    enis["eni-0sftp"]["ipv6"] = ["2a05:d018:0abc:0c33::40"]
+    enis["eni-0sftp"]["ipv6"] = ["2a05:d018:abc:c33::40"]
+    enis["eni-0app1"]["ipv6"] = ["2a05:d018:abc:c11::11"]
     enis["eni-0db01"]["groups"].append("sg-0bat0000000000005")  # the batch group, reused on the database
     nacl = {"id": "acl-0demo", "entries": [
         {"n": 90, "proto": "6", "allow": False, "cidr": "10.200.9.0/24", "from": 22, "to": 22},
@@ -105,12 +109,12 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
     ]}  # fmt: skip
     return {
         "errors": [],
-        "vpcs": [{"id": "vpc-0demo", "name": "main", "cidrs": [vpc]}],
+        "vpcs": [{"id": "vpc-0demo", "name": "main", "cidrs": [vpc], "cidrs6": [VPC6]}],
         "groups": groups,
         "enis": enis,
         "prefix_lists": {},
         "nacls": {s: nacl for s in sub.values()},
-        "vpns": [{"name": "Johannesburg DC", "routes": ["10.200.0.0/16"]}],
+        "vpns": [{"name": "Johannesburg DC", "routes": ["10.200.0.0/16", ONPREM6]}],
         "routes": {"read": True, "subnets": {sub["pub"]: {"igw4": True, "igw6": True, "table": "rtb-0pub"}},
                    "main": {"vpc-0demo": {"igw4": False, "igw6": False, "table": "rtb-0main"}}},
         "stale": [{"group": "sg-0app0000000000001", "name": "app-servers", "vpc": "vpc-0demo", "direction": "in",
@@ -254,6 +258,14 @@ def _patterns(vpc: str, other: tuple | None) -> list[dict]:
         pats.append({"src": _host("45.155.205.0/24", 2 + i), "to": alb, "port": 22, "ok": False, "p": 1.0, "rate": 2,
                      "only": [12], "sweep": True})  # fmt: skip
     # the app servers reading secrets through the Secrets Manager interface endpoint
+    # IPv6: the partner's office reaching SFTP over IPv6, data centre hosts calling the app over the VPN's
+    # unique local range, and a scanner's IPv6 address trying RDP on the SFTP server since two days ago
+    sftp6, app6 = ("eni-0sftp", "2a05:d018:abc:c33::40"), ("eni-0app1", "2a05:d018:abc:c11::11")
+    pats.append({"src": "2001:db8:acce:10::25", "to": sftp6, "port": 22, "ok": True, "p": 0.5, "rate": 4})
+    for i in range(2):
+        pats.append({"src": f"fd12:3456:0:4::{21 + i:x}", "to": app6, "port": 443, "ok": True, "p": 0.7, "rate": 6})
+    pats.append({"src": "2602:80d:1003::17", "to": sftp6, "port": 3389, "ok": False, "p": 0.8, "rate": 2,
+                 "after": 2, "sweep": True})  # fmt: skip
     vpce = ("eni-0vpce1", h(2 * 256 + 90))
     for ip in app:
         pats.append({"src": ip[1], "to": vpce, "port": 443, "ok": True, "p": 1.0, "rate": 40})
@@ -289,7 +301,7 @@ def chunk(region: str, s: int, e: int, pats: list, now: float, rnd: random.Rando
             continue
         eni, dst = p["to"]
         flows = max(1, int(p["rate"] * hours * rnd.uniform(0.6, 1.4)))
-        private = ipaddress.IPv4Address(p["src"]).is_private
+        private = ipaddress.ip_address(p["src"]).is_private
         if p["ok"] or private:
             rows.append([p["src"], dst, eni, "6", p["port"], "ACCEPT" if p["ok"] else "REJECT", flows])
         else:

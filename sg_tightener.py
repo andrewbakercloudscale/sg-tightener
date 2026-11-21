@@ -165,6 +165,13 @@ RFC1918_BLOCKS = [
 ]
 
 DEFAULT_PREFIX_THRESHOLD = 24
+# IPv6: a client is kept as its /64, the size of one subnet. Its own address changes within that /64 every
+# day or so (temporary addresses, RFC 8981), so a /128 rule would break it. An IPv6 rule wider than a /64 is
+# in scope when it is unique local (fc00::/7) or inside one of the account's own VPC IPv6 ranges: the IPv6
+# counterparts of 10.0.0.0/8 rules. Public IPv6 ranges and ::/0 are left alone, as public IPv4 ranges are.
+V6_SUBNET = 64
+DEFAULT_V6_PREFIX_THRESHOLD = 64
+ULA = ipaddress.ip_network("fc00::/7")
 DEFAULT_TOLERANCE = 0.30
 DEFAULT_MAX_RULES = 60
 DEFAULT_DAYS = 90
@@ -198,6 +205,20 @@ def _normalise_ips(ips: Iterable[str]) -> list[ipaddress.IPv4Address]:
         if not isinstance(addr, ipaddress.IPv4Address):
             continue
         if addr not in seen:
+            seen.add(addr)
+            out.append(addr)
+    return out
+
+
+def _normalise_ips6(ips: Iterable[str]) -> list[ipaddress.IPv6Address]:
+    out: list[ipaddress.IPv6Address] = []
+    seen: set[ipaddress.IPv6Address] = set()
+    for ip in ips:
+        try:
+            addr = ipaddress.ip_address(str(ip).strip())
+        except ValueError:
+            continue
+        if isinstance(addr, ipaddress.IPv6Address) and addr not in seen:
             seen.add(addr)
             out.append(addr)
     return out
@@ -290,29 +311,31 @@ class _Cover:
     tie. Exact, and O(leaves x kmax) rather than exponential.
     """
 
-    def __init__(self, leaves: list[tuple[int, int, int]], kmax: int):
+    def __init__(self, leaves: list[tuple[int, int, int]], kmax: int, bits: int = 32):
         self.kmax = max(1, kmax)
+        self.bits = bits  # 32: IPv4 addresses; 64: IPv6 /64 subnets (an address's top 64 bits)
         self.root = self._build(leaves, 0, len(leaves))
         self.curve = self.root.cost
 
     def _build(self, leaves, lo: int, hi: int) -> _Node:
         node = _Node()
         node.left = node.right = None
+        bits = self.bits
         if hi - lo == 1:
             node.base, node.plen, count = leaves[lo]
-            node.waste = (1 << (32 - node.plen)) - count
+            node.waste = (1 << (bits - node.plen)) - count
             node.cost = [_INF, node.waste]
             return node
         first = leaves[lo][0]
         last_base, last_plen, _ = leaves[hi - 1]
-        last = last_base + (1 << (32 - last_plen)) - 1
-        node.plen = 32 - (first ^ last).bit_length()
-        node.base = first & ~((1 << (32 - node.plen)) - 1)
-        mid = node.base + (1 << (31 - node.plen))
+        last = last_base + (1 << (bits - last_plen)) - 1
+        node.plen = bits - (first ^ last).bit_length()
+        node.base = first & ~((1 << (bits - node.plen)) - 1)
+        mid = node.base + (1 << (bits - 1 - node.plen))
         split = bisect.bisect_left(leaves, (mid,), lo, hi)
         node.left = self._build(leaves, lo, split)
         node.right = self._build(leaves, split, hi)
-        size = 1 << (32 - node.plen)
+        size = 1 << (bits - node.plen)
         node.waste = size - sum(c for _b, _p, c in leaves[lo:hi])
         left, right = node.left.cost, node.right.cost
         cap = min(self.kmax, len(left) - 1 + len(right) - 1)
@@ -343,7 +366,8 @@ class _Cover:
         while k > 1 and cost[k] == cost[k - 1]:
             k -= 1
         if cost[k] == node.waste or node.left is None:
-            out.append(ipaddress.ip_network((node.base, node.plen)))
+            out.append(ipaddress.ip_network((node.base, node.plen)) if self.bits == 32
+                       else ipaddress.IPv6Network((node.base << (128 - self.bits), node.plen)))
             return
         left, right = node.left.cost, node.right.cost
         for i in range(max(1, k - len(right) + 1), min(len(left) - 1, k - 1) + 1):
@@ -453,6 +477,98 @@ def collapse_ips_to_cidrs(
 # --------------------------------------------------------------------------- #
 # Eligibility
 # --------------------------------------------------------------------------- #
+
+def _widen6(ids: list[int], tolerance: float, floor: int) -> list[tuple[int, int, int]]:
+    """IPv6 layer 1, in /64 units: each /64 widened while at most ``tolerance`` of the block was never seen,
+    never wider than a /``floor``. Disjoint (base, prefix length, /64s seen) blocks in order."""
+    nets = set()
+    for a in ids:
+        best = V6_SUBNET
+        for plen in range(V6_SUBNET - 1, floor - 1, -1):
+            size = 1 << (V6_SUBNET - plen)
+            if (size - _count_in(ids, a & ~(size - 1), size)) / size <= tolerance:
+                best = plen
+            else:
+                break
+        size = 1 << (V6_SUBNET - best)
+        nets.add((a & ~(size - 1), best))
+    out = []
+    for base, plen in sorted(nets, key=lambda n: (n[0], n[1])):
+        end = base + (1 << (V6_SUBNET - plen))
+        if out and base < out[-1][0] + (1 << (V6_SUBNET - out[-1][1])):
+            continue  # inside the block before it
+        out.append((base, plen, _count_in(ids, base, end - base)))
+    return out
+
+
+def _rule_cover6(original: ipaddress.IPv6Network, ips: list[str], kmax: int, tolerance: float) -> _Cover:
+    """The cover of the IPv6 sources inside ``original``, by /64, that never leaves it."""
+    ids = sorted({int(a) >> (128 - V6_SUBNET) for a in _normalise_ips6(ips) if a in original})
+    floor = min(original.prefixlen, V6_SUBNET)
+    return _Cover(_widen6(ids, tolerance, floor), kmax, bits=V6_SUBNET)
+
+
+def collapse_ipv6_to_cidrs(
+    ips: Sequence[str],
+    max_rules: int = DEFAULT_MAX_RULES,
+    tolerance: float = DEFAULT_TOLERANCE,
+    within: str | None = None,
+) -> list[str]:
+    """IPv6 sources as at most ``max_rules`` CIDRs: each source's /64, widened as ``tolerance`` allows (never
+    past ``within``, or a /48 without it), then merged with the fewest unused /64s when over the budget.
+    Without ``within``, sources in different /32s (different networks' allocations) are never merged.
+    Sorted CIDR strings."""
+    net = ipaddress.IPv6Network(within, strict=False) if within else None
+    addrs = [a for a in _normalise_ips6(ips) if net is None or a in net]
+    if not addrs:
+        return []
+    ids = sorted({int(a) >> (128 - V6_SUBNET) for a in addrs})
+    t = max(0.0, min(1.0, tolerance))
+    leaves = _widen6(ids, t, min(net.prefixlen, V6_SUBNET) if net else 48)
+    nets = [ipaddress.IPv6Network((b << (128 - V6_SUBNET), p)) for b, p, _c in leaves]
+    if len(leaves) > max_rules:
+        if net is not None:
+            homes = [leaves]
+        else:  # one cover per /32: a merge never spans two networks' allocations
+            by: dict[int, list] = {}
+            for leaf in leaves:
+                by.setdefault(leaf[0] >> 32, []).append(leaf)
+            homes = list(by.values())
+        covers = [_Cover(h, max_rules, bits=V6_SUBNET) for h in homes]
+        slots = _split_budget([c.cost for c in covers], [len(c.curve) - 1 for c in covers], max_rules)
+        nets = [n for c, k in zip(covers, slots) for n in c.blocks(k)]
+        if net is not None:
+            nets = [n if n.subnet_of(net) else net for n in nets]
+    return [str(n) for n in sorted(set(ipaddress.collapse_addresses(nets)),
+                                   key=lambda n: (int(n.network_address), n.prefixlen))]
+
+
+def rule_is_eligible6(
+    cidr: str | None,
+    own: Iterable[str] = (),
+    prefix_threshold: int = DEFAULT_V6_PREFIX_THRESHOLD,
+) -> bool:
+    """An IPv6 rule is in scope iff it is wider than ``prefix_threshold`` (a /64) and unique local or inside
+    one of ``own`` (the account's VPC IPv6 ranges). ::/0 and public IPv6 ranges are left untouched."""
+    if not cidr:
+        return False
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return False
+    if not isinstance(net, ipaddress.IPv6Network) or not 0 < net.prefixlen < prefix_threshold:
+        return False
+    if net.subnet_of(ULA):
+        return True
+    for c in own:
+        try:
+            o = ipaddress.ip_network(c, strict=False)
+        except ValueError:
+            continue
+        if o.version == 6 and net.subnet_of(o):
+            return True
+    return False
+
 
 def rule_is_eligible(
     cidr: str | None,
@@ -1218,6 +1334,17 @@ def run_analyse(cfg: AnalyseConfig) -> dict:
 # Plan
 # --------------------------------------------------------------------------- #
 
+def _eligible_rules6(sg: dict, own: Iterable[str], prefix_threshold: int) -> list[dict]:
+    out = []
+    for perm in sg.get("IpPermissions", []):
+        for ip in perm.get("Ipv6Ranges", []):
+            if rule_is_eligible6(ip.get("CidrIpv6"), own, prefix_threshold):
+                out.append({"cidr": ip["CidrIpv6"], "protocol": perm.get("IpProtocol"),
+                            "from_port": perm.get("FromPort"), "to_port": perm.get("ToPort"),
+                            "description": ip.get("Description"), "v6": True})
+    return out
+
+
 def _eligible_rules(sg: dict, prefix_threshold: int) -> list[dict]:
     out = []
     for perm in sg.get("IpPermissions", []):
@@ -1324,9 +1451,9 @@ class InterfaceIndex:
                 self.by_id[eni["NetworkInterfaceId"]] = eni
             for ip in self._ips(eni):
                 self._by_ip.setdefault(ip, []).append(eni)
-            for pfx in eni.get("Ipv4Prefixes", []):
+            for pfx in eni.get("Ipv4Prefixes", []) + eni.get("Ipv6Prefixes", []):
                 try:
-                    self._prefixes.append((ipaddress.ip_network(pfx["Ipv4Prefix"]), eni))
+                    self._prefixes.append((ipaddress.ip_network(pfx.get("Ipv4Prefix") or pfx["Ipv6Prefix"]), eni))
                 except (KeyError, ValueError):
                     continue
 
@@ -1334,6 +1461,8 @@ class InterfaceIndex:
     def _ips(eni: dict) -> set[str]:
         ips = {eni.get("PrivateIpAddress")}
         ips |= {pa.get("PrivateIpAddress") for pa in eni.get("PrivateIpAddresses", [])}
+        ips |= {str(ipaddress.ip_address(a["Ipv6Address"])) for a in eni.get("Ipv6Addresses", [])
+                if a.get("Ipv6Address")}  # fmt: skip
         return ips - {None}
 
     def owners(self, ip: str | None) -> list[dict]:
@@ -1346,6 +1475,8 @@ class InterfaceIndex:
             addr = ipaddress.ip_address(ip)
         except ValueError:
             return []
+        if addr.version == 6 and str(addr) in self._by_ip:  # flow logs may write it uncompressed
+            return list(self._by_ip[str(addr)])
         return [eni for net, eni in self._prefixes if addr in net]
 
     def owns(self, eni: dict, ip: str) -> bool:
@@ -1551,16 +1682,19 @@ def privatelink_provider_groups(
     return out
 
 
-def _permission(proto, from_port, to_port, ranges: list[dict]) -> dict:
+def _permission(proto, from_port, to_port, ranges: list[dict], ranges6: list[dict] | None = None) -> dict:
     """An IpPermissions entry. Rules for all protocols ("-1") have no ports,
     and the EC2 API rejects FromPort/ToPort of None, so absent ports are left
-    out rather than sent as null."""
+    out rather than sent as null. ``ranges6`` are IPv6 ({"CidrIpv6": …})."""
     perm: dict = {"IpProtocol": proto}
     if from_port is not None:
         perm["FromPort"] = from_port
     if to_port is not None:
         perm["ToPort"] = to_port
-    perm["IpRanges"] = ranges
+    if ranges or not ranges6:
+        perm["IpRanges"] = ranges
+    if ranges6:
+        perm["Ipv6Ranges"] = ranges6
     return perm
 
 
@@ -1568,6 +1702,22 @@ def _clean_permissions(perms: list[dict]) -> list[dict]:
     """Drop null ports from plans and manifests written before _permission."""
     return [{k: v for k, v in p.items() if not (k in ("FromPort", "ToPort") and v is None)}
             for p in perms]
+
+
+def _untouched_ranges6(sg: dict, own: Iterable[str], prefix_threshold: int) -> dict[tuple, list[ipaddress.IPv6Network]]:
+    """IPv6 ranges plan leaves alone, per (protocol, from, to)."""
+    out: dict[tuple, list[ipaddress.IPv6Network]] = {}
+    for perm in sg.get("IpPermissions", []):
+        key = (perm.get("IpProtocol"), perm.get("FromPort"), perm.get("ToPort"))
+        for ip in perm.get("Ipv6Ranges", []):
+            cidr = ip.get("CidrIpv6")
+            if not cidr or rule_is_eligible6(cidr, own, prefix_threshold):
+                continue
+            try:
+                out.setdefault(key, []).append(ipaddress.IPv6Network(cidr, strict=False))
+            except ValueError:
+                continue
+    return out
 
 
 def _untouched_ranges(sg: dict, prefix_threshold: int) -> dict[tuple, list[ipaddress.IPv4Network]]:
@@ -1597,6 +1747,8 @@ def build_plan(
     prefix_threshold: int = DEFAULT_PREFIX_THRESHOLD,
     region: str | None = None,
     skip: dict[str, str] | None = None,
+    own_v6: Iterable[str] = (),
+    v6_prefix_threshold: int = DEFAULT_V6_PREFIX_THRESHOLD,
 ) -> dict:
     """Plan replacements for every eligible rule, scoped to that rule.
 
@@ -1619,11 +1771,17 @@ def build_plan(
     under ``skipped_groups``. A replacement already covered by a rule the
     plan leaves in place (same protocol and ports) is dropped: it adds
     nothing, and authorising a duplicate fails after the revoke has run.
+
+    IPv6 rules are planned the same way when they are wider than a /64 and
+    unique local or inside ``own_v6`` (the account's VPC IPv6 ranges; see
+    rule_is_eligible6). Their sources are kept by /64 (V6_SUBNET).
     """
     skip = skip or {}
     skipped: list[dict] = []
+    own_v6 = list(own_v6)
     by_group, everywhere, attribution = _attribute_flows(
-        [str(a) for a in _normalise_ips(approved_ips)], flows, interfaces)
+        [str(a) for a in _normalise_ips(approved_ips)] + [str(a) for a in _normalise_ips6(approved_ips)],
+        flows, interfaces)
 
     private_cache: dict[str, ipaddress.IPv4Address | None] = {}
 
@@ -1633,10 +1791,19 @@ def build_plan(
             private_cache[ip] = addrs[0] if addrs and any(addrs[0] in b for b in RFC1918_BLOCKS) else None
         return private_cache[ip]
 
+    v6_cache: dict[str, ipaddress.IPv6Address | None] = {}
+
+    def _v6(ip: str) -> ipaddress.IPv6Address | None:
+        if ip not in v6_cache:
+            addrs = _normalise_ips6([ip])
+            v6_cache[ip] = addrs[0] if addrs else None
+        return v6_cache[ip]
+
     plan_groups = []
     for sg in sgs:
         eligible = _eligible_rules(sg, prefix_threshold)
-        if not eligible:
+        eligible6 = _eligible_rules6(sg, own_v6, v6_prefix_threshold)
+        if not eligible and not eligible6:
             continue
         if sg["GroupId"] in skip:
             skipped.append({"group_id": sg["GroupId"], "group_name": sg.get("GroupName"),
@@ -1644,14 +1811,15 @@ def build_plan(
             LOG.warning("%s: not planned: %s", sg["GroupId"], skip[sg["GroupId"]])
             continue
         kept = _untouched_ranges(sg, prefix_threshold)
+        kept6 = _untouched_ranges6(sg, own_v6, v6_prefix_threshold)
         revokes_per_proto_port: dict[tuple, list[dict]] = {}
-        for r in eligible:
+        for r in eligible + eligible6:
             key = (r["protocol"], r["from_port"], r["to_port"])
             revokes_per_proto_port.setdefault(key, []).append(r)
 
         # Per-group budget = max_rules - (rules NOT being touched).
         existing_total = _all_rule_count(sg)
-        untouched = existing_total - len(eligible)
+        untouched = existing_total - len(eligible) - len(eligible6)
         budget = max(1, max_rules - untouched)
 
         # One unit per eligible rule: the observed private sources inside it
@@ -1663,18 +1831,21 @@ def build_plan(
             matching = [f for f in evidence if flow_matches_rule(f, *key)]
             for r in rules:
                 net = ipaddress.ip_network(r["cidr"], strict=False)
-                inside = sorted({a for a in (_private(f["src"]) for f in matching)
+                pick = _v6 if net.version == 6 else _private
+                inside = sorted({a for a in (pick(f["src"]) for f in matching)
                                  if a is not None and a in net})
                 units.append((key, net, [str(a) for a in inside]))
 
         # Share the budget so the group as a whole grants the fewest
         # addresses nobody was seen using: each rule's cover says what every
         # extra slot would save, and _split_budget picks the best split.
-        covers = [_rule_cover(net, ips, budget, tolerance) if ips else None for _key, net, ips in units]
+        covers = [(_rule_cover6 if net.version == 6 else _rule_cover)(net, ips, budget, tolerance) if ips else None
+                  for _key, net, ips in units]
         live = [c for c in covers if c is not None]
         shares = iter(_split_budget([c.cost for c in live], [len(c.curve) - 1 for c in live], budget))
 
         authorised_by_key: dict[tuple, list[ipaddress.IPv4Network]] = {}
+        authorised6_by_key: dict[tuple, list[ipaddress.IPv6Network]] = {}
         removed: list[dict] = []
         for (key, net, ips), cover in zip(units, covers):
             if cover is None:
@@ -1685,23 +1856,30 @@ def build_plan(
                     "to_port": key[2],
                 })
                 continue
+            if net.version == 6:
+                authorised6_by_key.setdefault(key, []).extend(
+                    n for n in cover.blocks(next(shares)) if not any(n.subnet_of(k) for k in kept6.get(key, [])))
+                continue
             authorised_by_key.setdefault(key, []).extend(
                 n for n in cover.blocks(next(shares))
                 if not any(n.subnet_of(k) for k in kept.get(key, []))
             )
 
         authorise_perms: list[dict] = []
-        for (proto, from_p, to_p), nets in authorised_by_key.items():
-            if not nets:
+        for key in dict.fromkeys(list(authorised_by_key) + list(authorised6_by_key)):
+            proto, from_p, to_p = key
+            nets, nets6 = authorised_by_key.get(key, []), authorised6_by_key.get(key, [])
+            if not nets and not nets6:
                 continue
             merged = sorted(
                 ipaddress.collapse_addresses(nets),
                 key=lambda n: (int(n.network_address), n.prefixlen),
             )
+            merged6 = sorted(ipaddress.collapse_addresses(nets6), key=lambda n: (int(n.network_address), n.prefixlen))
             authorise_perms.append(_permission(proto, from_p, to_p, [
                 {"CidrIp": str(c), "Description": "sg-tightener evidence-based"}
                 for c in merged
-            ]))
+            ], [{"CidrIpv6": str(c), "Description": "sg-tightener evidence-based"} for c in merged6]))
 
         if removed:
             LOG.warning(
@@ -1727,14 +1905,17 @@ def build_plan(
         revoke_perms = []
         restore_perms = []
         for (proto, from_p, to_p), rules in revokes_per_proto_port.items():
+            v4, v6 = [r for r in rules if not r.get("v6")], [r for r in rules if r.get("v6")]
             revoke_perms.append(_permission(proto, from_p, to_p,
-                                            [{"CidrIp": r["cidr"]} for r in rules]))
+                                            [{"CidrIp": r["cidr"]} for r in v4],
+                                            [{"CidrIpv6": r["cidr"]} for r in v6]))
             # What revert puts back: the same rules with their descriptions,
             # so a round trip leaves the group exactly as it was.
             restore_perms.append(_permission(proto, from_p, to_p, [
                 {"CidrIp": r["cidr"], **({"Description": r["description"]} if r.get("description") else {})}
-                for r in rules
-            ]))
+                for r in v4
+            ], [{"CidrIpv6": r["cidr"], **({"Description": r["description"]} if r.get("description") else {})}
+                for r in v6]))
 
         plan_groups.append({
             "group_id": sg["GroupId"],
@@ -1761,6 +1942,7 @@ def build_plan(
         "max_rules": max_rules,
         "tolerance": tolerance,
         "prefix_threshold": prefix_threshold,
+        "v6_prefix_threshold": v6_prefix_threshold,
         "groups": plan_groups,
         "skipped_groups": skipped,
         "snapshot_hash": state_hash(snapshot),
@@ -1808,6 +1990,23 @@ def _list_privatelink_services(region: str) -> tuple[list[dict] | None, list[dic
     return configs, lbs
 
 
+def _list_vpc_ipv6(region: str) -> list[str]:
+    """The region's VPC IPv6 ranges; [] (only unique local IPv6 rules in scope) when they cannot be read."""
+    try:
+        ec2 = _client("ec2", region)
+        out = []
+        for page in ec2.get_paginator("describe_vpcs").paginate():
+            for v in page.get("Vpcs", []):
+                out += [a["Ipv6CidrBlock"] for a in v.get("Ipv6CidrBlockAssociationSet", [])
+                        if a.get("Ipv6CidrBlock") and (a.get("Ipv6CidrBlockState") or {}).get("State", "associated")
+                        == "associated"]  # fmt: skip
+        return sorted(set(out))
+    except Exception as exc:  # noqa: BLE001 — without them only unique local IPv6 rules are planned
+        LOG.warning("could not read the VPCs' IPv6 ranges (ec2:DescribeVpcs failed: %s); only unique local "
+                    "IPv6 rules will be planned", exc)
+        return []
+
+
 def plan_from_approved(approved: dict, region: str, **kw) -> dict:
     """Build a plan from a loaded approved.json against ``region``'s groups.
 
@@ -1829,6 +2028,7 @@ def plan_from_approved(approved: dict, region: str, **kw) -> dict:
             "removed_without_evidence closely, or re-run analyse with this version.")
     skip = groups_outside_flow_log_coverage(sgs, interfaces, resources)
     skip.update(privatelink_provider_groups(interfaces, *_list_privatelink_services(region)))
+    kw.setdefault("own_v6", _list_vpc_ipv6(region))
 
     flows = approved.get("flows")
     if flows is None:

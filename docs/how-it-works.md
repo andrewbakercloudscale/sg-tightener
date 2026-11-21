@@ -56,8 +56,11 @@ into "revoke everything".
 each group:
 
 1. Picks out the **eligible** rules: IPv4 ingress, source strictly inside one
-   RFC 1918 block, prefix shorter than `--prefix-threshold` (default `/24`).
-   Everything else counts as a fixed rule.
+   RFC 1918 block, prefix shorter than `--prefix-threshold` (default `/24`);
+   and IPv6 ingress wider than a `/64` that is unique local (`fc00::/7`) or
+   inside one of the region's VPC IPv6 blocks (read with `DescribeVpcs`).
+   Everything else counts as a fixed rule, `::/0` and public IPv6 ranges
+   included, as `0.0.0.0/0` and public IPv4 ranges are.
 2. Computes the group's **rule budget**: `--max-rules` (default 60) minus the
    fixed rules.
 3. For **each eligible rule separately**, takes only the approved addresses
@@ -147,6 +150,20 @@ Example with the default tolerance:
 | `10.4.1.10`, `10.4.1.11` | `10.4.1.10/31` (2 of 2 used) |
 | `10.4.1.0` to `10.4.1.200` (201 hosts) | `10.4.1.0/24` (201 of 256 used, 21% unused) |
 | `10.4.1.10`, `10.9.7.3` | two `/32`s, far apart |
+
+**IPv6** (`collapse_ipv6_to_cidrs`, and the per-rule cover in `plan`) works the
+same way in units of **/64 subnets**: each IPv6 source is kept as its `/64`,
+because a client's own address changes inside its `/64` every day or so
+(temporary addresses, RFC 8981) and a `/128` rule would break it. Layer 1 widens
+a `/64` while the share of `/64`s never seen stays within the tolerance; layer 2
+is the same exact cover, run over 64-bit numbers. Sources in different `/32`s
+(different networks' allocations) are never merged, and a replacement never
+leaves the rule it replaces.
+
+| Observed | Result |
+|---|---|
+| `fd00:1:2:3::5`, `fd00:1:2:3::9` | `fd00:1:2:3::/64` |
+| `fd00:1:2:3::5`, `fd00:1:2:4::1` | two `/64`s (or `fd00:1:2::/61` when over budget) |
 
 ---
 
@@ -402,6 +419,9 @@ review `plan.json` by hand.
   `removed_without_evidence` in the plan and in a warning. If one should stay,
   delete that group from the plan or add the expected source to
   `approved.json`.
+* **IPv6 clients are kept by /64.** A replacement IPv6 rule allows the whole
+  `/64` of each source seen, not the single address: anyone else in that
+  subnet keeps access. It is still never wider than the original rule.
 * **The window is the evidence.** Anything that did not connect during the
   analysed window is treated as unused. Use `--days 180` or more where seasonal
   traffic exists.
