@@ -47,7 +47,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
-| **Unreleased** | `sg_review.py`: a self-contained HTML Security Group Review of one account over 24 hours to 6 months. Three timelines (refused sources, over-provisioned addresses worked back through CloudTrail's rule changes, active sources with DR and batch traffic apart), every source named (AWS service, SaaS, AS number, your data centres), each rule's status and suggested ranges, CSV and approved.json downloads. Moved here from the AWS Cloud Risk Review console |
+| **2.4.0** | `sg_review.py`: a self-contained HTML Security Group Review of one account over 24 hours to 6 months. Three timelines (refused sources, over-provisioned addresses worked back through CloudTrail's rule changes, active sources with DR and batch traffic apart), every source named and typed (AWS service, CDN, secure access, SaaS, anyone's hosting, scanner, Tor exit, your partners via a names file), graphs by port class, **Extract rule** to turn refused sources into reviewed rules, each rule's status and suggested ranges, CSV and approved.json downloads. Moved here from the AWS Cloud Risk Review console |
 | **2.3.0** | Exact rule fitting: when sources do not fit the rule limit, the blocks that open the fewest unused addresses are chosen, and a group's slots go to the rules where they save the most. Fitting 2,000 addresses takes 0.02 s instead of up to 28 s |
 | **2.2.0** | Interface-exact evidence: flows record the interface that logged them, so overlapping VPCs stay apart. `sg_diagnose` judges each refused flow against its destination's own groups, and `--manifest` marks what a tightening caused. `sg_viz` resolves EKS pod prefixes and security-group references. Org reports say which accounts could not be scanned (`scan_status`, exit code 2) and treat `::/0` as public |
 | **2.1.0** | PrivateLink NLB groups and groups outside flow-log coverage are held back. `-1` (all traffic) rules apply cleanly. `sg_compact` revert keeps descriptions. `sg_extend` grants AWS-service ranges only to the groups that received that traffic and reports unknown `--groups` ids up front |
@@ -84,7 +84,8 @@ ports view, and a table of what to tighten, with CSV and approved.json downloads
   coloured by kind, by network (AS number) or by port class.
 - **Source type:** each SaaS or internet source is typed from a built-in list of AS numbers and
   owner names: CDN, secure access service (Zscaler, Netskope and the like), SaaS, anyone's hosting,
-  internet scanner (Censys, Shodan and others), or Tor or VPN exit.
+  internet scanner (Censys, Shodan and others), or Tor or VPN exit (with the Tor Project's exit
+  list). A names file adds your partners by range or AS number.
 - **Ports:** the busiest refused and let-in ports, each with its service and class (web, remote
   admin, database, Windows and directory, containers and more). Risky classes are marked ⚠.
 - **Extract rule:** on the refused graph, this turns the sources selected into the inbound rules
@@ -106,6 +107,7 @@ ports view, and a table of what to tighten, with CSV and approved.json downloads
 | `read --profile P` / `--name N` / `--yes` | Credentials, the account name shown on the page, and skipping the `yes` prompt |
 | `report --onprem "10.200.0.0/16 Johannesburg DC"` | Names your data centres (purple in the graphs) |
 | `report --internal "10.40.0.0/16 Payments prod"` | Counts your other accounts' ranges as internal (blue) |
+| `report --names partners.yaml` | Your own names for partners and other networks, by range or AS number (default `~/.sg-tightener/names.yaml`; `sg_review.py names` writes an example) |
 | `report --offline` / `--out FILE` | Skips refreshing the public address lists; sets the output file |
 
 The full guide, with each graph explained, is [docs/security-group-review.md](docs/security-group-review.md).

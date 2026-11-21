@@ -11,6 +11,8 @@ Read-only. Answers, over 24 hours to 6 months, for one account at a time:
 
 Every source is named: this account's VPCs and the ranges you call internal, data centres (named ranges,
 VPN routes, other private space), AWS (and which service), SaaS providers, or any other network by AS number.
+Partners and other networks you know can be named in a names file (``~/.sg-tightener/names.yaml``, or
+``--names``): ranges and AS numbers, each with a name and a type.
 The naming lists download to ``~/.sg-tightener/ipintel`` and are looked up locally: no address leaves the machine.
 
 Modes:
@@ -23,14 +25,16 @@ Modes:
             table and what to change, the CSV and an approved.json per region to download.
   approved  Write sg-tightener's approved.json (v2) for one region from what was read.
   demo      Write the report for a made-up account, to see it without AWS.
+  names     Check the names file, or write an example one if there is none.
   forget    Delete what was read for an account.
 
 Usage:
   sg_review.py read     --regions eu-west-1[,us-east-1] [--days 1|7|30|90|180] [--profile P] [--yes]
   sg_review.py report   [--account ID] [--onprem "10.200.0.0/16 Johannesburg DC, ..."]
-                        [--internal "10.40.0.0/16 Payments prod, ..."] [--offline] [--out FILE]
+                        [--internal "10.40.0.0/16 Payments prod, ..."] [--names FILE] [--offline] [--out FILE]
   sg_review.py approved --region R [--account ID] [--out approved.json]
   sg_review.py demo     [--offline] [--out sg-review-demo.html]
+  sg_review.py names    [--out FILE]
   sg_review.py forget   --account ID
 """
 
@@ -147,6 +151,84 @@ def parse_ranges(text: str, default: str) -> list[tuple]:
         if net.version == 4 and net.prefixlen:
             out.append((net, " ".join(words[1:]) or f"{default} {net}"))
     return out
+
+
+# ------------------------------------------------------------------------------------------ names file
+NAME_TYPES = ("partner", "internal", "datacentre", *[g for g in sg_ipintel.GROUPS if g != "partner"])
+NAMES_EXAMPLE = """\
+# sg-tightener names: networks you know, shown by name on the Security Group Review page.
+# type: partner (default), internal, datacentre, saas, security, cdn, hosting, scanner, anon or other.
+- name: Acme payroll
+  type: partner
+  ranges: [203.0.113.0/24]
+  asn: [64500]
+  note: SFTP drop, contract 2024-17
+"""
+
+
+def names_path() -> Path:
+    return sg_ipintel.DATA_DIR / "names.yaml"
+
+
+def parse_names(doc) -> list[dict]:
+    """The entries of a names file, checked: [{name, type, ranges: [IPv4Network], asn: [int], note}]."""
+    if isinstance(doc, dict):
+        doc = doc.get("names", doc.get("networks"))
+    if doc is None:
+        return []
+    if not isinstance(doc, list):
+        raise TypeError("a names file is a list of entries, each with a name and ranges or asn")
+    out = []
+    for i, e in enumerate(doc, 1):
+        if not isinstance(e, dict) or not str(e.get("name") or "").strip():
+            raise ValueError(f"entry {i}: needs a name")
+        name = str(e["name"]).strip()
+        typ = str(e.get("type") or "partner").strip().lower()
+        if typ not in NAME_TYPES:
+            raise ValueError(f"{name}: type {typ!r} is not one of {', '.join(NAME_TYPES)}")
+        ranges, asns = [], []
+        for c in e.get("ranges") or e.get("cidrs") or []:
+            try:
+                net = ipaddress.ip_network(str(c).strip(), strict=False)
+            except ValueError:
+                raise ValueError(f"{name}: {c!r} is not a range") from None
+            if net.version == 4:
+                ranges.append(net)
+        for a in e.get("asn") or []:
+            try:
+                asns.append(int(str(a).strip().upper().removeprefix("AS")))
+            except ValueError:
+                raise ValueError(f"{name}: {a!r} is not an AS number") from None
+        if typ in ("internal", "datacentre") and asns:
+            raise ValueError(f"{name}: an {typ} entry takes ranges, not AS numbers")
+        if not ranges and not asns:
+            raise ValueError(f"{name}: needs ranges or asn")
+        out.append({"name": name, "type": typ, "ranges": ranges, "asn": asns, "note": str(e.get("note") or "").strip()})
+    return out
+
+
+def load_names(path=None) -> list[dict]:
+    """The names file at path (YAML or JSON), or the default one if it exists; [] when there is none."""
+    p = Path(path).expanduser() if path else names_path()
+    if not p.exists():
+        if path:
+            raise SystemExit(f"names file {p} not found")
+        return []
+    text = p.read_text()
+    bad: tuple = (ValueError, TypeError)
+    try:
+        if p.suffix.lower() == ".json":
+            doc = json.loads(text)
+        else:
+            try:
+                import yaml
+            except ImportError:
+                raise SystemExit("reading a YAML names file needs PyYAML: pip install pyyaml (or use .json)") from None
+            bad = (*bad, yaml.YAMLError)
+            doc = yaml.safe_load(text)
+        return parse_names(doc)
+    except bad as exc:
+        raise SystemExit(f"names file {p}: {exc}") from None
 
 
 # ------------------------------------------------------------------------------------- flow-log reads
@@ -457,7 +539,7 @@ INSIGHTS_PER_GB = 0.005
 TOP = 400  # sources listed per table (the charts count all of them)
 CATS = ("internal", "datacentre", "aws", "saas", "internet")
 CAT_NAME = {"internal": "Internal (your VPCs)", "datacentre": "Data centre and other private",
-            "aws": "AWS", "saas": "External: SaaS", "internet": "External: other networks"}  # fmt: skip
+            "aws": "AWS", "saas": "External: SaaS and partners", "internet": "External: other networks"}  # fmt: skip
 PRIVATE = [sg_ipintel.cidr_iv(c) for c in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")]
 ALL = [(0, 2**32 - 1)]
 _ACCT_RE = re.compile(r"^[0-9]{12}$")
@@ -645,9 +727,10 @@ def _iv(cidrs) -> list[tuple[int, int]]:
 class Labeller:
     """Category and name of a source address; one lookup per address."""
 
-    def __init__(self, doc: dict, onprem: str = "", internal: str = ""):
+    def __init__(self, doc: dict, onprem: str = "", internal: str = "", names: list[dict] | None = None):
         self.intel = sg_ipintel.get()
-        self.nets: list[tuple[int, int, str, str, str]] = []  # (first, last, category, name, cidr), narrowest first
+        # (first, last, category, name, cidr, extra fields), narrowest first
+        self.nets: list[tuple[int, int, str, str, str, dict]] = []
         own = []
         for snap in (x.get("snapshot") or {} for x in doc["regions"].values()):
             for v in snap.get("vpcs") or []:
@@ -655,32 +738,63 @@ class Labeller:
                     iv = sg_ipintel.cidr_iv(c)
                     if iv and ":" not in c:
                         own.append(iv)
-                        self.nets.append((*iv, "internal", f"This account, {v.get('name') or v['id']}", c))
+                        self.nets.append((*iv, "internal", f"This account, {v.get('name') or v['id']}", c, {}))
         others = []
         for net, name in parse_ranges(internal, "Your network"):
             iv = (int(net.network_address), int(net.broadcast_address))
             others.append(iv)
-            self.nets.append((*iv, "internal", name, str(net)))
+            self.nets.append((*iv, "internal", name, str(net), {}))
         dc = []
         for net, name in parse_ranges(onprem, "On-premises"):
             iv = (int(net.network_address), int(net.broadcast_address))
             dc.append(iv)
-            self.nets.append((*iv, "datacentre", name, str(net)))
+            self.nets.append((*iv, "datacentre", name, str(net), {}))
         for snap in (x.get("snapshot") or {} for x in doc["regions"].values()):
             for v in snap.get("vpns") or []:
                 for c in v.get("routes") or []:
                     iv = sg_ipintel.cidr_iv(c)
                     if iv:
                         dc.append(iv)
-                        self.nets.append((*iv, "datacentre", f"Behind VPN {v['name']}", c))
+                        self.nets.append((*iv, "datacentre", f"Behind VPN {v['name']}", c, {}))
+        # the names file: internal and data centre ranges join those above; anything else is an external network,
+        # named by range (before AWS's and the providers' lists) or by AS number (after AWS's)
+        named = {"saas": [], "internet": []}
+        self.name_asn: dict[int, dict] = {}
+        for e in names or []:
+            kind = e["type"] if e["type"] in ("internal", "datacentre") else sg_ipintel.GROUPS[e["type"]][1]
+            extra = {} if kind in ("internal", "datacentre") else self._named(e)
+            for net in e["ranges"]:
+                iv = (int(net.network_address), int(net.broadcast_address))
+                (others if kind == "internal" else dc if kind == "datacentre" else named[kind]).append(iv)
+                self.nets.append((*iv, kind, e["name"], str(net), extra))
+            for a in e["asn"]:
+                self.name_asn[a] = {"cat": kind, **extra}
         self.nets.sort(key=lambda n: n[1] - n[0])
-        internal = sg_ipintel.merge(own + others)
-        private = sg_ipintel.subtract(sg_ipintel.merge(PRIVATE + dc), internal)
-        aws = sg_ipintel.subtract(self.intel.aws_intervals(), sg_ipintel.merge(internal + private))
-        saas = sg_ipintel.subtract(self.intel.saas_intervals(), sg_ipintel.merge(internal + private + aws))
-        rest = sg_ipintel.subtract(ALL, sg_ipintel.merge(internal + private + aws + saas))
+        M, S = sg_ipintel.merge, sg_ipintel.subtract
+        internal = M(own + others)
+        taken = internal
+        named_saas = S(M(named["saas"]), taken)
+        named_inet = S(M(named["internet"]), M(taken + named_saas))
+        private = S(M(PRIVATE + dc), M(taken + named_saas + named_inet))
+        taken = M(taken + named_saas + named_inet + private)
+        aws = S(self.intel.aws_intervals(), taken)
+        taken = M(taken + aws)
+        by_asn = {"saas": [], "internet": []}
+        if self.name_asn:
+            ia = self.intel
+            for i, (asn, _cc, _owner) in enumerate(ia.asn_meta):
+                if asn in self.name_asn:
+                    by_asn[self.name_asn[asn]["cat"]].append((ia.asn_start[i], ia.asn_end[i]))
+        asn_saas, asn_inet = S(M(by_asn["saas"]), taken), S(M(by_asn["internet"]), taken)
+        saas = M(named_saas + asn_saas + S(S(self.intel.saas_intervals(), taken), asn_inet))
+        rest = S(ALL, M(taken + saas))
         self.cat_iv = {"internal": internal, "datacentre": private, "aws": aws, "saas": saas, "internet": rest}
         self._memo: dict[str, dict] = {}
+
+    @staticmethod
+    def _named(e: dict) -> dict:
+        typ = e["type"]
+        return {"group": typ, "provider": e["name"], "what": e["note"] or sg_ipintel.GROUPS[typ][0], "named": True}
 
     def __call__(self, ip: str) -> dict:
         hit = self._memo.get(ip)
@@ -691,9 +805,13 @@ class Labeller:
         except ValueError:
             return {"cat": "internet", "name": str(ip)}
         out = None
-        for first, last, cat, name, cidr in self.nets:
+        for first, last, cat, name, cidr, extra in self.nets:
             if first <= n <= last:
-                out = {"cat": cat, "name": name, "range": cidr}
+                out = {"cat": cat, "name": name, "range": cidr, **extra}
+                a = self.intel.asn(n) if extra else None
+                if a:  # a named external range: what the AS list knows too
+                    out.update(as_num=a["asn"], owner=a["owner"], cc=a["country"], block=a["block"],
+                               asn=f"AS{a['asn']} {a['owner']}".strip() + (f" ({a['country']})" if a["country"] else ""))  # fmt: skip
                 break
         if out is None:
             for (a, b), cidr in zip(PRIVATE, PRIVATE_V4):
@@ -702,7 +820,13 @@ class Labeller:
                     break
         if out is None:
             lab = self.intel.label(ip)
+            mine = self.name_asn.get(lab.get("asn")) if lab["kind"] != "aws" and lab.get("group") != "anon" else None
+            if mine:  # an AS number in the names file: its name and type, over the built-in lists
+                lab = {k: v for k, v in lab.items() if k not in ("prefix", "what")}
+                lab.update(kind=mine["cat"], name=mine["provider"], **{k: v for k, v in mine.items() if k != "cat"})
             out = {"cat": lab["kind"], "name": lab["name"]}
+            if mine:
+                out["named"] = True
             if lab.get("asn"):
                 out["asn"] = f"AS{lab['asn']} {lab.get('owner', '')}".strip() + (
                     f" ({lab['country']})" if lab.get("country") else ""
@@ -919,10 +1043,10 @@ def _state_at(now_entries: set, events: list, t: float) -> tuple[set, bool]:
     return state, known
 
 
-def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = "") -> dict:
+def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = "", names: list | None = None) -> dict:
     span, step = RANGES.get(range_key, RANGES["1m"])
     chunks = [c for c in doc["chunks"] if c["st"] in ("ok", "cut")]
-    lab = Labeller(doc, onprem, internal)
+    lab = Labeller(doc, onprem, internal, names)
     end = max((c["e"] for c in chunks), default=read_end(time.time()))
     start = _floor(end - span, step)
     nbins = max(1, -(-(end - start) // step))
@@ -1543,12 +1667,13 @@ def _evidence(doc: dict) -> tuple[int | None, int | None]:
     return min(c["s"] for c in ok), max(c["e"] for c in ok)
 
 
-def page_data(doc: dict, onprem: str = "", internal: str = "", now: float | None = None) -> dict:
+def page_data(doc: dict, onprem: str = "", internal: str = "", now: float | None = None,
+              names: list | None = None) -> dict:  # fmt: skip
     """Everything the page shows: each timeline the read covers, built in full, so the page needs no server."""
     first, end = _evidence(doc)
     days = (end - first) / DAY if first is not None else 0
     keys = [k for k, (span, _) in RANGES.items() if span <= (days + 0.5) * DAY] or ["24h"]
-    ranges = {k: build(doc, k, onprem, internal) for k in keys}
+    ranges = {k: build(doc, k, onprem, internal, names) for k in keys}
     regions = [r for r, x in doc["regions"].items() if x.get("query_sets")]
     return {
         "schema": "sg-tightener.review/v1",
@@ -1560,6 +1685,7 @@ def page_data(doc: dict, onprem: str = "", internal: str = "", now: float | None
         "end": end,
         "default": keys[-1],
         "ranges": ranges,
+        "names": len(names or []),
         "source_types": [{"key": k, "name": n, "kind": kind, "note": sg_ipintel.GROUP_NOTE.get(k, "")}
                          for k, (n, kind) in SOURCE_TYPES.items()],
         "port_classes": [{"key": k, "name": n, "note": note, "risky": k in RISKY_CLASSES}
@@ -1678,8 +1804,11 @@ def cmd_report(args) -> int:
         got = sg_ipintel.refresh()
         if got:
             LOG.info("address lists updated: %s", ", ".join(got))
+    names = load_names(args.names)
+    if names:
+        LOG.info("names file: %d networks named", len(names))
     out = args.out or f"sg-review-{account}.html"
-    write_page(page_data(doc, args.onprem, args.internal), out)
+    write_page(page_data(doc, args.onprem, args.internal, names=names), out)
     LOG.info("wrote %s", out)
     return 0
 
@@ -1704,8 +1833,22 @@ def cmd_demo(args) -> int:
         sg_ipintel.refresh()
     now = time.time()
     doc = sg_review_demo.build_doc(sg_review_demo.ACCOUNT, now, 180)
-    write_page(page_data(doc, "", sg_review_demo.INTERNAL, now), args.out)
+    write_page(page_data(doc, "", sg_review_demo.INTERNAL, now, parse_names(sg_review_demo.NAMES)), args.out)
     LOG.info("wrote %s (a made-up account: no AWS call was made)", args.out)
+    return 0
+
+
+def cmd_names(args) -> int:
+    p = Path(args.out).expanduser() if args.out else names_path()
+    if p.exists():
+        names = load_names(p)
+        LOG.info("%s: %d networks named, all valid", p, len(names))
+        for e in names:
+            LOG.info("  %s (%s): %s", e["name"], e["type"], ", ".join([str(n) for n in e["ranges"]] + [f"AS{a}" for a in e["asn"]]))
+        return 0
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(NAMES_EXAMPLE)
+    LOG.info("wrote an example names file to %s: edit it, then run report", p)
     return 0
 
 
@@ -1732,6 +1875,8 @@ def _build_parser() -> argparse.ArgumentParser:
     o.add_argument("--account", help="the account read (default: the only one)")
     o.add_argument("--onprem", default="", help='data centre ranges to name, e.g. "10.200.0.0/16 Johannesburg DC"')
     o.add_argument("--internal", default="", help='your other accounts\' ranges, e.g. "10.40.0.0/16 Payments prod"')
+    o.add_argument("--names", help="names file (YAML or JSON) naming partners and other networks by range or AS "
+                   "number (default ~/.sg-tightener/names.yaml if it exists; `sg_review.py names` writes an example)")
     o.add_argument("--offline", action="store_true", help="do not refresh the public address lists")
     o.add_argument("--out", help="output file (default sg-review-<account>.html)")
     o.set_defaults(fn=cmd_report)
@@ -1744,6 +1889,9 @@ def _build_parser() -> argparse.ArgumentParser:
     d.add_argument("--out", default="sg-review-demo.html")
     d.add_argument("--offline", action="store_true", help="do not refresh the public address lists")
     d.set_defaults(fn=cmd_demo)
+    n = sub.add_parser("names", help="check the names file, or write an example one if there is none")
+    n.add_argument("--out", help="the names file (default ~/.sg-tightener/names.yaml)")
+    n.set_defaults(fn=cmd_names)
     f = sub.add_parser("forget", help="delete what was read for an account")
     f.add_argument("--account")
     f.set_defaults(fn=cmd_forget)

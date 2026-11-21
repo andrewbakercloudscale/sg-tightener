@@ -7,9 +7,10 @@ from your estate ever leaves the machine:
 * AWS's own ranges (ip-ranges.json), with the service and region of each;
 * the ranges SaaS providers publish (Cloudflare, GitHub, Google, Atlassian, Okta, Datadog, Fastly, Oracle Cloud,
   plus the networks of Zscaler, Salesforce, Akamai and others by AS number);
-* every routed IPv4 range with its AS number, owner and country (iptoasn.com, public domain).
+* every routed IPv4 range with its AS number, owner and country (iptoasn.com, public domain);
+* the Tor Project's list of Tor exit relays (check.torproject.org/torbulkexitlist).
 
-AWS's list and the SaaS lists are read again after a day, the AS list after a week. Until a list has been read
+AWS's list, the SaaS lists and the Tor list are read again after a day, the AS list after a week. Until a list has been read
 once, a few well-known ranges stand in, so the report still labels the commonest sources. ``refresh`` downloads;
 ``get`` never waits for the network. The lists live under ``DATA_DIR/ipintel`` (``~/.sg-tightener`` unless
 ``set_data_dir`` says otherwise).
@@ -39,6 +40,7 @@ DATA_DIR = Path.home() / ".sg-tightener"
 DAY = 86400
 AWS_URL = "https://ip-ranges.amazonaws.com/ip-ranges.json"
 ASN_URL = "https://iptoasn.com/data/ip2asn-v4.tsv.gz"
+TOR_URL = "https://check.torproject.org/torbulkexitlist"
 # (name, url, how to read it). GitHub Actions runs on Azure's shared ranges, so it is left out: it would
 # name every Azure address GitHub.
 SAAS_FEEDS = [
@@ -64,6 +66,7 @@ GROUPS = {
     "hosting": ("Hosting and cloud servers (anyone's)", "internet"),
     "scanner": ("Internet scanner", "internet"),
     "anon": ("Tor or VPN exit", "internet"),
+    "partner": ("Named partner (your names file)", "saas"),
     "other": ("Other network (ISP, business)", "internet"),
 }
 # What each group means for a rule that lets it in.
@@ -76,6 +79,7 @@ GROUP_NOTE = {
     "scanner": "Scans the whole internet for open ports. Never needs a rule.",
     "anon": "An anonymising exit: whoever is behind it cannot be known.",
     "other": "An ISP or business network.",
+    "partner": "Named in your names file: check the name still holds for this address.",
 }
 # AS numbers known well enough to name by number: (provider, group, service type).
 ORG_ASNS = {
@@ -323,6 +327,19 @@ def parse_feed(name: str, how: str, raw: bytes) -> list[tuple[str, str]]:
     return [(c, name) for c in found]
 
 
+def parse_tor(raw: bytes) -> list[str]:
+    """The exit relays' IPv4 addresses, one a line; anything else is skipped."""
+    out = []
+    for line in raw.decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        try:
+            if line and not line.startswith("#") and ipaddress.ip_address(line).version == 4:
+                out.append(line)
+        except ValueError:
+            continue
+    return out
+
+
 def parse_asn(raw: bytes) -> list[tuple]:
     """(start, end, asn, country, owner) rows of iptoasn's TSV, routed ranges only."""
     rows = []
@@ -363,6 +380,14 @@ def refresh(force: bool = False) -> dict:
         if pairs:
             (d / "saas.json").write_text(json.dumps(pairs))
             got["saas"] = len(pairs)
+    if force or not _fresh(d / "tor.json", DAY):
+        try:
+            rows = parse_tor(_get(TOR_URL, 30))
+            if rows:  # an empty or broken list is not kept
+                (d / "tor.json").write_text(json.dumps(rows))
+                got["tor"] = len(rows)
+        except (OSError, ValueError) as exc:
+            log.info("Tor exit list not read: %s", exc)
     if force or not _fresh(d / "asn.tsv.gz", 7 * DAY):
         try:
             raw = _get(ASN_URL, 90)
@@ -410,7 +435,7 @@ class PrefixIndex:
 class Intel:
     """Every lookup, built once from the downloaded lists (or the stand-ins)."""
 
-    def __init__(self, aws_rows, saas_rows, asn_rows) -> None:
+    def __init__(self, aws_rows, saas_rows, asn_rows, tor_rows=()) -> None:
         # The most telling service wins: AMAZON is every range's catch-all, so it ranks last.
         best: dict[str, tuple] = {}
         for cidr, svc, region in aws_rows:
@@ -431,7 +456,8 @@ class Intel:
             self.asn_start.append(s)
             self.asn_end.append(e)
             self.asn_meta.append((asn, cc, owner))
-        self.counts = {"aws": len(best), "saas": len(saas_rows), "asn": len(self.asn_meta)}
+        self.tor = {n for n in map(_v4, tor_rows) if n is not None}
+        self.counts = {"aws": len(best), "saas": len(saas_rows), "asn": len(self.asn_meta), "tor": len(self.tor)}
         self._aws_iv: list | None = None
         self._saas_iv: list | None = None
         self._org: dict[tuple, tuple | None] = {}
@@ -476,6 +502,9 @@ class Intel:
         a = self.asn(n) or {}
         out = {"asn": a.get("asn"), "country": a.get("country", ""), "owner": a.get("owner", ""),
                "block": a.get("block", "")}
+        if n in self.tor:  # wherever it is hosted, a Tor exit carries anyone's traffic
+            return {**out, "kind": "internet", "name": "Tor exit", "provider": "Tor", "group": "anon",
+                    "group_name": GROUPS["anon"][0], "what": "Tor exit relay, on the Tor Project's list"}  # fmt: skip
         hit = self.aws.match(n)
         if hit:
             prefix, (svc, region) = hit
@@ -502,7 +531,7 @@ def get() -> Intel:
     d = _dir()
     key = tuple(
         (p.name, p.stat().st_mtime) if p.exists() else (p.name, 0)
-        for p in (d / "aws.json", d / "saas.json", d / "asn.tsv.gz")
+        for p in (d / "aws.json", d / "saas.json", d / "asn.tsv.gz", d / "tor.json")
     )
     with _lock:
         if _memo.get("key") == key:
@@ -514,7 +543,7 @@ def get() -> Intel:
         asn_rows = parse_asn((d / "asn.tsv.gz").read_bytes()) or SEED_ASN
     except (OSError, ValueError, EOFError):
         pass
-    intel = Intel(aws_rows, saas_rows, asn_rows)
+    intel = Intel(aws_rows, saas_rows, asn_rows, _read_json(d / "tor.json", flat=True) or ())
     intel.counts["seed"] = [n for n, rows, seed in (("aws", aws_rows, SEED_AWS), ("saas", saas_rows, SEED_SAAS),
                                                     ("asn", asn_rows, SEED_ASN)) if rows is seed]  # fmt: skip
     with _lock:
@@ -522,10 +551,18 @@ def get() -> Intel:
     return intel
 
 
-def _read_json(path):
+def _read_json(path, flat: bool = False):
     try:
-        return [tuple(r) for r in json.loads(path.read_text())]
-    except (OSError, ValueError):
+        rows = json.loads(path.read_text())
+        return list(rows) if flat else [tuple(r) for r in rows]
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _v4(s) -> int | None:
+    try:
+        return int(ipaddress.IPv4Address(s))
+    except ValueError:
         return None
 
 

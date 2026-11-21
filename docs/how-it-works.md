@@ -304,7 +304,9 @@ against the account's VPCs, the `--internal` and `--onprem` ranges and the VPN
 routes; then against AWS's published prefixes (longest match, so a service
 prefix wins over the general AMAZON one), the SaaS providers' published
 prefixes, and the AS number table, which gives the owner, country and announced
-block. A SaaS or internet source then gets a source type (CDN, secure access,
+block. An address on the Tor Project's exit list is a Tor exit whatever network hosts it. Ranges and AS
+numbers in the names file win over every public list: a named range is matched with your own ranges,
+before AWS's; a named AS number after AWS's. A SaaS or internet source then gets a source type (CDN, secure access,
 SaaS, hosting, scanner, Tor or VPN, other) from `sg_ipintel.ORG_ASNS` by AS
 number, or else from the first of `ORG_NAMES`' owner-name patterns that
 matches; an owner none of whose words starts like a pattern is skipped without

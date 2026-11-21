@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.4.0 - 2026-11-21
 
 - **New: `sg_review.py`**, moved here from the AWS Cloud Risk Review console,
   where it was the Cloud Assurance tab "Security Group Review". `read` reads
@@ -54,6 +54,17 @@
   - Google Cloud and Oracle Cloud customer ranges, and hosting networks, are
     now "other networks", not SaaS, so they no longer count as SaaS in the
     over-provisioned split.
+- **`sg_review.py` Tor exit list.** The Tor Project's list of exit relays
+  (check.torproject.org/torbulkexitlist) is downloaded daily with the other
+  address lists. A listed address is a Tor exit whatever network hosts it, so
+  exits on ordinary hosting networks are no longer missed.
+- **`sg_review.py` names file.** `~/.sg-tightener/names.yaml` (or
+  `report --names FILE`, YAML or JSON) names partners and other known networks
+  by range or AS number, with a type (partner, internal, datacentre, saas,
+  security, cdn, hosting, scanner, anon, other) and a note. Named sources win
+  over every public list and show as **Partner** (or their type) on the page;
+  partners count as "External: SaaS and partners". `sg_review.py names` writes
+  an example file or checks yours. `requirements.txt` gains `pyyaml`.
 
 ## 2.3.0 - 2026-11-20
 

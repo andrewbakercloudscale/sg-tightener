@@ -180,9 +180,10 @@ under `--data-dir` (default `~/.sg-tightener`): `review/<account>.json.gz`
 ```bash
 python sg_review.py read     --regions eu-west-1,us-east-1 [--days 1] [--profile P] [--yes]
 python sg_review.py report   [--account ID] [--onprem "10.200.0.0/16 Johannesburg DC"] \
-                             [--internal "10.40.0.0/16 Payments prod"] [--offline] [--out FILE]
+                             [--internal "10.40.0.0/16 Payments prod"] [--names FILE] [--offline] [--out FILE]
 python sg_review.py approved --region eu-west-1 [--account ID] [--out approved.json]
 python sg_review.py demo     [--offline] [--out sg-review-demo.html]
+python sg_review.py names    [--out FILE]
 python sg_review.py forget   --account ID
 ```
 
@@ -196,11 +197,13 @@ python sg_review.py forget   --account ID
 | `report --account` | the only one read | Which account's read to report |
 | `report --onprem` | | Data centre ranges to name, comma separated, each `CIDR name` |
 | `report --internal` | | Your other accounts' ranges, named like `--onprem`, counted as internal |
-| `report --offline` | off | Do not refresh the AWS, SaaS and AS-number lists (refreshed daily, weekly for AS numbers) |
+| `report --names` | `~/.sg-tightener/names.yaml` if it exists | Names file (YAML or JSON): partners and other networks named by range or AS number. See [Your names file](security-group-review.md#your-names-file) |
+| `report --offline` | off | Do not refresh the AWS, SaaS, Tor exit and AS-number lists (refreshed daily, weekly for AS numbers) |
 | `report --out` | `sg-review-<account>.html` | The page: open it in any browser, offline. It describes your network: treat it as confidential |
 | `approved --region` | required | The region whose approved.json to write (the page offers the same file per region) |
 | `approved --out` | `approved.json` | Output file, for `sg_tightener.py plan --approved` |
 | `demo --out` | `sg-review-demo.html` | The page for a made-up account; no AWS call |
+| `names --out` | `~/.sg-tightener/names.yaml` | Check the names file and list what it names, or write an example one if there is none |
 | `forget --account` | | Delete what was read for that account |
 | `--data-dir` (before the command) | `~/.sg-tightener` | Where reads and the address-naming lists are kept |
 

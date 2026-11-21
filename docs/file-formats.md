@@ -240,6 +240,28 @@ applied.
 | `not_extracted` | Sources a new security group rule would not let in, with the reason |
 | `ip_permissions` | Per group, the `IpPermissions` for `aws ec2 authorize-security-group-ingress` (and `revoke-security-group-ingress` to undo) |
 
+## Names file (`~/.sg-tightener/names.yaml`)
+
+Read by `sg_review.py report` (`--names FILE` for another path). YAML or, with a `.json` suffix,
+JSON: a list of entries (or `{"names": [...]}`).
+
+```yaml
+- name: Acme payroll        # required
+  type: partner             # optional, default partner
+  ranges: [203.0.113.0/24]  # IPv4 CIDRs; ranges or asn (or both) required
+  asn: [64500, AS64501]     # AS numbers, with or without "AS"
+  note: SFTP drop           # optional, shown on the page
+```
+
+| Field | Meaning |
+|---|---|
+| `type` | `partner`, `saas`, `security` or `cdn` count as External: SaaS and partners; `hosting`, `scanner`, `anon` or `other` as External: other networks; `internal` and `datacentre` work like `--internal` and `--onprem` and take ranges only |
+| `ranges` | Matched narrowest first with the account's own and the `--internal`/`--onprem` ranges, before AWS's published ranges |
+| `asn` | Matched after AWS's published ranges and the Tor exit list, before the built-in provider list |
+
+A source named by the file carries `source_type` (the `type`) and `provider` (the `name`) in the
+extracted-rules JSON.
+
 ## Reports
 
 `sg_ou_report.py` and `sg_transfer_audit.py` write an Excel workbook (summary

@@ -61,7 +61,8 @@ stop a read; the slices already read are kept.
 |---|---|---|
 | `--onprem` | `"10.200.0.0/16 Johannesburg DC, 10.201.0.0/16 Cape Town DC"` | These ranges count as **Data centre** (purple) and are labelled with your name for them. Ranges behind the account's VPN connections are added automatically |
 | `--internal` | `"10.40.0.0/16 Payments prod"` | Your other accounts' ranges count as **Internal** (blue), the same as the account's own VPCs |
-| `--offline` | flag | Do not refresh the public lists that name AWS services, SaaS providers and AS numbers. A few well-known ranges are used instead, and the page says so |
+| `--names` | `partners.yaml` | Names partners and other networks you know, by range or AS number (see [Your names file](#your-names-file)). Default `~/.sg-tightener/names.yaml` if it exists |
+| `--offline` | flag | Do not refresh the public lists that name AWS services, SaaS providers, AS numbers and Tor exits. A few well-known ranges are used instead, and the page says so |
 | `--account` | `123456789012` | Which account's read to report, if you have read more than one |
 | `--out` | `review.html` | Output file (default `sg-review-<account>.html`) |
 
@@ -73,6 +74,7 @@ Ranges are separated by commas. Each one is a CIDR, then a space, then a name.
 |---|---|
 | `approved --region R [--account ID] [--out approved.json]` | Writes sg-tightener's `approved.json` from the review, ready for `sg_tightener.py plan`. The same file can be downloaded from the page |
 | `demo [--offline] [--out FILE]` | The page for a made-up account |
+| `names [--out FILE]` | Checks the names file and lists what it names, or writes an example one if there is none |
 | `forget --account ID` | Deletes what was read for that account |
 | `--data-dir DIR` (before the command) | Where reads and address lists are kept (default `~/.sg-tightener`) |
 
@@ -109,13 +111,44 @@ say "Censys, internet scanner" rather than "AS398324":
 | **SaaS** | SaaS | GitHub, Atlassian, Slack, Okta, Datadog, Salesforce, Microsoft, Google, Stripe, Twilio | The provider's own service, such as a webhook or an integration |
 | **Anyone's hosting** | Other networks | DigitalOcean, OVHcloud, Hetzner, Linode, Vultr, Contabo, Google Cloud and Oracle Cloud customers' servers | Anyone can rent a server there: the address says nothing about who is behind it |
 | **Scanner** | Other networks | Shodan, Censys, Shadowserver, Rapid7, BinaryEdge, Onyphe, Driftnet | Scans the whole internet for open ports, and never needs a rule |
-| **Tor or VPN** | Other networks | Tor exit operators, Mullvad, NordVPN, Proton VPN, M247 | Whoever is behind it cannot be known |
+| **Tor or VPN** | Other networks | Every relay on the Tor Project's exit list (whatever network hosts it), Tor exit operators, Mullvad, NordVPN, Proton VPN, M247 | Whoever is behind it cannot be known |
+| **Partner** | SaaS and partners | Whatever your names file calls a partner | Named by you: check the name still holds |
 | **Other** | Other networks | Every other ISP or business network | |
 
 A published range wins over the AS number. Over-provisioned "SaaS" addresses count only the
 providers' own ranges and networks, not anyone's hosting. Microsoft's and Google's main AS numbers
 also carry Azure and some Google Cloud services, so a source named "Microsoft" may still be a
 customer's server.
+
+### Your names file
+
+A names file puts your own names on networks the public lists cannot know: a partner's office, a
+supplier's servers, the scanner your security team pays for. Entries name ranges, AS numbers or
+both, and win over every public list (a named range even over AWS's, since a partner's server is
+often an Elastic IP).
+
+```yaml
+# ~/.sg-tightener/names.yaml (or --names FILE; JSON works too)
+- name: Acme payroll
+  type: partner            # the default
+  ranges: [203.0.113.0/24]
+  asn: [64500]
+  note: SFTP drop, contract 2024-17
+- name: Our pen-test supplier
+  type: scanner
+  asn: [AS64501]
+- name: Cape Town DC
+  type: datacentre         # like --onprem; internal works like --internal (ranges only)
+  ranges: [10.90.0.0/16]
+```
+
+`type` is `partner`, `internal`, `datacentre`, `saas`, `security`, `cdn`, `hosting`, `scanner`,
+`anon` or `other`. Partners count as **External: SaaS and partners**. A source matched by name
+shows the name, a **Partner** (or other type) chip, and your note. Its AS number is still shown
+for a named range. `sg_review.py names` writes an example file, or checks yours and lists what it
+names. A mistake (an unknown type, a bad range) stops the report with the entry named.
+
+The demo names its SFTP partner this way: 203.0.113.0/24 is "Acme payroll".
 
 ### Colour by: kind, source type, network or port class
 
@@ -285,7 +318,8 @@ sources left out with the reason. To undo a rule, run the same command with
 | Path | Contents |
 |---|---|
 | `~/.sg-tightener/review/<account>.json.gz` | What was read: flow-log slices, security groups, interfaces, VPCs, rule changes. Mode 0600 in a 0700 directory |
-| `~/.sg-tightener/ipintel/` | The public address lists (AWS, SaaS providers, AS numbers), refreshed daily (AS numbers weekly) |
+| `~/.sg-tightener/ipintel/` | The public address lists (AWS, SaaS providers, Tor exits, AS numbers), refreshed daily (AS numbers weekly) |
+| `~/.sg-tightener/names.yaml` | Your names file, if you keep one there |
 | `sg-review-<account>.html` | The page. It describes your network, so treat it as confidential |
 
 The permissions needed are in [permissions.md](permissions.md). Every flag is in the

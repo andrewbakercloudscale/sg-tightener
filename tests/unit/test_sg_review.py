@@ -350,3 +350,70 @@ def test_label_gives_the_source_type_and_hosting_feeds_are_internet():
     assert (isp["kind"], isp["group"]) == ("internet", "other") and isp["name"].startswith("AS64512")
     # the saas share of over-provisioned holds the provider's own ranges, not anyone's hosting
     assert intel.saas_intervals() == [(ipintel.cidr_iv("192.0.2.0/24"))]
+
+
+# ------------------------------------------------------------------------------- Tor list, names file
+def test_tor_exit_list_is_parsed_and_wins_over_the_network_owner():
+    assert ipintel.parse_tor(b"# list\n171.25.193.25\n\nnot an ip\n2001:db8::1\n80.67.167.81\n") == [
+        "171.25.193.25", "80.67.167.81"]  # fmt: skip
+    intel = ipintel.Intel([("171.25.193.0/24", "EC2", "eu-north-1")], [],
+                          [("171.25.193.0", "171.25.193.255", 198093, "SE", "DFRI-AS Foreningen")],
+                          ["171.25.193.25"])  # fmt: skip
+    tor = intel.label("171.25.193.25")
+    assert (tor["kind"], tor["group"], tor["name"], tor["asn"]) == ("internet", "anon", "Tor exit", 198093)
+    assert intel.label("171.25.193.26")["kind"] == "aws" and intel.counts["tor"] == 1
+
+
+def test_refresh_keeps_the_tor_list_and_get_reads_it(monkeypatch):
+    monkeypatch.setattr(ipintel, "_get", lambda url, timeout=30: b"192.0.2.77\n" if url == ipintel.TOR_URL else b"x")
+    got = ipintel.refresh(force=True)
+    assert got.get("tor") == 1
+    assert ipintel.get().label("192.0.2.77")["group"] == "anon"
+
+
+def test_names_file_is_checked():
+    names = sg_review.parse_names([
+        {"name": "Acme payroll", "ranges": ["203.0.113.0/24"], "asn": ["AS64500", 64501], "note": "SFTP"},
+        {"name": "Cape Town DC", "type": "datacentre", "ranges": ["10.90.0.0/16"]},
+    ])  # fmt: skip
+    assert names[0]["type"] == "partner" and names[0]["asn"] == [64500, 64501] and str(names[0]["ranges"][0]) == "203.0.113.0/24"
+    assert sg_review.parse_names({"names": []}) == [] and sg_review.parse_names(None) == []
+    for bad in ([{"ranges": ["1.2.3.0/24"]}], [{"name": "x"}], [{"name": "x", "type": "friend", "asn": [1]}],
+                [{"name": "x", "ranges": ["nope"]}], [{"name": "x", "type": "internal", "asn": [1]}], {"names": "x"}):  # fmt: skip
+        with pytest.raises((ValueError, TypeError)):
+            sg_review.parse_names(bad)
+
+
+def test_names_file_names_ranges_and_as_numbers(report, tmp_path):
+    doc, _rep = report
+    (tmp_path / "names.yaml").write_text(
+        "- name: Acme payroll\n  ranges: [203.0.113.0/24]\n  note: SFTP drop\n"
+        "- name: Censys, allowed to scan\n  type: scanner\n  asn: [398324]\n"
+        "- name: Cape Town DC\n  type: datacentre\n  ranges: [10.90.0.0/16]\n"
+    )
+    names = sg_review.load_names(tmp_path / "names.yaml")
+    lab = sg_review.Labeller(doc, "", demo_sg.INTERNAL, names)
+    acme = lab("203.0.113.10")
+    assert (acme["cat"], acme["group"], acme["name"], acme["what"], acme["named"]) == ("saas", "partner", "Acme payroll", "SFTP drop", True)
+    cz = lab("162.142.125.10")
+    assert (cz["cat"], cz["group"], cz["name"], cz["as_num"]) == ("internet", "scanner", "Censys, allowed to scan", 398324)
+    dc = lab("10.90.1.1")
+    assert (dc["cat"], dc["name"]) == ("datacentre", "Cape Town DC")
+    # the partner range moves into the SaaS and partners share of the address space
+    iv = ipintel.cidr_iv("203.0.113.0/24")
+    assert ipintel.size(ipintel.intersect([iv], lab.cat_iv["saas"])) == 256
+    assert sum(ipintel.size(v) for v in lab.cat_iv.values()) == 2**32
+    rep = sg_review.build(doc, "3m", "", demo_sg.INTERNAL, names)
+    assert any(x["name"] == "Acme payroll" for x in rep["active"])
+
+
+def test_names_cli_writes_an_example_then_checks_it(tmp_path):
+    p = tmp_path / "names.yaml"
+    assert sg_review.main(["names", "--out", str(p)]) == 0 and "Acme payroll" in p.read_text()
+    assert sg_review.main(["names", "--out", str(p)]) == 0
+    assert sg_review.load_names(p)[0]["asn"] == [64500]
+    with pytest.raises(SystemExit):
+        sg_review.load_names(tmp_path / "missing.yaml")
+    (tmp_path / "broken.yaml").write_text("- name: [unclosed\n")
+    with pytest.raises(SystemExit, match="broken.yaml"):
+        sg_review.load_names(tmp_path / "broken.yaml")

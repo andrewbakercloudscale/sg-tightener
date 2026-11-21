@@ -23,6 +23,9 @@ REGION = "eu-west-1"
 VPC = "10.20.0.0/16"
 OTHER = ("Payments prod (111122223333)", "10.40.0.0/16")
 INTERNAL = f"{OTHER[1]} {OTHER[0]}"
+# the demo's names file: the partner behind the SFTP rule, and a network they say is theirs
+NAMES = [{"name": "Acme payroll", "type": "partner", "ranges": ["203.0.113.0/24"],
+          "note": "SFTP drop for payroll files"}]  # fmt: skip
 
 DEMO_BYTES_PER_HOUR = 150_000_000  # what the made-up flow logs "scan" per hour, for the cost estimate
 
