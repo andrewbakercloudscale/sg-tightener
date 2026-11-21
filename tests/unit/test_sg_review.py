@@ -104,8 +104,10 @@ def test_over_provisioned_never_counts_a_seen_address(report):
     seen = set()
     for c in doc["chunks"]:
         seen |= {r[0] for r in c["rows"]} | {r[0] for r in c["pub"]}
-    ivs = ipintel.merge([(n, n) for n in map(sg_review._ip, seen)])
+    ivs = ipintel.merge([(n, n) for n in map(sg_review._ip, seen) if n is not None])
     for r in rep["rules"]:
+        if r.get("v6"):  # IPv6 ranges are counted in /64 subnets, tested separately
+            continue
         allowed = ipintel.merge([ipintel.cidr_iv(r["source"])])
         assert r["never"] == ipintel.size(ipintel.subtract(allowed, ivs))
     assert rep["summary"]["over_now"] > 0
@@ -354,8 +356,8 @@ def test_label_gives_the_source_type_and_hosting_feeds_are_internet():
 
 # ------------------------------------------------------------------------------- Tor list, names file
 def test_tor_exit_list_is_parsed_and_wins_over_the_network_owner():
-    assert ipintel.parse_tor(b"# list\n171.25.193.25\n\nnot an ip\n2001:db8::1\n80.67.167.81\n") == [
-        "171.25.193.25", "80.67.167.81"]  # fmt: skip
+    assert ipintel.parse_tor(b"# list\n171.25.193.25\n\nnot an ip\n2001:DB8::1\n80.67.167.81\n") == [
+        "171.25.193.25", "2001:db8::1", "80.67.167.81"]  # fmt: skip
     intel = ipintel.Intel([("171.25.193.0/24", "EC2", "eu-north-1")], [],
                           [("171.25.193.0", "171.25.193.255", 198093, "SE", "DFRI-AS Foreningen")],
                           ["171.25.193.25"])  # fmt: skip

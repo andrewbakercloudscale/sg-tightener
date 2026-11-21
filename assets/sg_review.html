@@ -88,6 +88,8 @@ table.data tr:last-child td { border-bottom: none; }
 .pill { display: inline-block; font-size: 11px; font-weight: 650; padding: 1px 7px; border-radius: 999px; white-space: nowrap; vertical-align: 1px; background: color-mix(in srgb, var(--p, var(--muted)) 14%, var(--surface)); color: color-mix(in srgb, var(--p, var(--muted)) 75%, var(--ink)); border: 1px solid color-mix(in srgb, var(--p, var(--muted)) 45%, transparent); }
 .pill.recon { --p: var(--sev-critical); }
 .pill.new { --p: var(--tone-est); }
+.pill.fresh { --p: var(--tone-risk); }
+.pill.v6 { --p: var(--accent); }
 .filter { margin: 10px 0 6px; }
 .tools { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 6px 0 8px; font-size: 13px; }
 .tools select { font: inherit; }
@@ -180,6 +182,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
       <p class="muted small">Per security group and port, the refused private sources as the fewest exact ranges. Add them only if the traffic is wanted; sources a network ACL refused are left out (the ACL decides first).</p>
       <div class="table-wrap"><table class="data" id="suggest"></table></div>
     </div>
+    <div class="tools" id="refusedSeen"></div>
     <p class="filter muted small" id="refusedFilter"></p>
     <div class="table-wrap"><table class="data" id="refused"></table></div>
   </section>
@@ -202,6 +205,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     <h2><span class="num">3</span>Active sources</h2>
     <p class="muted section-lede">Distinct addresses let in per period. Dark: also let in during the last 24 hours. Light: not seen in the last 24 hours, the sources a rule change would hurt without warning (DR tests, failovers, month-end batches). Replies to the account's own outbound connections are left out. Select a bar to list its sources.</p>
     <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Colour by</span><div class="seg" id="activeBy" role="group" aria-label="Colour the active sources by"><button type="button" data-by="recency">Last 24 hours</button><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div></div><div class="chart-box"><canvas id="chActive" role="img" aria-label="Stacked bars of active source addresses per period, split into those also seen in the last 24 hours and those not"></canvas></div></figure>
+    <div class="tools" id="activeSeen"></div>
     <p class="filter muted small" id="activeFilter"></p>
     <div class="table-wrap"><table class="data" id="active"></table></div>
   </section>
@@ -260,13 +264,13 @@ details.xr-fold > summary { margin: 0 0 10px; }
   const STATUS_TONE = { tighten: "--tone-risk", unused: "--sev-critical", open: "--warn-ink", watch: "--muted", incomplete: "--muted", "not logged": "--muted", used: "--good" };
   const RANGE_DAYS = { "24h": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180 };
   const NET_SHOWN = 10;
-  const state = { range: DATA.default, rep: null, cats: new Set(CATS), bin: null, mark: null, only: null, charts: {}, by: { refused: "kind", active: "recency" }, netTop: { refused: new Set(), active: new Set() }, xr: null };
+  const state = { range: DATA.default, rep: null, cats: new Set(CATS), bin: null, mark: null, only: null, charts: {}, by: { refused: "kind", active: "recency" }, seen: { refused: "", active: "" }, netTop: { refused: new Set(), active: new Set() }, xr: null };
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const num = (n) => (n == null ? EMPTY : Number(n).toLocaleString("en-GB"));
   const plural = (n, one, many) => `${num(n)} ${n === 1 ? one : many || one + "s"}`;
   const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-  const big = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${(n / 1e3).toFixed(0)}k` : num(n));
+  const big = (n) => (n >= 1e12 ? `${Number(n).toExponential(1).replace("e+", "×10^")}` : n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${(n / 1e3).toFixed(0)}k` : num(n));
   const bytes = (n) => { if (n == null) return EMPTY; const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1000 && i < 4) { n /= 1000; i++; } return `${n.toFixed(i ? 1 : 0)} ${u[i]}`; };
   const cost = (c) => (c == null ? "cost unknown until the first read" : c < 0.01 ? "under US$0.01" : `about US$${c.toFixed(2)}`);
   const when = (t, withTime = true) => (t ? new Date(t * 1000).toLocaleString("en-GB", { timeZone: "UTC", day: "numeric", month: "short", ...(withTime ? { hour: "2-digit", minute: "2-digit" } : {}) }) + (withTime ? " UTC" : "") : EMPTY);
@@ -283,7 +287,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
   const verdictBlock = (v) => (v ? `<div style="margin-top:4px"><span class="pill" style="--p:var(${SEV_VAR[v.sev] || "--muted"})" title="${esc(v.action)}">${esc(v.label)}</span></div><div class="small ${v.sev === "info" ? "muted" : ""} verdict-why">${esc(v.reason)}</div>` : "");
   const restoreCmd = (r) => `# Put back ${r.entry} on ${r.group_name || r.group}\npython sg_db.py exec --reason 'sg_review: put back a revoked rule that is still needed' -- \\\n  aws ec2 authorize-security-group-ingress --region ${r.region} --group-id ${r.group} \\\n  --ip-permissions '${JSON.stringify(r.perms)}'`;
   const pcChip = (pc) => (pc ? `<span class="pc${pc.risky ? " risky" : ""}" style="--c:${CLASS_COLOR[pc.cls] || "#888"}" title="${esc(CLASS[pc.cls]?.note || "")}">${esc(pc.name)}</span>` : "");
-  const srcCell = (x) => `<div><code>${esc(x.src)}</code> ${catChip(x.cat)} ${typeChip(x)}</div><div class="small">${esc(x.name)}${x.asn && !String(x.name).startsWith("AS") ? ` <span class="muted">· ${esc(x.asn)}</span>` : ""}${x.cc && String(x.name).startsWith("AS") ? ` <span class="muted">(${esc(x.cc)})</span>` : ""}</div>`;
+  const seenPill = (x) => (x.new ? ` <span class="pill fresh" title="Never in the flow logs read before ${esc(when(x.first_ever))}">new · first seen ${esc(when(x.first_ever))}</span>` : "");
+  const srcCell = (x) => `<div><code>${esc(x.src)}</code> ${catChip(x.cat)} ${typeChip(x)}${x.v6 ? ` <span class="pill v6">IPv6</span>` : ""}${seenPill(x)}</div><div class="small">${esc(x.name)}${x.asn && !String(x.name).startsWith("AS") ? ` <span class="muted">· ${esc(x.asn)}</span>` : ""}${x.cc && String(x.name).startsWith("AS") ? ` <span class="muted">(${esc(x.cc)})</span>` : ""}</div>`;
   function download(text, name, type) {
     const url = URL.createObjectURL(new Blob([text], { type }));
     const a = document.createElement("a");
@@ -618,7 +623,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
         <div class="att-top">${sevPill(it.sev, `${SEV_NAME[it.sev]} · ${it.label}`)}<strong>${esc(it.title)}</strong>${it.target ? `<span class="small muted">${esc(it.target)}</span>` : ""}</div>
         <p>${esc(it.reason)}</p>
         <p><strong>Do:</strong> ${esc(it.action)}</p>
-        ${it.srcs.length ? `<p class="small muted">${plural(it.srcs.length, "source")}: ${srcList(it)} · ${num(it.flows)} flows${dates ? ` · ${esc(dates)}` : ""}${it.days > 1 ? ` · ${plural(it.days, "day")}` : ""}</p>` : it.kind === "privatelink" ? `<p class="small muted">PrivateLink · ${esc(it.region || "")} · <a href="#privatelinkWrap">all PrivateLink</a></p>` : it.kind === "posture" ? `<p class="small muted">${esc(AREA[it.area] || "")} · ${esc(it.region || "")} · <a href="#postureWrap">all exposure and hygiene</a></p>` : it.kind === "drift" ? `<p class="small muted">Rule change · ${esc(it.event?.who || "unknown")} · ${esc(when(it.event?.t))} · ${esc(it.region || "")}</p>` : ""}
+        ${it.srcs.length ? `<p class="small muted">${plural(it.srcs.length, "source")}: ${srcList(it)} · ${num(it.flows)} flows${it.new ? ` · <span class="pill fresh">${num(it.new)} new, never seen before</span>` : ""}${dates ? ` · ${esc(dates)}` : ""}${it.days > 1 ? ` · ${plural(it.days, "day")}` : ""}</p>` : it.kind === "privatelink" ? `<p class="small muted">PrivateLink · ${esc(it.region || "")} · <a href="#privatelinkWrap">all PrivateLink</a></p>` : it.kind === "posture" ? `<p class="small muted">${esc(AREA[it.area] || "")} · ${esc(it.region || "")} · <a href="#postureWrap">all exposure and hygiene</a></p>` : it.kind === "drift" ? `<p class="small muted">Rule change · ${esc(it.event?.who || "unknown")} · ${esc(when(it.event?.t))} · ${esc(it.region || "")}</p>` : ""}
         <div class="tools">${it.srcs.length ? `<button type="button" class="btn" data-att-list="${i}">List these sources</button>` : ""}${it.kind === "refused" && !["internal-scan", "nacl"].includes(it.key) ? `<button type="button" class="btn" data-att-extract="${i}">Extract rule</button>` : ""}${it.restore ? `<button type="button" class="btn primary" data-att-restore="${i}">Restore the revoked rule</button>` : it.cli ? `<button type="button" class="btn primary" data-att-restore="${i}">Show the fix</button>` : ""}</div>
         ${restore}
       </div>`;
@@ -667,14 +672,29 @@ details.xr-fold > summary { margin: 0 0 10px; }
     }).join("")}</tbody></table></div>${egressNote}`;
   }
 
+  // "New only" / "IPv6 only" filters on the refused and active tables.
+  const seenOk = (x, kind) => !state.seen[kind] || (state.seen[kind] === "new" ? x.new : x.v6);
+  const firstEver = (x) => (x.seen_before && x.first_ever ? `<div class="muted">seen before: first ${esc(when(x.first_ever))}</div>` : "");
+  function seenBar(kind) {
+    const rows = state.rep[kind].filter((x) => state.cats.has(x.cat) && (kind === "refused" || x.bins.length));
+    const nNew = rows.filter((x) => x.new).length, n6 = rows.filter((x) => x.v6).length;
+    const st = state.rep.summary;
+    const opts = [["", "All"], ["new", `New only (${num(nNew)})`], ["v6", `IPv6 only (${num(n6)})`]];
+    if (state.seen[kind] && !opts.some(([k]) => k === state.seen[kind])) state.seen[kind] = "";
+    const note = st.new_possible ? `New: first seen in the last 7 days, never in the ${num(Math.round(st.history_days))} days of flow logs read before.` : `New needs at least 21 days of flow logs read (${num(Math.round(st.history_days || 0))} so far): read a longer range.`;
+    $(`#${kind}Seen`).innerHTML = `${opts.map(([k, label]) => `<button type="button" class="btn mini${state.seen[kind] === k ? " primary" : ""}" data-seen="${kind}|${k}">${esc(label)}</button>`).join(" ")}<span class="muted small">${esc(note)}</span>`;
+  }
+
   function refusedShown() {
     const order = (c) => CATS.indexOf(c);
-    return state.rep.refused.filter((x) => state.cats.has(x.cat) && inPick(x, "refused")).sort((a, b) => order(a.cat) - order(b.cat) || b.flows - a.flows);
+    return state.rep.refused.filter((x) => state.cats.has(x.cat) && inPick(x, "refused") && seenOk(x, "refused")).sort((a, b) => order(a.cat) - order(b.cat) || b.flows - a.flows);
   }
 
   function tables() {
     const rep = state.rep;
     const sel = state.cats;
+    seenBar("refused");
+    seenBar("active");
     const ref = refusedShown();
     filterNote("#refusedFilter", "refused", ref.length, rep.summary.refused);
     const b = state.bin?.kind === "refused" ? state.bin : null;
@@ -682,7 +702,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     $("#btnExtract").disabled = !ref.length;
     const tgt = (t) => `<div class="small">${esc(t.kind)} <code>${esc(t.eni)}</code> · ${esc(portsOf(t))} ${pcChip(t.pc)} <span class="muted">${esc(t.pc?.svc || "")}</span> · ${num(t.flows)} flows${t.by ? ` · <span class="${t.by.startsWith("Network ACL") ? "acl" : ""}">refused by ${esc(t.by)}</span>` : ""}</div>`;
     $("#refused").innerHTML = ref.length
-      ? `<thead><tr><th>Source</th><th>Refused at</th><th class="num-cell">Flows</th><th>First seen</th><th>Last seen</th><th></th></tr></thead><tbody>${ref.map((x) => `<tr><td>${srcCell(x)}${x.sweep ? ` <span class="pill recon">sweeping ${num(x.ports)} ports, ${num(x.dsts)} targets</span>` : ""}${verdictBlock(x.verdict)}</td><td>${targetsInPick(x, "refused").map(tgt).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="small">${esc(when(x.first))}</td><td class="small">${esc(when(x.last))}</td><td><button type="button" class="btn mini" data-extract="${esc(x.src)}">Extract rule</button></td></tr>`).join("")}</tbody>`
+      ? `<thead><tr><th>Source</th><th>Refused at</th><th class="num-cell">Flows</th><th>First seen</th><th>Last seen</th><th></th></tr></thead><tbody>${ref.map((x) => `<tr><td>${srcCell(x)}${x.sweep ? ` <span class="pill recon">sweeping ${num(x.ports)} ports, ${num(x.dsts)} targets</span>` : ""}${verdictBlock(x.verdict)}</td><td>${targetsInPick(x, "refused").map(tgt).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="small">${esc(when(x.first))}${firstEver(x)}</td><td class="small">${esc(when(x.last))}</td><td><button type="button" class="btn mini" data-extract="${esc(x.src)}">Extract rule</button></td></tr>`).join("")}</tbody>`
       : `<tbody><tr><td class="muted">No refused source of the kinds shown${state.bin ? " in this period" : ""}.</td></tr></tbody>`;
     $("#suggestWrap").hidden = !rep.suggestions.length;
     $("#suggest").innerHTML = `<thead><tr><th>Security group</th><th>Port</th><th>From</th><th class="num-cell">Sources</th><th class="num-cell">Flows</th><th>Ranges to add, if wanted</th></tr></thead><tbody>${rep.suggestions.map((x) => `<tr><td>${esc(x.name)} <code class="small">${esc(x.group)}</code><div class="muted small">${esc(x.region)}</div></td><td>${esc(x.ports)}<div>${pcChip(x.pc)} <span class="muted small">${esc(x.pc?.svc || "")}</span></div></td><td class="small">${x.from.map(esc).join("<br>")}</td><td class="num-cell">${num(x.sources)}</td><td class="num-cell">${num(x.flows)}</td><td><code class="small">${x.cidrs.map(esc).join("<br>")}</code></td></tr>`).join("")}</tbody>`;
@@ -697,10 +717,10 @@ details.xr-fold > summary { margin: 0 0 10px; }
       ? `<thead><tr><th>Status</th><th>Security group</th><th>Rule</th><th class="num-cell">Allowed</th><th class="num-cell">Seen here</th><th class="num-cell">Seen elsewhere</th><th class="num-cell">Never seen</th><th>Last used</th><th>Change to</th></tr></thead><tbody>${rules.map(ruleRow).join("")}</tbody>`
       : `<tbody><tr><td class="muted">${act ? "No rule to act on: every rule is in use, too early to judge, or not logged. Choose Every rule to see them all." : "No rule on groups in use."}</td></tr></tbody>`;
     $("#approvedBtns").innerHTML = Object.keys(DATA.approved || {}).map((r) => `<button type="button" class="btn" data-approved="${esc(r)}">approved.json, ${esc(r)}</button>`).join(" ");
-    const actv = rep.active.filter((x) => sel.has(x.cat) && inPick(x, "active")).sort((a, b) => (a.today === b.today ? b.flows - a.flows : a.today ? 1 : -1));
+    const actv = rep.active.filter((x) => sel.has(x.cat) && inPick(x, "active") && seenOk(x, "active")).sort((a, b) => (a.today === b.today ? b.flows - a.flows : a.today ? 1 : -1));
     filterNote("#activeFilter", "active", actv.length, rep.summary.active);
     $("#active").innerHTML = actv.length
-      ? `<thead><tr><th>Source</th><th>Let in to</th><th class="num-cell">Flows</th><th class="num-cell">Days seen</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${actv.map((x) => `<tr><td>${srcCell(x)}${verdictBlock(x.verdict)}${x.today ? "" : ` <span class="pill new">not in the last 24 hours</span>`}${!x.today && x.days <= 3 ? `<div class="small dr">Seen on only ${plural(x.days, "day")}: a DR test, batch or failover? Keep it in any tightened rule.</div>` : ""}</td><td>${targetsInPick(x, "active").map((t) => `<div class="small">${esc(portsOf(t))} ${pcChip(t.pc)} <span class="muted">${esc(t.pc?.svc || "")}</span> on <code>${esc(t.eni)}</code>${t.groups.length ? ` <span class="muted">(${t.groups.map(esc).join(", ")})</span>` : ""}</div>`).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="num-cell">${num(x.days)}</td><td class="small">${esc(when(x.first))}</td><td class="small">${esc(when(x.last))}</td></tr>`).join("")}</tbody>`
+      ? `<thead><tr><th>Source</th><th>Let in to</th><th class="num-cell">Flows</th><th class="num-cell">Days seen</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${actv.map((x) => `<tr><td>${srcCell(x)}${verdictBlock(x.verdict)}${x.today ? "" : ` <span class="pill new">not in the last 24 hours</span>`}${!x.today && x.days <= 3 ? `<div class="small dr">Seen on only ${plural(x.days, "day")}: a DR test, batch or failover? Keep it in any tightened rule.</div>` : ""}</td><td>${targetsInPick(x, "active").map((t) => `<div class="small">${esc(portsOf(t))} ${pcChip(t.pc)} <span class="muted">${esc(t.pc?.svc || "")}</span> on <code>${esc(t.eni)}</code>${t.groups.length ? ` <span class="muted">(${t.groups.map(esc).join(", ")})</span>` : ""}</div>`).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="num-cell">${num(x.days)}</td><td class="small">${esc(when(x.first))}${firstEver(x)}</td><td class="small">${esc(when(x.last))}</td></tr>`).join("")}</tbody>`
       : `<tbody><tr><td class="muted">No active source of the kinds shown${state.bin ? " in this period" : ""}.</td></tr></tbody>`;
   }
 
@@ -708,10 +728,10 @@ details.xr-fold > summary { margin: 0 0 10px; }
     const tone = STATUS_TONE[r.status] || "--muted";
     const saved = r.suggest_size != null ? r.allowed - r.suggest_size : null;
     const change = r.status === "unused" ? `<strong>Remove</strong><div class="muted small">nothing matched it in ${num(r.days)} days</div>`
-      : r.suggest.length ? `<code class="small">${r.suggest.slice(0, 8).map(esc).join("<br>")}${r.suggest.length > 8 ? `<br>… ${r.suggest.length - 8} more` : ""}</code><div class="muted small">${plural(r.suggest.length, "range")}, ${r.suggest_size === 1 ? "1 address" : `${big(r.suggest_size)} addresses`}; ${big(saved)} fewer${r.unattributed ? `; keeps ${num(r.unattributed)} seen on deleted interfaces` : ""}</div>`
+      : r.suggest.length ? `<code class="small">${r.suggest.slice(0, 8).map(esc).join("<br>")}${r.suggest.length > 8 ? `<br>… ${r.suggest.length - 8} more` : ""}</code><div class="muted small">${plural(r.suggest.length, "range")}, ${r.v6 ? `${big(r.suggest_size)} /64 subnet${r.suggest_size === 1 ? "" : "s"}` : r.suggest_size === 1 ? "1 address" : `${big(r.suggest_size)} addresses`}; ${big(saved)} fewer${r.unattributed ? `; keeps ${num(r.unattributed)} seen on deleted interfaces` : ""}</div>`
       : r.status === "open" ? `<div class="small">Let in by it: ${[...new Set(r.top.map((x) => x.name))].slice(0, 4).map(esc).join(", ") || "no one seen"}</div>` : "";
     const top = r.top.length ? `<details class="small"><summary>Who uses it (${num(r.here)})</summary>${r.top.map((x) => `<div><code>${esc(x.src)}</code> ${esc(x.name)} · ${num(x.flows)} flows</div>`).join("")}</details>` : "";
-    return `<tr><td><span class="pill" style="--p:var(${tone})">${esc(STATUS[r.status] || r.status)}</span>${r.note ? `<div class="muted small">${esc(r.note)}</div>` : ""}</td><td>${esc(r.gname)} <code class="small">${esc(r.group)}</code><div class="muted small">${esc(r.region)} · ${plural(r.enis, "interface")}</div></td><td>${esc(r.ports)} from <code>${esc(r.source)}</code><div>${pcChip(r.pc)} <span class="muted small">${esc(r.pc?.svc || "")}</span></div>${r.desc ? `<div class="muted small">${esc(r.desc)}</div>` : ""}${top}</td><td class="num-cell">${big(r.allowed)}</td><td class="num-cell">${num(r.here)}${r.unattributed ? `<div class="muted small">+${num(r.unattributed)} deleted</div>` : ""}</td><td class="num-cell">${num(r.elsewhere)}</td><td class="num-cell">${big(r.never)}</td><td class="small">${r.last_used ? esc(when(r.last_used)) : EMPTY}<div class="muted">evidence ${num(r.days)} days</div></td><td>${change}</td></tr>`;
+    return `<tr><td><span class="pill" style="--p:var(${tone})">${esc(STATUS[r.status] || r.status)}</span>${r.note ? `<div class="muted small">${esc(r.note)}</div>` : ""}</td><td>${esc(r.gname)} <code class="small">${esc(r.group)}</code><div class="muted small">${esc(r.region)} · ${plural(r.enis, "interface")}</div></td><td>${esc(r.ports)} from <code>${esc(r.source)}</code><div>${pcChip(r.pc)} <span class="muted small">${esc(r.pc?.svc || "")}</span></div>${r.desc ? `<div class="muted small">${esc(r.desc)}</div>` : ""}${top}</td><td class="num-cell">${big(r.allowed)}${r.v6 ? `<div class="muted small">/64 subnets</div>` : ""}</td><td class="num-cell">${num(r.here)}${r.unattributed ? `<div class="muted small">+${num(r.unattributed)} deleted</div>` : ""}</td><td class="num-cell">${num(r.elsewhere)}</td><td class="num-cell">${big(r.never)}${r.v6 ? `<div class="muted small">/64 subnets</div>` : ""}</td><td class="small">${r.last_used ? esc(when(r.last_used)) : EMPTY}<div class="muted">evidence ${num(r.days)} days</div></td><td>${change}</td></tr>`;
   }
 
   function csv() {
@@ -727,7 +747,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
   // ------------------------------------------------------------------------------------------ extract rule
   const ip2n = (ip) => { const p = String(ip).split(".").map(Number); return p.length === 4 && p.every((x) => Number.isInteger(x) && x >= 0 && x < 256) ? ((p[0] * 256 + p[1]) * 256 + p[2]) * 256 + p[3] : null; };
   const n2ip = (n) => [Math.floor(n / 16777216) % 256, Math.floor(n / 65536) % 256, Math.floor(n / 256) % 256, n % 256].join(".");
-  // The fewest CIDR blocks covering exactly the addresses given.
+  const isV6 = (ip) => /^[0-9a-f:.]+$/i.test(String(ip)) && String(ip).includes(":");
+  // The fewest CIDR blocks covering exactly the addresses given: IPv4 runs merged, each IPv6 address as its /128.
   function exactCidrs(ips) {
     const ns = [...new Set(ips.map(ip2n).filter((n) => n != null))].sort((a, b) => a - b);
     const runs = [];
@@ -741,6 +762,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
         a += size;
       }
     }
+    for (const ip of [...new Set(ips.filter(isV6))].sort()) out.push({ cidr: `${ip}/128`, v6: true, ip, first: 0, last: 0 });
     return out;
   }
   // Security group rule descriptions allow letters, digits, spaces and ._-:/()#,@[]+=&;{}!$* up to 255 characters.
@@ -759,7 +781,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
           : t.by?.startsWith("Network ACL") ? `${t.by} refused it first: a security group rule would not change that; the ACL entry must change`
           : t.by?.includes("added since") ? "a rule added since already allows it"
           : t.port >= 32768 ? "ports from 32768 up are read as one, so the exact port is not known"
-          : ip2n(x.src) == null ? "not an IPv4 address" : "";
+          : ip2n(x.src) == null && !isV6(x.src) ? "not an IP address" : "";
         if (why) { apart.push({ x, t, why }); continue; }
         const key = `${t.groups[0]}|${t.proto}|${t.port}`;
         const r = rules.get(key) || { key, group: t.groups[0], groups: new Set(), proto: t.proto, port: t.port, pc: t.pc, region: t.region, vpc: t.vpc, assets: new Map(), sources: new Map() };
@@ -804,7 +826,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   function ruleOut(r) {
     const on = [...r.sources.values()].filter((s) => s.on);
     const cidrs = exactCidrs(on.map((s) => s.x.src)).map((c) => {
-      const members = on.filter((s) => { const n = ip2n(s.x.src); return n >= c.first && n <= c.last; });
+      const members = on.filter((s) => { if (c.v6) return s.x.src === c.ip; const n = ip2n(s.x.src); return n != null && n >= c.first && n <= c.last; });
       const names = [...new Set(members.map((s) => s.x.name + (s.x.cc && !s.x.range ? ` ${s.x.cc}` : "")))];
       return { ...c, members, desc: sgDesc(`sg_review ${today()}: ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` +${names.length - 3}` : ""} - ${r.pc?.svc || ""}`) };
     });
@@ -882,12 +904,16 @@ details.xr-fold > summary { margin: 0 0 10px; }
     if (X.apart.length) {
       html += `<h3>Refused, but not for a new rule to fix</h3><div class="table-wrap"><table class="data"><thead><tr><th>Source</th><th>At</th><th>Why no rule</th></tr></thead><tbody>${X.apart.slice(0, 100).map(({ x, t, why }) => `<tr><td><code>${esc(x.src)}</code> ${catChip(x.cat)}<div class="small">${esc(x.name)}</div></td><td class="small">${esc(portsOf(t))} ${pcChip(t.pc)} on <code>${esc(t.eni)}</code></td><td class="small">${esc(why)}</td></tr>`).join("")}</tbody></table></div>`;
     }
+    const ipPerm = (p, port, cidrs) => {
+      const v4 = cidrs.filter((c) => !c.v6), v6 = cidrs.filter((c) => c.v6);
+      return { IpProtocol: p, FromPort: port, ToPort: port, ...(v4.length ? { IpRanges: v4.map((c) => ({ CidrIp: c.cidr, Description: c.desc })) } : {}), ...(v6.length ? { Ipv6Ranges: v6.map((c) => ({ CidrIpv6: c.cidr, Description: c.desc })) } : {}) };
+    };
     const byGroup = {};
     for (const o of live) {
       const k = `${o.r.region}|${o.r.group}`;
-      const icmp = String(o.r.proto) === "1";
-      const p = ["6", "17"].includes(String(o.r.proto)) ? protoName(o.r.proto) : icmp ? "icmp" : String(o.r.proto);
-      (byGroup[k] = byGroup[k] || { region: o.r.region, group: o.r.group, perms: [] }).perms.push({ IpProtocol: p, FromPort: icmp ? -1 : o.r.port, ToPort: icmp ? -1 : o.r.port, IpRanges: o.cidrs.map((c) => ({ CidrIp: c.cidr, Description: c.desc })) });
+      const icmp = String(o.r.proto) === "1" || String(o.r.proto) === "58";
+      const p = ["6", "17"].includes(String(o.r.proto)) ? protoName(o.r.proto) : String(o.r.proto) === "1" ? "icmp" : String(o.r.proto);
+      (byGroup[k] = byGroup[k] || { region: o.r.region, group: o.r.group, perms: [] }).perms.push(ipPerm(p, icmp ? -1 : o.r.port, o.cidrs));
     }
     const cmds = Object.values(byGroup).map((g) => `# ${sgDesc(rep.groups?.[g.group]?.name || g.group)}: ${g.perms.map((p) => `${p.IpProtocol} ${p.FromPort}`).join(", ")}\npython sg_db.py exec --reason 'sg_review: extracted from refused traffic' -- \\\n  aws ec2 authorize-security-group-ingress --region ${g.region} --group-id ${g.group} \\\n  --ip-permissions '${JSON.stringify(g.perms)}'`);
     html += `<h3>Apply</h3><div class="xr-out"><p class="small muted">Nothing has been applied. Run with credentials that can change these groups, after the change has been approved: <code>sg_db.py exec</code> records it in the security group database, with the reason, then makes it in AWS. To undo, run the same command with <code>revoke-security-group-ingress</code>.</p><textarea id="xrCli" readonly spellcheck="false">${esc(cmds.join("\n\n") || "# Nothing ticked")}</textarea><div class="tools"><button type="button" class="btn primary" id="xrCopy"${cmds.length ? "" : " disabled"}>Copy the commands</button><button type="button" class="btn" id="xrJson"${cmds.length ? "" : " disabled"}>Download the rules (JSON)</button><span class="small muted" id="xrCopied"></span></div></div>`;
@@ -927,6 +953,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
     if (e.target.closest("#xrJson")) download(JSON.stringify(state.xr.json, null, 2), `extracted-rules-${state.rep.account}-${today()}.json`, "application/json");
   });
   document.addEventListener("click", (e) => {
+    const sb = e.target.closest("[data-seen]");
+    if (sb) { const [kind, k] = sb.dataset.seen.split("|"); state.seen[kind] = k; tables(); return; }
     const cat = e.target.closest("[data-cat]");
     if (cat) {
       const k = cat.dataset.cat;

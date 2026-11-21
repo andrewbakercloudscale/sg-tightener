@@ -120,6 +120,12 @@ def vpc_cidrs(vpcs: list[dict]) -> list[str]:
     return sorted(set(out))
 
 
+def vpc_cidrs6(vpcs: list[dict]) -> list[str]:
+    return sorted({a["Ipv6CidrBlock"] for v in vpcs for a in v.get("Ipv6CidrBlockAssociationSet") or []
+                   if a.get("Ipv6CidrBlock")
+                   and (a.get("Ipv6CidrBlockState") or {}).get("State", "associated") == "associated"})  # fmt: skip
+
+
 def eni_kind(eni: dict) -> str:
     """What a network interface belongs to, in a few words."""
     desc = eni.get("Description") or ""
@@ -140,7 +146,7 @@ def eni_kind(eni: dict) -> str:
 
 
 def parse_ranges(text: str, default: str) -> list[tuple]:
-    """Named IPv4 ranges, one per comma or line: "10.200.0.0/16 Johannesburg DC" (the name is optional)."""
+    """Named ranges (IPv4 or IPv6), one per comma or line: "10.200.0.0/16 Johannesburg DC" (the name is optional)."""
     out = []
     for part in (text or "").replace("\n", ",").split(","):
         words = part.split()
@@ -150,7 +156,7 @@ def parse_ranges(text: str, default: str) -> list[tuple]:
             net = ipaddress.ip_network(words[0], strict=False)
         except ValueError:
             continue
-        if net.version == 4 and net.prefixlen:
+        if net.prefixlen:
             out.append((net, " ".join(words[1:]) or f"{default} {net}"))
     return out
 
@@ -173,7 +179,7 @@ def names_path() -> Path:
 
 
 def parse_names(doc) -> list[dict]:
-    """The entries of a names file, checked: [{name, type, ranges: [IPv4Network], asn: [int], note}]."""
+    """The entries of a names file, checked: [{name, type, ranges: [IPv4Network | IPv6Network], asn: [int], note}]."""
     if isinstance(doc, dict):
         doc = doc.get("names", doc.get("networks"))
     if doc is None:
@@ -194,8 +200,7 @@ def parse_names(doc) -> list[dict]:
                 net = ipaddress.ip_network(str(c).strip(), strict=False)
             except ValueError:
                 raise ValueError(f"{name}: {c!r} is not a range") from None
-            if net.version == 4:
-                ranges.append(net)
+            ranges.append(net)
         for a in e.get("asn") or []:
             try:
                 asns.append(int(str(a).strip().upper().removeprefix("AS")))
@@ -238,6 +243,7 @@ def load_names(path=None) -> list[dict]:
 ROWS = 10000  # the most rows one Logs Insights query returns
 EPHEMERAL = 32768  # ports from here up are folded into one: replies to the account's own connections land there
 PRIVATE_V4 = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
+PRIVATE_V6 = ("fc00::/7", "fe80::/10")  # unique local and link-local: never routed on the internet
 NEEDED = ("srcaddr", "dstaddr", "dstport", "protocol", "action", "interface_id")
 HISTORY_DAYS = 90
 HISTORY_EVENTS = ("AuthorizeSecurityGroupIngress", "RevokeSecurityGroupIngress", "ModifySecurityGroupRules")
@@ -266,7 +272,13 @@ def readable(log_format: str | None) -> bool:
 
 
 def _private(field: str) -> str:
-    return "(" + " or ".join(f'isIpv4InSubnet({field}, "{c}")' for c in PRIVATE_V4) + ")"
+    return "(" + " or ".join([f'isIpv4InSubnet({field}, "{c}")' for c in PRIVATE_V4]
+                             + [f'isIpv6InSubnet({field}, "{c}")' for c in PRIVATE_V6]) + ")"
+
+
+def _in_any(field: str, cidrs: list[str]) -> str:
+    """A Logs Insights test that ``field`` is inside one of ``cidrs`` (IPv4 or IPv6)."""
+    return "(" + " or ".join(f'isIpv{6 if ":" in c else 4}InSubnet({field}, "{c}")' for c in cidrs) + ")"
 
 
 def _base(log_format: str | None, vpc_ranges: list[str]) -> tuple[str, str, str, bool] | None:
@@ -284,7 +296,7 @@ def _base(log_format: str | None, vpc_ranges: list[str]) -> tuple[str, str, str,
     if by_dir:
         head += ' and f_flow_direction = "ingress"'
     elif vpc_ranges and len(vpc_ranges) <= VPC_FILTER_MAX:
-        head += " and (" + " or ".join(f'isIpv4InSubnet({dst}, "{c}")' for c in vpc_ranges) + ")"
+        head += " and " + _in_any(dst, vpc_ranges)
     return head, src, dst, by_dir
 
 
@@ -333,7 +345,7 @@ def egress_query(log_format: str | None, vpc_ranges: list[str]) -> str | None:
     if "flow_direction" in fields:
         head += ' and f_flow_direction = "egress"'
     elif vpc_ranges and len(vpc_ranges) <= VPC_FILTER_MAX:
-        head += " and (" + " or ".join(f'isIpv4InSubnet({src}, "{c}")' for c in vpc_ranges) + ")"
+        head += " and " + _in_any(src, vpc_ranges)
     else:
         return None  # no way to tell outbound from inbound
     return (f"{head} | stats count(*) as flows by {src} as src, {dst} as dst, f_interface_id as eni,"
@@ -440,7 +452,8 @@ def snapshot(session, region: str) -> dict:
     ec2 = session.client("ec2", region_name=region, config=BOTO_CONFIG)
     out: dict = {"errors": []}
     vpcs = _pages(ec2, "describe_vpcs", "Vpcs")
-    out["vpcs"] = [{"id": v["VpcId"], "name": _name(v.get("Tags")), "cidrs": vpc_cidrs([v])} for v in vpcs]
+    out["vpcs"] = [{"id": v["VpcId"], "name": _name(v.get("Tags")), "cidrs": vpc_cidrs([v]), "cidrs6": vpc_cidrs6([v])}
+                   for v in vpcs]  # fmt: skip
     out["groups"] = {
         g["GroupId"]: {
             "name": g.get("GroupName", ""),
@@ -466,18 +479,23 @@ def snapshot(session, region: str) -> dict:
             "instance": (e.get("Attachment") or {}).get("InstanceId", ""),
             "public": (e.get("Association") or {}).get("PublicIp", ""),
             "ipv6": [a["Ipv6Address"] for a in e.get("Ipv6Addresses") or [] if a.get("Ipv6Address")],
+            "prefixes6": [p["Ipv6Prefix"] for p in e.get("Ipv6Prefixes") or [] if p.get("Ipv6Prefix")],
         }
     out["enis"] = enis
     out["routes"] = _internet_routes(ec2, out["errors"])
     out["stale"] = _stale_refs(ec2, [v["id"] for v in out["vpcs"]], out["errors"])
     pls: dict = {}
+    pls6: dict = {}
     for pid in sorted({p for g in out["groups"].values() for r in g["rules"] for p in r["pls"]}):
         try:
-            pls[pid] = [x["Cidr"] for x in _pages(ec2, "get_managed_prefix_list_entries", "Entries", PrefixListId=pid)
-                        if x.get("Cidr") and ":" not in x["Cidr"]]  # fmt: skip
+            got = [x["Cidr"] for x in _pages(ec2, "get_managed_prefix_list_entries", "Entries", PrefixListId=pid)
+                   if x.get("Cidr")]  # fmt: skip
+            pls[pid] = [c for c in got if ":" not in c]
+            pls6[pid] = [c for c in got if ":" in c]
         except (ClientError, BotoCoreError) as exc:
             out["errors"].append(f"prefix list {pid}: {exc}")
     out["prefix_lists"] = pls
+    out["prefix_lists6"] = pls6
     nacls = {}
     for n in _pages(ec2, "describe_network_acls", "NetworkAcls"):
         entries = sorted(
@@ -601,8 +619,7 @@ def parse_event(ev: dict) -> dict | None:
     if name == "RevokeSecurityGroupIngress" and _items(req.get("securityGroupRuleIds")) and not entries:
         out["unknown"] = True  # revoked by rule id: which range it was is not in the event
     out["added" if name == "AuthorizeSecurityGroupIngress" else "removed"] = entries
-    if name == "AuthorizeSecurityGroupIngress":
-        out["added6"] = _perm_entries6(req.get("ipPermissions"))
+    out["added6" if name == "AuthorizeSecurityGroupIngress" else "removed6"] = _perm_entries6(req.get("ipPermissions"))
     return out if out["group"] else None
 
 
@@ -716,6 +733,8 @@ LAG = 900  # flow logs reach CloudWatch up to ~10 minutes late: the newest quart
 TAIL_LAG = 300  # watch also reads from the last full hour up to five minutes ago ("tail" slices), to alert in minutes
 WORKERS = 4
 EVIDENCE_DAYS = 30  # fewer days of flow logs than this and no rule is called unused or ready to tighten
+NEW_DAYS = 7  # a source first seen this recently is new...
+NEW_HISTORY_DAYS = 14  # ...when at least this many days of flow logs before it were read without it
 INSIGHTS_PER_GB = 0.005
 TOP = 400  # sources listed per table (the charts count all of them)
 CATS = ("internal", "datacentre", "aws", "saas", "internet")
@@ -820,7 +839,9 @@ def query_sets(snap: dict) -> list[dict]:
 
 
 def _vpc_ranges(snap: dict) -> list[str]:
-    return sorted({c for v in snap.get("vpcs") or [] for c in v.get("cidrs") or [] if ":" not in c})
+    """The VPCs' IPv4 ranges, then their IPv6 ranges."""
+    v4 = sorted({c for v in snap.get("vpcs") or [] for c in v.get("cidrs") or [] if ":" not in c})
+    return v4 + sorted({c for v in snap.get("vpcs") or [] for c in v.get("cidrs6") or []})
 
 
 def _stamp(t: float) -> str:
@@ -927,21 +948,37 @@ class Labeller:
         self.intel = sg_ipintel.get()
         # (first, last, category, name, cidr, extra fields), narrowest first
         self.nets: list[tuple[int, int, str, str, str, dict]] = []
+        # IPv6: (network, category, name, extra fields), narrowest first. No address-space counts for IPv6.
+        self.nets6: list[tuple[ipaddress.IPv6Network, str, str, dict]] = []
         own = []
         for snap in (x.get("snapshot") or {} for x in doc["regions"].values()):
             for v in snap.get("vpcs") or []:
+                vname = f"This account, {v.get('name') or v['id']}"
                 for c in v.get("cidrs") or []:
                     iv = sg_ipintel.cidr_iv(c)
                     if iv and ":" not in c:
                         own.append(iv)
-                        self.nets.append((*iv, "internal", f"This account, {v.get('name') or v['id']}", c, {}))
+                        self.nets.append((*iv, "internal", vname, c, {}))
+                for c in v.get("cidrs6") or []:
+                    if _net6(c):
+                        self.nets6.append((_net6(c), "internal", vname, {}))
+            for eid, e in (snap.get("enis") or {}).items():  # an interface's own IPv6 address, even outside a VPC range read
+                for a in e.get("ipv6") or []:
+                    if _net6(a):
+                        self.nets6.append((_net6(a + "/128"), "internal", f"This account, {e.get('kind') or eid}", {}))
         others = []
         for net, name in parse_ranges(internal, "Your network"):
+            if net.version == 6:
+                self.nets6.append((net, "internal", name, {}))
+                continue
             iv = (int(net.network_address), int(net.broadcast_address))
             others.append(iv)
             self.nets.append((*iv, "internal", name, str(net), {}))
         dc = []
         for net, name in parse_ranges(onprem, "On-premises"):
+            if net.version == 6:
+                self.nets6.append((net, "datacentre", name, {}))
+                continue
             iv = (int(net.network_address), int(net.broadcast_address))
             dc.append(iv)
             self.nets.append((*iv, "datacentre", name, str(net), {}))
@@ -952,6 +989,8 @@ class Labeller:
                     if iv:
                         dc.append(iv)
                         self.nets.append((*iv, "datacentre", f"Behind VPN {v['name']}", c, {}))
+                    elif _net6(c):
+                        self.nets6.append((_net6(c), "datacentre", f"Behind VPN {v['name']}", {}))
         # the names file: internal and data centre ranges join those above; anything else is an external network,
         # named by range (before AWS's and the providers' lists) or by AS number (after AWS's)
         named = {"saas": [], "internet": []}
@@ -960,12 +999,16 @@ class Labeller:
             kind = e["type"] if e["type"] in ("internal", "datacentre") else sg_ipintel.GROUPS[e["type"]][1]
             extra = {} if kind in ("internal", "datacentre") else self._named(e)
             for net in e["ranges"]:
+                if net.version == 6:
+                    self.nets6.append((net, kind, e["name"], extra))
+                    continue
                 iv = (int(net.network_address), int(net.broadcast_address))
                 (others if kind == "internal" else dc if kind == "datacentre" else named[kind]).append(iv)
                 self.nets.append((*iv, kind, e["name"], str(net), extra))
             for a in e["asn"]:
                 self.name_asn[a] = {"cat": kind, **extra}
         self.nets.sort(key=lambda n: n[1] - n[0])
+        self.nets6.sort(key=lambda n: -n[0].prefixlen)
         M, S = sg_ipintel.merge, sg_ipintel.subtract
         internal = M(own + others)
         taken = internal
@@ -996,6 +1039,12 @@ class Labeller:
         hit = self._memo.get(ip)
         if hit:
             return hit
+        if is_v6(ip):
+            out = self._v6(ip)
+            out.setdefault("group", out["cat"])
+            out["net"] = f"{out['cat']}|{out['name']}"
+            self._memo[ip] = out
+            return out
         try:
             n = int(ipaddress.IPv4Address(ip))
         except ValueError:
@@ -1015,31 +1064,58 @@ class Labeller:
                     out = {"cat": "datacentre", "name": "Private address outside every scanned VPC", "range": cidr}
                     break
         if out is None:
-            lab = self.intel.label(ip)
-            mine = self.name_asn.get(lab.get("asn")) if lab["kind"] != "aws" and lab.get("group") != "anon" else None
-            if mine:  # an AS number in the names file: its name and type, over the built-in lists
-                lab = {k: v for k, v in lab.items() if k not in ("prefix", "what")}
-                lab.update(kind=mine["cat"], name=mine["provider"], **{k: v for k, v in mine.items() if k != "cat"})
-            out = {"cat": lab["kind"], "name": lab["name"]}
-            if mine:
-                out["named"] = True
-            if lab.get("asn"):
-                out["asn"] = f"AS{lab['asn']} {lab.get('owner', '')}".strip() + (
-                    f" ({lab['country']})" if lab.get("country") else ""
-                )
-                out.update(as_num=lab["asn"], owner=lab.get("owner", ""), cc=lab.get("country", ""),
-                           block=lab.get("block", ""))  # fmt: skip
-            if lab.get("prefix"):
-                out["range"] = lab["prefix"]
-            if lab.get("service"):
-                out.update(service=lab["service"], aws_region=lab.get("region", ""))
-            for k in ("group", "provider", "what"):
-                if lab.get(k):
-                    out[k] = lab[k]
+            out = self._external(ip)
         out.setdefault("group", out["cat"])  # internal, datacentre and aws are their own type
         out["net"] = f"{out['cat']}|{out['name']}"
         self._memo[ip] = out
         return out
+
+    def _external(self, ip: str) -> dict:
+        """A public address, IPv4 or IPv6, from the published lists (and the names file's AS numbers)."""
+        lab = self.intel.label(ip)
+        mine = self.name_asn.get(lab.get("asn")) if lab["kind"] != "aws" and lab.get("group") != "anon" else None
+        if mine:  # an AS number in the names file: its name and type, over the built-in lists
+            lab = {k: v for k, v in lab.items() if k not in ("prefix", "what")}
+            lab.update(kind=mine["cat"], name=mine["provider"], **{k: v for k, v in mine.items() if k != "cat"})
+        out = {"cat": lab["kind"], "name": lab["name"]}
+        if mine:
+            out["named"] = True
+        if lab.get("asn"):
+            out["asn"] = f"AS{lab['asn']} {lab.get('owner', '')}".strip() + (
+                f" ({lab['country']})" if lab.get("country") else ""
+            )
+            out.update(as_num=lab["asn"], owner=lab.get("owner", ""), cc=lab.get("country", ""),
+                       block=lab.get("block", ""))  # fmt: skip
+        if lab.get("prefix"):
+            out["range"] = lab["prefix"]
+        if lab.get("service"):
+            out.update(service=lab["service"], aws_region=lab.get("region", ""))
+        for k in ("group", "provider", "what"):
+            if lab.get(k):
+                out[k] = lab[k]
+        return out
+
+    def _v6(self, ip: str) -> dict:
+        """An IPv6 address: your VPCs' and named ranges first (narrowest wins), then unique local and link-local
+        addresses (private, like 10.0.0.0/8), then the published lists."""
+        a = _addr6(ip)
+        if a is None:
+            return {"cat": "internet", "name": str(ip), "v6": True}
+        for net, cat, name, extra in self.nets6:
+            if a in net:
+                out = {"cat": cat, "name": name, "range": str(net), "v6": True, **extra}
+                if extra:
+                    got = self.intel.asn(int(a), 6)
+                    if got:
+                        out.update(as_num=got["asn"], owner=got["owner"], cc=got["country"], block=got["block"],
+                                   asn=f"AS{got['asn']} {got['owner']}".strip()
+                                   + (f" ({got['country']})" if got["country"] else ""))  # fmt: skip
+                return out
+        for c in PRIVATE_V6:
+            if a in _net6(c):
+                what = "Unique local IPv6 address" if c.startswith("fc") else "Link-local IPv6 address"
+                return {"cat": "datacentre", "name": f"{what} outside every scanned VPC", "range": c, "v6": True}
+        return {**self._external(ip), "v6": True}
 
 
 # ------------------------------------------------------------------------------------------- rules
@@ -1048,6 +1124,42 @@ def _ip(s) -> int | None:
         return int(ipaddress.IPv4Address(s))
     except (ValueError, TypeError):
         return None
+
+
+_ADDR6: dict = {}
+_NET6: dict = {}
+
+
+def _addr6(s) -> ipaddress.IPv6Address | None:
+    if s not in _ADDR6:
+        try:
+            _ADDR6[s] = ipaddress.IPv6Address(s) if s and ":" in str(s) else None
+        except ValueError:
+            _ADDR6[s] = None
+    return _ADDR6[s]
+
+
+def _net6(c) -> ipaddress.IPv6Network | None:
+    if c not in _NET6:
+        try:
+            _NET6[c] = ipaddress.IPv6Network(c, strict=False) if c and ":" in str(c) else None
+        except ValueError:
+            _NET6[c] = None
+    return _NET6[c]
+
+
+def _in6(ip: str, cidr: str) -> bool:
+    a, n = _addr6(ip), _net6(cidr)
+    return a is not None and n is not None and a in n
+
+
+def is_v6(ip) -> bool:
+    return ":" in str(ip or "")
+
+
+def rule_sources(rule: dict, ip: str) -> list[str]:
+    """The ranges of a rule that ``ip``'s family could match: IPv4 ranges for an IPv4 address, IPv6 for IPv6."""
+    return list(rule.get("cidrs6") or []) if is_v6(ip) else list(rule.get("cidrs") or [])
 
 
 def port_matches(rule: dict, proto: str, port: int) -> bool:
@@ -1196,11 +1308,15 @@ def _entries(rule: dict) -> list[str]:
     return list(rule.get("cidrs") or []) + list(rule.get("pls") or [])
 
 
-def nacl_verdict(nacl: dict | None, src: int, proto: str, port: int) -> dict | None:
-    """The first inbound network ACL entry matching, when it denies; None when the ACL allows."""
-    for x in (nacl or {}).get("entries") or []:
-        iv = sg_ipintel.cidr_iv(x["cidr"])
-        if not iv or not iv[0] <= src <= iv[1]:
+def nacl_verdict(nacl: dict | None, src, proto: str, port: int) -> dict | None:
+    """The first inbound network ACL entry matching, when it denies; None when the ACL allows. ``src`` is an
+    IPv4 address as a number, or an IPv6 address as text (matched against the ACL's IPv6 entries)."""
+    v6 = isinstance(src, str)
+    for x in (nacl or {}).get("entries6" if v6 else "entries") or []:
+        if v6:
+            if not _in6(src, x["cidr"]):
+                continue
+        elif not (iv := sg_ipintel.cidr_iv(x["cidr"])) or not iv[0] <= src <= iv[1]:
             continue
         if x["proto"] not in ("-1", str(proto)):
             continue
@@ -1262,19 +1378,27 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         for gid in e["groups"]:
             if gid in groups:
                 groups[gid]["enis"].append(eid)
-    own_ips = {ip for e in enis.values() for ip in e["ips"]}
+    own_ips = {ip for e in enis.values() for ip in [*e["ips"], *(e.get("ipv6") or [])]}
+
+    def mine(e: dict) -> set:
+        return {*e["ips"], *(e.get("ipv6") or [])}
 
     def relevant(eni_id, src, dst) -> bool:
-        if src in own_ips and (eni_id not in enis or src in enis[eni_id]["ips"]):
+        if src in own_ips and (eni_id not in enis or src in mine(enis[eni_id])):
             return False  # the interface's own outbound record
         e = enis.get(eni_id)
         if e is None:
             return True  # a deleted interface: kept, as unattributed
         if not e["groups"]:
             return False  # NAT gateways, transit gateway attachments: no security group decides
-        return dst in e["ips"] or any(sg_ipintel.cidr_iv(p) and _in(dst, p) for p in e.get("prefixes") or [])
+        if dst in e["ips"] or dst in (e.get("ipv6") or ()):
+            return True
+        if is_v6(dst):
+            return any(_in6(dst, p) for p in e.get("prefixes6") or [])
+        return any(sg_ipintel.cidr_iv(p) and _in(dst, p) for p in e.get("prefixes") or [])
 
     seen: set[str] = set()
+    first_seen: dict[str, int] = {}  # source -> start of the earliest slice holding it, any range
     rej: dict[str, dict] = {}
     act: dict[str, dict] = {}
     by_class: dict[str, dict] = {"refused": {}, "active": {}}  # kind -> (class, category) -> bin -> sources
@@ -1301,6 +1425,8 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
             if not src:
                 continue
             seen.add(src)
+            if c["s"] < first_seen.get(src, c["s"] + 1):
+                first_seen[src] = c["s"]
             if not relevant(eni, src, dst):
                 continue
             if action == "ACCEPT":
@@ -1331,6 +1457,8 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
             if not src:
                 continue
             seen.add(src)
+            if c["s"] < first_seen.get(src, c["s"] + 1):
+                first_seen[src] = c["s"]
             if in_view and (port < EPHEMERAL or ports > 1):
                 r = _refused(rej, src, b, c, flows, (eni, str(proto), port, dst))
                 r["ports"] = max(r.get("ports", 1), ports)
@@ -1419,9 +1547,24 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
     # ---- verdicts: why each source was refused, and which let-in sources look wrong
     ctx = _Ctx(lab, enis, groups, snaps, ev_by_group, accepted_rows, rej, end)
     ctx.act, ctx.start = act, start
+    read_since = min(region_first.values(), default=end)
+    history_days = (end - read_since) / DAY
+
+    def novelty(src: str) -> dict:
+        first = first_seen.get(src)
+        if first is None:
+            return {"first_ever": None, "seen_before": False, "new": False}
+        return {"first_ever": first, "seen_before": first < start,
+                "new": first >= end - NEW_DAYS * DAY and first - read_since >= NEW_HISTORY_DAYS * DAY}  # fmt: skip
+
+    nov = {src: novelty(src) for src in set(rej) | set(act)}
     verdicts = {src: refused_verdict(ctx, src, r) for src, r in rej.items()}
     let_in = {src: v for src, a in act.items() if a["bins"] and (v := active_verdict(ctx, src, a))}
+    for src, v in [*verdicts.items(), *let_in.items()]:
+        _note_novelty(v, nov[src], read_since)
     attention = needs_attention(ctx, verdicts, let_in)
+    for it in attention:
+        it["new"] = sum(1 for s in it["srcs"] if nov.get(s, {}).get("new"))
     privatelink = privatelink_findings(doc, rules)
     inet_in: dict[tuple, set] = {}
     for src, a in act.items():
@@ -1442,7 +1585,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
     def src_row(src, x):
         lb = lab(src)
         return {"src": src, **lb, "flows": x["flows"], "bins": sorted(x["bins"]), "first": x["first"],
-                "last": x["last"]}  # fmt: skip
+                "last": x["last"], **nov[src], "v6": is_v6(src)}  # fmt: skip
 
     refused = []
     for src, r in sorted(rej.items(), key=lambda kv: -kv[1]["flows"])[:TOP]:
@@ -1534,6 +1677,12 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
             "not_logged_groups": [{"id": g["id"], "name": g["name"], "region": g["region"]} for g in not_logged][:50],
             "frozen": sorted(frozen_groups),
             "seen": len(seen),
+            "new_refused": sum(1 for s in rej if nov[s]["new"]),
+            "new_active": sum(1 for s, a in act.items() if a["bins"] and nov[s]["new"]),
+            "new_possible": history_days >= NEW_DAYS + NEW_HISTORY_DAYS,
+            "history_days": round(history_days, 1),
+            "refused_v6": sum(1 for s in rej if is_v6(s)),
+            "active_v6": sum(1 for s, a in act.items() if a["bins"] and is_v6(s)),
             "evidence_since": min(region_first.values(), default=None),
             "cut": sorted(cut_regions),
             "public_cut": pub_cut,
@@ -1612,6 +1761,8 @@ def _group_series(srcs: dict, lab, nbins: int) -> dict[str, list[int]]:
 
 
 def _in(ip: str, cidr: str) -> bool:
+    if is_v6(ip):
+        return _in6(ip, cidr)
     n, iv = _ip(ip), sg_ipintel.cidr_iv(cidr)
     return n is not None and iv is not None and iv[0] <= n <= iv[1]
 
@@ -1619,7 +1770,7 @@ def _in(ip: str, cidr: str) -> bool:
 def _rule_covers(groups: dict, eni: dict | None, proto, port: int) -> bool:
     if not eni:
         return False
-    return any(port_matches(r, str(proto), port) and _entries(r) for g in eni["groups"]
+    return any(port_matches(r, str(proto), port) and (_entries(r) or r.get("cidrs6")) for g in eni["groups"]
                for r in (groups.get(g) or {}).get("rules") or [])  # fmt: skip
 
 
@@ -1673,7 +1824,7 @@ class _Ctx:
                 x = self.by_tgt[k][src] = [c["s"], c["e"], 0]
                 self.acc[(src, *k)] = x
             x[0], x[1], x[2] = min(x[0], c["s"]), max(x[1], c["e"]), x[2] + flows
-        self.ip_eni = {ip: eid for eid, e in enis.items() for ip in e["ips"]}
+        self.ip_eni = {ip: eid for eid, e in enis.items() for ip in [*e["ips"], *(e.get("ipv6") or [])]}
 
     def gname(self, gid: str) -> str:
         return (self.groups.get(gid) or {}).get("name") or gid
@@ -1700,6 +1851,8 @@ def _restore(ctx, ev: dict, entry) -> dict | None:
     desc = f"restored by sg_review: revoked {_day(ev['t'])} by {ev.get('who') or 'unknown'}"[:255]
     if str(source).startswith("pl-"):
         perm["PrefixListIds"] = [{"PrefixListId": source, "Description": desc}]
+    elif ":" in str(source):
+        perm["Ipv6Ranges"] = [{"CidrIpv6": source, "Description": desc}]
     else:
         perm["IpRanges"] = [{"CidrIp": source, "Description": desc}]
     g = ctx.groups.get(ev["group"]) or {}
@@ -1710,18 +1863,16 @@ def _restore(ctx, ev: dict, entry) -> dict | None:
 def _removal(ctx, groups_of: list, src: str, proto: str, port: int, lo: float, hi: float):
     """The rule change on one of the interface's groups, between lo and hi, that took away what let src in:
     (event, the revoked entry) or (event, None) for a change whose detail CloudTrail does not give."""
-    n = _ip(src)
     vague = None
     for gid in groups_of:
         for ev in ctx.evs.get(gid, []):
             if not lo <= ev["t"] <= hi:
                 continue
-            for x in ev["removed"]:
+            for x in ev.get("removed6" if is_v6(src) else "removed") or []:
                 rp, a, b, source = x
                 if not port_matches({"proto": str(rp), "from": a, "to": b}, proto, port):
                     continue
-                iv = sg_ipintel.cidr_iv(source) if not str(source).startswith("pl-") else None
-                if str(source).startswith("pl-") or (iv and n is not None and iv[0] <= n <= iv[1]):
+                if str(source).startswith("pl-") or _in(src, source):
                     return ev, x
             if ev["unknown"] and vague is None:
                 vague = (ev, None)
@@ -1848,6 +1999,23 @@ def refused_verdict(ctx, src: str, r: dict) -> dict:
             "reason": f"Nothing suggests it was wanted ({retries}).", "action": "None.", "wanted": False}
 
 
+NOVELTY_SKIP = frozenset({"scan", "resolved"})  # a refused scanner being new tells nothing
+
+
+def _note_novelty(v: dict, nov: dict, read_since: float) -> None:
+    """Add to a verdict whether its source is new: first seen in the last NEW_DAYS days, never in the flow logs
+    read before. A "New address?" verdict whose source was seen weeks ago says so."""
+    v.update(nov)
+    first = nov.get("first_ever")
+    if first is None or v["key"] in NOVELTY_SKIP:
+        return
+    days = max(0, round((first - read_since) / DAY))
+    if nov["new"]:
+        v["reason"] = v["reason"].rstrip() + f" First seen {_day(first)}: never before in {days} days of flow logs."
+    elif v["key"] == "moved" and nov["seen_before"]:
+        v["reason"] = v["reason"].rstrip() + f" Not a new address though: first seen {_day(first)}."
+
+
 def _mover(ctx, src: str, tgt: tuple, tf: float):
     """A source let in on the same interface and port that stopped about when src started being refused."""
     best = None
@@ -1871,13 +2039,12 @@ def _same_provider(ctx, src: str, lb: dict, tgt: tuple) -> str:
 
 def _allowed_by(ctx, e: dict, src: str, proto: str, port: int) -> list[str]:
     """The entries of the interface's groups that let src in on the port."""
-    n = _ip(src)
     out = []
     for gid in e.get("groups") or []:
         for rule in (ctx.groups.get(gid) or {}).get("rules") or []:
             if port_matches(rule, proto, port):
-                out += [f"{ctx.gname(gid)}: {ports_label(rule)} from {c}" for c in rule.get("cidrs") or []
-                        if (iv := sg_ipintel.cidr_iv(c)) and n is not None and iv[0] <= n <= iv[1]]  # fmt: skip
+                out += [f"{ctx.gname(gid)}: {ports_label(rule)} from {c}" for c in rule_sources(rule, src)
+                        if _in(src, c)]  # fmt: skip
     return out
 
 
@@ -1956,11 +2123,16 @@ def needs_attention(ctx, verdicts: dict, let_in: dict) -> list[dict]:
 
 
 def _allows_now(groups: dict, e: dict, src: str, proto: str, port: int) -> list[str]:
-    n = _ip(src)
     out = []
+    v6 = is_v6(src)
+    n = None if v6 else _ip(src)
     for gid in e.get("groups") or []:
         for r in (groups.get(gid) or {}).get("rules") or []:
             if not port_matches(r, proto, port):
+                continue
+            if v6:
+                if any(_in6(src, c) for c in r.get("cidrs6") or []):
+                    out.append(gid)
                 continue
             ivs = _iv(r.get("cidrs") or [])
             if n is not None and any(a <= n <= b for a, b in ivs):
@@ -2491,7 +2663,7 @@ def _egress_items(region, gid, g, mine, enis, groups, egress_seen, lab) -> list[
 def _refused_by(src: str, e: dict, groups: dict, snaps: dict, proto: str, port: int) -> str:
     if not e:
         return "Interface since deleted"
-    n = _ip(src)
+    n = src if is_v6(src) else _ip(src)
     nacl = (snaps.get(e["region"], {}).get("nacls") or {}).get(e.get("subnet", ""))
     if n is not None and nacl_verdict(nacl, n, proto, port):
         v = nacl_verdict(nacl, n, proto, port)
@@ -2521,10 +2693,13 @@ def _suggest(rej: dict, enis: dict, groups: dict, snaps: dict, lab) -> list[dict
     out = []
     for (gid, proto, port), w in sorted(want.items(), key=lambda kv: -kv[1]["flows"])[:100]:
         g = groups.get(gid) or {}
+        v4 = sorted(x for x in w["srcs"] if not is_v6(x))
+        v6 = sorted(x for x in w["srcs"] if is_v6(x))
         out.append({"group": gid, "name": g.get("name", ""), "region": g.get("region", ""),
                     "ports": ports_label({"proto": proto, "from": port, "to": port}), "sources": len(w["srcs"]),
                     "flows": w["flows"], "from": sorted(w["names"])[:5], "pc": port_class(proto, port),
-                    "cidrs": sg_tightener.collapse_ips_to_cidrs(sorted(w["srcs"]), sg_tightener.DEFAULT_MAX_RULES, 0.0)})  # fmt: skip
+                    "cidrs": sg_tightener.collapse_ips_to_cidrs(v4, sg_tightener.DEFAULT_MAX_RULES, 0.0)
+                    + sg_tightener.collapse_ipv6_to_cidrs(v6, sg_tightener.DEFAULT_MAX_RULES, 0.0)})  # fmt: skip
     return out
 
 
@@ -2537,6 +2712,7 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
         else:
             deleted.append(row)
     seen_ints = sorted(n for n in map(_ip, seen) if n is not None)
+    seen6 = {a for a in map(_addr6, seen) if a is not None}
     out = []
     for g in groups.values():
         if not g["enis"]:
@@ -2548,7 +2724,12 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
         since = max([region_first.get(g["region"], end)] + created)
         days = max(0, (end - since) / DAY)
         rows = [r for e in g["enis"] for r in by_eni.get(e, [])]
+        own6 = next((v.get("cidrs6") or [] for v in snap.get("vpcs") or [] if v["id"] == g["vpc"]), [])
         for rule in g["rules"]:
+            for entry in rule.get("cidrs6") or []:
+                row = _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regions, since, days)
+                if row:
+                    out.append(row)
             for entry in _entries(rule):
                 ivs = (_iv((snap.get("prefix_lists") or {}).get(entry, [])) if entry.startswith("pl-")
                        else _iv([entry]))  # fmt: skip
@@ -2601,6 +2782,65 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
     return out
 
 
+def _subnets(ips) -> set[int]:
+    """The /64 subnets (top 64 bits) of IPv6 addresses."""
+    return {int(a) >> 64 for a in ips}
+
+
+def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regions, since, days) -> dict | None:
+    """One IPv6 range of a rule, counted in /64 subnets (one client network each)."""
+    net = _net6(entry)
+    if net is None:
+        return None
+    width = max(0, sg_tightener.V6_SUBNET - net.prefixlen)
+    allowed = 1 << width if net.prefixlen <= sg_tightener.V6_SUBNET else 1
+    here: dict[str, list] = {}
+    for src, _dst, _eni, proto, dport, flows, c in rows:
+        if is_v6(src) and port_matches(rule, proto, dport) and _in6(src, entry):
+            h = here.setdefault(src, [0, 0])
+            h[0] += flows
+            h[1] = max(h[1], c["e"])
+    unattr = {src for src, dst, _e, proto, dport, _f, _c in deleted
+              if is_v6(src) and port_matches(rule, proto, dport) and _in6(src, entry)
+              and any(_in6(dst, o) for o in own6)}  # fmt: skip
+    inside = {a for a in seen6 if a in net}
+    seen_nets = _subnets(inside)
+    row = {"region": g["region"], "group": g["id"], "gname": g["name"], "vpc": g["vpc"], "enis": len(g["enis"]),
+           "ports": ports_label(rule), "proto": rule["proto"], "from": rule["from"], "to": rule["to"], "source": entry,
+           "desc": (rule.get("descs") or {}).get(entry, ""), "v6": True, "unit": "/64", "allowed": allowed,
+           "here": len(here), "elsewhere": max(0, len(inside) - len(here) - len(unattr - set(here))),
+           "unattributed": len(unattr - set(here)), "never": max(0, allowed - len(seen_nets)),
+           "last_used": max((h[1] for h in here.values()), default=None), "since": since, "days": round(days, 1),
+           "suggest": [], "suggest_size": None, "note": "", "pc": rule_port_class(rule)}  # fmt: skip
+    row["top"] = [{"src": s, **lab(s), "flows": h[0]} for s, h in sorted(here.items(), key=lambda kv: -kv[1][0])[:8]]
+    private = net.subnet_of(sg_tightener.ULA) or any(_net6(o) and net.subnet_of(_net6(o)) for o in own6)
+    if entry.endswith("::/0") and net.prefixlen == 0:
+        row["status"], row["note"] = "open", "Open to every IPv6 address: the users are listed; a narrower range may do"
+    elif not logged:
+        row["status"], row["note"] = "not logged", "Some of this group's interfaces have no flow log (accepted traffic) in CloudWatch Logs"
+    elif g["region"] in cut_regions:
+        row["status"], row["note"] = "incomplete", "Some slices hit the 10,000 row limit even at an hour: not safe to act on"
+    elif days < EVIDENCE_DAYS:
+        row["status"], row["note"] = "watch", f"Only {days:.0f} days of flow logs: read a longer range before changing this rule"
+    elif not here and not unattr:
+        row["status"], row["note"] = "unused", f"No connection matched this rule in {days:.0f} days"
+    elif net.prefixlen < sg_tightener.DEFAULT_V6_PREFIX_THRESHOLD and row["never"]:
+        row["status"] = "tighten"
+        row["note"] = ("Wider than needed: the suggestion keeps the /64 of every address seen, with 30% headroom"
+                       if private else "Public IPv6 range: the suggestion keeps only the /64s seen; check with the partner first")
+    else:
+        row["status"] = "used"
+    if row["status"] == "tighten":
+        cidrs = sg_tightener.collapse_ipv6_to_cidrs(sorted(set(here) | unattr), sg_tightener.DEFAULT_MAX_RULES,
+                                                    sg_tightener.DEFAULT_TOLERANCE, within=entry)  # fmt: skip
+        size = sum(1 << max(0, sg_tightener.V6_SUBNET - _net6(c).prefixlen) for c in cidrs)
+        if size >= allowed or not cidrs:
+            row["status"], row["note"] = "used", "In use across the range: nothing to take away"
+        else:
+            row["suggest"], row["suggest_size"] = cidrs, size
+    return row
+
+
 def _status(row, rule, entry, logged, g, cut_regions, days) -> tuple[str, str]:
     if entry == "0.0.0.0/0":
         return "open", "Open to every address: the users are listed; a prefix list or narrower range may do"
@@ -2628,7 +2868,7 @@ def approved(doc: dict, region: str) -> dict:
     """sg-tightener's approved list (v2) for one region, from the accepted connections read."""
     snap = (doc["regions"].get(region) or {}).get("snapshot") or {}
     enis = snap.get("enis") or {}
-    own = {ip for e in enis.values() for ip in e["ips"]}
+    own = {ip for e in enis.values() for ip in [*e["ips"], *(e.get("ipv6") or [])]}
     flows, warnings = set(), []
     folded = 0
     for c in doc["chunks"]:
@@ -2638,7 +2878,7 @@ def approved(doc: dict, region: str) -> dict:
             if action != "ACCEPT" or not src or src in own:
                 continue
             e = enis.get(eni)
-            if e is not None and dst not in e["ips"]:
+            if e is not None and dst not in e["ips"] and dst not in (e.get("ipv6") or ()):
                 continue
             if dport >= EPHEMERAL:
                 folded += 1
@@ -2657,10 +2897,19 @@ def approved(doc: dict, region: str) -> dict:
         "flow_log_check": {"verified": True, "fields": fields_of(qsets[0]["format"]) if qsets else [],
                            "warnings": warnings,
                            "resources": sorted({f["resource"] for f in snap.get("flow_logs") or []})},  # fmt: skip
-        "ips": sorted({f[0] for f in flows}, key=lambda s: _ip(s) or 0),
+        "ips": sorted({f[0] for f in flows}, key=_addr_key),
         "flows": [{"src": a, "dst": b, "dstport": p, "protocol": pr, "interface": i}
                   for a, b, p, pr, i in sorted(flows, key=str)],
     }  # fmt: skip
+
+
+def _addr_key(s: str) -> tuple:
+    """Sort key: IPv4 addresses in numeric order, then IPv6."""
+    try:
+        a = ipaddress.ip_address(s)
+        return (a.version, int(a))
+    except ValueError:
+        return (9, 0)
 
 
 # ------------------------------------------------------------------------------------------- reading
@@ -3046,7 +3295,8 @@ def alert_text(account: str, name: str, items: list[dict], markdown: bool = True
         out.append(it["reason"])
         out.append(f"Do: {it['action']}")
         if it["srcs"]:
-            out.append(f"Sources: {srcs} · {it['flows']:,} flows")
+            fresh = f" · {it['new']} new (never seen before)" if it.get("new") else ""
+            out.append(f"Sources: {srcs} · {it['flows']:,} flows{fresh}")
         if it.get("cli"):
             out += [f"Fix: {line}" for line in it["cli"].splitlines()]
         if it.get("restore"):
@@ -3335,7 +3585,10 @@ def refused_rows(account: str, name: str, rep: dict, limit: int = ORG_REFUSED) -
                     "reason": v.get("reason", ""), "region": t.get("region", ""), "eni": t.get("eni", ""),
                     "kind": t.get("kind", ""), "dst": t.get("dst", ""), "proto": t.get("proto", ""),
                     "port": t.get("port"), "port_class": pc.get("name", ""), "risky": bool(pc.get("risky")),
-                    "groups": t.get("groups", [])})  # fmt: skip
+                    "groups": t.get("groups", []), "first_ever": r.get("first_ever"),
+                    "seen_before": bool(r.get("seen_before")), "new": bool(r.get("new")),
+                    "v6": bool(r.get("v6")), "internal": r.get("cat") in ("internal", "datacentre"),
+                    "scan": bool(r.get("sweep"))})  # fmt: skip
     return out
 
 
@@ -3426,7 +3679,9 @@ Needs attention across them: {head}. Each account's page has the evidence, the v
 <div class="tools"><input id="q" type="search" placeholder="Filter: account, source, owner, port, verdict…" aria-label="Filter rejected traffic">
 <select id="sev" aria-label="Severity"><option value="">Every severity</option><option>critical</option><option>high</option>
 <option>medium</option><option>low</option><option>info</option></select>
-<label class="small"><input id="risky" type="checkbox"> risky ports only</label> <span id="n" class="muted small"></span></div>
+<label class="small"><input id="risky" type="checkbox"> risky ports only</label>
+<label class="small"><input id="fresh" type="checkbox"> new addresses only</label>
+<label class="small"><input id="v6" type="checkbox"> IPv6 only</label> <span id="n" class="muted small"></span></div>
 <div class="scroll"><table id="rt"><thead><tr><th>Severity</th><th>Account</th><th>Source</th><th>Refused on</th><th>Flows</th><th>Last seen</th><th>Verdict</th></tr></thead><tbody></tbody></table></div>
 <script id="rdata" type="application/json">{_script_json(summary.get("refused") or [])}</script>
 <script>
@@ -3441,19 +3696,23 @@ Needs attention across them: {head}. Each account's page has the evidence, the v
     const q = document.getElementById("q").value.toLowerCase().trim();
     const sev = document.getElementById("sev").value;
     const risky = document.getElementById("risky").checked;
-    const shown = rows.filter((r) => (!sev || r.sev === sev) && (!risky || r.risky) && (!q ||
+    const fresh = document.getElementById("fresh").checked;
+    const v6 = document.getElementById("v6").checked;
+    const shown = rows.filter((r) => (!sev || r.sev === sev) && (!risky || r.risky) && (!fresh || r.new) && (!v6 || r.v6) && (!q ||
       [r.account, r.account_name, r.src, r.name, r.type, r.port, r.port_class, r.verdict, r.reason, r.kind, r.region, r.eni, r.dst]
         .join(" ").toLowerCase().includes(q)));
     tb.innerHTML = shown.slice(0, 2000).map((r) => `<tr><td><span class="pill" style="--p:${{col[r.sev] || "var(--muted)"}}">${{esc(r.sev)}}</span></td>
       <td>${{esc(r.account_name || r.account)}}<div class="muted small"><code>${{esc(r.account)}}</code></div></td>
-      <td><code>${{esc(r.src)}}</code><div class="muted small">${{esc(r.name)}}${{r.type ? " · " + esc(r.type) : ""}}</div></td>
+      <td><code>${{esc(r.src)}}</code>${{r.new ? ' <span class="pill" style="--p:var(--high)">new</span>' : ""}}${{r.v6 ? ' <span class="pill">IPv6</span>' : ""}}
+        <div class="muted small">${{r.internal ? "internal" : "external"}} · ${{esc(r.name)}}${{r.type ? " · " + esc(r.type) : ""}}${{r.scan ? " · scanning" : ""}}</div>
+        ${{r.first_ever ? `<div class="muted small">${{r.new ? "first seen" : "seen since"}} ${{when(r.first_ever).slice(0, 10)}}</div>` : ""}}</td>
       <td>${{esc(proto[r.proto] || r.proto)}} ${{esc(r.port)}}${{r.risky ? " ⚠" : ""}} <span class="muted small">${{esc(r.port_class)}}</span>
         <div class="muted small">${{esc(r.kind)}} ${{esc(r.dst)}} · ${{esc(r.region)}}${{r.ports > 1 ? ` · ${{r.ports}} ports` : ""}}</div></td>
       <td>${{Number(r.flows).toLocaleString()}}</td><td class="small">${{when(r.last)}}</td>
       <td>${{esc(r.verdict)}}<div class="muted small">${{esc(r.reason)}}</div></td></tr>`).join("");
     document.getElementById("n").textContent = `${{shown.length.toLocaleString()}} of ${{rows.length.toLocaleString()}}`;
   }};
-  for (const id of ["q", "sev", "risky"]) document.getElementById(id).addEventListener("input", draw);
+  for (const id of ["q", "sev", "risky", "fresh", "v6"]) document.getElementById(id).addEventListener("input", draw);
   draw();
 }})();
 </script>
