@@ -11,6 +11,9 @@ Each group's rules are held twice:
   ``adopt``) and by sg_tightener, sg_extend and sg_compact, each with who and why.
 * **synced**: what AWS held the last time the tool read or changed it.
 
+Desired changes only by an approved **change request**: one person proposes (``add``, ``remove``,
+``exec``, ``adopt``, ``propose --plan``) with a reason, and a different person approves it
+(``approve``); two-person approval is on unless ``approvals off`` was set (audited).
 ``apply`` pushes desired to AWS. ``reconcile`` reads AWS: anything that differs from synced was
 changed outside the tool (console, CLI, Terraform). It is recorded in the audit trail as external,
 reported, and left for a person to decide: ``apply`` puts AWS back to desired, ``adopt`` accepts the
@@ -18,7 +21,7 @@ change into desired. The audit trail is append-only (triggers refuse UPDATE and 
 hash-chained, so ``verify`` shows whether anyone edited or removed an entry.
 
 Usage:
-  sg_db.py import    --regions eu-west-1,us-east-1 [--profile P]
+  sg_db.py import    --regions eu-west-1,us-east-1 [--profile P] [--ou-id ou-… | --org] [--role-name R]
   sg_db.py reconcile --regions eu-west-1 [--slack URL] [--no-cloudtrail]
   sg_db.py show      --region eu-west-1 [--group sg-…]
   sg_db.py diff      --region eu-west-1
@@ -29,6 +32,12 @@ Usage:
   sg_db.py adopt     --region R [--group sg-…] --reason "…"
   sg_db.py create-group --region R --vpc vpc-… --name N --description D --reason "…"
   sg_db.py log       [--region R] [--group sg-…] [--since 7d] [--json]
+  sg_db.py requests  [--status pending]
+  sg_db.py approve   ID [--note "…"]      (a different person from the one who proposed it)
+  sg_db.py reject    ID --note "…"
+  sg_db.py cancel    ID
+  sg_db.py propose   --plan plan.json --reason "…"   (an sg_tightener or sg_compact plan)
+  sg_db.py approvals on|off --reason "…"
   sg_db.py verify
 """
 
@@ -78,6 +87,14 @@ CREATE TABLE IF NOT EXISTS audit (
   detail TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', ticket TEXT NOT NULL DEFAULT '',
   prev TEXT NOT NULL, hash TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS audit_group ON audit (account, region, group_id);
+CREATE TABLE IF NOT EXISTS accounts (account TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, account TEXT NOT NULL, region TEXT NOT NULL,
+  proposer TEXT NOT NULL, reason TEXT NOT NULL, ticket TEXT NOT NULL DEFAULT '', changes TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled', 'applied')),
+  decided_by TEXT NOT NULL DEFAULT '', decided_at TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+  applied_at TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS requests_status ON requests (status, account, region);
 CREATE TRIGGER IF NOT EXISTS audit_append_only_u BEFORE UPDATE ON audit
   BEGIN SELECT RAISE(ABORT, 'the audit trail is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_append_only_d BEFORE DELETE ON audit
@@ -425,6 +442,15 @@ class Store:
         self.audit(actor, origin, "desired-changed", account, region, gid, detail, reason, ticket)
         return detail
 
+    def adoption(self, account: str, region: str, gid: str = "") -> list[tuple[str, str, Rule, str]]:
+        """The changes that would make desired what AWS holds (synced), as a change request's changes."""
+        out = []
+        for g in [gid] if gid else self.groups(account, region):
+            want, have = self.rules(account, region, g, "desired"), self.rules(account, region, g, "synced")
+            out += [(g, "add", r, d) for r, d in sorted(have.items()) if r not in want]
+            out += [(g, "remove", r, d) for r, d in sorted(want.items()) if r not in have]
+        return out
+
     def adopt(self, account: str, region: str, actor: str, reason: str, gid: str = "") -> int:
         """Take what AWS holds (synced) as desired: accept external changes. Returns the groups changed."""
         if not reason.strip():
@@ -440,6 +466,142 @@ class Store:
                         "removed": [_rule_json(r, d) for r, d in sorted(want.items()) if r not in have]}, reason)  # fmt: skip
             n += 1
         return n
+
+    # ---------------------------------------------------------------- accounts
+    def name_account(self, account: str, name: str) -> None:
+        if name:
+            self.db.execute("INSERT INTO accounts (account, name) VALUES (?, ?) ON CONFLICT (account) DO UPDATE SET "
+                            "name = excluded.name", (account, name))  # fmt: skip
+
+    def account_names(self) -> dict[str, str]:
+        return dict(self.db.execute("SELECT account, name FROM accounts"))
+
+    # ---------------------------------------------------------------- change requests
+    def approvals(self) -> bool:
+        row = self.db.execute("SELECT value FROM meta WHERE key = 'approvals'").fetchone()
+        return (row[0] if row else "two-person") != "off"
+
+    def set_approvals(self, on: bool, actor: str, reason: str) -> None:
+        if not reason.strip():
+            raise Refused("a reason is required: it goes in the audit trail")
+        if self.approvals() == on:
+            return
+        self.db.execute("INSERT INTO meta (key, value) VALUES ('approvals', ?) ON CONFLICT (key) DO UPDATE SET "
+                        "value = excluded.value", ("two-person" if on else "off",))  # fmt: skip
+        self.audit(actor, "tool", "approvals-on" if on else "approvals-off", "", "", "",
+                   {"approvals": "two-person" if on else "off"}, reason)  # fmt: skip
+
+    def propose(self, account: str, region: str, actor: str, reason: str, ticket: str,
+                changes: list[tuple[str, str, Rule, str]]) -> int | None:  # fmt: skip
+        """A change request: (group, "add" or "remove", rule, description) each. With approvals off it is
+        approved by the proposer at once. Returns the request id, or None when it changes nothing."""
+        if not reason.strip():
+            raise Refused("a reason is required: it goes in the audit trail")
+        known = self.groups(account, region)
+        for gid, op, _, _ in changes:
+            if gid not in known:
+                raise Refused(f"{gid} is not in the database for {account} {region}")
+            if op not in ("add", "remove"):
+                raise Refused(f"unknown change {op}")
+        changes = [c for c in changes if self._would_change(account, region, c)]
+        if not changes:
+            return None
+        body = json.dumps([{"group": g, "op": op, "rule": _rule_json(r, d)} for g, op, r, d in changes], sort_keys=True)
+        cur = self.db.execute("INSERT INTO requests (at, account, region, proposer, reason, ticket, changes, status) "
+                              "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
+                              (_now(), account, region, actor, reason, ticket, body))  # fmt: skip
+        rid = cur.lastrowid
+        self.audit(actor, "tool", "request-proposed", account, region, _groups_of(changes),
+                   {"request": rid, **_split(changes)}, reason, ticket)  # fmt: skip
+        if not self.approvals():
+            self._approve(rid, actor, "approvals are off")
+        return rid
+
+    def _would_change(self, account, region, c) -> bool:
+        gid, op, rule, _ = c
+        want = self.rules(account, region, gid, "desired")
+        return (rule not in want) if op == "add" else (rule in want)
+
+    def requests(self, status: str = "", account: str = "", region: str = "", rid: int | None = None) -> list[dict]:
+        q, args, where = ("SELECT id, at, account, region, proposer, reason, ticket, changes, status, decided_by, "
+                          "decided_at, note, applied_at FROM requests"), [], []  # fmt: skip
+        for col, v in (("status", status), ("account", account), ("region", region), ("id", rid)):
+            if v:
+                where.append(f"{col} = ?")
+                args.append(v)
+        if where:
+            q += " WHERE " + " AND ".join(where)
+        cols = ("id", "at", "account", "region", "proposer", "reason", "ticket", "changes", "status", "decided_by",
+                "decided_at", "note", "applied_at")  # fmt: skip
+        return [{**dict(zip(cols, r)), "changes": json.loads(r[7])} for r in self.db.execute(q + " ORDER BY id DESC", args)]
+
+    def _request(self, rid: int) -> dict:
+        got = self.requests(rid=rid)
+        if not got:
+            raise Refused(f"no change request #{rid}")
+        return got[0]
+
+    def decide(self, rid: int, actor: str, approve: bool, note: str = "") -> dict:
+        """Approve (a different person from the proposer) or reject a pending request."""
+        r = self._request(rid)
+        if r["status"] != "pending":
+            raise Refused(f"request #{rid} is {r['status']}, not pending")
+        if approve and principal(actor) == principal(r["proposer"]):
+            raise Refused(f"request #{rid} was proposed by {principal(actor)}: a different person must approve it")
+        if not approve and not note.strip():
+            raise Refused("say why it is rejected (--note): it goes in the audit trail")
+        if approve:
+            return self._approve(rid, actor, note)
+        self.db.execute("UPDATE requests SET status = 'rejected', decided_by = ?, decided_at = ?, note = ? WHERE id = ?",
+                        (actor, _now(), note, rid))  # fmt: skip
+        self.audit(actor, "tool", "request-rejected", r["account"], r["region"], _groups_of_json(r["changes"]),
+                   {"request": rid}, note, r["ticket"])  # fmt: skip
+        return {"added": [], "removed": []}
+
+    def _approve(self, rid: int, actor: str, note: str) -> dict:
+        r = self._request(rid)
+        self.db.execute("UPDATE requests SET status = 'approved', decided_by = ?, decided_at = ?, note = ? WHERE id = ?",
+                        (actor, _now(), note, rid))  # fmt: skip
+        self.audit(actor, "tool", "request-approved", r["account"], r["region"], _groups_of_json(r["changes"]),
+                   {"request": rid, "proposer": r["proposer"]}, note or "approved", r["ticket"])  # fmt: skip
+        out = {"added": [], "removed": []}
+        by_group: dict[str, list] = {}
+        for c in r["changes"]:
+            by_group.setdefault(c["group"], []).append(c)
+        for gid, cs in by_group.items():
+            d = self.desire(r["account"], r["region"], gid, actor, f"request #{rid}: {r['reason']}", r["ticket"],
+                            add={_rule_tuple(c["rule"]): c["rule"].get("description", "") for c in cs if c["op"] == "add"},
+                            remove=[_rule_tuple(c["rule"]) for c in cs if c["op"] == "remove"], origin="approved")  # fmt: skip
+            out["added"] += d["added"]
+            out["removed"] += d["removed"]
+        return out
+
+    def cancel(self, rid: int, actor: str) -> None:
+        r = self._request(rid)
+        if r["status"] != "pending":
+            raise Refused(f"request #{rid} is {r['status']}, not pending")
+        if principal(actor) != principal(r["proposer"]):
+            raise Refused(f"only {principal(r['proposer'])}, who proposed it, can cancel request #{rid}; reject it instead")
+        self.db.execute("UPDATE requests SET status = 'cancelled', decided_by = ?, decided_at = ? WHERE id = ?",
+                        (actor, _now(), rid))  # fmt: skip
+        self.audit(actor, "tool", "request-cancelled", r["account"], r["region"], _groups_of_json(r["changes"]),
+                   {"request": rid}, "cancelled by the proposer", r["ticket"])  # fmt: skip
+
+    def settle(self, account: str, region: str) -> list[int]:
+        """Mark approved requests whose every change AWS now holds as applied."""
+        done = []
+        for r in self.requests("approved", account, region):
+            ok = True
+            for c in r["changes"]:
+                have = self.rules(account, region, c["group"], "synced")
+                rule = _rule_tuple(c["rule"])
+                if (c["op"] == "add") != (rule in have):
+                    ok = False
+                    break
+            if ok:
+                self.db.execute("UPDATE requests SET status = 'applied', applied_at = ? WHERE id = ?", (_now(), r["id"]))
+                done.append(r["id"])
+        return done
 
     def synced(self, account: str, region: str, gid: str, live: dict | None, actor: str, origin: str,
                action: str, reason: str = "", ticket: str = "", desired_too: bool = False) -> dict:  # fmt: skip
@@ -459,6 +621,37 @@ class Store:
         self.audit(actor, origin, action, account, region, gid, detail, reason, ticket)
         self._touch(account, region)
         return detail
+
+
+def principal(actor: str) -> str:
+    """The AWS identity in an actor name ("arn (local user)"): who must differ between proposer and approver."""
+    return actor.split(" (", 1)[0]
+
+
+def _groups_of(changes) -> str:
+    return ",".join(sorted({c[0] for c in changes}))
+
+
+def _groups_of_json(changes) -> str:
+    return ",".join(sorted({c["group"] for c in changes}))
+
+
+def _split(changes) -> dict:
+    return {"added": [{"group": g, **_rule_json(r, d)} for g, op, r, d in changes if op == "add"],
+            "removed": [{"group": g, **_rule_json(r, d)} for g, op, r, d in changes if op == "remove"]}  # fmt: skip
+
+
+def plan_changes(plan: dict, account: str) -> list[tuple[str, str, Rule, str]]:
+    """An sg_tightener or sg_compact plan as change-request changes: its revokes, then its authorisations."""
+    if plan.get("schema") != "sg-tightener.plan/v1":
+        raise Refused(f"not an sg-tightener plan (schema {plan.get('schema')!r})")
+    out = []
+    for g in plan.get("groups") or []:
+        for r, d in rules_from_permissions(g.get("revoke") or [], IN, account).items():
+            out.append((g["group_id"], "remove", r, d))
+        for r, d in rules_from_permissions(g.get("authorise") or [], IN, account).items():
+            out.append((g["group_id"], "add", r, d))
+    return out
 
 
 def _hash(entry: dict) -> str:
@@ -516,6 +709,8 @@ def push(store: Store, ec2, account: str, region: str, actor: str, gid: str = ""
         live_g = read_live(ec2, account, [g]).get(g)
         with store:
             store.synced(account, region, g, live_g, actor, "apply", "applied", reason, ticket)
+    with store:
+        out["settled"] = store.settle(account, region)
     return out
 
 
@@ -543,6 +738,11 @@ class TrackedEC2:
             raise SystemExit(f"{len(ext)} security group(s) in {region} were changed outside sg-tightener and are now "
                              f"in the audit trail. Review: sg_db.py reconcile --regions {region}; then apply or adopt "
                              f"before running {tool}.")  # fmt: skip
+        if strict and self._store.approvals():
+            raise SystemExit(f"two-person approval is on: propose this as a change request, then have someone else "
+                             f"approve it and apply it: sg_db.py propose --plan PLAN.json --reason \"…\"; "
+                             f"sg_db.py approve ID; sg_db.py apply --region {region}. ({tool} itself is for when "
+                             f"approvals are off: sg_db.py approvals off --reason \"…\".)")  # fmt: skip
         if strict and self._store.pending(account, region):
             raise SystemExit(f"the database has changes for {region} not yet applied (sg_db.py diff --region {region}). "
                              f"Apply them (sg_db.py apply) or put them back before running {tool}.")  # fmt: skip
@@ -652,9 +852,72 @@ def rules_for_ids(ec2, gid: str, ids: list[str], account: str) -> list[Rule]:
 
 
 # ------------------------------------------------------------------------------------------ CLI
+DEFAULT_ROLE = "OrganizationAccountAccessRole"
+
+
 def _session(profile):
     use_profile(profile)
     return sg_tightener.boto3.Session(profile_name=profile) if profile else sg_tightener.boto3.Session()
+
+
+class Targets:
+    """The caller (who acts, for the audit trail) and a session per account: the caller's own, or a role
+    assumed in each account of an OU or the organisation."""
+
+    def __init__(self, args):
+        self.base = _session(getattr(args, "profile", None))
+        self.account, arn = account_of(self.base)
+        self.actor = actor_name(arn)
+        self.role = getattr(args, "role_name", None) or DEFAULT_ROLE
+        self.external_id = getattr(args, "external_id", "") or ""
+        self._sessions = {self.account: self.base}
+
+    def session(self, account: str):
+        if not account or account == self.account:
+            return self.base
+        if account not in self._sessions:
+            import sg_review
+
+            self._sessions[account] = sg_review._assume(self.base, account, self.role, self.external_id)
+        return self._sessions[account]
+
+    def accounts(self, args) -> list[tuple[str, str]]:
+        """(account, name) for --ou-id / --org, narrowed by --accounts; else --account or the caller's own."""
+        only = {a.strip() for a in (getattr(args, "accounts", "") or "").split(",") if a.strip()}
+        if getattr(args, "ou_id", None) or getattr(args, "org", False):
+            import sg_review
+
+            found = [(a["Id"], a.get("Name", "")) for a in sg_review.org_accounts(self.base, getattr(args, "ou_id", None))]
+            return [a for a in found if not only or a[0] in only]
+        if only:
+            return [(a, "") for a in sorted(only)]
+        return [(getattr(args, "account", None) or self.account, "")]
+
+
+def _for_each(args, store: Store, fn) -> tuple[list[str], int]:
+    """Run fn(targets, account, session, region) for every account and region; one out of reach is reported
+    and the rest still run. Returns (lines, failures)."""
+    t = Targets(args)
+    lines, failed = [], 0
+    for account, name in t.accounts(args):
+        try:
+            sess = t.session(account)
+        except Exception as exc:  # noqa: BLE001 - one account out of reach must not stop the others
+            lines.append(f"{account} {name}: not reached ({exc})")
+            failed += 1
+            continue
+        if name:
+            with store:
+                store.name_account(account, name)
+        for region in _regions(args.regions):
+            try:
+                lines += fn(t, account, sess, region) or []
+            except Refused:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                lines.append(f"{account} {region}: failed ({exc})")
+                failed += 1
+    return lines, failed
 
 
 def _who_from_cloudtrail(sess, region: str):
@@ -668,7 +931,9 @@ def _who_from_cloudtrail(sess, region: str):
         return lambda gid: ""
     last: dict[str, str] = {}
     for ev in events:
-        last[ev["group"]] = f"{ev['who'] or 'unknown'} ({ev['name']} at {dt.datetime.fromtimestamp(ev['t'], dt.timezone.utc):%Y-%m-%d %H:%M} UTC" + (f" from {ev['ip']}" if ev.get("ip") else "") + ")"
+        last[ev["group"]] = (f"{ev['who'] or 'unknown'} ({ev['name']} at "
+                             f"{dt.datetime.fromtimestamp(ev['t'], dt.timezone.utc):%Y-%m-%d %H:%M} UTC"
+                             + (f" from {ev['ip']}" if ev.get("ip") else "") + ")")  # fmt: skip
     return lambda gid: last.get(gid, "")
 
 
@@ -699,45 +964,70 @@ def _rule_from_args(args) -> Rule:
     return (args.direction, proto, lo, hi, args.source)
 
 
+def _caller_actor(args=None) -> str:
+    sess = _session(getattr(args, "profile", None)) if args is not None else None
+    return actor_name(account_of(sess)[1])
+
+
+def _requested(store: Store, rid, region: str) -> str:
+    if rid is None:
+        return "nothing changed: the database already says that"
+    r = store._request(rid)
+    if r["status"] == "pending":
+        return (f"change request #{rid} recorded, waiting for a second person: sg_db.py approve {rid}; "
+                f"then sg_db.py apply --region {region}")  # fmt: skip
+    return f"change request #{rid} approved (approvals are off); sg_db.py apply --region {region} makes it in AWS"
+
+
 def cmd_import(args, store: Store) -> int:
-    sess = _session(args.profile)
-    account, arn = account_of(sess)
-    actor = actor_name(arn)
-    for region in _regions(args.regions):
+    def one(t, account, sess, region):
+        if store.imported(account, region):
+            return [f"{account} {region}: already in the database (reconcile reads it again)"]
         live = read_live(sess.client("ec2", region_name=region), account)
         with store:
-            n = store.import_region(account, region, live, actor, args.reason or "first import")
-        LOG.info("%s %s: %d group(s), %d rule(s) imported into %s", account, region, len(live), n, store.path)
-    return 0
+            n = store.import_region(account, region, live, t.actor, args.reason or "first import")
+        return [f"{account} {region}: {len(live)} group(s), {n} rule(s) imported"]
+
+    lines, failed = _for_each(args, store, one)
+    print("\n".join(lines))
+    return 2 if failed else 0
 
 
 def cmd_reconcile(args, store: Store) -> int:
-    sess = _session(args.profile)
-    account, arn = account_of(sess)
-    actor = actor_name(arn)
-    found, lines = 0, []
-    for region in _regions(args.regions):
+    found = {"ext": 0, "pend": 0}
+
+    def one(t, account, sess, region):
+        out = []
         ec2 = sess.client("ec2", region_name=region)
         who = None if args.no_cloudtrail else _who_from_cloudtrail(sess, region)
-        changes = ensure_current(store, ec2, account, region, actor, who)
+        changes = ensure_current(store, ec2, account, region, t.actor, who)
         pend = store.pending(account, region)
-        found += len(changes)
+        found["ext"] += len(changes)
+        found["pend"] += len(pend)
+        label = f"{account}{' (' + store.account_names().get(account, '') + ')' if store.account_names().get(account) else ''} {region}"
         if changes:
-            lines.append(f"{account} {region}: {len(changes)} group(s) changed outside sg-tightener")
+            out.append(f"{label}: {len(changes)} group(s) changed outside sg-tightener")
             for ch in changes:
-                lines += _change_lines(ch)
+                out += _change_lines(ch)
         if pend:
-            lines.append(f"{account} {region}: `sg_db.py apply --region {region}` would make {len(pend)} change(s) "
-                         f"so AWS matches the database:")  # fmt: skip
-            lines += [f"  {'revoke' if op == 'remove' else 'authorize'} {g}: {rule_text(r, d)}" for g, op, r, d in pend]
-            lines.append(f"  or keep what AWS holds: sg_db.py adopt --region {region} [--group sg-…] --reason \"…\"")
+            out.append(f"{label}: `sg_db.py apply --account {account} --region {region}` would make {len(pend)} "
+                       f"change(s) so AWS matches the database:")  # fmt: skip
+            out += [f"  {'revoke' if op == 'remove' else 'authorize'} {g}: {rule_text(r, d)}" for g, op, r, d in pend]
+            out.append(f"  or keep what AWS holds: sg_db.py adopt --account {account} --region {region} "
+                       f"[--group sg-…] --reason \"…\" (a change request)")  # fmt: skip
+        return out
+
+    lines, failed = _for_each(args, store, one)
+    waiting = store.requests("pending")
+    if waiting:
+        lines.append(f"{len(waiting)} change request(s) waiting for approval: sg_db.py requests --status pending")
     text = "\n".join(lines) if lines else "AWS matches the database."
     print(text)
-    if found and args.slack:
+    if found["ext"] and args.slack:
         import sg_review
 
         sg_review.post_slack(args.slack, "*sg-tightener: security groups changed outside the tool*\n```" + text[:3500] + "```")
-    return 1 if found or any(store.pending(account, r) for r in _regions(args.regions)) else 0
+    return 2 if failed else 1 if found["ext"] or found["pend"] else 0
 
 
 def cmd_show(args, store: Store) -> int:
@@ -765,19 +1055,17 @@ def cmd_diff(args, store: Store) -> int:
 
 def cmd_add_remove(args, store: Store, op: str) -> int:
     account = args.account or _only_account(store, args.region)
-    actor = actor_name(sg_tightener.caller_arn())
+    actor = _caller_actor(args)
+    if op == "remove" and args.all:
+        changes = [(args.group, "remove", r, d) for r, d in store.rules(account, args.region, args.group, "desired").items()
+                   if r[0] == args.direction]  # fmt: skip
+    elif op == "remove":
+        changes = [(args.group, "remove", _rule_from_args(args), "")]
+    else:
+        changes = [(args.group, "add", _rule_from_args(args), args.description or "")]
     with store:
-        if op == "remove" and args.all:
-            rules = [r for r in store.rules(account, args.region, args.group, "desired") if r[0] == args.direction]
-            d = store.desire(account, args.region, args.group, actor, args.reason, args.ticket, remove=rules)
-        elif op == "remove":
-            d = store.desire(account, args.region, args.group, actor, args.reason, args.ticket, remove=[_rule_from_args(args)])
-        else:
-            d = store.desire(account, args.region, args.group, actor, args.reason, args.ticket,
-                             add={_rule_from_args(args): args.description or ""})  # fmt: skip
-    n = len(d["added"]) + len(d["removed"])
-    print(f"{n} change(s) recorded in the database; `sg_db.py apply --region {args.region}` makes them in AWS"
-          if n else "nothing changed: the database already says that")  # fmt: skip
+        rid = store.propose(account, args.region, actor, args.reason, args.ticket, changes)
+    print(_requested(store, rid, args.region))
     return 0
 
 
@@ -789,33 +1077,47 @@ def cmd_exec(args, store: Store) -> int:
     region = c["region"] or args.region or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
     if not region:
         raise SystemExit("the command has no --region and none is set")
-    sess = _session(args.profile)
-    account, arn = account_of(sess)
-    actor = actor_name(arn)
+    t = Targets(args)
+    account = args.account or t.account
+    sess = t.session(account)
     ec2 = sess.client("ec2", region_name=region)
-    ext = ensure_current(store, ec2, account, region, actor)
+    ext = ensure_current(store, ec2, account, region, t.actor)
     if ext:
         raise SystemExit(f"{len(ext)} group(s) were changed outside sg-tightener; review them with "
                          f"`sg_db.py reconcile --regions {region}` first")  # fmt: skip
     rules = rules_from_permissions(c["perms"], c["direction"], account)
     if c["rule_ids"]:
         rules.update({r: "" for r in rules_for_ids(ec2, c["group"], c["rule_ids"], account)})
+    op = "add" if c["verb"] == "authorize" else "remove"
     with store:
-        if c["verb"] == "authorize":
-            store.desire(account, region, c["group"], actor, args.reason, args.ticket, add=rules)
-        else:
-            store.desire(account, region, c["group"], actor, args.reason, args.ticket, remove=list(rules))
-    if args.no_apply:
-        print(f"recorded; `sg_db.py apply --region {region} --group {c['group']}` makes it in AWS")
+        rid = store.propose(account, region, t.actor, args.reason, args.ticket,
+                            [(c["group"], op, r, d) for r, d in rules.items()])  # fmt: skip
+    if rid is None or store._request(rid)["status"] == "pending" or args.no_apply:
+        print(_requested(store, rid, region))
         return 0
-    res = push(store, ec2, account, region, actor, c["group"], args.reason, args.ticket)
+    res = push(store, ec2, account, region, t.actor, c["group"], args.reason, args.ticket)
     print(f"{res['done']} change(s) made in AWS and recorded" + (f"; {len(res['failed'])} failed" if res["failed"] else ""))
     return 1 if res["failed"] else 0
 
 
+def cmd_propose(args, store: Store) -> int:
+    with open(args.plan, encoding="utf-8") as fh:
+        plan = json.load(fh)
+    region = plan.get("region") or args.region
+    if not region:
+        raise SystemExit("the plan names no region: pass --region")
+    t = Targets(args)
+    account = args.account or t.account
+    ensure_current(store, t.session(account).client("ec2", region_name=region), account, region, t.actor)
+    with store:
+        rid = store.propose(account, region, t.actor, args.reason, args.ticket, plan_changes(plan, account))
+    print(_requested(store, rid, region))
+    return 0
+
+
 def cmd_apply(args, store: Store) -> int:
-    sess = _session(args.profile)
-    account, arn = account_of(sess)
+    t = Targets(args)
+    account = args.account or t.account
     pend = store.pending(account, args.region, args.group or "")
     if not pend:
         print("nothing to apply")
@@ -823,36 +1125,75 @@ def cmd_apply(args, store: Store) -> int:
     for g, op, r, d in pend:
         print(f"{'revoke' if op == 'remove' else 'authorize'} {g}: {rule_text(r, d)}")
     if not args.yes:
-        sg_tightener._confirm(f"make these {len(pend)} change(s) in {args.region}")
+        sg_tightener._confirm(f"make these {len(pend)} change(s) in {account} {args.region}")
     try:
-        res = push(store, sess.client("ec2", region_name=args.region), account, args.region, actor_name(arn),
+        res = push(store, t.session(account).client("ec2", region_name=args.region), account, args.region, t.actor,
                    args.group or "", args.reason or "sg_db.py apply", args.ticket)  # fmt: skip
     except Refused as exc:
         raise SystemExit(str(exc))
-    print(f"{res['done']} change(s) made" + (f", {len(res['failed'])} failed" if res["failed"] else ""))
+    print(f"{res['done']} change(s) made" + (f", {len(res['failed'])} failed" if res["failed"] else "")
+          + (f"; request(s) applied: {', '.join('#' + str(i) for i in res['settled'])}" if res.get("settled") else ""))
     return 1 if res["failed"] else 0
 
 
 def cmd_adopt(args, store: Store) -> int:
     account = args.account or _only_account(store, args.region)
     with store:
-        n = store.adopt(account, args.region, actor_name(sg_tightener.caller_arn()), args.reason, args.group or "")
-    print(f"{n} group(s): what AWS holds is now what the database wants")
+        rid = store.propose(account, args.region, _caller_actor(args), args.reason, args.ticket,
+                            store.adoption(account, args.region, args.group or ""))  # fmt: skip
+    print(_requested(store, rid, args.region) if rid is not None else "nothing to adopt: the database already wants what AWS holds")
+    return 0
+
+
+def cmd_requests(args, store: Store) -> int:
+    rows = store.requests(args.status or "", args.account or "", args.region or "")
+    if args.json:
+        print(json.dumps(rows, indent=1))
+        return 0
+    for r in rows:
+        print(f"#{r['id']} {r['status']:<9} {r['at']} {r['account']} {r['region']}  by {principal(r['proposer'])}"
+              + (f"  [{r['ticket']}]" if r["ticket"] else "") + f"  {r['reason']}")  # fmt: skip
+        for c in r["changes"]:
+            print(f"    {'+' if c['op'] == 'add' else '-'} {c['group']}: {rule_text(_rule_tuple(c['rule']), c['rule'].get('description', ''))}")
+        if r["decided_by"]:
+            print(f"    {r['status']} by {principal(r['decided_by'])} at {r['decided_at']}" + (f": {r['note']}" if r["note"] else ""))
+    if not rows:
+        print("no change requests" + (f" {args.status}" if args.status else ""))
+    return 0
+
+
+def cmd_decide(args, store: Store) -> int:
+    actor = _caller_actor(args)
+    with store:
+        if args.cmd == "cancel":
+            store.cancel(args.id, actor)
+            print(f"change request #{args.id} cancelled")
+            return 0
+        store.decide(args.id, actor, args.cmd == "approve", args.note or "")
+    r = store._request(args.id)
+    print(f"change request #{args.id} {r['status']}" + (f"; sg_db.py apply --account {r['account']} --region {r['region']} "
+                                                        f"makes it in AWS" if r["status"] == "approved" else ""))  # fmt: skip
+    return 0
+
+
+def cmd_approvals(args, store: Store) -> int:
+    with store:
+        store.set_approvals(args.state == "on", _caller_actor(args), args.reason)
+    print(f"two-person approval is {'on' if store.approvals() else 'off'}")
     return 0
 
 
 def cmd_create_group(args, store: Store) -> int:
     if not args.reason.strip():
         raise SystemExit("--reason is required")
-    sess = _session(args.profile)
-    account, arn = account_of(sess)
-    actor = actor_name(arn)
-    ec2 = sess.client("ec2", region_name=args.region)
-    ensure_current(store, ec2, account, args.region, actor)
+    t = Targets(args)
+    account = args.account or t.account
+    ec2 = t.session(account).client("ec2", region_name=args.region)
+    ensure_current(store, ec2, account, args.region, t.actor)
     gid = ec2.create_security_group(GroupName=args.name, Description=args.description, VpcId=args.vpc)["GroupId"]
     live = read_live(ec2, account, [gid]).get(gid)
     with store:
-        store.synced(account, args.region, gid, live, actor, "tool", "group-created", args.reason, args.ticket,
+        store.synced(account, args.region, gid, live, t.actor, "tool", "group-created", args.reason, args.ticket,
                      desired_too=True)  # fmt: skip
     print(gid)
     return 0
@@ -871,8 +1212,8 @@ def cmd_log(args, store: Store) -> int:
         print(json.dumps(rows, indent=1))
         return 0
     for e in rows:
-        print(f"#{e['seq']} {e['at']} {e['origin']:<8} {e['action']:<16} {e['region']} {e['group_id']}  {e['actor']}"
-              + (f"  [{e['ticket']}]" if e["ticket"] else "") + (f"  {e['reason']}" if e["reason"] else ""))  # fmt: skip
+        print(f"#{e['seq']} {e['at']} {e['origin']:<8} {e['action']:<16} {e['account']} {e['region']} {e['group_id']}  "
+              f"{e['actor']}" + (f"  [{e['ticket']}]" if e["ticket"] else "") + (f"  {e['reason']}" if e["reason"] else ""))  # fmt: skip
         for k in ("added", "removed"):
             for r in e["detail"].get(k, []):
                 print(f"    {'+' if k == 'added' else '-'} {rule_text(_rule_tuple(r), r.get('description', ''))}")
@@ -913,56 +1254,91 @@ def _build_parser() -> argparse.ArgumentParser:
         q.add_argument("--port", help="22, 8000-8100 or all")
         q.add_argument("--source", required=required, help="CIDR, pl-…, sg-… or ACCOUNT/sg-…")
 
-    q = sub.add_parser("import", help="take every group and rule in these regions into the database")
-    q.add_argument("--regions", required=True)
+    def where(q, region_required=True):
+        q.add_argument("--region", required=region_required)
+        q.add_argument("--account", help="the account (default: the caller's, or the only one in the database)")
+
+    def aws(q):
+        add_profile_arg(q)
+        q.add_argument("--role-name", default=DEFAULT_ROLE, help=f"role assumed in other accounts (default {DEFAULT_ROLE})")
+        q.add_argument("--external-id", default="", help="external id for that role, if it needs one")
+
+    def org(q):
+        q.add_argument("--regions", required=True)
+        q.add_argument("--ou-id", help="every active account in this OU and the OUs under it")
+        q.add_argument("--org", action="store_true", help="every active account in the organisation")
+        q.add_argument("--accounts", help="only these comma-separated account ids")
+        aws(q)
+
+    q = sub.add_parser("import", help="take every group and rule in these accounts and regions into the database")
+    org(q)
     q.add_argument("--reason", default="")
-    add_profile_arg(q)
     q = sub.add_parser("reconcile", help="record and report changes made in AWS outside the tool")
-    q.add_argument("--regions", required=True)
+    org(q)
     q.add_argument("--slack", default=os.environ.get("SG_REVIEW_SLACK_WEBHOOK", ""), help="post external changes here")
     q.add_argument("--no-cloudtrail", action="store_true", help="do not look up who made each change")
-    add_profile_arg(q)
     for name in ("show", "diff"):
         q = sub.add_parser(name, help="the rules the database holds" if name == "show" else "what apply would change")
-        q.add_argument("--region", required=True)
+        where(q)
         q.add_argument("--group")
-        q.add_argument("--account")
-    q = sub.add_parser("add", help="add a rule to the database (apply makes it in AWS)")
-    q.add_argument("--region", required=True)
+    q = sub.add_parser("add", help="propose a rule (a change request; apply makes it in AWS once approved)")
+    where(q)
     q.add_argument("--group", required=True)
-    q.add_argument("--account")
     q.add_argument("--description", default="")
     rule_args(q)
     reasoned(q)
-    q = sub.add_parser("remove", help="remove a rule from the database (apply takes it out of AWS)")
-    q.add_argument("--region", required=True)
+    add_profile_arg(q)
+    q = sub.add_parser("remove", help="propose removing a rule (a change request)")
+    where(q)
     q.add_argument("--group", required=True)
-    q.add_argument("--account")
     q.add_argument("--all", action="store_true", help="every rule in --direction")
     rule_args(q, required=False)
     reasoned(q)
-    q = sub.add_parser("exec", help="run an aws ec2 authorize/revoke-security-group command through the database")
-    q.add_argument("--region")
+    add_profile_arg(q)
+    q = sub.add_parser("exec", help="propose an aws ec2 authorize/revoke-security-group command (applied at once "
+                       "only when approvals are off)")
+    where(q, region_required=False)
     q.add_argument("--no-apply", action="store_true", help="record it in the database only")
     reasoned(q)
-    add_profile_arg(q)
+    aws(q)
     q.add_argument("command", nargs=argparse.REMAINDER, help="-- aws ec2 …  (or the whole command quoted)")
+    q = sub.add_parser("propose", help="propose an sg_tightener or sg_compact plan as one change request")
+    q.add_argument("--plan", required=True)
+    where(q, region_required=False)
+    reasoned(q)
+    aws(q)
+    q = sub.add_parser("requests", help="the change requests")
+    q.add_argument("--status", choices=("pending", "approved", "rejected", "cancelled", "applied"))
+    q.add_argument("--account")
+    q.add_argument("--region")
+    q.add_argument("--json", action="store_true")
+    for name, hlp in (("approve", "approve a change request (not your own)"), ("reject", "reject a change request"),
+                      ("cancel", "withdraw your own change request")):  # fmt: skip
+        q = sub.add_parser(name, help=hlp)
+        q.add_argument("id", type=int)
+        q.add_argument("--note", default="", help="kept in the audit trail" + (" (required)" if name == "reject" else ""))
+        add_profile_arg(q)
+    q = sub.add_parser("approvals", help="turn two-person approval on or off (audited)")
+    q.add_argument("state", choices=("on", "off"))
+    q.add_argument("--reason", required=True)
+    add_profile_arg(q)
     q = sub.add_parser("apply", help="make AWS match the database")
-    q.add_argument("--region", required=True)
+    where(q)
     q.add_argument("--group")
     q.add_argument("--yes", action="store_true")
     reasoned(q, required=False)
-    add_profile_arg(q)
-    q = sub.add_parser("adopt", help="accept what AWS holds into the database")
-    q.add_argument("--region", required=True)
+    aws(q)
+    q = sub.add_parser("adopt", help="propose accepting what AWS holds into the database (a change request)")
+    where(q)
     q.add_argument("--group")
-    q.add_argument("--account")
     reasoned(q)
+    add_profile_arg(q)
     q = sub.add_parser("create-group", help="create a security group, in AWS and the database")
-    for a in ("--region", "--vpc", "--name", "--description"):
+    where(q)
+    for a in ("--vpc", "--name", "--description"):
         q.add_argument(a, required=True)
     reasoned(q)
-    add_profile_arg(q)
+    aws(q)
     q = sub.add_parser("log", help="the audit trail")
     q.add_argument("--region")
     q.add_argument("--group")
@@ -986,7 +1362,9 @@ def main(argv=None) -> int:
     try:
         handler = {"import": cmd_import, "reconcile": cmd_reconcile, "show": cmd_show, "diff": cmd_diff,
                    "exec": cmd_exec, "apply": cmd_apply, "adopt": cmd_adopt, "create-group": cmd_create_group,
-                   "log": cmd_log, "verify": cmd_verify}.get(args.cmd)  # fmt: skip
+                   "log": cmd_log, "verify": cmd_verify, "propose": cmd_propose, "requests": cmd_requests,
+                   "approve": cmd_decide, "reject": cmd_decide, "cancel": cmd_decide,
+                   "approvals": cmd_approvals}.get(args.cmd)  # fmt: skip
         try:
             if args.cmd in ("add", "remove"):
                 return cmd_add_remove(args, store, args.cmd)

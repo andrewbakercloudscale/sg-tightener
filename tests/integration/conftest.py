@@ -56,6 +56,12 @@ def aws(monkeypatch, tmp_path):
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     monkeypatch.delenv("AWS_REGION", raising=False)
     monkeypatch.setenv("SG_TIGHTENER_DB", str(tmp_path / "sg.db"))  # every change lands in a test database
+    import sg_db
+
+    store = sg_db.Store(tmp_path / "sg.db")  # one test identity: approvals off unless a test turns them on
+    with store:
+        store.set_approvals(False, "tests", "the tests act as one person")
+    store.close()
     monkeypatch.chdir(tmp_path)  # manifests land here
     with moto.mock_aws():
         yield
