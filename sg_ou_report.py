@@ -153,7 +153,7 @@ class Finding:
     account_id: str
     account_name: str
     region: str
-    resource_type: str  # "SG" or "NACL"
+    resource_type: str  # "SG", "NACL", "PrivateLink service", "PrivateLink NLB" or "PrivateLink endpoint"
     resource_id: str
     cidr: str
     port_range: str
@@ -241,7 +241,75 @@ def _scan_region(session, account_id: str, account_name: str, region: str
         errors.append({"account_id": account_id, "region": region, "stage": "network-acls",
                        "error": str(exc)})
 
-    return out, errors
+    pl, pl_errors, endpoint_groups = scan_privatelink(session, ec2, account_id, account_name, region)
+    for f in out:
+        if f.resource_type == "SG" and f.resource_id in endpoint_groups:
+            f.resource_type = "SG (PrivateLink endpoint)"
+            f.resource_id = f"{f.resource_id} ({endpoint_groups[f.resource_id]})"
+    return out + pl, errors + pl_errors
+
+
+def classify_endpoint_service(principals: list[str], acceptance_required: bool) -> str | None:
+    """CRITICAL: any AWS account may connect and connections are accepted without review. HIGH: any account may
+    connect, each connection reviewed. LOW: named principals, accepted automatically. None otherwise."""
+    anyone = any(p.strip() in ("*", "arn:aws:iam::*:root") for p in principals)
+    if anyone:
+        return "HIGH" if acceptance_required else "CRITICAL"
+    if principals and not acceptance_required:
+        return "LOW"
+    return None
+
+
+def scan_privatelink(session, ec2, account_id: str, account_name: str, region: str
+                     ) -> tuple[list[Finding], list[dict], dict[str, str]]:
+    """PrivateLink that is too open: endpoint services the account provides that any AWS account may connect to,
+    or accept automatically; load balancers behind them that do not filter PrivateLink traffic (MEDIUM). Also returns
+    {security group id: interface endpoint id}, so the security group findings on an endpoint's groups say so
+    (they are rated like any other group's, and not counted twice)."""
+    out: list[Finding] = []
+    errors: list[dict] = []
+    groups: dict[str, str] = {}
+    try:
+        lb_arns = []
+        for page in ec2.get_paginator("describe_vpc_endpoint_service_configurations").paginate():
+            for c in page.get("ServiceConfigurations", []):
+                sid = c.get("ServiceId", "")
+                principals = [p.get("Principal", "") for pg in ec2.get_paginator(
+                    "describe_vpc_endpoint_service_permissions").paginate(ServiceId=sid)
+                    for p in pg.get("AllowedPrincipals", [])]
+                sev = classify_endpoint_service(principals, bool(c.get("AcceptanceRequired")))
+                if sev:
+                    who = "*" if sev in ("CRITICAL", "HIGH") else ",".join(principals[:3])
+                    out.append(Finding(account_id, account_name, region, "PrivateLink service", sid,
+                                       f"principal {who}" + ("" if c.get("AcceptanceRequired") else ", auto-accept"),
+                                       "-", sev))
+                lb_arns += [(sid, a) for a in c.get("NetworkLoadBalancerArns") or []]
+        if lb_arns:
+            elb = _session_client(session, "elbv2", region)
+            arns = sorted({a for _, a in lb_arns})
+            for i in range(0, len(arns), 20):
+                for lb in elb.describe_load_balancers(LoadBalancerArns=arns[i:i + 20]).get("LoadBalancers", []):
+                    off = str(lb.get("EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic", "on")).lower() == "off"
+                    if off or not lb.get("SecurityGroups"):
+                        out.append(Finding(account_id, account_name, region, "PrivateLink NLB",
+                                           lb.get("LoadBalancerName", lb["LoadBalancerArn"]),
+                                           "no security group" if not lb.get("SecurityGroups") else
+                                           "security groups not applied to PrivateLink traffic", "-", "MEDIUM"))
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("PrivateLink service scan failed in %s/%s: %s", account_id, region, exc)
+        errors.append({"account_id": account_id, "region": region, "stage": "privatelink-services",
+                       "error": str(exc), "optional": True})
+    try:
+        for page in ec2.get_paginator("describe_vpc_endpoints").paginate(
+                Filters=[{"Name": "vpc-endpoint-type", "Values": ["Interface"]}]):
+            for v in page.get("VpcEndpoints", []):
+                for g in v.get("Groups") or []:
+                    groups.setdefault(g.get("GroupId", ""), v.get("VpcEndpointId", ""))
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("PrivateLink endpoint scan failed in %s/%s: %s", account_id, region, exc)
+        errors.append({"account_id": account_id, "region": region, "stage": "privatelink-endpoints",
+                       "error": str(exc), "optional": True})
+    return out, errors, groups
 
 
 def _list_org_accounts(ou_id: str | None) -> list[dict]:
@@ -269,10 +337,11 @@ def _list_org_accounts(ou_id: str | None) -> list[dict]:
 def account_status(accounts: list[dict], errors: list[dict]) -> dict[str, str]:
     """{account id: "ok" | "incomplete" | "failed"}. "failed": the role could
     not be assumed, so nothing was scanned; "incomplete": part of a region's
-    scan failed."""
+    scan failed. A PrivateLink check that failed ("optional": an older role without the newer
+    PrivateLink permissions) is listed with the errors but does not make the account incomplete."""
     out = {}
     for acct in accounts:
-        mine = [e for e in errors if e["account_id"] == acct["Id"]]
+        mine = [e for e in errors if e["account_id"] == acct["Id"] and not e.get("optional")]
         if any(e["stage"] == "assume-role" for e in mine):
             out[acct["Id"]] = "failed"
         elif mine:

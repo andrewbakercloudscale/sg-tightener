@@ -136,6 +136,23 @@ to list the sources it cut off.
 
 ![The refused graph with a red triangle at the change that cut off two callers](images/sg-review-refused-after-change.png)
 
+### PrivateLink
+
+![PrivateLink: an endpoint service any account may connect to, a load balancer that does not filter PrivateLink traffic, an interface endpoint open to 10.0.0.0/8](images/sg-review-privatelink.png)
+
+Both sides of PrivateLink are checked, from the same read:
+
+| Finding | Severity | When | The fix it gives |
+|---|---|---|---|
+| PrivateLink open to all | Critical, or high when each connection must be accepted | An endpoint service this account provides allows principal `*`: any AWS account can create an endpoint to it | `modify-vpc-endpoint-service-permissions` removing `*` and adding the accounts connected today, and `--acceptance-required` |
+| Accepted automatically | Low | Named principals, but each new endpoint is accepted without review | `--acceptance-required` |
+| PrivateLink not filtered | Medium | The load balancer behind the service has no security group, or does not apply its groups to PrivateLink traffic | `elbv2 set-security-groups ... --enforce-security-group-inbound-rules-on-private-link-traffic on` (a load balancer created without a group must be recreated) |
+| Endpoint too open | High for `0.0.0.0/0`, medium for a `/16` or wider | An interface endpoint's security group (Secrets Manager, STS, a partner's service) lets in a whole network | The callers flow logs saw, and the ranges from the rules table that cover them |
+
+Critical, high and medium findings join **Needs attention**, so `watch` posts them and `org` counts
+them. `sg_ou_report.py` makes the same provider checks across an organisation, and names security
+group findings on an interface endpoint's groups as `SG (PrivateLink endpoint)`.
+
 ### Who each address is
 
 Every source address is attributed, on the computer that writes the page, from these lists:

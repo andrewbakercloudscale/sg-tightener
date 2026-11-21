@@ -225,3 +225,42 @@ def test_org_rolls_up_every_account_and_names_the_one_not_read(monkeypatch, tmp_
     index = (out / "index.html").read_text()
     assert f"sg-review-{demo.ACCOUNT}.html" in index and "locked" in index
     assert (out / f"sg-review-{demo.ACCOUNT}.html").exists()
+
+
+# ------------------------------------------------------------------------------------------- PrivateLink
+def test_privatelink_both_sides_in_the_demo(week):
+    _, rep = week
+    got = {it["key"]: it for it in rep["privatelink"]}
+    svc = got["pl-service-anyone"]
+    assert svc["sev"] == "critical" and "payments-api" in svc["title"]
+    assert "--remove-allowed-principals '*'" in svc["cli"] and "arn:aws:iam::111122223333:root" in svc["cli"]
+    assert "--acceptance-required" in svc["cli"]
+    nlb = got["pl-nlb-no-sg"]
+    assert nlb["sev"] == "medium" and "--enforce-security-group-inbound-rules-on-private-link-traffic on" in nlb["cli"]
+    ep = got["pl-endpoint-open"]
+    assert ep["sev"] == "medium" and "Flow logs saw 3 source(s)" in ep["reason"]
+    # they join Needs attention, so watch and org carry them too
+    keys = {it["key"] for it in rep["attention"]}
+    assert {"pl-service-anyone", "pl-nlb-no-sg", "pl-endpoint-open"} <= keys
+    assert rep["summary"]["privatelink"]["critical"] == 1
+
+
+def test_privatelink_endpoint_open_to_everyone_is_high_and_named_principals_auto_accept_is_low():
+    snap = {"groups": {"sg-1": {"name": "ep", "rules": [{"proto": "6", "from": 443, "to": 443,
+                                                          "cidrs": ["0.0.0.0/0"], "pls": [], "refs": []}]}},
+            "privatelink": {"services": [{"id": "vpce-svc-1", "name": "api", "service": "", "acceptance": False,
+                                          "principals": ["arn:aws:iam::111122223333:root"], "connections": [],
+                                          "nlbs": [], "gwlbs": []}],
+                            "endpoints": [{"id": "vpce-1", "service": "com.amazonaws.eu-west-1.sts", "vpc": "v",
+                                           "name": "", "groups": ["sg-1"], "enis": []}]}}  # fmt: skip
+    got = {it["key"]: it for it in sg_review.privatelink_findings({"regions": {"eu-west-1": {"snapshot": snap}}}, [])}
+    assert got["pl-endpoint-open"]["sev"] == "high" and "every address" in got["pl-endpoint-open"]["title"]
+    assert got["pl-auto-accept"]["sev"] == "low"
+    assert "pl-service-anyone" not in got
+
+
+def test_alert_text_carries_the_privatelink_fix(week):
+    _, rep = week
+    text = sg_review.alert_text("123456789012", "", [it for it in rep["attention"] if it["key"] == "pl-service-anyone"],
+                                markdown=False)  # fmt: skip
+    assert "Fix: aws ec2 modify-vpc-endpoint-service-permissions" in text and "Sources:" not in text

@@ -25,6 +25,8 @@
         "sts:AssumeRole",
         "ec2:DescribeVpcEndpoints",
         "ec2:DescribeVpcEndpointServiceConfigurations",
+        "ec2:DescribeVpcEndpointServicePermissions",
+        "ec2:DescribeVpcEndpointConnections",
         "elasticloadbalancing:DescribeLoadBalancers",
         "transfer:ListServers",
         "transfer:DescribeServer",

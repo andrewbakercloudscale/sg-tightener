@@ -57,6 +57,10 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
                                  "rules": [rule("6", 8080, 8080, ["10.0.0.0/8"])]},
         "sg-0leg0000000000008": {"name": "legacy-admin", "vpc": "vpc-0demo", "tag": "",
                                  "rules": [rule("6", 3389, 3389, ["0.0.0.0/0"], {"0.0.0.0/0": "temporary, vendor support"})]},
+        "sg-0vpce000000000009": {"name": "secrets-endpoint", "vpc": "vpc-0demo", "tag": "",
+                                 "rules": [rule("6", 443, 443, ["10.0.0.0/8"], {"10.0.0.0/8": "default from module"})]},
+        "sg-0nlb0000000000010": {"name": "payments-api-nlb", "vpc": "vpc-0demo", "tag": "",
+                                 "rules": [rule("6", 443, 443, ["10.0.0.0/8"])]},
         "sg-0ops0000000000006": {"name": "ops-ssh", "vpc": "vpc-0demo", "tag": "",
                                  "rules": [rule("6", 22, 22, ["10.200.0.0/16"])]},
         "sg-0old0000000000007": {"name": "unused-sg", "vpc": "vpc-0demo", "tag": "",
@@ -77,6 +81,8 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
         "eni-0bat1": eni(h(6 * 256 + 50), ["sg-0bat0000000000005"], sub["app"]),
         "eni-0leg1": eni(h(1 * 256 + 60), ["sg-0leg0000000000008"], sub["pub"], public="198.51.100.9"),
         "eni-0nat1": eni(h(1 * 256 + 5), [], sub["pub"], "NAT gateway", "Interface for NAT Gateway"),
+        "eni-0vpce1": eni(h(2 * 256 + 90), ["sg-0vpce000000000009"], sub["app"], "VPC endpoint",
+                          "VPC Endpoint Interface vpce-0secrets"),
     }
     nacl = {"id": "acl-0demo", "entries": [
         {"n": 90, "proto": "6", "allow": False, "cidr": "10.200.9.0/24", "from": 22, "to": 22},
@@ -90,6 +96,22 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
         "prefix_lists": {},
         "nacls": {s: nacl for s in sub.values()},
         "vpns": [{"name": "Johannesburg DC", "routes": ["10.200.0.0/16"]}],
+        "privatelink": {
+            "read": True,
+            "services": [{
+                "id": "vpce-svc-0demo00000000001", "name": "payments-api", "service":
+                "com.amazonaws.vpce.eu-west-1.vpce-svc-0demo00000000001", "state": "Available", "acceptance": False,
+                "principals": ["*"],
+                "connections": [{"id": "vpce-0c0n1", "owner": "111122223333", "state": "available"},
+                                {"id": "vpce-0c0n2", "owner": "444455556666", "state": "available"}],
+                "nlbs": [{"arn": "arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/net/payments-api/0d"
+                          "emo", "name": "payments-api", "groups": ["sg-0nlb0000000000010"], "enforce": "off",
+                          "scheme": "internal"}],
+                "gwlbs": []}],
+            "endpoints": [{"id": "vpce-0secrets", "service": "com.amazonaws.eu-west-1.secretsmanager",
+                           "vpc": "vpc-0demo", "name": "secrets-manager", "state": "available",
+                           "groups": ["sg-0vpce000000000009"], "enis": ["eni-0vpce1"]}],
+        },
         "flow_logs": [
             {
                 "id": "fl-0demo",
@@ -209,6 +231,10 @@ def _patterns(vpc: str, other: tuple | None) -> list[dict]:
     for i in range(70):
         pats.append({"src": _host("45.155.205.0/24", 2 + i), "to": alb, "port": 22, "ok": False, "p": 1.0, "rate": 2,
                      "only": [12], "sweep": True})  # fmt: skip
+    # the app servers reading secrets through the Secrets Manager interface endpoint
+    vpce = ("eni-0vpce1", h(2 * 256 + 90))
+    for ip in app:
+        pats.append({"src": ip[1], "to": vpce, "port": 443, "ok": True, "p": 1.0, "rate": 40})
     return pats
 
 

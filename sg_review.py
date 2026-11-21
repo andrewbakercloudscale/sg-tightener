@@ -424,6 +424,7 @@ def snapshot(session, region: str) -> dict:
     except (ClientError, BotoCoreError) as exc:
         out["vpns"] = []
         out["errors"].append(f"VPN connections: {exc}")
+    out["privatelink"] = privatelink_snapshot(session, ec2, region, out["errors"])
     out["flow_logs"] = [
         {"id": f.get("FlowLogId", ""), "resource": f.get("ResourceId", ""), "traffic": f.get("TrafficType", ""),
          "dest": f.get("LogDestinationType", "cloud-watch-logs"), "group": f.get("LogGroupName", ""),
@@ -1218,6 +1219,8 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
     verdicts = {src: refused_verdict(ctx, src, r) for src, r in rej.items()}
     let_in = {src: v for src, a in act.items() if a["bins"] and (v := active_verdict(ctx, src, a))}
     attention = needs_attention(ctx, verdicts, let_in)
+    privatelink = privatelink_findings(doc, rules)
+    attention = sorted(attention + [p for p in privatelink if p["sev"] in ATTENTION], key=lambda it: SEV_RANK[it["sev"]])
     for m in markers:
         m["caused"] = sorted({src for src, v in verdicts.items() if (v.get("event") or {}).get("t") == m["t"]
                               and v["event"]["group"] == m["group"]})[:50]  # fmt: skip
@@ -1295,7 +1298,9 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
                    for gid, g in groups.items()},
         "markers": markers,
         "attention": attention,
+        "privatelink": privatelink,
         "summary": {
+            "privatelink": {k: sum(1 for p in privatelink if p["sev"] == k) for k in SEVERITIES},
             "verdicts": {k: sum(1 for v in verdicts.values() if v["sev"] == k) for k in SEVERITIES},
             "attention": {k: sum(1 for a in attention if a["sev"] == k) for k in SEVERITIES},
             "refused": len(rej),
@@ -1743,6 +1748,184 @@ def _allows_now(groups: dict, e: dict, src: str, proto: str, port: int) -> list[
             ivs = _iv(r.get("cidrs") or [])
             if n is not None and any(a <= n <= b for a, b in ivs):
                 out.append(gid)
+    return out
+
+
+# ------------------------------------------------------------------------------------------ PrivateLink
+def privatelink_snapshot(session, ec2, region: str, errors: list) -> dict:
+    """The endpoint services this account provides (who may connect, whether connections are accepted
+    automatically, the load balancers behind them and whether they apply security groups to PrivateLink
+    traffic), and the interface endpoints in its VPCs with their security groups. Read-only."""
+    out: dict = {"services": [], "endpoints": [], "read": True}
+    try:
+        cfgs = _pages(ec2, "describe_vpc_endpoint_service_configurations", "ServiceConfigurations")
+    except (ClientError, BotoCoreError) as exc:
+        errors.append(f"PrivateLink endpoint services: {describe_error(exc)[:200]}")
+        out["read"], cfgs = False, []
+    lb_arns = sorted({a for c in cfgs for a in c.get("NetworkLoadBalancerArns") or []})
+    lbs: dict = {}
+    if lb_arns:
+        try:
+            elb = session.client("elbv2", region_name=region, config=BOTO_CONFIG)
+            for i in range(0, len(lb_arns), 20):
+                part = lb_arns[i:i + 20]
+                for lb in with_backoff(lambda part=part: elb.describe_load_balancers(LoadBalancerArns=part))[
+                        "LoadBalancers"]:  # fmt: skip
+                    lbs[lb["LoadBalancerArn"]] = {
+                        "name": lb.get("LoadBalancerName", ""), "groups": lb.get("SecurityGroups") or [],
+                        "enforce": str(lb.get("EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic", "on")).lower(),
+                        "scheme": lb.get("Scheme", "")}  # fmt: skip
+        except (ClientError, BotoCoreError) as exc:
+            errors.append(f"load balancers behind endpoint services: {describe_error(exc)[:200]}")
+    for c in cfgs:
+        sid = c.get("ServiceId", "")
+        try:
+            principals = [p.get("Principal", "") for p in _pages(ec2, "describe_vpc_endpoint_service_permissions",
+                                                                  "AllowedPrincipals", ServiceId=sid)]  # fmt: skip
+        except (ClientError, BotoCoreError) as exc:
+            principals = None
+            errors.append(f"who may connect to {sid}: {describe_error(exc)[:200]}")
+        try:
+            conns = [{"id": x.get("VpcEndpointId", ""), "owner": x.get("VpcEndpointOwner", ""),
+                      "state": x.get("VpcEndpointState", "")}
+                     for x in _pages(ec2, "describe_vpc_endpoint_connections", "VpcEndpointConnections",
+                                     Filters=[{"Name": "service-id", "Values": [sid]}])]  # fmt: skip
+        except (ClientError, BotoCoreError) as exc:
+            conns = None
+            errors.append(f"connections to {sid}: {describe_error(exc)[:200]}")
+        out["services"].append({
+            "id": sid, "name": _name(c.get("Tags")) or c.get("ServiceName", sid), "service": c.get("ServiceName", ""),
+            "state": c.get("ServiceState", ""), "acceptance": bool(c.get("AcceptanceRequired")),
+            "principals": principals, "connections": conns,
+            "nlbs": [{"arn": a, **lbs.get(a, {"name": a.rsplit("/", 2)[-2] if "/" in a else a, "groups": [],
+                                               "enforce": "unknown", "scheme": ""})}
+                     for a in c.get("NetworkLoadBalancerArns") or []],
+            "gwlbs": c.get("GatewayLoadBalancerArns") or []})  # fmt: skip
+    try:
+        for v in _pages(ec2, "describe_vpc_endpoints", "VpcEndpoints",
+                        Filters=[{"Name": "vpc-endpoint-type", "Values": ["Interface"]}]):  # fmt: skip
+            out["endpoints"].append({
+                "id": v.get("VpcEndpointId", ""), "service": v.get("ServiceName", ""), "vpc": v.get("VpcId", ""),
+                "name": _name(v.get("Tags")), "state": v.get("State", ""),
+                "groups": [g.get("GroupId", "") for g in v.get("Groups") or []],
+                "enis": v.get("NetworkInterfaceIds") or []})  # fmt: skip
+    except (ClientError, BotoCoreError) as exc:
+        errors.append(f"interface endpoints: {describe_error(exc)[:200]}")
+        out["read"] = False
+    return out
+
+
+PL_WIDE = 65536  # a source block this size (a /16) or larger on an interface endpoint is a whole network
+
+
+def _pl_item(key, sev, label, title, reason, action, region, name, cli="", group="", target="", extra=None) -> dict:
+    return {"key": key, "sev": sev, "label": label, "title": title, "reason": reason, "action": action,
+            "kind": "privatelink", "name": name, "cat": "", "group": group, "srcs": [], "flows": 0, "first": None,
+            "last": None, "target": target, "restore": None, "event": None, "days": 0, "weight": 0,
+            "region": region, "cli": cli, **(extra or {})}  # fmt: skip
+
+
+def privatelink_findings(doc: dict, rules: list[dict]) -> list[dict]:
+    """PrivateLink that is too open, on both sides.
+
+    Provider: an endpoint service any AWS account may connect to (critical when connections are also accepted
+    without review), one that accepts connections automatically (low), and a load balancer behind it that does not
+    apply its security groups to PrivateLink traffic or has none (medium). Consumer: an interface endpoint whose
+    security group lets in every address (high) or a whole network, a /16 or wider (medium), with the callers the
+    flow logs saw and the narrower ranges from the rules table."""
+    out = []
+    by_rule = {(r["group"], r["source"], r["ports"]): r for r in rules}
+    for region, x in sorted(doc["regions"].items()):
+        snap = x.get("snapshot") or {}
+        pl = snap.get("privatelink") or {}
+        for s in pl.get("services") or []:
+            owners = sorted({c["owner"] for c in s.get("connections") or [] if c.get("owner")})
+            conn = f"{len(s.get('connections') or [])} endpoint(s) connected" + (
+                f", from account(s) {', '.join(owners[:5])}" if owners else "")
+            principals = s.get("principals")
+            anyone = principals is not None and any(p.strip() in ("*", "arn:aws:iam::*:root") for p in principals)
+            if anyone:
+                sev = "high" if s["acceptance"] else "critical"
+                grant = " ".join(f"arn:aws:iam::{o}:root" for o in owners) or "arn:aws:iam::<consumer-account>:root"
+                cli = (f"aws ec2 modify-vpc-endpoint-service-permissions --region {region} --service-id {s['id']} "
+                       f"--remove-allowed-principals '*' --add-allowed-principals {grant}")  # fmt: skip
+                if not s["acceptance"]:
+                    cli += (f"\naws ec2 modify-vpc-endpoint-service-configuration --region {region} "
+                            f"--service-id {s['id']} --acceptance-required")  # fmt: skip
+                out.append(_pl_item(
+                    "pl-service-anyone", sev, "PrivateLink open to all",
+                    f"Any AWS account may connect to endpoint service {s['name']}",
+                    f"{s['service'] or s['id']} allows principal '*'"
+                    + ("" if s["acceptance"] else ", and accepts connections without review")
+                    + f": any AWS account can create an endpoint to it and reach its load balancer. {conn}.",
+                    "Allow only the accounts that should connect"
+                    + ("" if s["acceptance"] else ", and require acceptance") + ".",
+                    region, s["name"], cli, target=s["id"], extra={"service": s}))
+            elif not s["acceptance"] and principals:
+                out.append(_pl_item(
+                    "pl-auto-accept", "low", "Accepted automatically",
+                    f"Endpoint service {s['name']} accepts connections without review",
+                    f"{len(principals)} principal(s) may connect, and each endpoint they create is accepted at once. "
+                    f"{conn}.", "Require acceptance if a new consumer should be approved first.", region, s["name"],
+                    f"aws ec2 modify-vpc-endpoint-service-configuration --region {region} --service-id {s['id']} "
+                    "--acceptance-required", target=s["id"], extra={"service": s}))  # fmt: skip
+            elif principals is None:
+                out.append(_pl_item(
+                    "pl-unread", "info", "Not read", f"Who may connect to {s['name']} was not read",
+                    "ec2:DescribeVpcEndpointServicePermissions was refused, so it is not known who may connect.",
+                    "Grant the permission to the role sg_review runs as.", region, s["name"], target=s["id"]))
+            for lb in s.get("nlbs") or []:
+                if lb.get("enforce") == "off" or (lb.get("enforce") != "unknown" and not lb.get("groups")):
+                    none = not lb.get("groups")
+                    out.append(_pl_item(
+                        "pl-nlb-no-sg", "medium", "PrivateLink not filtered",
+                        f"Load balancer {lb['name']} behind {s['name']} does not filter PrivateLink traffic",
+                        ("It has no security group, so " if none else
+                         "It does not apply its security groups to PrivateLink traffic, so ")
+                        + "every endpoint an allowed account creates reaches every listener; only the allowed "
+                          "principals stand in the way.",
+                        "Create the load balancer with a security group (one cannot be added later)" if none else
+                        "Turn on security group enforcement for PrivateLink traffic, with rules for the consumers' "
+                        "ranges.", region, lb["name"],
+                        "" if none else
+                        f"aws elbv2 set-security-groups --region {region} --load-balancer-arn {lb['arn']} "
+                        f"--security-groups {' '.join(lb['groups'])} "
+                        "--enforce-security-group-inbound-rules-on-private-link-traffic on",
+                        target=s["id"], extra={"service": s}))  # fmt: skip
+        groups = snap.get("groups") or {}
+        for e in pl.get("endpoints") or []:
+            svc = e["service"].rsplit(".", 1)[-1] if e["service"] else e["id"]
+            for gid in e["groups"]:
+                g = groups.get(gid) or {}
+                for r in g.get("rules") or []:
+                    for c in r.get("cidrs") or []:
+                        try:
+                            net = ipaddress.ip_network(c, strict=False)
+                        except ValueError:
+                            continue
+                        if net.num_addresses < PL_WIDE:
+                            continue
+                        ports = ports_label(r)
+                        row = by_rule.get((gid, c, ports)) or {}
+                        everyone = net.prefixlen == 0
+                        seen = row.get("here")
+                        sugg = row.get("suggest") or []
+                        what = (f"Flow logs saw {seen} source(s) reach it" if seen is not None else
+                                "No flow log covers it, so its callers are not known")  # fmt: skip
+                        out.append(_pl_item(
+                            "pl-endpoint-open", "high" if everyone else "medium", "Endpoint too open",
+                            f"Interface endpoint {e['name'] or e['id']} ({svc}) lets in "
+                            + ("every address" if everyone else c),
+                            f"Its security group {g.get('name') or gid} allows {c} on {ports}: {net.num_addresses:,} "
+                            f"addresses may call {e['service'] or 'the service'} through it. {what}"
+                            + (f"; {', '.join(sugg[:6])} would cover them." if sugg else
+                               f". {row['note']}." if row.get("note") else "."),
+                            (f"Narrow the rule to {', '.join(sugg[:6])} (Rules, and what to change)." if sugg else
+                             "Narrow the rule to the subnets that call this service, or to the callers' security "
+                             "group."),
+                            region, e["name"] or e["id"], group=gid, target=f"{ports} to {e['id']}",
+                            extra={"endpoint": e, "source": c}))  # fmt: skip
+    out.sort(key=lambda it: (SEV_RANK[it["sev"]], it["region"], it["name"]))
     return out
 
 
@@ -2267,7 +2450,10 @@ def alert_text(account: str, name: str, items: list[dict], markdown: bool = True
         out.append(f"{SEV_ICON.get(it['sev'], '')} *{title}*" if markdown else title)
         out.append(it["reason"])
         out.append(f"Do: {it['action']}")
-        out.append(f"Sources: {srcs} · {it['flows']:,} flows")
+        if it["srcs"]:
+            out.append(f"Sources: {srcs} · {it['flows']:,} flows")
+        if it.get("cli"):
+            out += [f"Fix: {line}" for line in it["cli"].splitlines()]
         if it.get("restore"):
             r = it["restore"]
             out.append(f"Restore: aws ec2 authorize-security-group-ingress --region {r['region']} --group-id {r['group']} "

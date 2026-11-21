@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.6.0 - 2026-11-21
+
+- **PrivateLink that is too open, on both sides.** `sg_review.py` reads the
+  endpoint services the account provides (who may connect, whether connections
+  are accepted automatically, the accounts connected, the load balancers behind
+  them) and the interface endpoints in its VPCs, and adds a **PrivateLink**
+  section:
+  - an endpoint service any AWS account may connect to (principal `*`) is
+    critical when connections are also accepted without review, high
+    otherwise; the fix removes `*`, allows the accounts connected today and
+    requires acceptance;
+  - named principals accepted automatically are low;
+  - a load balancer behind a service that has no security group, or does not
+    apply its groups to PrivateLink traffic, is medium;
+  - an interface endpoint whose security group lets in `0.0.0.0/0` is high, a
+    `/16` or wider medium, with the callers flow logs saw and the ranges that
+    cover them.
+  Critical, high and medium findings join **Needs attention**, `watch` and
+  `org`; each carries the AWS CLI command that fixes it ("Show the fix").
+- **`sg_ou_report.py`** makes the provider checks across an organisation
+  (`PrivateLink service`, `PrivateLink NLB` findings) and labels security group
+  findings on interface endpoints' groups `SG (PrivateLink endpoint)` rather
+  than counting them twice. A role without the newer PrivateLink permissions
+  is reported, but does not make the account incomplete.
+- `iam-policy.json` gains `ec2:DescribeVpcEndpointServicePermissions` and
+  `ec2:DescribeVpcEndpointConnections`.
+- The demo has an endpoint service open to every account behind a load
+  balancer that does not filter PrivateLink traffic, and a Secrets Manager
+  endpoint open to `10.0.0.0/8`.
+
 ## 2.5.0 - 2026-11-21
 
 - **`sg_review.py` verdicts and Needs attention.** Every refused source gets a

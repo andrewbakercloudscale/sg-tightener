@@ -217,8 +217,14 @@ details.xr-fold > summary { margin: 0 0 10px; }
     <div class="table-wrap"><table class="data" id="portClasses"></table></div>
   </section>
 
+  <section class="section" id="privatelinkWrap">
+    <h2><span class="num">5</span>PrivateLink</h2>
+    <p class="muted section-lede">Both sides of PrivateLink. <strong>Endpoint services this account provides:</strong> who may connect (any AWS account, '*', is critical when connections are also accepted without review), whether a new connection waits for acceptance, which accounts are connected, and whether the load balancer behind it applies its security groups to PrivateLink traffic. <strong>Interface endpoints in its VPCs:</strong> security groups that let in every address or a whole network (a /16 or wider), with the callers the flow logs saw and the ranges that would cover them.</p>
+    <div id="privatelink"></div>
+  </section>
+
   <section class="section">
-    <h2><span class="num">5</span>How it is read</h2>
+    <h2><span class="num">6</span>How it is read</h2>
     <div class="card" id="method"></div>
   </section>
   <footer id="footer"></footer>
@@ -345,6 +351,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     $("#coverage").innerHTML = gaps.length ? `<strong>What this review cannot see</strong><ul>${gaps.map((g) => `<li>${g}</li>`).join("")}</ul>` : "";
     $("#chips").innerHTML = `<span class="muted small">Show:</span>` + rep.categories.map((c) => `<button type="button" class="chip" data-cat="${c.key}" aria-pressed="${state.cats.has(c.key)}" style="--c:${COLOR[c.key]}">${esc(c.name)}</button>`).join("");
     attention();
+    privatelink();
     charts();
     tables();
     $("#method").innerHTML = `<p><strong>Read, per region, live and read-only:</strong> the security groups, network interfaces, VPCs, network ACLs, VPN routes and flow logs (ec2 Describe calls, and GetManagedPrefixListEntries for prefix lists); 90 days of inbound rule changes (cloudtrail:LookupEvents); and the VPC flow logs in CloudWatch Logs (logs:StartQuery, GetQueryResults, StopQuery). All are in sg-tightener's <code>iam-policy.json</code>.</p>
@@ -355,7 +362,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
       <p><strong>Who an address is:</strong> this account's VPCs, the internal and data centre ranges given to the report, VPN routes, AWS's published ranges (ip-ranges.json, with the service and region), SaaS providers' published ranges, and every routed network's AS number, owner, country and announced block (iptoasn.com). Each provider network is then given a source type from a built-in list of AS numbers and owner names: a CDN, a secure access service (whose shared addresses serve every customer), a SaaS or big-tech service, anyone's hosting, a known internet scanner, a Tor or VPN exit (with the Tor Project's own list of exit relays), or another network.${DATA.names ? ` ${num(DATA.names)} ${DATA.names === 1 ? "network is" : "networks are"} named from your names file, over every list.` : ""} The lists were downloaded to the computer that wrote this page and looked up there: no address left it.</p>
       <p><strong>What a port is for:</strong> each destination port is matched against a list of common services and put in a class (web, remote admin, database, Windows and directory, containers, file transfer, mail, messaging, network and monitoring, or other by port range). It names what the port usually carries, not what is actually listening.</p>
       <p><strong>Extract rule:</strong> the refused sources listed (by the chips, the period and the colour selected) turned into inbound rules: one per security group, protocol and port, on the first security group of the interface refused, with the sources as the fewest exact ranges. Sources a network ACL refused, sources a rule added since already allows, and interfaces since deleted are listed apart, since a new rule would not change them. Nothing is applied: the page writes the AWS CLI command and the rules as JSON. Sources start ticked when their verdict says the traffic is wanted; when a rule change caused the refusal, the box offers the command that puts the revoked entry back.</p>
-      <p><strong>Verdicts, from what is already read:</strong> each refused source is matched, in order, against: a scan (many ports or targets; from inside your network it is critical, from outside it is the defences working), traffic that stopped by the end of the range (fixed since), traffic let in before and refused right after a CloudTrail rule change (broken by a change, with the revoked entry to restore) or refused since with no change found (stopped working), a network ACL, a new address for a client let in on the same interface and port within two days (Zscaler, a partner moving egress), the same provider elsewhere, AWS health checks, your own internal or data centre traffic, a partner in the names file, a known service, retries, and anything else (info). Sources let in are checked too: a known scanner or Tor exit let in is critical on a risky port and high otherwise, and hosting providers on a risky port are high. <strong>Needs attention</strong> lists critical, high and medium verdicts, grouped by the change, source or provider, ranked by severity, then flows times days. No extra AWS call is made.</p>`;
+      <p><strong>Verdicts, from what is already read:</strong> each refused source is matched, in order, against: a scan (many ports or targets; from inside your network it is critical, from outside it is the defences working), traffic that stopped by the end of the range (fixed since), traffic let in before and refused right after a CloudTrail rule change (broken by a change, with the revoked entry to restore) or refused since with no change found (stopped working), a network ACL, a new address for a client let in on the same interface and port within two days (Zscaler, a partner moving egress), the same provider elsewhere, AWS health checks, your own internal or data centre traffic, a partner in the names file, a known service, retries, and anything else (info). Sources let in are checked too: a known scanner or Tor exit let in is critical on a risky port and high otherwise, and hosting providers on a risky port are high. <strong>PrivateLink</strong> findings (endpoint services open to any account or not filtering PrivateLink traffic, interface endpoints letting in a whole network) join them. <strong>Needs attention</strong> lists critical, high and medium verdicts, grouped by the change, source or provider, ranked by severity, then flows times days. No extra AWS call is made.</p>`;
     $("#footer").textContent = `Written ${new Date(DATA.generated_at).toLocaleString("en-GB", { timeZone: "UTC" })} UTC by sg-tightener sg_review.py · account ${rep.account}`;
   }
 
@@ -596,19 +603,37 @@ details.xr-fold > summary { margin: 0 0 10px; }
     const srcList = (it) => { const n = it.srcs.length; return `${it.srcs.slice(0, 4).map((s) => `<code>${esc(s)}</code>`).join(", ")}${n > 4 ? ` and ${num(n - 4)} more` : ""}`; };
     const card = (it, i) => {
       const dates = it.first ? `${when(it.first)}${it.last && it.last !== it.first ? ` to ${when(it.last)}` : ""}` : "";
-      const restore = it.restore ? `<div class="att-restore" id="attR${i}" hidden><p class="small">This puts the revoked entry back exactly as it was. Nothing has been applied: run it after the change has been approved.</p><textarea id="attT${i}" readonly spellcheck="false">${esc(restoreCmd(it.restore))}</textarea><div class="tools"><button type="button" class="btn" data-copy="attT${i}">Copy the command</button></div></div>` : "";
+      const cmd = it.restore ? restoreCmd(it.restore) : it.cli || "";
+      const why = it.restore ? "This puts the revoked entry back exactly as it was." : "This is the change the action describes.";
+      const restore = cmd ? `<div class="att-restore" id="attR${i}" hidden><p class="small">${why} Nothing has been applied: run it after the change has been approved.</p><textarea id="attT${i}" readonly spellcheck="false">${esc(cmd)}</textarea><div class="tools"><button type="button" class="btn" data-copy="attT${i}">Copy the command</button></div></div>` : "";
       return `<div class="att-item" style="--s:var(${SEV_VAR[it.sev] || "--muted"})">
         <div class="att-top">${sevPill(it.sev, `${SEV_NAME[it.sev]} · ${it.label}`)}<strong>${esc(it.title)}</strong>${it.target ? `<span class="small muted">${esc(it.target)}</span>` : ""}</div>
         <p>${esc(it.reason)}</p>
         <p><strong>Do:</strong> ${esc(it.action)}</p>
-        <p class="small muted">${plural(it.srcs.length, "source")}: ${srcList(it)} · ${num(it.flows)} flows${dates ? ` · ${esc(dates)}` : ""}${it.days > 1 ? ` · ${plural(it.days, "day")}` : ""}</p>
-        <div class="tools"><button type="button" class="btn" data-att-list="${i}">List these sources</button>${it.kind === "refused" && !["internal-scan", "nacl"].includes(it.key) ? `<button type="button" class="btn" data-att-extract="${i}">Extract rule</button>` : ""}${it.restore ? `<button type="button" class="btn primary" data-att-restore="${i}">Restore the revoked rule</button>` : ""}</div>
+        ${it.srcs.length ? `<p class="small muted">${plural(it.srcs.length, "source")}: ${srcList(it)} · ${num(it.flows)} flows${dates ? ` · ${esc(dates)}` : ""}${it.days > 1 ? ` · ${plural(it.days, "day")}` : ""}</p>` : it.kind === "privatelink" ? `<p class="small muted">PrivateLink · ${esc(it.region || "")} · <a href="#privatelinkWrap">all PrivateLink</a></p>` : ""}
+        <div class="tools">${it.srcs.length ? `<button type="button" class="btn" data-att-list="${i}">List these sources</button>` : ""}${it.kind === "refused" && !["internal-scan", "nacl"].includes(it.key) ? `<button type="button" class="btn" data-att-extract="${i}">Extract rule</button>` : ""}${it.restore ? `<button type="button" class="btn primary" data-att-restore="${i}">Restore the revoked rule</button>` : it.cli ? `<button type="button" class="btn primary" data-att-restore="${i}">Show the fix</button>` : ""}</div>
         ${restore}
       </div>`;
     };
     const top = items.slice(0, 6).map(card).join("");
     const rest = items.slice(6).map((it, i) => card(it, i + 6)).join("");
     $("#attention").innerHTML = `<div class="att-sum">${sum}</div><div class="att">${top}</div>${rest ? `<details class="att-more"><summary>${plural(items.length - 6, "more item")}</summary><div class="att">${rest}</div></details>` : ""}${foot}`;
+  }
+
+  function privatelink() {
+    const rep = state.rep;
+    const items = rep.privatelink || [];
+    const regions = Object.keys(rep.regions || {});
+    if (!items.length) {
+      $("#privatelink").innerHTML = `<p class="muted">No endpoint service this account provides is open to every account or unfiltered, and no interface endpoint's security group lets in a whole network${regions.length ? ` in ${esc(regions.join(", "))}` : ""}.</p>`;
+      return;
+    }
+    $("#privatelink").innerHTML = `<div class="table-wrap"><table class="data"><thead><tr><th>Severity</th><th>What</th><th>Why</th><th>Fix</th></tr></thead><tbody>${items.map((it, i) => {
+      const s = it.service, e = it.endpoint;
+      const facts = s ? `<div class="small muted">Service <code>${esc(s.id)}</code> · ${s.acceptance ? "acceptance required" : "accepted automatically"} · may connect: ${s.principals == null ? "not read" : s.principals.length ? s.principals.map((p) => `<code>${esc(p)}</code>`).join(", ") : "nobody"} · ${plural((s.connections || []).length, "endpoint")} connected</div>`
+        : e ? `<div class="small muted">Endpoint <code>${esc(e.id)}</code> · ${esc(e.service)} · ${esc(e.vpc)}</div>` : "";
+      return `<tr><td>${sevPill(it.sev, `${SEV_NAME[it.sev]} · ${it.label}`)}</td><td><strong>${esc(it.title)}</strong>${facts}</td><td class="small">${esc(it.reason)}</td><td class="small">${esc(it.action)}${it.cli ? `<textarea id="plT${i}" readonly spellcheck="false" style="width:100%;min-height:80px;font:12px/1.4 ui-monospace,Menlo,monospace;margin-top:6px">${esc(it.cli)}</textarea><button type="button" class="btn" data-copy="plT${i}">Copy</button>` : ""}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
   }
 
   function refusedShown() {

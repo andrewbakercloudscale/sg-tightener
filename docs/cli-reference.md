@@ -136,6 +136,15 @@ Exit codes: `0` every account and region scanned, nothing CRITICAL; `1` a
 CRITICAL finding; `2` the scan was incomplete (see `errors` in the JSON and
 `scan_status` per account) and nothing CRITICAL was found.
 
+Findings are security group and network ACL rules, plus PrivateLink: an endpoint
+service any AWS account may connect to (`PrivateLink service`, CRITICAL when
+connections are accepted without review, HIGH otherwise, LOW for named
+principals accepted automatically) and a load balancer behind one that does not
+filter PrivateLink traffic (`PrivateLink NLB`, MEDIUM). Security group findings
+on an interface endpoint's groups are labelled `SG (PrivateLink endpoint)`. A
+PrivateLink check the role may not make is listed in `errors` with
+`"optional": true` and does not make the account incomplete.
+
 ---
 
 ## `sg_transfer_audit.py`
