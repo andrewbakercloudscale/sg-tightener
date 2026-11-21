@@ -24,9 +24,11 @@ a planned tightening, a post-change check, and a live incident.
 - [ ] **The flow logs are old enough.** 90 days by default. If the account runs
       quarterly DR tests, year-end jobs or blue/green deployments, wait for and
       analyse at least 180 days.
-- [ ] **An IAM role** with [`iam-policy.json`](../iam-policy.json). Use a
-      read-only variant (drop the `WriteForApplyAndRevert` statement) for
-      `analyse`, `plan` and the reports. See [permissions.md](permissions.md).
+- [ ] **Two IAM roles**: [`iam-policy-read.json`](../iam-policy-read.json)
+      for `analyse`, `plan` and the reports, and
+      [`iam-policy-write.json`](../iam-policy-write.json) (scoped to one VPC)
+      for `apply` and `revert` during the change window. See
+      [permissions.md](permissions.md).
 - [ ] **The rule quota.** The default limit is 60 inbound rules per group. If
       your account's quota is higher, pass it as `--max-rules`.
 

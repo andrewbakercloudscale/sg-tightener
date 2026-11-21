@@ -204,8 +204,11 @@ pip install -r requirements-dev.txt
 python -m pytest                     # all tests should pass
 ```
 
-Requires Python 3.9 or later and AWS credentials with the permissions in
-[`iam-policy.json`](iam-policy.json).
+Requires Python 3.9 or later and AWS credentials: read-only
+[`iam-policy-read.json`](iam-policy-read.json) for everything except changes,
+and [`iam-policy-write.json`](iam-policy-write.json) (one VPC) to apply them
+([permissions](docs/permissions.md)). AWS IAM Identity Center (SSO) works:
+see [SSO](docs/cli-reference.md#sso-and-profiles).
 
 ```bash
 # 0. Optional, and a good start: see what each rule is used for, as one HTML page

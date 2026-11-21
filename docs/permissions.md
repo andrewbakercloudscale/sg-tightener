@@ -1,15 +1,28 @@
 # Permissions
 
-[`iam-policy.json`](../iam-policy.json) holds every permission the suite uses,
-in two statements:
+Three policy files, from widest to narrowest use:
 
-* `ReadOnlyForAnalysePlanReport`: everything that only reads.
-* `WriteForApplyAndRevert`: `ec2:AuthorizeSecurityGroupIngress` and
-  `ec2:RevokeSecurityGroupIngress`.
+| File | For | Holds |
+|---|---|---|
+| [`iam-policy-read.json`](../iam-policy-read.json) | Everyone who runs the suite: `analyse`, `plan`, `sg_diagnose`, `sg_review`, both organization reports, `sg_compact plan` | Every describe and query call, plus the separate optional statement `OptionalSecurityHubExport` (`securityhub:BatchImportFindings`); drop it if you do not use `--securityhub` |
+| [`iam-policy-write.json`](../iam-policy-write.json) | The people who apply changes, for the change window only | Authorize and revoke, ingress and egress, limited to one VPC by `ec2:Vpc`, and denied on any group tagged `sg-tightener=protected`. Replace `REGION`, `ACCOUNT_ID` and `VPC_ID`; use one statement per VPC if you need more |
+| [`iam-policy.json`](../iam-policy.json) | A single role, when you cannot split | The read statement, the Security Hub statement and `WriteForApplyAndRevert` (`ec2:AuthorizeSecurityGroupIngress`, `ec2:RevokeSecurityGroupIngress`) on `*` |
 
-Split them into two roles. Most runs (`analyse`, `plan`, `sg_diagnose`, both
-reports, `sg_compact plan`) need only the read-only one. Give the write role to
-the people who apply changes, and only for the change window.
+The suite's own writes (`apply`, `revert`, `sg_extend`, `sg_compact apply`)
+are ingress only. The egress actions in `iam-policy-write.json` are there for
+the `authorize-security-group-egress` and `revoke-security-group-egress`
+commands that `sg_review` prints for you to run.
+
+To narrow a write session further without a new role, pass a session policy
+when you assume it; the session gets the intersection of the two:
+
+```bash
+aws sts assume-role --role-arn arn:aws:iam::ACCOUNT_ID:role/sg-tightener-write \
+  --role-session-name change-1234 --duration-seconds 3600 \
+  --policy '{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+    "Action":["ec2:AuthorizeSecurityGroupIngress","ec2:RevokeSecurityGroupIngress"],
+    "Resource":"arn:aws:ec2:eu-west-1:ACCOUNT_ID:security-group/sg-0123456789abcdef0"}]}'
+```
 
 ---
 
@@ -23,10 +36,11 @@ the people who apply changes, and only for the change window.
 | `sg_diagnose` | As `analyse`, plus `ec2:DescribeSecurityGroups` |
 | `sg_extend` | As `analyse` (minus `DescribeFlowLogs`), `ec2:DescribeNetworkInterfaces`, `ec2:DescribeSecurityGroups`, `ec2:AuthorizeSecurityGroupIngress` |
 | `sg_compact` | `ec2:DescribeSecurityGroups`; the write statement to apply |
-| `sg_ou_report` | In the management (or delegated admin) account: `organizations:List*`, `organizations:DescribeOrganization`, `sts:GetCallerIdentity`, `sts:AssumeRole`. In each member account, via the assumed role: `ec2:DescribeSecurityGroups`, `ec2:DescribeNetworkAcls`; for the PrivateLink checks `ec2:DescribeVpcEndpointServiceConfigurations`, `ec2:DescribeVpcEndpointServicePermissions`, `ec2:DescribeVpcEndpoints`, `elasticloadbalancing:DescribeLoadBalancers` (a refusal is listed but does not make the account incomplete) |
+| `sg_ou_report` | In the management (or delegated admin) account: `organizations:List*`, `organizations:DescribeOrganization`, `sts:GetCallerIdentity`, `sts:AssumeRole`. In each member account, via the assumed role: `ec2:DescribeSecurityGroups`, `ec2:DescribeNetworkAcls`; for the reachability note `ec2:DescribeNetworkInterfaces` and `ec2:DescribeRouteTables`; for the PrivateLink checks `ec2:DescribeVpcEndpointServiceConfigurations`, `ec2:DescribeVpcEndpointServicePermissions`, `ec2:DescribeVpcEndpoints`, `elasticloadbalancing:DescribeLoadBalancers` (a refusal is listed but does not make the account incomplete) |
 | `sg_transfer_audit` | As `sg_ou_report`, plus in each member account `transfer:ListServers`, `transfer:DescribeServer`, `ec2:DescribeVpcEndpoints` |
-| `sg_review read` | `sts:GetCallerIdentity`; `ec2:DescribeSecurityGroups`, `ec2:DescribeNetworkInterfaces`, `ec2:DescribeVpcs`, `ec2:DescribeNetworkAcls`, `ec2:DescribeVpnConnections`, `ec2:DescribeFlowLogs`, `ec2:GetManagedPrefixListEntries`; `cloudtrail:LookupEvents` (rule changes; without it earlier rules are taken as today's); for PrivateLink, `ec2:DescribeVpcEndpointServiceConfigurations`, `ec2:DescribeVpcEndpointServicePermissions`, `ec2:DescribeVpcEndpointConnections`, `ec2:DescribeVpcEndpoints` and `elasticloadbalancing:DescribeLoadBalancers` (without them the PrivateLink section says what was not read); `logs:StartQuery`, `logs:GetQueryResults`, `logs:StopQuery`; optional `iam:ListAccountAliases` for the account's name. `report`, `approved` and `demo` make no AWS call |
+| `sg_review read` | `sts:GetCallerIdentity`; `ec2:DescribeSecurityGroups`, `ec2:DescribeNetworkInterfaces`, `ec2:DescribeVpcs`, `ec2:DescribeNetworkAcls`, `ec2:DescribeVpnConnections`, `ec2:DescribeFlowLogs`, `ec2:GetManagedPrefixListEntries`; `ec2:DescribeRouteTables` (internet exposure: without it no rule is reported as reachable, only as open); `ec2:DescribeStaleSecurityGroups` (references to deleted groups); `cloudtrail:LookupEvents` (rule changes; without it earlier rules are taken as today's); for PrivateLink, `ec2:DescribeVpcEndpointServiceConfigurations`, `ec2:DescribeVpcEndpointServicePermissions`, `ec2:DescribeVpcEndpointConnections`, `ec2:DescribeVpcEndpoints` and `elasticloadbalancing:DescribeLoadBalancers` (without them the PrivateLink section says what was not read); `logs:StartQuery`, `logs:GetQueryResults`, `logs:StopQuery`; optional `iam:ListAccountAliases` for the account's name. `report`, `approved` and `demo` make no AWS call |
 | `sg_review watch` | As `sg_review read` |
+| `sg_review securityhub`, `--securityhub` on `watch`, `org` and `sg_ou_report` | As the command it is on, plus `securityhub:BatchImportFindings` in each account findings are sent to (Security Hub must be enabled in that region) |
 | `sg_review org` | In the management (or delegated admin) account: `organizations:ListAccounts`, `organizations:ListAccountsForParent`, `organizations:ListOrganizationalUnitsForParent`, `sts:AssumeRole`. In each member account, via the assumed role: as `sg_review read` |
 
 `Resource` is `*` because these describe and query calls do not support
@@ -35,7 +49,7 @@ on the write statement, for example `aws:ResourceTag` or `ec2:Vpc`.
 
 ## Cross-account
 
-The two organization reports assume `--role-name` (default
+The organization commands (`sg_ou_report`, `sg_transfer_audit`, `sg_review org`) assume `--role-name` (default
 `OrganizationAccountAccessRole`) in each account. That default role has
 administrator access; for routine scans create a narrower read-only role with
 the member-account permissions above and pass its name.

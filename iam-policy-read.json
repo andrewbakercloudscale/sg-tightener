@@ -1,0 +1,51 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadOnlyForAnalysePlanReport",
+      "Effect": "Allow",
+      "Action": [
+        "cloudtrail:LookupEvents",
+        "ec2:DescribeFlowLogs",
+        "ec2:DescribeNetworkAcls",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeRegions",
+        "ec2:DescribeRouteTables",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeStaleSecurityGroups",
+        "ec2:DescribeVpcEndpointConnections",
+        "ec2:DescribeVpcEndpointServiceConfigurations",
+        "ec2:DescribeVpcEndpointServicePermissions",
+        "ec2:DescribeVpcEndpoints",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeVpnConnections",
+        "ec2:GetManagedPrefixListEntries",
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "iam:ListAccountAliases",
+        "logs:DescribeLogGroups",
+        "logs:GetQueryResults",
+        "logs:StartQuery",
+        "logs:StopQuery",
+        "organizations:DescribeOrganization",
+        "organizations:ListAccounts",
+        "organizations:ListAccountsForParent",
+        "organizations:ListOrganizationalUnitsForParent",
+        "s3:GetObject",
+        "s3:ListBucket",
+        "sts:AssumeRole",
+        "sts:GetCallerIdentity",
+        "transfer:DescribeServer",
+        "transfer:ListServers"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "OptionalSecurityHubExport",
+      "Effect": "Allow",
+      "Action": [
+        "securityhub:BatchImportFindings"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

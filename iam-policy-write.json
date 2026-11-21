@@ -1,0 +1,58 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DescribeBeforeWrite",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeSecurityGroups",
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "WriteIngressInOneVpc",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupIngress"
+      ],
+      "Resource": "arn:aws:ec2:*:*:security-group/*",
+      "Condition": {
+        "ArnEquals": {
+          "ec2:Vpc": "arn:aws:ec2:REGION:ACCOUNT_ID:vpc/VPC_ID"
+        }
+      }
+    },
+    {
+      "Sid": "WriteEgressInOneVpc",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupEgress"
+      ],
+      "Resource": "arn:aws:ec2:*:*:security-group/*",
+      "Condition": {
+        "ArnEquals": {
+          "ec2:Vpc": "arn:aws:ec2:REGION:ACCOUNT_ID:vpc/VPC_ID"
+        }
+      }
+    },
+    {
+      "Sid": "NeverTouchProtectedGroups",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupEgress"
+      ],
+      "Resource": "arn:aws:ec2:*:*:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/sg-tightener": "protected"
+        }
+      }
+    }
+  ]
+}
