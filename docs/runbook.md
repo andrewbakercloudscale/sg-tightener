@@ -86,6 +86,9 @@ a planned tightening, a post-change check, and a live incident.
    Have a second engineer review production plans.
 
 6. **Apply in a change window,** with someone watching the services involved.
+   First `python sg_db.py reconcile --regions eu-west-1`: `apply` refuses while a change made
+   outside sg-tightener has not been reviewed, or the database holds changes not yet applied.
+   Every rule `apply` changes is recorded in the database's audit trail.
 
    ```bash
    export AWS_REGION=eu-west-1
@@ -177,5 +180,6 @@ python sg_transfer_audit.py --regions eu-west-1,af-south-1 \
 ```
 
 For each CRITICAL or HIGH server, collect the partners' source addresses and
-replace the `0.0.0.0/0` rule by hand (or in Terraform). PUBLIC endpoints have
+replace the `0.0.0.0/0` rule through the database (`sg_db.py add` and `remove`, then `apply`;
+never in Terraform). PUBLIC endpoints have
 no security group and must be migrated to a VPC endpoint first.

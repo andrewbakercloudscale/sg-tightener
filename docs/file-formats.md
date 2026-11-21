@@ -323,7 +323,15 @@ Written by `sg_review.py org` next to `index.html` and one `sg-review-<account>.
 | `rows[].items` | The items, worst first: severity, verdict label, title, target, reason, action, flows, sources |
 
 `<account>.watch.json`, next to each read in `~/.sg-tightener/review`, records which items `watch`
-posted and when: `{"sent": {"<item id>": <epoch seconds>}}`.
+posted and when: `{"sent": {"<item id>": <epoch seconds>}}`. In the read itself, chunks with
+`"tail": true` were read by `watch` past the last full hour; they are replaced by the hourly read.
+
+## The security group database
+
+`~/.sg-tightener/sg.db` (or `$SG_TIGHTENER_DB`) is SQLite: tables `regions`, `groups`, `rules`
+(`state` desired or synced, `direction` in or out, `proto`, `from_port`, `to_port`, `source`,
+`description`) and `audit`. See [the database](database.md) for every column and the hash chain.
+`sg_db.py log --json` writes the audit trail as a list of entries with `detail` parsed.
 
 ## Reports
 

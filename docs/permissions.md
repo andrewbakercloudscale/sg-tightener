@@ -5,13 +5,16 @@ Three policy files, from widest to narrowest use:
 | File | For | Holds |
 |---|---|---|
 | [`iam-policy-read.json`](../iam-policy-read.json) | Everyone who runs the suite: `analyse`, `plan`, `sg_diagnose`, `sg_review`, both organization reports, `sg_compact plan` | Every describe and query call, plus the separate optional statement `OptionalSecurityHubExport` (`securityhub:BatchImportFindings`); drop it if you do not use `--securityhub` |
-| [`iam-policy-write.json`](../iam-policy-write.json) | The people who apply changes, for the change window only | Authorize and revoke, ingress and egress, limited to one VPC by `ec2:Vpc`, and denied on any group tagged `sg-tightener=protected`. Replace `REGION`, `ACCOUNT_ID` and `VPC_ID`; use one statement per VPC if you need more |
-| [`iam-policy.json`](../iam-policy.json) | A single role, when you cannot split | The read statement, the Security Hub statement and `WriteForApplyAndRevert` (`ec2:AuthorizeSecurityGroupIngress`, `ec2:RevokeSecurityGroupIngress`) on `*` |
+| [`iam-policy-write.json`](../iam-policy-write.json) | The people who apply changes, for the change window only | Authorize and revoke, ingress and egress, limited to one VPC by `ec2:Vpc`, `ec2:CreateSecurityGroup` in that VPC (`sg_db.py create-group`), and denied on any group tagged `sg-tightener=protected`. Replace `REGION`, `ACCOUNT_ID` and `VPC_ID`; use one statement per VPC if you need more |
+| [`iam-policy.json`](../iam-policy.json) | A single role, when you cannot split | The read statement, the Security Hub statement and `WriteForApplyAndRevert` (authorize and revoke, ingress and egress, and `ec2:CreateSecurityGroup`) on `*` |
 
-The suite's own writes (`apply`, `revert`, `sg_extend`, `sg_compact apply`)
-are ingress only. The egress actions in `iam-policy-write.json` are there for
-the `authorize-security-group-egress` and `revoke-security-group-egress`
-commands that `sg_review` prints for you to run.
+`sg_tightener apply`/`revert`, `sg_extend` and `sg_compact apply` write
+ingress only. `sg_db.py apply` and `exec` write whatever the database holds,
+ingress and egress, including the egress commands `sg_review` prints.
+
+Security groups are managed only through sg-tightener's database: deny every
+other role (Terraform's above all) the security group write calls. The policy
+is in [Moving security groups out of Terraform](terraform.md#5-deny-terraforms-role-the-security-group-write-calls).
 
 To narrow a write session further without a new role, pass a session policy
 when you assume it; the session gets the intersection of the two:
@@ -32,7 +35,9 @@ aws sts assume-role --role-arn arn:aws:iam::ACCOUNT_ID:role/sg-tightener-write \
 |---|---|
 | `analyse` | `ec2:DescribeFlowLogs`; CloudWatch: `logs:StartQuery`, `logs:GetQueryResults`, `logs:StopQuery`, `logs:DescribeLogGroups`; or S3: `s3:ListBucket`, `s3:GetObject` |
 | `plan` | `ec2:DescribeSecurityGroups`, `ec2:DescribeNetworkInterfaces` (to map each destination to its groups), `ec2:DescribeVpcEndpointServiceConfigurations` and `elasticloadbalancing:DescribeLoadBalancers` (to find NLBs behind PrivateLink endpoint services; without them every group on a load balancer interface is held back) |
-| `apply`, `revert` | `ec2:DescribeSecurityGroups` plus the write statement |
+| `apply`, `revert` | `ec2:DescribeSecurityGroups` plus the write statement (every change is also recorded in the database) |
+| `sg_db.py import`, `reconcile`, `show`, `diff`, `log`, `verify` | `sts:GetCallerIdentity`, `ec2:DescribeSecurityGroups`; `reconcile` also `cloudtrail:LookupEvents` to name who made a change (optional: `--no-cloudtrail`). `show`, `diff`, `log` and `verify` make no AWS call |
+| `sg_db.py apply`, `exec`, `create-group` | As `reconcile`, plus the write statement; `exec` with `--security-group-rule-ids` also `ec2:DescribeSecurityGroupRules`; `create-group` `ec2:CreateSecurityGroup` |
 | `sg_diagnose` | As `analyse`, plus `ec2:DescribeSecurityGroups` |
 | `sg_extend` | As `analyse` (minus `DescribeFlowLogs`), `ec2:DescribeNetworkInterfaces`, `ec2:DescribeSecurityGroups`, `ec2:AuthorizeSecurityGroupIngress` |
 | `sg_compact` | `ec2:DescribeSecurityGroups`; the write statement to apply |
@@ -41,7 +46,6 @@ aws sts assume-role --role-arn arn:aws:iam::ACCOUNT_ID:role/sg-tightener-write \
 | `sg_review read` | `sts:GetCallerIdentity`; `ec2:DescribeSecurityGroups`, `ec2:DescribeNetworkInterfaces`, `ec2:DescribeVpcs`, `ec2:DescribeNetworkAcls`, `ec2:DescribeVpnConnections`, `ec2:DescribeFlowLogs`, `ec2:GetManagedPrefixListEntries`; `ec2:DescribeRouteTables` (internet exposure: without it no rule is reported as reachable, only as open); `ec2:DescribeStaleSecurityGroups` (references to deleted groups); `cloudtrail:LookupEvents` (rule changes; without it earlier rules are taken as today's); for PrivateLink, `ec2:DescribeVpcEndpointServiceConfigurations`, `ec2:DescribeVpcEndpointServicePermissions`, `ec2:DescribeVpcEndpointConnections`, `ec2:DescribeVpcEndpoints` and `elasticloadbalancing:DescribeLoadBalancers` (without them the PrivateLink section says what was not read); `logs:StartQuery`, `logs:GetQueryResults`, `logs:StopQuery`; optional `iam:ListAccountAliases` for the account's name. `report`, `approved` and `demo` make no AWS call |
 | `sg_review watch` | As `sg_review read` |
 | `sg_review securityhub`, `--securityhub` on `watch`, `org` and `sg_ou_report` | As the command it is on, plus `securityhub:BatchImportFindings` in each account findings are sent to (Security Hub must be enabled in that region) |
-| Real-time drift alerts (`deploy/drift-alerts`) | The template creates the function's role: `ec2:DescribeSecurityGroups`, `sns:Publish` on its topic, and only when turned on `secretsmanager:GetSecretValue` (the Slack secret), `securityhub:BatchImportFindings`, and `ec2:RevokeSecurityGroupIngress` (denied on groups tagged `sg-tightener-allow-wide=true`). Deploying it needs CloudFormation or Terraform rights to create those |
 | `sg_review org` | In the management (or delegated admin) account: `organizations:ListAccounts`, `organizations:ListAccountsForParent`, `organizations:ListOrganizationalUnitsForParent`, `sts:AssumeRole`. In each member account, via the assumed role: as `sg_review read` |
 
 `Resource` is `*` because these describe and query calls do not support

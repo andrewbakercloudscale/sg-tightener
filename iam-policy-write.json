@@ -5,6 +5,7 @@
       "Sid": "DescribeBeforeWrite",
       "Effect": "Allow",
       "Action": [
+        "ec2:DescribeSecurityGroupRules",
         "ec2:DescribeSecurityGroups",
         "sts:GetCallerIdentity"
       ],
@@ -37,6 +38,17 @@
           "ec2:Vpc": "arn:aws:ec2:REGION:ACCOUNT_ID:vpc/VPC_ID"
         }
       }
+    },
+    {
+      "Sid": "CreateGroupsInOneVpc",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateSecurityGroup"
+      ],
+      "Resource": [
+        "arn:aws:ec2:REGION:ACCOUNT_ID:vpc/VPC_ID",
+        "arn:aws:ec2:REGION:ACCOUNT_ID:security-group/*"
+      ]
     },
     {
       "Sid": "NeverTouchProtectedGroups",

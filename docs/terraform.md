@@ -1,165 +1,170 @@
-# Taking security group sources out of Terraform
+# Moving security groups out of Terraform
 
-> **Why.** A security group's sources are not infrastructure. They are a fact about who talks to
-> whom, and that changes every week. Pinned in Terraform they can only grow, so they end up as whole
-> corporate or data centre blocks (`10.0.0.0/8` is 16.7 million addresses). sg-tightener keeps them
-> at the fewest addresses that cover the real callers, from VPC flow log evidence. For that to stick,
-> Terraform must stop putting the broad blocks back. See
-> [The shift: IP addresses are risk, not configuration](../README.md#the-shift-ip-addresses-are-risk-not-configuration).
+> **You cannot manage security groups in Terraform with this solution.** Not the groups, not their
+> rules, not some of the rules. Every security group and every rule lives in sg-tightener's local
+> database (`~/.sg-tightener/sg.db`, see [the database](database.md)), and every change to them is
+> recorded there with who, why and when. The same applies to CloudFormation, CDK, Pulumi and the
+> console. See
+> [Security groups live in a local database, not in Terraform](../README.md#security-groups-live-in-a-local-database-not-in-terraform).
 
-Keep in Terraform what really is infrastructure: the security group itself, its name, VPC and tags,
-its attachments to instances, load balancers and endpoints, rules that reference other security
-groups or prefix lists, and deliberate public rules such as `0.0.0.0/0` on 443 for an internet-facing
-load balancer. Take out the private CIDR sources sg-tightener manages: RFC 1918 blocks wider than
-`/24` (see [what it changes](../README.md#what-it-changes-and-what-it-never-touches)).
+This page is a one-way migration. Do it once per Terraform root that owns security groups.
 
 ---
 
-## Which pattern you have
+## Why there is no "keep some of it in Terraform"
 
-| Your code today | What Terraform does to a rule sg-tightener changes | Use |
-|---|---|---|
-| `ingress { }` blocks inside `aws_security_group` | Puts the old rule back and deletes the new ones on the next `apply`: inline blocks are the complete list | [Pattern A](#pattern-a-inline-ingress-blocks) |
-| `aws_vpc_security_group_ingress_rule` or `aws_security_group_rule` resources | Recreates the rule it owns if it was revoked; ignores rules it does not own | [Pattern B](#pattern-b-separate-rule-resources) |
-| A module that takes `ingress_cidr_blocks` or similar | Same as whichever pattern the module uses inside | Pass an empty list for the private sources, then A or B |
+Earlier versions of this guide suggested `lifecycle { ignore_changes = [ingress] }`, or keeping
+security group references and public rules as `aws_vpc_security_group_ingress_rule` resources. Both
+leave two owners for one group:
 
-Never mix inline `ingress` blocks and separate rule resources for the same group. Terraform then
-fights itself on every plan.
+- `ignore_changes` hides real drift: a rule someone adds in the console never shows in a plan.
+- A rule resource Terraform owns comes back on the next `terraform apply` after sg-tightener revoked
+  it, and a narrowed replacement Terraform does not own is invisible to code review.
+- Nobody can answer "who allowed this, and why?" from one place.
+
+With the database there is one owner, one history and one place to change a rule.
+
+What stays in Terraform: VPCs, subnets, instances, launch templates, load balancers, endpoints,
+databases, and their **attachments** to security groups, by group id.
 
 ---
 
-## Pattern A: inline ingress blocks
+## The migration
 
-Before:
+### 1. Import every group and rule into the database
+
+```bash
+python sg_db.py import --regions eu-west-1,us-east-1 --profile prod
+python sg_db.py show --region eu-west-1          # every group and rule, as the database holds them
+```
+
+Nothing changes in AWS. From now on the database is the source of truth.
+
+### 2. Make Terraform forget the groups, without destroying them
+
+Delete the `aws_security_group`, `aws_vpc_security_group_ingress_rule`,
+`aws_vpc_security_group_egress_rule` and `aws_security_group_rule` resources from the code, and tell
+Terraform to forget them rather than destroy them.
+
+Terraform 1.7 or later, one `removed` block per resource (or module):
 
 ```hcl
-resource "aws_security_group" "db" {
-  name   = "payments-db"
-  vpc_id = var.vpc_id
+removed {
+  from = aws_security_group.db
+  lifecycle { destroy = false }
+}
 
-  ingress {
-    description     = "app tier"
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.app.id]
-  }
+removed {
+  from = aws_vpc_security_group_ingress_rule.db_from_corp
+  lifecycle { destroy = false }
+}
 
-  ingress {
-    description = "corporate network"
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/8"]          # 16.7 million addresses
-  }
+removed {
+  from = module.payments.aws_security_group.this
+  lifecycle { destroy = false }
 }
 ```
 
-The simplest change is to let the group's rules live outside Terraform once they are created:
+Older versions:
+
+```bash
+terraform state list | grep -E 'aws_security_group|aws_vpc_security_group_(ingress|egress)_rule|aws_security_group_rule'
+terraform state rm aws_security_group.db aws_vpc_security_group_ingress_rule.db_from_corp
+```
+
+A module that creates its own security group (many community modules do) usually has a switch such
+as `create_security_group = false` and a `security_group_ids` input: turn it off and pass the ids.
+
+### 3. Refer to groups by id only
+
+Attachments stay in Terraform and look the group up:
 
 ```hcl
-resource "aws_security_group" "db" {
-  name   = "payments-db"
+data "aws_security_group" "db" {
   vpc_id = var.vpc_id
+  name   = "payments-db"
+}
 
-  ingress {
-    description     = "app tier"
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.app.id]
-  }
-
-  # Private CIDR sources are managed by sg-tightener from flow log evidence.
-  lifecycle {
-    ignore_changes = [ingress]
-  }
+resource "aws_db_instance" "payments" {
+  # ...
+  vpc_security_group_ids = [data.aws_security_group.db.id]
 }
 ```
 
-`ignore_changes = [ingress]` ignores every inbound rule, including the security-group reference
-above, once the group exists. If you want Terraform to keep managing references and public rules,
-move to Pattern B instead: it is the cleaner long-term shape.
+### 4. `terraform plan` shows no change to any group or rule
 
----
+It should show only the state removals. If it wants to create, change or delete a security group or
+a rule, stop: a resource is still in the code.
 
-## Pattern B: separate rule resources
+### 5. Deny Terraform's role the security group write calls
 
-Give the group no inline rules, and keep only the rules Terraform should own as their own resources:
+So a forgotten module cannot put a group back under Terraform. On the role Terraform runs as (or as
+a service control policy for every role except sg-tightener's):
 
-```hcl
-resource "aws_security_group" "db" {
-  name   = "payments-db"
-  vpc_id = var.vpc_id
-  # no ingress blocks: Terraform leaves rules it does not own alone
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "SecurityGroupsAreManagedBySgTightener",
+    "Effect": "Deny",
+    "Action": [
+      "ec2:CreateSecurityGroup",
+      "ec2:DeleteSecurityGroup",
+      "ec2:AuthorizeSecurityGroupIngress",
+      "ec2:AuthorizeSecurityGroupEgress",
+      "ec2:RevokeSecurityGroupIngress",
+      "ec2:RevokeSecurityGroupEgress",
+      "ec2:ModifySecurityGroupRules",
+      "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
+      "ec2:UpdateSecurityGroupRuleDescriptionsEgress"
+    ],
+    "Resource": "*"
+  }]
 }
-
-resource "aws_vpc_security_group_ingress_rule" "db_from_app" {
-  security_group_id            = aws_security_group.db.id
-  referenced_security_group_id = aws_security_group.app.id
-  ip_protocol                  = "tcp"
-  from_port                    = 5432
-  to_port                      = 5432
-  description                  = "app tier"
-}
-
-# The corporate-network rule is gone from code. sg-tightener plans its replacement from the
-# flow logs and applies the narrowed blocks; Terraform never sees them.
 ```
 
-Rules that sg-tightener writes are separate rules in AWS that no Terraform resource owns, so
-`terraform plan` stays clean.
+As an SCP, add a condition such as
+`"Condition": {"ArnNotLike": {"aws:PrincipalArn": "arn:aws:iam::*:role/sg-tightener"}}` so the role
+sg-tightener runs as keeps the calls. Attaching a group to an instance or load balancer
+(`ec2:ModifyNetworkInterfaceAttribute`, `ec2:RunInstances` with `SecurityGroupIds`) is not denied:
+attachments stay in Terraform.
+
+### 6. Run reconcile hourly
+
+```cron
+0 * * * *  cd /opt/sg-tightener && .venv/bin/python sg_db.py reconcile --regions eu-west-1 --slack "$WEBHOOK"
+```
+
+Any change made outside sg-tightener (a Terraform root you missed, the console, the CLI) is recorded
+in the audit trail as external, with who made it from CloudTrail, posted to Slack, and printed with
+the two ways out: `sg_db.py apply` puts AWS back to what the database says, `sg_db.py adopt --reason
+"…"` keeps the change. A person decides.
 
 ---
 
-## Migrating without an outage
+## New security groups
 
-The broad rule must stay in AWS until sg-tightener replaces it. Deleting it from code with a normal
-`apply` would revoke it first and cut off the callers. So remove it from Terraform's state, not from
-AWS:
+Create them through the database, then attach them in Terraform by name or id:
 
-1. **Read the evidence.** `sg_tightener.py analyse` over 30 to 90 days, or `sg_review.py read` to see
-   each rule's use first.
-2. **Stop Terraform owning the broad rules.**
-   - Pattern A: add `lifecycle { ignore_changes = [ingress] }`, remove the CIDR `ingress` block from
-     the code, and `apply`. Nothing changes in AWS.
-   - Pattern B: delete the rule resource from the code and tell Terraform to forget it rather than
-     destroy it:
+```bash
+python sg_db.py create-group --region eu-west-1 --vpc vpc-0abc --name payments-cache \
+  --description "redis for payments" --reason "new cache tier" --ticket CHG-1234
+python sg_db.py add --region eu-west-1 --group sg-0new --proto tcp --port 6379 \
+  --source sg-0app --reason "app tier to cache" --ticket CHG-1234
+python sg_db.py apply --region eu-west-1 --group sg-0new
+```
 
-     ```hcl
-     removed {                      # Terraform 1.7 or later
-       from = aws_vpc_security_group_ingress_rule.db_from_corp
-       lifecycle {
-         destroy = false
-       }
-     }
-     ```
-
-     On older versions: `terraform state rm aws_vpc_security_group_ingress_rule.db_from_corp`.
-3. **`terraform plan` shows no change to the group's rules.** If it wants to delete or add one, stop:
-   something still owns it.
-4. **Tighten.** `sg_tightener.py plan`, review, `apply` (it writes a manifest), then
-   `sg_diagnose.py --manifest` to confirm nothing was cut off. `revert` puts the old rules back.
-5. **Keep it tight.** Re-run analyse and plan on a schedule, and `sg_review.py watch` to hear when a
-   change breaks something or a rule is too open.
+A group created in the console instead is found by `reconcile`, recorded as external and taken into
+the database as it is.
 
 ---
 
-## New services
+## What changes for your teams
 
-For a new service, create the group in Terraform with only its references and deliberate public
-rules. If callers from private ranges are needed on day one, add them as narrow `/32` or small
-blocks you know, outside Terraform, or with `sg_extend.py` during an incident. Let sg-tightener fit
-the rules once flow logs have evidence. Do not start with a `/8` "for now": it never comes out.
-
----
-
-## Drift and audits
-
-- Terraform state no longer lists those sources. The source of truth is the security group in AWS,
-  with each rule's description saying what set it and when, and the sg-tightener manifest of every
-  change.
-- `sg_review.py report` gives an auditor the whole picture for an account: every rule, what used it,
-  what it lets in that was never seen, and its history from CloudTrail.
+- A security group change is a `sg_db.py` command with a reason, not a pull request. The audit trail
+  (`sg_db.py log`) replaces the Terraform history for groups, and records more: changes made outside
+  the tool are in it too.
+- `terraform plan` no longer shows security group rules. `sg_db.py diff` shows what the database will
+  change; `sg_db.py show` shows every rule.
 - When you export an estate to Terraform, for example with [CloudtoRepo](https://cloudtorepo.com),
-  keep the same split: references and public rules in code, private sources left to sg-tightener.
+  leave security groups out and refer to them with `data "aws_security_group"`.

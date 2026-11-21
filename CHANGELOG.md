@@ -1,5 +1,45 @@
 # Changelog
 
+## 3.0.0 - 2026-11-21
+
+Breaking: security groups are managed through a local database, Terraform
+cannot manage them with this solution, and the 2.8.0 drift Lambda is removed.
+
+- **Security group database (`sg_db.py`).** Every group and rule lives in
+  SQLite (`~/.sg-tightener/sg.db` or `$SG_TIGHTENER_DB`), held as *desired*
+  and *synced*. Every change is written with who, why and an optional ticket
+  to an append-only (triggers refuse UPDATE and DELETE), hash-chained audit
+  trail; `verify` proves nobody edited or removed an entry. Commands:
+  `import`, `reconcile`, `show`, `diff`, `add`, `remove`, `exec`, `apply`,
+  `adopt`, `create-group`, `log`, `verify`.
+- **Changes made outside the tool** (console, CLI, Terraform) are found by
+  `reconcile`, recorded as external with who made them from CloudTrail,
+  posted to Slack, and printed with how to put AWS back (`apply`) or keep the
+  change (`adopt`). A person decides.
+- **Every write goes through the database.** `sg_tightener apply`/`revert`,
+  `sg_compact apply`/`revert` and `sg_extend` record each change.
+  `apply` refuses while AWS has unreviewed external changes or the database
+  has changes not applied; `revert` and `sg_extend` (break-glass) warn and go
+  ahead. The fixes `sg_review` prints (page, alerts, Extract rule, restore)
+  run through `sg_db.py exec --reason …`; the default-group fix is
+  `sg_db.py remove --all`.
+- **No Terraform for security groups.** The README says so plainly and
+  `docs/terraform.md` is now a one-way migration: import, `removed` blocks or
+  `terraform state rm`, `data "aws_security_group"` for attachments, an IAM or
+  SCP deny on the security group write calls, hourly `reconcile`. New
+  `docs/database.md`.
+- **Real-time alerts are for rejected traffic.** `sg_review watch` posts only
+  refused-traffic items by default (`--alerts all` for the rest), `--every`
+  defaults to 5 minutes, and each run also reads a tail from the last full
+  hour to five minutes ago, so a refused flow is alerted within about 10
+  minutes (`--no-tail` to skip; about twice the cost of a daily read).
+- **Removed:** `sg_drift_lambda.py` and `deploy/drift-alerts/` (CloudFormation
+  and Terraform). Rules opened wide are still **Needs attention** items in the
+  report and in `watch --alerts all`.
+- IAM: `ec2:DescribeSecurityGroupRules` in the read policies;
+  `ec2:CreateSecurityGroup` (one VPC) in `iam-policy-write.json`; egress and
+  `CreateSecurityGroup` in `iam-policy.json`'s write statement.
+
 ## 2.8.0 - 2026-11-21
 
 - **Real-time drift alerts.** `sg_drift_lambda.py` and `deploy/drift-alerts/`

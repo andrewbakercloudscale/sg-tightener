@@ -150,14 +150,10 @@ uses it, naming who added it, from which address, and when:
 | A private `/8` on a risky port | Medium |
 | Any of these, already removed again | Low |
 
-The item gives the `revoke-security-group-ingress` command (by rule id when CloudTrail recorded it).
-Run `watch` hourly and these are posted within the hour, so a rule opened by mistake, or by someone
-who should not have, is seen the same day.
-
-For alerts within seconds instead, and the option to revoke such a rule automatically, deploy
-[real-time drift alerts](../deploy/drift-alerts/README.md): an EventBridge rule and a Lambda function
-that make the same judgement on each CloudTrail event as it happens, and post to SNS, Slack and
-Security Hub.
+The item gives the `revoke-security-group-ingress` command (by rule id when CloudTrail recorded it),
+run through the security group database (`sg_db.py exec`). These items are in the report and in
+`watch --alerts all`. A rule changed outside sg-tightener is also found, for every change and not only
+wide ones, by `sg_db.py reconcile` ([the database](database.md)).
 
 ### PrivateLink
 
@@ -433,20 +429,29 @@ sources left out with the reason. To undo a rule, run the same command with
 
 ---
 
-## Alert mode (`watch`)
+## Alert mode (`watch`): real-time alerts on rejected traffic
 
 ```bash
-# Hourly from cron: read only what is new, post the items not posted yet.
-python sg_review.py watch --regions eu-west-1 --slack https://hooks.slack.com/services/...
+# Keep it running: every 5 minutes, post rejected traffic that needs attention.
+python sg_review.py watch --regions eu-west-1 --slack https://hooks.slack.com/services/... --loop
 
-# Or keep it running, and email as well.
+# Email as well, from medium up.
 python sg_review.py watch --regions eu-west-1 --email-to secops@example.com \
     --smtp-host smtp.example.com --min-severity medium --loop
 ```
 
-Each run reads the flow logs not read yet in the last day (an hour, when run hourly), builds the
-last 24 hours and posts only the **Needs attention** items at or above `--min-severity` (default
-`high`) that were not posted in the last `--repeat` hours (default 24). An item that closes is
+Real-time alerts are for **rejected traffic**: a rule change that cut a caller off, your own traffic
+or AWS health checks refused, a partner's new address. Each run reads the flow logs not read yet in
+the last day, and a **tail** from the last full hour up to five minutes ago, so a refused flow is
+posted within about 10 minutes of happening (flow logs reach CloudWatch a few minutes late). The tail
+is read again from the new hour once the hourly read covers it, so a 5-minute loop costs about twice
+a once-a-day read of the same day; `--no-tail` halves that and alerts up to 75 minutes late.
+
+It builds the last 24 hours and posts only the refused-traffic **Needs attention** items at or above
+`--min-severity` (default `high`) that were not posted in the last `--repeat` hours (default 24).
+`--alerts all` posts the other items too (rules opened wide, internet exposure, hygiene, PrivateLink).
+Changes made to security groups outside sg-tightener are reported by `sg_db.py reconcile`, not by
+`watch` ([the database](database.md)). An item that closes is
 forgotten, so it is posted at once if it comes back. A read estimated above `--max-cost` (default
 US$0.50) is skipped and logged. With neither `--slack` nor `--email-to`, the alert is printed.
 
@@ -459,7 +464,9 @@ US$0.50) is skipped and logged. With neither `--slack` nor `--email-to`, the ale
 | `--min-severity` | `high` | `critical`, `high` or `medium` |
 | `--repeat` | `24` | Hours before an item still open is posted again |
 | `--max-cost` | `0.50` | US$ cap per read |
-| `--loop`, `--every` | off, 60 | Keep running, once every so many minutes |
+| `--alerts` | `refused` | `refused` (rejected traffic only) or `all` |
+| `--loop`, `--every` | off, 5 | Keep running, once every so many minutes |
+| `--no-tail` | off | Read only to the last full hour |
 
 What was posted is kept in `~/.sg-tightener/review/<account>.watch.json`.
 

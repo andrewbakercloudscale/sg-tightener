@@ -11,6 +11,7 @@
         "ec2:DescribeNetworkInterfaces",
         "ec2:DescribeRegions",
         "ec2:DescribeRouteTables",
+        "ec2:DescribeSecurityGroupRules",
         "ec2:DescribeSecurityGroups",
         "ec2:DescribeStaleSecurityGroups",
         "ec2:DescribeVpcEndpointConnections",
@@ -52,7 +53,10 @@
       "Effect": "Allow",
       "Action": [
         "ec2:AuthorizeSecurityGroupIngress",
-        "ec2:RevokeSecurityGroupIngress"
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:CreateSecurityGroup"
       ],
       "Resource": "*"
     }

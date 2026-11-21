@@ -342,7 +342,9 @@ flows times days. Each marker on the timeline whose change caused refusals carri
 (`caused`), so the refused graph can mark it.
 
 **`watch` and `org`.** `watch` reads the gap in the last day (`plan_read` and `run_read`, as `read`
-does), builds the 24-hour range and keeps an id per item (key, target, name, group, change time) with
+does) and a tail slice from the last full hour to five minutes ago (`plan_tail`; tail chunks are marked
+and dropped once the hourly read reaches them, so nothing is counted twice), builds the 24-hour range,
+keeps only the refused-traffic items unless `--alerts all`, and keeps an id per item (key, target, name, group, change time) with
 when it was posted. `org` lists the accounts through Organizations, assumes a role in each, plans every
 read first so the cost is confirmed once, then writes each account's page and a roll-up of the
 `summary.attention` counts and items.
@@ -403,3 +405,16 @@ review `plan.json` by hand.
 * **The window is the evidence.** Anything that did not connect during the
   analysed window is treated as unused. Use `--days 180` or more where seasonal
   traffic exists.
+
+---
+
+## The security group database
+
+`sg_db.py` holds every group's rules twice: **desired** (what they should be) and **synced** (what AWS
+held when last read or changed). `pending` is desired minus synced (adds) and synced minus desired
+(removals, first). `observe` compares a fresh read with synced: each difference is an external change,
+written to the audit trail and taken as synced, while desired stays, so `apply` would put it back.
+sg_tightener, sg_compact and sg_extend write through `TrackedEC2`, a wrapper around the EC2 client that
+checks the region before the first write and, after each authorize or revoke, reads the group back and
+records it as desired and synced. The audit table is append-only (SQLite triggers) and each row carries
+the SHA-256 of itself and the row before it. See [the database](database.md).

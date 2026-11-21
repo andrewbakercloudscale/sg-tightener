@@ -54,12 +54,11 @@ the attacker does not need an exploit, only an address in a range you already al
 sg-tightener treats each IP address a security group lets in as **risk to be minimised**, and each
 security group's limited rule slots as a **budget to spend well**:
 
-1. **Take security group sources out of Terraform.** Keep the security groups themselves (and their
-   attachments) in code, but stop hard-coding the source CIDR blocks, for example with
-   `lifecycle { ignore_changes = [ingress] }`, or by keeping only security-group references and
-   deliberate public rules as `aws_vpc_security_group_ingress_rule` resources and leaving private
-   CIDR sources to this tool. The rules become living data, refreshed from evidence.
-   [How, without an outage](docs/terraform.md).
+1. **Take security groups out of Terraform, completely.** Every security group and every rule lives
+   in sg-tightener's local database, with an audit trail of who changed what, when and why. Terraform
+   keeps the instances, load balancers and endpoints and refers to groups by id only. The rules become
+   living data, refreshed from evidence.
+   [Why, and how to move out of Terraform without an outage](docs/terraform.md).
 2. **Let evidence decide who gets in.** VPC flow logs show which source addresses actually reached
    which network interface, on which port, over weeks or months. Only those are kept.
 3. **Let an algorithm spend the rule budget.** When the real callers do not fit in the rules a group
@@ -75,7 +74,7 @@ security group's limited rule slots as a **budget to spend well**:
 | | Old world | New world |
 |---|---|---|
 | Who decides the sources | A person, once, guessing | Flow log evidence, refreshed |
-| Where the sources live | Hard-coded in Terraform | Data managed by sg-tightener, outside Terraform |
+| Where the rules live | Hard-coded in Terraform | A local database with an audit trail; never Terraform |
 | Typical rule | `10.0.0.0/8` or a data centre `/16` | The fewest exact blocks covering the real callers |
 | Addresses let in | Millions | Tens to hundreds |
 | What one compromised host can reach | Everything that trusts its network | Only what it was already talking to |
@@ -83,6 +82,47 @@ security group's limited rule slots as a **budget to spend well**:
 
 The result is least-privilege network access for AWS security groups, without guessing and without
 breaking production.
+
+---
+
+## Security groups live in a local database, not in Terraform
+
+> **You cannot manage security groups in Terraform (or CloudFormation, CDK or Pulumi) with this
+> solution.** Every security group and every rule is held in sg-tightener's local database,
+> `~/.sg-tightener/sg.db`. That database is the source of truth. AWS is where the rules are
+> enforced; the database is where they are decided.
+
+Why not Terraform:
+
+- **Two owners fight.** sg-tightener narrows rules every week from flow-log evidence. A Terraform
+  resource for the same group puts the old rule back on the next `terraform apply`, or deletes the new
+  ones. There is no safe split: `ignore_changes` hides real drift, and separate rule resources still
+  recreate the broad rule someone revoked.
+- **Sources are data, not infrastructure.** Who may reach a database changes every week. Code review
+  once, at the time a rule was written, is the wrong control. The right one is evidence, a reason and
+  an audit trail for every change.
+- **One place to look.** With the database, every group, every rule, and every change to them (made by
+  sg-tightener, by a person through `sg_db.py`, or found in AWS after someone used the console) is in
+  one append-only, hash-chained log.
+
+How it works:
+
+- `python sg_db.py import --regions eu-west-1` takes every group and rule into the database. The
+  tools import a region on first use anyway.
+- Every change goes through the database with who, why and an optional ticket: `sg_tightener apply`,
+  `sg_compact`, `sg_extend`, `sg_db.py add|remove|exec`. The commands `sg_review` prints run through
+  `sg_db.py exec`.
+- `python sg_db.py reconcile --regions eu-west-1` (hourly from cron) finds any change made in AWS
+  outside the tool (console, CLI, Terraform), records it in the audit trail as external with who made
+  it from CloudTrail, posts it to Slack, and prints how to put it back (`sg_db.py apply`) or keep it
+  (`sg_db.py adopt`). A person decides.
+- `python sg_db.py log` shows the audit trail; `python sg_db.py verify` proves nobody edited or
+  removed an entry.
+
+If your groups are in Terraform today, [move them out once](docs/terraform.md): import them into the
+database, remove them from Terraform state without destroying them, refer to them with data sources,
+and deny Terraform's role the security group write calls. The database is described in
+[docs/database.md](docs/database.md).
 
 ---
 
@@ -95,7 +135,8 @@ the blocks that open the fewest addresses nobody was seen using. Every change is
 applied with a manifest, and can be reverted.
 
 It is a companion to [CloudtoRepo](https://cloudtorepo.com), which turns an AWS estate into
-Terraform.
+Terraform. Security groups are the exception: they live in sg-tightener's database, and Terraform
+refers to them by id ([why](#security-groups-live-in-a-local-database-not-in-terraform)).
 
 ---
 
@@ -120,7 +161,8 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
-| **2.8.0** | **Real-time drift alerts**: an EventBridge rule and Lambda function ([`deploy/drift-alerts`](deploy/drift-alerts/README.md), CloudFormation or Terraform) alert within seconds when a security group rule is opened wide, naming who and from where, to SNS, Slack and Security Hub, and can revoke it automatically (`AutoRevoke`, with a tag to exempt groups meant to be public) |
+| **3.0.0** | **Security groups live in a local database** (`sg_db.py`): every group and rule in SQLite, every change with who, why and ticket in an append-only, hash-chained audit trail. `reconcile` records changes made outside the tool (console, CLI, Terraform), names who from CloudTrail, and offers to put them back. sg_tightener, sg_compact, sg_extend and the fixes `sg_review` prints all go through it. **Terraform cannot manage security groups with this solution**: [move out once](docs/terraform.md). **Real-time alerts are for rejected traffic**: `watch --loop` every 5 minutes reads up to five minutes ago. The 2.8.0 drift Lambda is removed |
+| **2.8.0** | Real-time drift alerts by EventBridge and Lambda (removed in 3.0.0: alerts are on rejected traffic, and changes made outside the tool are found by `sg_db.py reconcile`). It alerted within seconds when a security group rule is opened wide, naming who and from where, to SNS, Slack and Security Hub, and can revoke it automatically (`AutoRevoke`, with a tag to exempt groups meant to be public) |
 | **2.7.0** | Security posture. `sg_review` finds rules the internet can actually reach (public address, internet-gateway route, network ACLs), wide IPv6 ranges, the default group in use, cross-account and stale references, and, with `read --egress`, outbound connections to Tor or scanners and outbound rules fitted to what was used. A rule opened wide in the last day is a **Needs attention** item at once, so `watch` alerts within the hour. Findings go to **AWS Security Hub** (`securityhub`, `--securityhub`). `sg_ou_report` adds reachability notes, IPv6 and hygiene rows. **SSO**: `--profile` on every tool and a one-line `aws sso login` hint. Least-privilege `iam-policy-read.json` / `iam-policy-write.json`, and signed plans and manifests that `apply` and `revert` check |
 | **2.6.0** | PrivateLink that is too open, on both sides: endpoint services any AWS account may connect to (critical when connections are accepted without review), load balancers that do not filter PrivateLink traffic, and interface endpoints whose security group lets in a whole network, each with the command that fixes it, in `sg_review` (and its Needs attention, `watch` and `org`) and in `sg_ou_report` |
 | **2.5.0** | `sg_review.py` verdicts: every refused and let-in source gets a severity and a one-line reason, and a **Needs attention** box lists only what looks broken (a rule change that cut traffic off, with the command to restore it; a partner's new address; your own traffic refused; health checks refused) or too open (scanners and Tor exits let in), worst first. Scans turned away stay out. A red triangle marks the change that broke traffic. `watch` posts new items to Slack or email; `org` rolls the verdicts up across every account in an OU |
@@ -137,14 +179,14 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
 
 | Script | Job | Writes to AWS? |
 |---|---|---|
-| [`sg_tightener.py`](sg_tightener.py) | Main loop: `analyse` → `plan` → `apply` → `revert` | `apply` and `revert` only |
+| [`sg_db.py`](sg_db.py) | The security group database: `import`, `reconcile`, `add`/`remove`/`exec`, `apply`, `adopt`, `create-group`, `log`, `verify` | `apply`, `exec`, `create-group`; every change recorded |
+| [`sg_tightener.py`](sg_tightener.py) | Main loop: `analyse` → `plan` → `apply` → `revert` | `apply` and `revert` only, recorded in the database |
 | [`sg_diagnose.py`](sg_diagnose.py) | After an apply: find private sources the destination's groups now refuse, mark what the tightening caused, print the command that restores them | No |
-| [`sg_extend.py`](sg_extend.py) | Break-glass: add rules for rejected traffic during an incident (additive only) | Yes, adds only |
-| [`sg_compact.py`](sg_compact.py) | Merge narrow CIDRs into wider ones to get back under the rule limit | `apply` and `revert` only |
+| [`sg_extend.py`](sg_extend.py) | Break-glass: add rules for rejected traffic during an incident (additive only) | Yes, adds only, recorded in the database |
+| [`sg_compact.py`](sg_compact.py) | Merge narrow CIDRs into wider ones to get back under the rule limit | `apply` and `revert` only, recorded in the database |
 | [`sg_ou_report.py`](sg_ou_report.py) | Rank every account in an AWS Organization by permissive SG and NACL rules; exit 1 on CRITICAL, 2 if any account could not be scanned | No |
 | [`sg_transfer_audit.py`](sg_transfer_audit.py) | Find AWS Transfer Family servers (SFTP/FTPS/FTP/AS2) open to the internet; same exit codes | No |
 | [`sg_review.py`](sg_review.py) | One account's inbound rules against months of flow logs, as one HTML page with what needs attention, three timelines and what to change; `watch` alerts to Slack or email, `org` rolls up an OU; `sg_review.py demo` shows it without AWS | No |
-| [`sg_drift_lambda.py`](sg_drift_lambda.py) | Lambda for [real-time drift alerts](deploy/drift-alerts/README.md): a rule opened wide is posted to SNS, Slack and Security Hub within seconds | Only with `AutoRevoke` on: revokes that rule |
 | [`sg_viz.py`](sg_viz.py) | Export who talked to what, accepted or rejected, per time bucket, with the rule that allowed it and what a plan would block | No |
 | [`tests/`](tests) | Offline test suite (unit + moto integration), no AWS credentials needed | No |
 
@@ -161,8 +203,9 @@ ports view, and a table of what to tighten, with CSV and approved.json downloads
   one-line reason, from what was already read. The box at the top lists only what looks broken (a
   rule change that cut traffic off, with the command that restores it; a partner's new address; your
   own traffic or AWS health checks refused) or too open (scanners and Tor exits let in on remote
-  admin), worst first. Scans the defences turned away stay out. `watch` posts new items to Slack or
-  email every hour; `org` rolls them up across every account in an OU.
+  admin), worst first. Scans the defences turned away stay out. `watch --loop` posts new
+  **rejected-traffic** items to Slack or email within minutes (every 5 minutes; `--alerts all` adds
+  the rest); `org` rolls them up across every account in an OU.
 - **Attribution:** every source is named: your VPCs and named ranges, your data centres, the AWS
   service and region, the SaaS provider, or the AS number, owner and country. The graphs can be
   coloured by kind, by network (AS number) or by port class.
@@ -214,11 +257,16 @@ and [`iam-policy-write.json`](iam-policy-write.json) (one VPC) to apply them
 see [SSO](docs/cli-reference.md#sso-and-profiles).
 
 ```bash
-# 0. Optional, and a good start: see what each rule is used for, as one HTML page
+# 0. Take every security group and rule into the database (the tools do this on first use too),
+#    and run reconcile hourly from cron so changes made outside the tool are recorded and reported
+python sg_db.py import --regions eu-west-1
+python sg_db.py reconcile --regions eu-west-1 --slack "$WEBHOOK"
+
+# Optional, and a good start: see what each rule is used for, as one HTML page
 python sg_review.py read --regions eu-west-1 --days 1     # measures what longer reads cost
 python sg_review.py read --regions eu-west-1 --days 90    # asks before spending
 python sg_review.py report --onprem "10.200.0.0/16 Johannesburg DC"   # sg-review-<account>.html
-python sg_review.py watch --regions eu-west-1 --slack "$WEBHOOK"   # hourly from cron: alert on what broke
+python sg_review.py watch --regions eu-west-1 --slack "$WEBHOOK" --loop   # rejected traffic, every 5 minutes
 
 # 1. Learn: read 90 days of accepted flows and write approved.json
 #    (each source and the destination address and port it reached)
@@ -252,7 +300,8 @@ python sg_tightener.py revert --manifest manifest-<timestamp>.json
 
 | Document | Read it when |
 |---|---|
-| [Taking security group sources out of Terraform](docs/terraform.md) | Your security groups are in Terraform: how to stop it putting broad blocks back, and migrate without an outage |
+| [Moving security groups out of Terraform](docs/terraform.md) | Your security groups are in Terraform: this solution cannot work with that. How to move them into the database once, without an outage |
+| [The security group database](docs/database.md) | You want the schema, the audit trail, desired and synced rules, reconcile, and backups |
 | [How it works](docs/how-it-works.md) | You want to understand the algorithm and the safety design |
 | [Runbook](docs/runbook.md) | You are about to tighten a real account, or are mid-incident |
 | [CLI reference](docs/cli-reference.md) | You need every flag and default for every tool |
@@ -265,7 +314,8 @@ python sg_tightener.py revert --manifest manifest-<timestamp>.json
 
 ## Safety in one paragraph
 
-`plan` never writes. `apply` asks you to type `yes`, refuses to run if any
+Every security group change is recorded in the database, with who and why, and nothing else may
+change a group: changes made outside are found by `reconcile`. `plan` never writes. `apply` asks you to type `yes`, refuses to run if any
 security group in the region changed since the plan was made, revokes and
 authorises one group at a time, stops at the first failure, and always leaves a
 manifest that `revert` replays in reverse. `sg_extend` only ever adds. Even so,

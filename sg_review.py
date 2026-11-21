@@ -607,7 +607,7 @@ def parse_event(ev: dict) -> dict | None:
 
 
 # --------------------------------------------------------------------------------------------- drift
-DRIFT_WINDOW = 86400  # rule changes this recent are "new": watch, run hourly, posts each once
+DRIFT_WINDOW = 86400  # rule changes this recent are "new" (watch --alerts all posts each once)
 
 
 def drift_findings(doc: dict, now: float, window: float = DRIFT_WINDOW) -> list[dict]:
@@ -3471,8 +3471,8 @@ def _build_parser() -> argparse.ArgumentParser:
     n = sub.add_parser("names", help="check the names file, or write an example one if there is none")
     n.add_argument("--out", help="the names file (default ~/.sg-tightener/names.yaml)")
     n.set_defaults(fn=cmd_names)
-    w = sub.add_parser("watch", help="read the newest flow logs and post what needs attention to Slack or email "
-                       "(alert mode: run it hourly, or with --loop)")
+    w = sub.add_parser("watch", help="real-time alerts on rejected traffic: read up to five minutes ago and post "
+                       "what needs attention to Slack or email (run with --loop: every 5 minutes)")
     g = sub.add_parser("org", help="read every account in an OU (assuming a role in each) and write a roll-up of what "
                        "needs attention in each")
     for q in (w, g):

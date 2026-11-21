@@ -42,6 +42,45 @@ Flow-log source, used by `analyse`, `sg_diagnose` and `sg_extend`: give
 
 ---
 
+## `sg_db.py`
+
+The security group database: every group and rule, and an append-only, hash-chained audit trail.
+Security groups are managed only through it; Terraform cannot manage them with this solution. See
+[the database](database.md) and [moving out of Terraform](terraform.md).
+
+```bash
+python sg_db.py import    --regions eu-west-1,us-east-1 [--profile P]
+python sg_db.py reconcile --regions eu-west-1 [--slack URL] [--no-cloudtrail]
+python sg_db.py show      --region eu-west-1 [--group sg-…] [--account ID]
+python sg_db.py diff      --region eu-west-1 [--group sg-…]
+python sg_db.py add       --region R --group sg-… --proto tcp --port 443 --source 10.20.0.0/24 \
+                          --reason "…" [--ticket CHG-1] [--direction in|out] [--description D]
+python sg_db.py remove    --region R --group sg-… (--proto tcp --port 22 --source 0.0.0.0/0 | --all) --reason "…"
+python sg_db.py exec      --reason "…" [--no-apply] -- aws ec2 revoke-security-group-ingress --region R --group-id sg-… ...
+python sg_db.py apply     --region R [--group sg-…] [--yes] [--reason "…"]
+python sg_db.py adopt     --region R [--group sg-…] --reason "…"
+python sg_db.py create-group --region R --vpc vpc-… --name N --description D --reason "…"
+python sg_db.py log       [--region R] [--group sg-…] [--since 7d] [--json]
+python sg_db.py verify
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--db` | `$SG_TIGHTENER_DB` or `~/.sg-tightener/sg.db` | The database file (before the command) |
+| `--reason`, `--ticket` | | Why, kept in the audit trail. `--reason` is required for `add`, `remove`, `exec`, `adopt` and `create-group` |
+| `--source` | | A CIDR (IPv4 or IPv6), `pl-…`, `sg-…`, or `ACCOUNT/sg-…` for another account's group |
+| `--proto`, `--port` | | `tcp`, `udp`, `icmp`, `all` or a number; `22`, `8000-8100` or `all` |
+
+Exit codes: `reconcile` 1 when AWS changed outside the tool or the database has changes not applied;
+`diff` 1 when there is something to apply; `verify` 1 when the audit trail is broken; `apply` and
+`exec` 1 when a change failed.
+
+`sg_tightener apply`/`revert`, `sg_compact apply`/`revert` and `sg_extend` record every change in the
+database. `apply` refuses while AWS has changes not yet reviewed (`reconcile`) or the database has
+changes not applied; `revert` and `sg_extend` go ahead and warn.
+
+---
+
 ## `sg_tightener.py`
 
 ### `analyse`
@@ -212,21 +251,6 @@ Same flags as `sg_ou_report.py`, with outputs defaulting to
 
 ---
 
-## `sg_drift_lambda.py`
-
-The Lambda handler for [real-time drift alerts](../deploy/drift-alerts/README.md). Locally it prints
-the alert a saved event would raise, with no AWS call:
-
-```bash
-python sg_drift_lambda.py event.json     # an EventBridge event, or a bare CloudTrail record
-```
-
-Exit codes: `0` nothing high or critical, `1` a high or critical rule, `2` wrong usage. In Lambda it
-is configured by environment variables: `MIN_SEVERITY`, `SNS_TOPIC_ARN`, `SLACK_SECRET_ARN`,
-`SECURITY_HUB`, `AUTO_REVOKE`, `ACCOUNT_NAME`.
-
----
-
 ## `sg_viz.py`
 
 Read-only. Writes one JSON file (`sg-tightener.viz/v1`) for drawing a region's
@@ -267,7 +291,7 @@ python sg_review.py demo     [--offline] [--out sg-review-demo.html]
 python sg_review.py names    [--out FILE]
 python sg_review.py forget   --account ID
 python sg_review.py watch    --regions R [--slack URL] [--email-to A,B] [--min-severity high] [--repeat 24] \
-                             [--max-cost 0.50] [--loop [--every 60]]
+                             [--max-cost 0.50] [--alerts refused|all] [--no-tail] [--loop [--every 5]]
 python sg_review.py org      --regions R [--ou-id OU] [--role-name OrganizationAccountAccessRole] [--days 1] \
                              [--accounts ID,ID] [--range 1w] [--out-dir sg-review-org] [--yes]
 python sg_review.py securityhub [--account ID] [--range 1w] [--profile P] [--out findings.json]
@@ -289,7 +313,9 @@ python sg_review.py securityhub [--account ID] [--range 1w] [--profile P] [--out
 | `watch --min-severity` | `high` | Post items at or above `critical`, `high` or `medium` |
 | `watch --repeat` | `24` | Hours before an item still open is posted again |
 | `watch --max-cost` | `0.50` | Skip a read estimated above this many US$ |
-| `watch --loop`, `--every` | off, `60` | Keep running, once every so many minutes |
+| `watch --alerts` | `refused` | Post rejected-traffic items only, or `all` items |
+| `watch --loop`, `--every` | off, `5` | Keep running, once every so many minutes |
+| `watch --no-tail` | off | Read only to the last full hour: alerts up to 75 minutes late, about half the cost |
 | `org --ou-id` | whole organisation | Accounts in this OU and every OU under it |
 | `org --role-name` | `OrganizationAccountAccessRole` | Role assumed in each account (`--external-id` if it needs one) |
 | `org --days`, `--range` | `1`, `1w` | How far back to read; the range the roll-up counts |
