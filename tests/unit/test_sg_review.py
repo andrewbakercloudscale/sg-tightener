@@ -760,4 +760,5 @@ def test_over_provisioning_is_attributed_by_source_type_and_network_over_time(tm
     assert all("networks networks" not in n["name"] for n in se["over_by_net"])
     page = tmp_path / "p.html"
     sg_review.write_page(sg_review.page_data(doc, "", ""), str(page))
-    assert 'id="overBy"' in page.read_text()
+    text = page.read_text()
+    assert 'id="overBy"' in text and 'id="overScale"' in text and 'overScale: "stack"' in text

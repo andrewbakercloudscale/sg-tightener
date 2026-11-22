@@ -1,5 +1,15 @@
 # Changelog
 
+## 5.8.1 - 2026-11-22
+
+- **The over-provisioned graph is a stacked timeline by default.** Each bar is
+  the number of never-seen addresses allowed in at that time, stacked by who they
+  belong to (internal, data centre and private, AWS, SaaS, other), with the total
+  dashed on top, the refused sources as a line on the right scale and the Tighten
+  panel's After bar at the end. **Scale** switches back to one line each on a log
+  scale.
+- The blog post has no section breaks and opens section 2 with the stacked graph.
+
 ## 5.8.0 - 2026-11-22
 
 - **Over-provisioning by type and owner, over time.** The over-provisioned

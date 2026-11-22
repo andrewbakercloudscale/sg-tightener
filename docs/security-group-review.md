@@ -414,7 +414,13 @@ is summed over every security group that has flow logs on all its interfaces.
 - The rules in force on each day are worked back from today's rules using CloudTrail's record of
   rule changes. Each triangle is a change; select one to see it.
 - Rules open to `0.0.0.0/0` are listed in the rules table and not counted here.
-- The scale is logarithmic, so each step down is a tenfold cut.
+- Each bar is the number of never-seen (unused) addresses allowed in at that time, **stacked by
+  who they belong to**: internal (your VPCs), data centre and other private space, AWS, SaaS and
+  partners, other networks. A tightening shows as the bar stepping down.
+- **Scale** switches to **Log, one line each**: one line per slice on a logarithmic scale (each
+  step down a tenfold cut), so small slices are visible next to a /8.
+- The grey line, on the right scale, is the sources refused in each period. A tightening that went
+  too far shows as refusals rising right after a ▼.
 - **Colour by** splits the never-seen addresses by **kind**, by **source type**, or by **network**:
   who each never-seen address belongs to. Your VPCs, your other accounts' VPCs, the routes behind
   each VPN and your named ranges come first; then private space no VPC or named range uses, each
