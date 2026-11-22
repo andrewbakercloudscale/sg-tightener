@@ -6,9 +6,8 @@ is correctness first.
 ## Setup
 
 ```bash
-./install.sh
+./install.sh --dev
 source .venv/bin/activate
-pip install -r requirements-dev.txt
 python -m pytest
 ```
 

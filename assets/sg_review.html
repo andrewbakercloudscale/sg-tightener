@@ -292,8 +292,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
   const SEV_NAME = { critical: "Critical", high: "High", medium: "Medium", low: "Low", info: "Info" };
   const TYPES = DATA.source_types || [];
   const TYPE = Object.fromEntries(TYPES.map((t) => [t.key, t]));
-  const TYPE_COLOR = { internal: "#2a78d6", datacentre: "#7357c9", aws: "#e8a317", cdn: "#0f9d9a", security: "#1f6f43", saas: "#2f9e5b", hosting: "#e0673a", scanner: "#8f8d86", anon: "#5b2a86", partner: "#b5367a", other: "#d03b3b" };
-  const TYPE_SHORT = { cdn: "CDN", security: "Secure access", saas: "SaaS", hosting: "Anyone's hosting", scanner: "Scanner", anon: "Tor or VPN", partner: "Partner" };
+  const TYPE_COLOR = { internal: "#2a78d6", datacentre: "#7357c9", aws: "#e8a317", cdn: "#0f9d9a", security: "#1f6f43", saas: "#2f9e5b", hosting: "#e0673a", scanner: "#8f8d86", anon: "#5b2a86", threat: "#8b0d2a", partner: "#b5367a", other: "#d03b3b" };
+  const TYPE_SHORT = { cdn: "CDN", security: "Secure access", saas: "SaaS", hosting: "Anyone's hosting", scanner: "Scanner", anon: "Tor or VPN", threat: "Known malicious", partner: "Partner" };
   const CLASSES = DATA.port_classes || [];
   const CLASS = Object.fromEntries(CLASSES.map((c) => [c.key, c]));
   const STATUS = { tighten: "Tighten", unused: "Unused", open: "Open to all", watch: "Too early", incomplete: "Incomplete", "not logged": "Not logged", used: "In use" };
@@ -318,7 +318,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   }
   const catName = (cat) => (state.rep.categories || []).find((c) => c.key === cat)?.name || cat;
   const catChip = (cat) => `<span class="cat" style="--c:${COLOR[cat] || "#888"}">${esc(catName(cat))}</span>`;
-  const typeChip = (x) => (TYPE_SHORT[x.group] ? `<span class="pc${x.group === "scanner" || x.group === "anon" ? " risky" : ""}" style="--c:${TYPE_COLOR[x.group]}" title="${esc(TYPE[x.group]?.note || "")}">${esc(TYPE_SHORT[x.group])}</span>` : "");
+  const typeChip = (x) => (TYPE_SHORT[x.group] ? `<span class="pc${["scanner", "anon", "threat"].includes(x.group) ? " risky" : ""}" style="--c:${TYPE_COLOR[x.group]}" title="${esc(TYPE[x.group]?.note || "")}">${esc(TYPE_SHORT[x.group])}</span>` : "");
   const sevPill = (sev, text) => `<span class="pill" style="--p:var(${SEV_VAR[sev] || "--muted"})">${esc(text || SEV_NAME[sev] || sev)}</span>`;
   const verdictBlock = (v) => (v ? `<div style="margin-top:4px"><span class="pill" style="--p:var(${SEV_VAR[v.sev] || "--muted"})" title="${esc(v.action)}">${esc(v.label)}</span></div><div class="small ${v.sev === "info" ? "muted" : ""} verdict-why">${esc(v.reason)}</div>` : "");
   const restoreCmd = (r) => `# Put back ${r.entry} on ${r.group_name || r.group}\npython sg_db.py exec --reason 'sg_review: put back a revoked rule that is still needed' -- \\\n  aws ec2 authorize-security-group-ingress --region ${r.region} --group-id ${r.group} \\\n  --ip-permissions '${JSON.stringify(r.perms)}'`;
@@ -347,11 +347,12 @@ details.xr-fold > summary { margin: 0 0 10px; }
   }
 
   // ---- Tighten: fit each rule to the sources that used it, leaving as much room as chosen per kind, type or name
-  const FIT_OPTS = [["exact", "Each address only"], ["28", "The /28 around each (16)"], ["24", "The /24 around each (256)"], ["20", "The /20 around each (4,096)"], ["16", "The /16 around each (65,536)"], ["range", "Its published or named range"], ["keep", "Leave as it is"]];
+  const FIT_OPTS = [["exact", "Each address only"], ["28", "The /28 around each (16)"], ["24", "The /24 around each (256)"], ["20", "The /20 around each (4,096)"], ["16", "The /16 around each (65,536)"], ["range", "Its published or named range"], ["keep", "Leave as it is"], ["drop", "Turn away (not kept)"]];
+  const FIT_TYPE_DEFAULT = { threat: "drop", anon: "drop", scanner: "drop" }; // never fit a rule to these
   const FIT_DEFAULT = { internal: "24", datacentre: "24", aws: "range", saas: "range", internet: "exact" };
   const FIT_WHY = { internal: "your VPCs move addresses as instances come and go", datacentre: "data centre ranges are yours, but wide", aws: "AWS services use their published ranges", saas: "providers and partners move within their ranges", internet: "anyone else: only what was seen" };
   const FIT = DATA.fit || { rules: [], labels: {} };
-  const fitState = () => (state.fit = state.fit || { kind: { ...FIT_DEFAULT }, type: {}, name: {}, recent: 0, open: false, unused: true, res: null });
+  const fitState = () => (state.fit = state.fit || { kind: { ...FIT_DEFAULT }, type: { ...FIT_TYPE_DEFAULT }, name: {}, recent: 0, open: false, unused: true, res: null });
   const ip4 = (s) => { const p = String(s).split("."); if (p.length !== 4) return null; let n = 0; for (const x of p) { if (!/^\d{1,3}$/.test(x) || +x > 255) return null; n = n * 256 + +x; } return n; };
   const intIp = (n) => [16777216, 65536, 256, 1].map((d) => Math.floor(n / d) % 256).join(".");
   const cidrIv = (c) => { if (!c) return null; const [a, l] = String(c).split("/"); const n = ip4(a); const len = l === undefined ? 32 : +l; if (n == null || !(len >= 0 && len <= 32)) return null; const size = 2 ** (32 - len); const lo = Math.floor(n / size) * size; return [lo, lo + size - 1]; };
@@ -378,12 +379,13 @@ details.xr-fold > summary { margin: 0 0 10px; }
     if (!r.srcs.length && !f.unused) return null;
     const orig = cidrIv(r.source);
     if (!orig) return null;
-    const blocks = [], kept = [], dropped = [], hows = new Set();
+    const blocks = [], kept = [], dropped = [], turned = [], hows = new Set();
     for (const [src, last] of r.srcs) {
       const lb = fitLabel(src), n = ip4(src);
+      const how = fitHow(f, lb);
+      if (how === "drop") { turned.push(src); continue; }
       if (cutoff && last != null && last < cutoff) { dropped.push(src); continue; }
       kept.push(src);
-      const how = fitHow(f, lb);
       hows.add(how);
       let b = n == null || how === "keep" ? orig : how === "exact" ? [n, n] : how === "range" ? cidrIv(lb[3]) || cidrIv(`${src}/24`) : cidrIv(`${src}/${how}`);
       b = [Math.max(b[0], orig[0]), Math.min(b[1], orig[1])];
@@ -393,7 +395,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     const iv = mergeIv(blocks);
     const same = iv.length === 1 && iv[0][0] === orig[0] && iv[0][1] === orig[1];
     const size = iv.reduce((t, [a, b]) => t + b - a + 1, 0);
-    return { r, same, cidrs: iv.flatMap(([a, b]) => toCidrs(a, b)), size, kept, dropped, hows, neverAfter: Math.max(0, size - kept.length) };
+    return { r, same, cidrs: iv.flatMap(([a, b]) => toCidrs(a, b)), size, kept, dropped, turned, hows, neverAfter: Math.max(0, size - kept.length) };
   }
   function fitCompute() {
     const f = fitState();
@@ -407,7 +409,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
       if (x.r.kind in delta) delta[x.r.kind] += Math.max(0, x.r.never - x.neverAfter);
     }
     const refused = [...new Set(changed.flatMap((x) => x.dropped))];
-    f.res = { all, changed, delta, refused, openFitted, skipped: all.filter((x) => x.skipped) };
+    const turned = [...new Set(changed.flatMap((x) => x.turned))];
+    f.res = { all, changed, delta, refused, turned, openFitted, skipped: all.filter((x) => x.skipped) };
     return f.res;
   }
   const fitSelect = (id, value, inherit) => `<select data-fit="${esc(id)}">${inherit ? `<option value=""${value ? "" : " selected"}>${esc(inherit)}</option>` : ""}${FIT_OPTS.map(([k, n]) => `<option value="${k}"${k === value ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>`;
@@ -468,12 +471,13 @@ details.xr-fold > summary { margin: 0 0 10px; }
     $("#fitWarn").innerHTML = [
       many.length ? `<div class="xr-warn soft">${plural(many.length, "rule")} would need more than 50 ranges (a security group holds 60 rules by default): leave more room for ${esc([...new Set(many.flatMap((x) => [...x.hows]))].map((h) => Object.fromEntries(FIT_OPTS)[h]).join(", "))}, or fit those rules with <code>sg_tightener.py plan</code>.</div>` : "",
       res.refused.length ? `<div class="xr-warn">${plural(res.refused.length, "source")} that used these rules would be refused: ${res.refused.slice(0, 12).map((s) => `<code>${esc(s)}</code>`).join(", ")}${res.refused.length > 12 ? "…" : ""}. They were last seen before the cut-off chosen; a monthly batch or a DR test looks like this.</div>` : "",
+      res.turned.length ? `<div class="xr-warn soft">${plural(res.turned.length, "source")} that used these rules ${res.turned.length === 1 ? "is" : "are"} known malicious, a Tor exit or a scanner, and ${res.turned.length === 1 ? "is" : "are"} turned away, not kept: ${res.turned.slice(0, 12).map((s) => `<code>${esc(s)}</code> ${esc(fitLabel(s)[2] || "")}`).join(", ")}${res.turned.length > 12 ? "…" : ""}.</div>` : "",
       res.skipped.length ? `<div class="xr-warn soft">${res.skipped.map((x) => `${esc(x.r.gname)} ${esc(x.r.ports)} ${esc(x.r.source)}: ${esc(x.skipped)}`).join("<br>")}</div>` : "",
       res.changed.some((x) => !x.skipped && x.r.status === "unused") ? `<div class="xr-warn soft">${plural(res.changed.filter((x) => !x.skipped && x.r.status === "unused").length, "rule")} nothing used in the whole read would be removed. A disaster recovery path or a yearly job looks like this: untick <em>remove rules nothing used</em> to keep them.</div>` : "",
       res.changed.some((x) => x.r.kind === "open") ? `<div class="xr-warn soft">Rules open to every address are fitted too. A public website, API or load balancer must stay open: untick the box, or leave those names as they are.</div>` : "",
     ].join("");
     const rows = res.changed.filter((x) => !x.skipped).sort((p, q) => q.r.never - q.neverAfter - (p.r.never - p.neverAfter));
-    $("#fitRules").innerHTML = rows.length ? `<thead><tr><th>Security group</th><th>Ports</th><th>Now</th><th>After</th><th class="num-cell">Never seen now</th><th class="num-cell">After</th><th class="num-cell">Sources kept</th><th class="num-cell">Turned away</th></tr></thead><tbody>${rows.map((x) => `<tr><td>${esc(x.r.gname)}<div class="small muted"><code>${esc(x.r.group)}</code> · ${esc(x.r.region)}</div></td><td>${esc(x.r.ports)}</td><td><code>${esc(x.r.source)}</code>${x.r.kind === "open" ? ` <span class="pill" style="--p:var(--warn-ink)">open to all</span>` : ""}</td><td>${x.cidrs.length ? x.cidrs.slice(0, 6).map((c) => `<code>${esc(c)}</code>`).join(" ") + (x.cidrs.length > 6 ? ` <span class="small muted">and ${num(x.cidrs.length - 6)} more</span>` : "") : `<span class="pill" style="--p:var(--sev-critical)">removed</span>`}</td><td class="num-cell">${big(x.r.never)}</td><td class="num-cell">${big(x.neverAfter)}</td><td class="num-cell">${num(x.kept.length)}</td><td class="num-cell">${x.dropped.length ? `<strong>${num(x.dropped.length)}</strong>` : "0"}</td></tr>`).join("")}</tbody>` : `<tbody><tr><td class="muted">Nothing changes with these settings.</td></tr></tbody>`;
+    $("#fitRules").innerHTML = rows.length ? `<thead><tr><th>Security group</th><th>Ports</th><th>Now</th><th>After</th><th class="num-cell">Never seen now</th><th class="num-cell">After</th><th class="num-cell">Sources kept</th><th class="num-cell">Turned away</th></tr></thead><tbody>${rows.map((x) => `<tr><td>${esc(x.r.gname)}<div class="small muted"><code>${esc(x.r.group)}</code> · ${esc(x.r.region)}</div></td><td>${esc(x.r.ports)}</td><td><code>${esc(x.r.source)}</code>${x.r.kind === "open" ? ` <span class="pill" style="--p:var(--warn-ink)">open to all</span>` : ""}</td><td>${x.cidrs.length ? x.cidrs.slice(0, 6).map((c) => `<code>${esc(c)}</code>`).join(" ") + (x.cidrs.length > 6 ? ` <span class="small muted">and ${num(x.cidrs.length - 6)} more</span>` : "") : `<span class="pill" style="--p:var(--sev-critical)">removed</span>`}</td><td class="num-cell">${big(x.r.never)}</td><td class="num-cell">${big(x.neverAfter)}</td><td class="num-cell">${num(x.kept.length)}</td><td class="num-cell">${x.dropped.length ? `<strong>${num(x.dropped.length)}</strong>` : "0"}${x.turned.length ? ` <span class="small muted" title="Known malicious, Tor or scanner">+${num(x.turned.length)} bad</span>` : ""}</td></tr>`).join("")}</tbody>` : `<tbody><tr><td class="muted">Nothing changes with these settings.</td></tr></tbody>`;
     const plans = fitPlans(res);
     const regions = Object.keys(plans);
     const file = (r) => `tighten-${DATA.account}-${r}.json`;
@@ -1058,7 +1062,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
         const a = r.assets.get(t.eni) || { eni: t.eni, kind: t.kind, dst: new Set(), public: t.public, subnet: t.subnet, desc: t.desc, flows: 0 };
         a.dst.add(t.dst); a.flows += t.flows; r.assets.set(t.eni, a);
         const v = x.verdict;
-        const noisy = x.sweep || x.group === "scanner" || x.group === "anon" || (x.cat === "internet" && t.pc?.risky);
+        const noisy = x.sweep || ["scanner", "anon", "threat"].includes(x.group) || (x.cat === "internet" && t.pc?.risky);
         const s = r.sources.get(x.src) || { x, flows: 0, on: v ? v.wanted || (!!single && !noisy && !["scan", "internal-scan"].includes(v.key)) : !noisy };
         s.flows += t.flows; r.sources.set(x.src, s);
         rules.set(key, r);
@@ -1121,11 +1125,11 @@ details.xr-fold > summary { margin: 0 0 10px; }
       if (o.r.pc?.risky && inet.length) warn.push(`${plural(inet.length, "internet source")} on ${esc(port)}, a ${esc(o.r.pc.name.toLowerCase())} port, into ${esc(rep.groups?.[o.r.group]?.name || o.r.group)}.`);
       const sweep = o.on.filter((s) => s.x.sweep);
       if (sweep.length) warn.push(`${plural(sweep.length, "source")} ticked on ${esc(port)} ${sweep.length === 1 ? "is" : "are"} sweeping many ports or targets: a scanner, not a client.`);
-      for (const g of ["scanner", "anon", "security", "cdn", "hosting"]) {
+      for (const g of ["threat", "scanner", "anon", "security", "cdn", "hosting"]) {
         const mine = o.on.filter((s) => s.x.group === g);
         if (!mine.length) continue;
         const who = uniq(mine.map((s) => s.x.provider || s.x.name));
-        (g === "scanner" || g === "anon" ? warn : soft).push(`${plural(mine.length, "source")} on ${esc(port)} from ${esc(who.slice(0, 3).join(", "))}${who.length > 3 ? ` and ${num(who.length - 3)} more` : ""} (${esc(TYPE_SHORT[g])}): ${esc(TYPE[g]?.note || "")}`);
+        (["scanner", "anon", "threat"].includes(g) ? warn : soft).push(`${plural(mine.length, "source")} on ${esc(port)} from ${esc(who.slice(0, 3).join(", "))}${who.length > 3 ? ` and ${num(who.length - 3)} more` : ""} (${esc(TYPE_SHORT[g])}): ${esc(TYPE[g]?.note || "")}`);
       }
       const ec2 = o.on.filter((s) => s.x.service === "EC2" || s.x.service === "AMAZON");
       if (ec2.length) soft.push(`${plural(ec2.length, "AWS source")} on ${esc(port)} ${ec2.length === 1 ? "is" : "are"} in AWS's general EC2 or Amazon ranges: any AWS customer's server can hold these addresses, not only yours.`);

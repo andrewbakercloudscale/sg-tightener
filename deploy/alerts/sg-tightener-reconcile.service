@@ -1,0 +1,13 @@
+# systemd: one reconcile run (started hourly by sg-tightener-reconcile.timer).
+[Unit]
+Description=sg-tightener: report security group changes made outside the tool
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=sgtightener
+ExecStart=/opt/sg-tightener/deploy/alerts/sg-alerts.sh reconcile
+# reconcile exits 1 when it found changes: that is a report, not a failure
+SuccessExitStatus=1
+NoNewPrivileges=true

@@ -1,5 +1,32 @@
 # Changelog
 
+## 5.3.0 - 2026-11-22
+
+- **Known malicious addresses.** Every source and outbound destination is
+  checked against four free threat lists, downloaded daily and looked up
+  locally: abuse.ch Feodo Tracker (botnet command servers), Spamhaus DROP
+  (criminal or hijacked netblocks, IPv4 and IPv6), Proofpoint Emerging Threats
+  (compromised hosts) and blocklist.de (recent attackers). A new source type,
+  **Known malicious**, wins over the AS number and cloud ranges but not over a
+  provider's own service (a CDN address keeps its provider's name).
+  - Refused: "Known malicious address refused", info.
+  - Let in: "Known malicious let in", critical on risky ports.
+  - Outbound: "Outbound to a known malicious address", critical.
+  - `watch` always posts the let-in and outbound items, whatever `--alerts`.
+  - Tighten turns known malicious, Tor and scanner sources away by default
+    (new option **Turn away**).
+  - Console Rejected traffic marks them **known malicious** or **Tor**, with a
+    filter. Your names file takes `type: threat` for your own intelligence.
+  - The demo: an attacker refused on SSH for weeks, let in once a contractor
+    opened ops-ssh to the world; an app server calling a botnet server.
+- **Alerting scripts** in `deploy/alerts`: `sg-alerts.sh` (watch, watch-once,
+  reconcile, daily) reading one settings file, with systemd units and timer, a
+  launchd agent and a crontab.
+- **install.sh** checks every package imports, downloads the address lists
+  once, and takes `--dev` for the test packages. Run outside the venv,
+  `sg_review.py` says to run `./install.sh` instead of a traceback.
+- Tests run against their own data directory, never `~/.sg-tightener`.
+
 ## 5.2.0 - 2026-11-22
 
 - **Blast radius.** The Security Group Review has a new card under the

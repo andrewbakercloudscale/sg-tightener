@@ -8,12 +8,15 @@ from your estate ever leaves the machine:
 * the ranges SaaS providers publish (Cloudflare, GitHub, Google, Atlassian, Okta, Datadog, Fastly, Oracle Cloud,
   plus the networks of Zscaler, Salesforce, Akamai and others by AS number);
 * every routed IPv4 and IPv6 range with its AS number, owner and country (iptoasn.com, public domain);
-* the Tor Project's list of Tor exit relays (check.torproject.org/torbulkexitlist).
+* the Tor Project's list of Tor exit relays (check.torproject.org/torbulkexitlist);
+* free threat lists of known malicious addresses: abuse.ch Feodo Tracker (botnet command servers), Spamhaus DROP
+  (netblocks run by criminals or hijacked), Proofpoint Emerging Threats (compromised hosts) and blocklist.de
+  (addresses reported attacking servers in the last 48 hours).
 
 IPv6 addresses are named the same way, from the IPv6 ranges in the same lists. Address-space counts (how many
 addresses a rule opens) stay IPv4: an IPv6 rule's size says nothing useful.
 
-AWS's list, the SaaS lists and the Tor list are read again after a day, the AS list after a week. Until a list has been read
+AWS's list, the SaaS lists, the Tor list and the threat lists are read again after a day, the AS list after a week. Until a list has been read
 once, a few well-known ranges stand in, so the report still labels the commonest sources. ``refresh`` downloads;
 ``get`` never waits for the network. The lists live under ``DATA_DIR/ipintel`` (``~/.sg-tightener`` unless
 ``set_data_dir`` says otherwise).
@@ -45,6 +48,21 @@ AWS_URL = "https://ip-ranges.amazonaws.com/ip-ranges.json"
 ASN_URL = "https://iptoasn.com/data/ip2asn-v4.tsv.gz"
 ASN6_URL = "https://iptoasn.com/data/ip2asn-v6.tsv.gz"
 TOR_URL = "https://check.torproject.org/torbulkexitlist"
+# Known malicious addresses: (list name, url). The first list that holds an address names it, so the most telling
+# comes first. Each is free to use; see each provider's terms.
+THREAT_FEEDS = [
+    ("Feodo Tracker botnet C2", "https://feodotracker.abuse.ch/downloads/ipblocklist.txt"),
+    ("Spamhaus DROP", "https://www.spamhaus.org/drop/drop_v4.json"),
+    ("Spamhaus DROP", "https://www.spamhaus.org/drop/drop_v6.json"),
+    ("Emerging Threats compromised host", "https://rules.emergingthreats.net/blockrules/compromised-ips.txt"),
+    ("blocklist.de attacker", "https://lists.blocklist.de/lists/all.txt"),
+]
+THREAT_WHAT = {
+    "Feodo Tracker botnet C2": "Botnet command and control server (abuse.ch Feodo Tracker)",
+    "Spamhaus DROP": "Netblock run by criminals or hijacked (Spamhaus Don't Route Or Peer)",
+    "Emerging Threats compromised host": "Known compromised host (Proofpoint Emerging Threats)",
+    "blocklist.de attacker": "Reported attacking SSH, mail or web servers in the last 48 hours (blocklist.de)",
+}
 # (name, url, how to read it). GitHub Actions runs on Azure's shared ranges, so it is left out: it would
 # name every Azure address GitHub.
 SAAS_FEEDS = [
@@ -71,6 +89,7 @@ GROUPS = {
     "hosting": ("Hosting and cloud servers (anyone's)", "internet"),
     "scanner": ("Internet scanner", "internet"),
     "anon": ("Tor or VPN exit", "internet"),
+    "threat": ("Known malicious (threat list)", "internet"),
     "partner": ("Named partner (your names file)", "saas"),
     "other": ("Other network (ISP, business)", "internet"),
 }
@@ -83,6 +102,8 @@ GROUP_NOTE = {
     "hosting": "Anyone can rent a server here: the address says nothing about who is behind it.",
     "scanner": "Scans the whole internet for open ports. Never needs a rule.",
     "anon": "An anonymising exit: whoever is behind it cannot be known.",
+    "threat": "On a threat list (botnet command server, criminal netblock, compromised host or recent attacker). "
+              "Never needs a rule; a connection out to one is how malware calls home.",
     "other": "An ISP or business network.",
     "partner": "Named in your names file: check the name still holds for this address.",
 }
@@ -348,6 +369,30 @@ def parse_tor(raw: bytes) -> list[str]:
     return out
 
 
+def parse_threat(raw: bytes) -> list[str]:
+    """The addresses and ranges of a threat list: one a line (Feodo, Emerging Threats, blocklist.de), or one JSON
+    object a line with a "cidr" (Spamhaus DROP). Comments, metadata and anything that is not a public address are
+    skipped."""
+    out = []
+    for line in raw.decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        if not line or line[0] in "#;":
+            continue
+        if line.startswith("{"):
+            try:
+                line = str(json.loads(line).get("cidr") or "")
+            except (ValueError, AttributeError):
+                continue
+        tok = line.replace(";", " ").split()[0] if line.split() else ""
+        try:
+            n = ipaddress.ip_network(tok, strict=False)
+        except ValueError:
+            continue
+        if n.is_global and n.prefixlen >= (8 if n.version == 4 else 19):  # never a whole /0 by mistake
+            out.append(str(n))
+    return out
+
+
 def parse_asn(raw: bytes) -> list[tuple]:
     """(start, end, asn, country, owner) rows of iptoasn's TSV, routed ranges only."""
     rows = []
@@ -398,6 +443,16 @@ def refresh(force: bool = False) -> dict:
                 got["tor"] = len(rows)
         except (OSError, ValueError) as exc:
             log.info("Tor exit list not read: %s", exc)
+    if force or not _fresh(d / "threat.json", DAY):
+        pairs = []
+        for name, url in THREAT_FEEDS:
+            try:
+                pairs += [(c, name) for c in parse_threat(_get(url, 30))]
+            except (OSError, ValueError) as exc:
+                log.info("%s not read: %s", name, exc)
+        if pairs:  # a failed download keeps the old copy
+            (d / "threat.json").write_text(json.dumps(pairs))
+            got["threat"] = len(pairs)
     if force or not _fresh(d / "asn.tsv.gz", 7 * DAY):
         try:
             raw = _get(ASN_URL, 90)
@@ -459,7 +514,7 @@ class PrefixIndex:
 class Intel:
     """Every lookup, built once from the downloaded lists (or the stand-ins)."""
 
-    def __init__(self, aws_rows, saas_rows, asn_rows, tor_rows=(), asn6_rows=()) -> None:
+    def __init__(self, aws_rows, saas_rows, asn_rows, tor_rows=(), asn6_rows=(), threat_rows=()) -> None:
         # The most telling service wins: AMAZON is every range's catch-all, so it ranks last.
         best: dict[str, tuple] = {}
         for cidr, svc, region in aws_rows:
@@ -492,8 +547,9 @@ class Intel:
             self.asn6_meta.append((asn, cc, owner))
         self.tor = {n for n in map(_v4, tor_rows) if n is not None}
         self.tor6 = {n for n in map(_v6, tor_rows) if n is not None}
+        self.threat = PrefixIndex(threat_rows)
         self.counts = {"aws": len(best), "saas": len(saas_rows), "asn": len(self.asn_meta), "tor": len(self.tor),
-                       "asn6": len(self.asn6_meta), "tor6": len(self.tor6)}  # fmt: skip
+                       "asn6": len(self.asn6_meta), "tor6": len(self.tor6), "threat": len(threat_rows)}  # fmt: skip
         self._aws_iv: list | None = None
         self._saas_iv: list | None = None
         self._org: dict[tuple, tuple | None] = {}
@@ -543,13 +599,28 @@ class Intel:
         if n in (self.tor if ver == 4 else self.tor6):  # wherever it is hosted, a Tor exit carries anyone's traffic
             return {**out, "kind": "internet", "name": "Tor exit", "provider": "Tor", "group": "anon",
                     "group_name": GROUPS["anon"][0], "what": "Tor exit relay, on the Tor Project's list"}  # fmt: skip
-        hit = self.aws.match(n, ver)
+        bad = self.threat.match(n, ver)
+        aws = self.aws.match(n, ver)
+        saas = self.saas.match(n, ver)
+        # A threat list wins, except over a provider's own service (a CDN or SaaS address carries everyone's
+        # traffic, and a shared address on a list says little); anyone's server on AWS or a cloud is still named.
+        own = (saas and GROUPS[feed_group(saas[1])][1] == "saas") or (aws and aws[1][0] not in ("EC2", "AMAZON"))
+        if bad and not own and a:
+            org = self.org(a.get("asn"), a.get("owner") or "")
+            own = bool(org and GROUPS[org[1]][1] == "saas")
+        if bad and not own:
+            return {**out, "kind": "internet", "name": bad[1], "provider": bad[1], "group": "threat",
+                    "group_name": GROUPS["threat"][0], "threat": bad[1], "prefix": bad[0],
+                    "what": THREAT_WHAT.get(bad[1], "On a threat list")}  # fmt: skip
+        if bad:
+            out["threat"] = bad[1]
+        hit = aws
         if hit:
             prefix, (svc, region) = hit
             name = AWS_SERVICE.get(svc, svc.replace("_", " ").title())
             return {**out, "kind": "aws", "service": svc, "region": region, "prefix": prefix,
                     "name": f"AWS {name}" + (f", {region}" if region and region != "GLOBAL" else "")}  # fmt: skip
-        hit = self.saas.match(n, ver)
+        hit = saas
         if hit:
             group = feed_group(hit[1])
             return {**out, "kind": GROUPS[group][1], "name": hit[1], "prefix": hit[0], "provider": hit[1].split(" (")[0],
@@ -569,7 +640,7 @@ def get() -> Intel:
     d = _dir()
     key = tuple(
         (p.name, p.stat().st_mtime) if p.exists() else (p.name, 0)
-        for p in (d / "aws.json", d / "saas.json", d / "asn.tsv.gz", d / "tor.json", d / "asn6.tsv.gz")
+        for p in (d / "aws.json", d / "saas.json", d / "asn.tsv.gz", d / "tor.json", d / "asn6.tsv.gz", d / "threat.json")
     )
     with _lock:
         if _memo.get("key") == key:
@@ -586,7 +657,8 @@ def get() -> Intel:
         asn6_rows = parse_asn((d / "asn6.tsv.gz").read_bytes()) or SEED_ASN6
     except (OSError, ValueError, EOFError):
         pass
-    intel = Intel(aws_rows, saas_rows, asn_rows, _read_json(d / "tor.json", flat=True) or (), asn6_rows)
+    intel = Intel(aws_rows, saas_rows, asn_rows, _read_json(d / "tor.json", flat=True) or (), asn6_rows,
+                  _read_json(d / "threat.json") or ())
     intel.counts["seed"] = [n for n, rows, seed in (("aws", aws_rows, SEED_AWS), ("saas", saas_rows, SEED_SAAS),
                                                     ("asn", asn_rows, SEED_ASN), ("asn6", asn6_rows, SEED_ASN6))
                           if rows is seed]  # fmt: skip

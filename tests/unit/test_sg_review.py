@@ -489,3 +489,67 @@ def test_page_carries_the_blast_radius_panel():
     page = sg_review.render_page(data)
     for needle in ('id="reachWrap"', 'id="reachIp"', 'id="reachRules"', "function reachOf"):
         assert needle in page, needle
+
+
+# ------------------------------------------------------------------------------------------ threat lists
+def test_threat_lists_parse_spamhaus_json_and_plain_lists():
+    raw = (b'{"cidr":"1.10.16.0/20","sblid":"SBL1","rir":"apnic"}\n{"type":"metadata","records":1}\n'
+           b"# Feodo Tracker\n162.243.103.246\n10.0.0.1\n0.0.0.0/0\n2001:678:254::/48 ; SBL2\nnot an address\n")  # fmt: skip
+    assert ipintel.parse_threat(raw) == ["1.10.16.0/20", "162.243.103.246/32", "2001:678:254::/48"]
+
+
+def test_threat_list_names_an_address_but_not_a_providers_shared_one():
+    intel = ipintel.Intel(ipintel.SEED_AWS, ipintel.SEED_SAAS, ipintel.SEED_ASN, (), (), [
+        ("162.243.103.246", "Feodo Tracker botnet C2"), ("104.20.22.42", "blocklist.de attacker"),
+        ("13.244.1.1", "blocklist.de attacker"), ("1.10.16.0/20", "Spamhaus DROP")])  # fmt: skip
+    c2 = intel.label("162.243.103.246")
+    assert (c2["group"], c2["name"], c2["kind"]) == ("threat", "Feodo Tracker botnet C2", "internet")
+    assert "command and control" in c2["what"]
+    assert intel.label("1.10.17.5")["group"] == "threat"  # inside a Spamhaus DROP netblock
+    assert intel.label("13.244.1.1")["group"] == "threat"  # anyone's server on EC2 is still named
+    cf = intel.label("104.20.22.42")  # a CDN address carries everyone's traffic: the provider's name stays
+    assert (cf["group"], cf["threat"]) == ("cdn", "blocklist.de attacker")
+    assert intel.counts["threat"] == 4
+
+
+def test_refresh_keeps_the_threat_lists_and_a_failed_read_keeps_the_old_copy(monkeypatch):
+    feeds = {url: name for name, url in ipintel.THREAT_FEEDS}
+
+    def fake(url, timeout=30):
+        if feeds.get(url) == "Feodo Tracker botnet C2":
+            return b"# C2\n162.243.103.246\n"
+        if url in feeds:
+            raise OSError("down")
+        return b"x"
+
+    monkeypatch.setattr(ipintel, "_get", fake)
+    assert ipintel.refresh(force=True).get("threat") == 1
+    assert ipintel.get().label("162.243.103.246")["name"] == "Feodo Tracker botnet C2"
+    monkeypatch.setattr(ipintel, "_get", lambda url, timeout=30: (_ for _ in ()).throw(OSError("offline")))
+    ipintel.refresh(force=True)
+    assert ipintel.get().label("162.243.103.246")["group"] == "threat"
+
+
+def test_known_malicious_sources_are_flagged_in_and_out():
+    doc = demo_sg.build_doc(ACCT, time.time(), 30)
+    doc["egress"] = True
+    rep = sg_review.build(doc, "1m", "", demo_sg.INTERNAL, names=sg_review.parse_names(demo_sg.NAMES))
+    let_in = [a for a in rep["attention"] if a.get("label") == "Known malicious let in"]
+    assert let_in and let_in[0]["sev"] == "critical" and "198.51.100.66" in json.dumps(let_in[0])
+    out = [p for p in rep["posture"] if p["label"] == "Outbound to a known malicious address"]
+    assert out and out[0]["sev"] == "critical" and out[0]["name"] == "eni-0app2"
+    assert "198.51.100.99 (Feodo Tracker botnet C2)" in out[0]["reason"]
+    refused = next(r for r in rep["refused"] if r["src"] == "198.51.100.66")
+    assert refused["verdict"]["title"] == "Known malicious address refused"
+    rows = sg_review.refused_rows(ACCT, "demo", rep)
+    assert next(r for r in rows if r["src"] == "198.51.100.66")["threat"]
+    assert not next(r for r in rows if r["src"] == "198.51.100.66")["tor"]
+
+
+def test_watch_always_posts_known_malicious_items():
+    items = [{"kind": "refused", "label": "Refused"}, {"kind": "active", "label": "Known malicious let in"},
+             {"kind": "posture", "label": "Outbound to a known malicious address"},
+             {"kind": "active", "label": "Scan got in"}, {"kind": "drift", "label": "Opened wide"}]  # fmt: skip
+    assert [i["label"] for i in sg_review.alert_items(items)] == [
+        "Refused", "Known malicious let in", "Outbound to a known malicious address"]  # fmt: skip
+    assert len(sg_review.alert_items(items, "all")) == 5

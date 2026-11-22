@@ -61,8 +61,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Sequence
 
-from botocore.config import Config as BotoConfig
-from botocore.exceptions import BotoCoreError, ClientError
+try:
+    from botocore.config import Config as BotoConfig
+    from botocore.exceptions import BotoCoreError, ClientError
+except ImportError:  # run outside the venv: say how to install, not a traceback
+    sys.exit("sg-tightener's Python packages are not installed: run ./install.sh, then source .venv/bin/activate")
 
 import sg_ipintel
 import sg_securityhub
@@ -165,7 +168,7 @@ def parse_ranges(text: str, default: str) -> list[tuple]:
 NAME_TYPES = ("partner", "internal", "datacentre", *[g for g in sg_ipintel.GROUPS if g != "partner"])
 NAMES_EXAMPLE = """\
 # sg-tightener names: networks you know, shown by name on the Security Group Review page.
-# type: partner (default), internal, datacentre, saas, security, cdn, hosting, scanner, anon or other.
+# type: partner (default), internal, datacentre, saas, security, cdn, hosting, scanner, anon, threat or other.
 - name: Acme payroll
   type: partner
   ranges: [203.0.113.0/24]
@@ -1091,7 +1094,7 @@ class Labeller:
             out["range"] = lab["prefix"]
         if lab.get("service"):
             out.update(service=lab["service"], aws_region=lab.get("region", ""))
-        for k in ("group", "provider", "what"):
+        for k in ("group", "provider", "what", "threat"):
             if lab.get(k):
                 out[k] = lab[k]
         return out
@@ -1897,13 +1900,16 @@ def refused_verdict(ctx, src: str, r: dict) -> dict:
                               "but scanning from inside is how a compromised host looks for its next step.",
                     "action": f"Find out what runs on {src}. If nothing there should scan, isolate it and look for "
                               "compromise.", "wanted": False}  # fmt: skip
-        who = {"scanner": "a known internet scanner", "anon": "a Tor or VPN exit"}.get(group, "a scan")
+        who = {"scanner": "a known internet scanner", "anon": "a Tor or VPN exit",
+               "threat": f"a known malicious address ({name})"}.get(group, "a scan")  # fmt: skip
         return {"key": "scan", "sev": "info", "label": "Defence working", "title": "Scan refused",
                 "reason": f"{who[0].upper() + who[1:]} sweeping {_n_ports(r)} ports on {_n_dsts(r)} addresses: "
                           "refused, nothing got in.", "action": "None.", "wanted": False}  # fmt: skip
-    if group in ("scanner", "anon"):
-        what = "A known internet scanner" if group == "scanner" else "A Tor or VPN exit"
-        return {"key": "scan", "sev": "info", "label": "Defence working", "title": "Scanner refused",
+    if group in ("scanner", "anon", "threat"):
+        what = {"scanner": "A known internet scanner", "anon": "A Tor or VPN exit",
+                "threat": "A known malicious address, on a threat list"}[group]  # fmt: skip
+        return {"key": "scan", "sev": "info", "label": "Defence working",
+                "title": "Known malicious address refused" if group == "threat" else "Scanner refused",
                 "reason": f"{what} ({name}): refused, nothing got in.", "action": "None.", "wanted": False}
     for (eni, proto, port, dst), _f in tgts[:5]:
         e = ctx.enis.get(eni)
@@ -2052,12 +2058,12 @@ def _allowed_by(ctx, e: dict, src: str, proto: str, port: int) -> list[str]:
 
 
 def active_verdict(ctx, src: str, a: dict) -> dict | None:
-    """A let-in source that looks wrong: a scanner, a Tor exit or anyone's server on a port that is not the
-    public web, or a source that swept refused ports and found one let in."""
+    """A let-in source that looks wrong: a scanner, a Tor exit, an address on a threat list or anyone's server on a
+    port that is not the public web, or a source that swept refused ports and found one let in."""
     lb = ctx.lab(src)
     group, name = lb.get("group", lb["cat"]), lb["name"]
     swept = src in ctx.rej and _sweeps(ctx.rej[src])
-    if not (group in ("scanner", "anon") or swept or (group == "hosting" and lb["cat"] == "internet")):
+    if not (group in ("scanner", "anon", "threat") or swept or (group == "hosting" and lb["cat"] == "internet")):
         return None
     worst = None
     for (eni, proto, port), flows in sorted(a["targets"].items(), key=lambda kv: -kv[1]):
@@ -2074,9 +2080,10 @@ def active_verdict(ctx, src: str, a: dict) -> dict | None:
     sev, eni, proto, port, flows, pc = worst
     e = ctx.enis.get(eni) or {}
     rules = _allowed_by(ctx, e, src, proto, port)
-    who = {"scanner": "A known internet scanner", "anon": "A Tor or VPN exit",
+    who = {"scanner": "A known internet scanner", "anon": "A Tor or VPN exit", "threat": "A known malicious address",
            "hosting": "A server on anyone's hosting"}.get(group, "A source that scanned refused ports")  # fmt: skip
-    return {"key": "let-in", "sev": sev, "label": "Scan got in" if group != "hosting" else "Let in: unknown server",
+    label = {"hosting": "Let in: unknown server", "threat": "Known malicious let in"}.get(group, "Scan got in")
+    return {"key": "let-in", "sev": sev, "label": label,
             "title": f"{who} was let in on {pc['name'].lower()}",
             "reason": f"{who} ({name}) was let in on {_port_label(proto, port)} ({pc['svc']}) to {ctx.where(eni)}, "
                       f"{flows:,} flows" + (f", by {rules[0]}" if rules else "") + ".",
@@ -2560,11 +2567,12 @@ def posture_findings(doc: dict, inet_in: dict | None = None, egress_seen: dict |
 
 def _bad_dest(lab, d: str) -> dict | None:
     lb = lab(d) if lab is not None else {}
-    return lb if lb.get("group") in ("anon", "scanner") else None
+    return lb if lb.get("group") in ("anon", "scanner", "threat") else None
 
 
 def _egress_bad(region, enis, groups, egress_seen, lab) -> list[dict]:
-    """One item per interface that connected out to a Tor or VPN exit or a scanner."""
+    """One item per interface that connected out to a Tor or VPN exit, a scanner or an address on a threat list
+    (critical: a botnet command server or a compromised host is how malware calls home)."""
     out = []
     for eid in sorted(egress_seen):
         e = enis.get(eid)
@@ -2581,11 +2589,16 @@ def _egress_bad(region, enis, groups, egress_seen, lab) -> list[dict]:
         if not bad:
             continue
         ds = sorted(bad, key=lambda d: -bad[d][2])
+        threat = [d for d in ds if bad[d][0].get("group") == "threat"]
+        if threat:  # the malicious destinations first: they are the reason this is critical
+            ds = threat + [d for d in ds if d not in threat]
         lb = bad[ds[0]][0]
         names = ", ".join((groups.get(g) or {}).get("name") or g for g in e.get("groups") or [])
         out.append(_pt_item(
-            "egress", "egress-bad", "high", "Outbound to Tor or a scanner",
-            f"{e['kind']} {eid} connected out to {len(ds)} Tor, VPN or scanner address(es)",
+            "egress", "egress-bad", "critical" if threat else "high",
+            "Outbound to a known malicious address" if threat else "Outbound to Tor or a scanner",
+            (f"{e['kind']} {eid} connected out to {len(threat)} address(es) on a threat list" if threat else
+             f"{e['kind']} {eid} connected out to {len(ds)} Tor, VPN or scanner address(es)"),
             f"{ds[0]} ({lb.get('name', '')}) on port(s) {', '.join(map(str, sorted(bad[ds[0]][1])))}, "
             f"{sum(b[2] for b in bad.values()):,} flows" + (f", and {len(ds) - 1} more address(es)" if len(ds) > 1 else "")
             + f". Groups: {names}. Servers rarely have reason to; it is how malware calls home and how data leaves.",
@@ -3464,6 +3477,17 @@ def _report_opts(args) -> tuple[str, str, list]:
 ALERTS = ("refused", "all")
 
 
+THREAT_ALERTS = frozenset({"Known malicious let in", "Outbound to a known malicious address"})
+
+
+def alert_items(items: list[dict], mode: str = "refused") -> list[dict]:
+    """What watch posts: rejected traffic, and always a known malicious address let in or called out to (a
+    compromise in progress cannot wait for --alerts all); with "all", every Needs attention item."""
+    if mode == "all":
+        return list(items)
+    return [it for it in items if it.get("kind") == "refused" or it.get("label") in THREAT_ALERTS]
+
+
 def watch_once(sess, args, now: float | None = None) -> dict:
     """Read what is new in the last day, up to five minutes ago, build the last 24 hours and post the items not
     posted yet: by default only rejected traffic (--alerts refused); --alerts all adds exposure, drift and the rest."""
@@ -3491,9 +3515,7 @@ def watch_once(sess, args, now: float | None = None) -> dict:
         return out
     onprem, internal, names = _report_opts(args)
     rep = build(doc, "24h", onprem, internal, names)
-    items = rep.get("attention", [])
-    if getattr(args, "alerts", "refused") == "refused":
-        items = [it for it in items if it.get("kind") == "refused"]
+    items = alert_items(rep.get("attention", []), getattr(args, "alerts", "refused"))
     out["items"] = len(items)
     state = load_watch(account)
     new = fresh_items(items, state, now, args.min_severity, args.repeat * HOUR)
@@ -3704,7 +3726,8 @@ def refused_rows(account: str, name: str, rep: dict, limit: int = ORG_REFUSED) -
                     "groups": t.get("groups", []), "first_ever": r.get("first_ever"),
                     "seen_before": bool(r.get("seen_before")), "new": bool(r.get("new")),
                     "v6": bool(r.get("v6")), "internal": r.get("cat") in ("internal", "datacentre"),
-                    "scan": bool(r.get("sweep"))})  # fmt: skip
+                    "scan": bool(r.get("sweep")), "threat": r.get("group") == "threat",
+                    "tor": r.get("group") == "anon"})  # fmt: skip
     return out
 
 
@@ -3820,7 +3843,7 @@ Needs attention across them: {head}. Each account's page has the evidence, the v
     tb.innerHTML = shown.slice(0, 2000).map((r) => `<tr><td><span class="pill" style="--p:${{col[r.sev] || "var(--muted)"}}">${{esc(r.sev)}}</span></td>
       <td>${{esc(r.account_name || r.account)}}<div class="muted small"><code>${{esc(r.account)}}</code></div></td>
       <td><code>${{esc(r.src)}}</code>${{r.new ? ' <span class="pill" style="--p:var(--high)">new</span>' : ""}}${{r.v6 ? ' <span class="pill">IPv6</span>' : ""}}
-        <div class="muted small">${{r.internal ? "internal" : "external"}} · ${{esc(r.name)}}${{r.type ? " · " + esc(r.type) : ""}}${{r.scan ? " · scanning" : ""}}</div>
+        <div class="muted small">${{r.internal ? "internal" : "external"}} · ${{esc(r.name)}}${{r.type ? " · " + esc(r.type) : ""}}${{r.scan ? " · scanning" : ""}}${{r.threat ? " · known malicious" : r.tor ? " · Tor exit" : ""}}</div>
         ${{r.first_ever ? `<div class="muted small">${{r.new ? "first seen" : "seen since"}} ${{when(r.first_ever).slice(0, 10)}}</div>` : ""}}</td>
       <td>${{esc(proto[r.proto] || r.proto)}} ${{esc(r.port)}}${{r.risky ? " ⚠" : ""}} <span class="muted small">${{esc(r.port_class)}}</span>
         <div class="muted small">${{esc(r.kind)}} ${{esc(r.dst)}} · ${{esc(r.region)}}${{r.ports > 1 ? ` · ${{r.ports}} ports` : ""}}</div></td>
@@ -3923,7 +3946,7 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--profile", help="AWS profile (default: the usual credential chain)")
     r.add_argument("--name", help="a name for the account in the report (default: its alias)")
     r.add_argument("--egress", action="store_true", help="also read outbound connections, so the report can fit "
-                   "outbound rules and flag connections to Tor or scanners (about half as much again per read; "
+                   "outbound rules and flag connections to Tor, scanners or threat-list addresses (about half as much again per read; "
                    "stays on for this account)")
     r.add_argument("--yes", action="store_true", help="skip the typed confirmation")
     r.set_defaults(fn=cmd_read)
@@ -3979,8 +4002,8 @@ def _build_parser() -> argparse.ArgumentParser:
     w.add_argument("--max-cost", type=float, default=0.50, help="skip a read estimated above this many US$ (default 0.50)")
     w.add_argument("--loop", action="store_true", help="keep running, once every --every minutes")
     w.add_argument("--every", type=float, default=5, help="minutes between watches with --loop (default 5)")
-    w.add_argument("--alerts", default="refused", help="what to post: refused (rejected traffic only, the default) "
-                   "or all (adds exposure, rules opened wide, hygiene, PrivateLink)")
+    w.add_argument("--alerts", default="refused", help="what to post: refused (rejected traffic, and known malicious addresses "
+                   "let in or called out to; the default) or all (adds exposure, rules opened wide, hygiene, PrivateLink)")
     w.add_argument("--ou-id", help="watch every active account in this OU and the OUs under it (a role assumed in each)")
     w.add_argument("--org", action="store_true", help="watch every active account in the organisation")
     w.add_argument("--accounts", help="only these comma-separated account ids (with --ou-id or --org)")

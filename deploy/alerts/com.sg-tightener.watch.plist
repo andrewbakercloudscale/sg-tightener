@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- macOS: rejected-traffic alerts while you are logged in. Change the paths, then:
+     cp com.sg-tightener.watch.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.sg-tightener.watch.plist -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.sg-tightener.watch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/sg-tightener/deploy/alerts/sg-alerts.sh</string>
+    <string>watch</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>/tmp/sg-tightener-watch.log</string>
+  <key>StandardErrorPath</key><string>/tmp/sg-tightener-watch.log</string>
+</dict>
+</plist>

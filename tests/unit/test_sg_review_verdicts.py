@@ -100,7 +100,10 @@ def test_scanners_and_tor_let_in_on_remote_admin_are_critical(week):
     _, rep = week
     got = _items(rep, "let-in")
     assert {s for it in got for s in it["srcs"]} >= {"185.220.101.33", "162.142.125.10"}
-    assert all(it["sev"] == "critical" and it["kind"] == "active" and "3389" in it["target"] for it in got)
+    assert all(it["sev"] == "critical" and it["kind"] == "active" for it in got)
+    assert all("3389" in it["target"] for it in got if "198.51.100.66" not in it["srcs"])
+    # the demo's attacker on a threat list, let in on SSH since a contractor opened ops-ssh to the world
+    assert any("198.51.100.66" in it["srcs"] and "tcp 22" in it["target"] for it in got)
     tor = next(x for x in rep["active"] if x["src"] == "185.220.101.33")
     assert tor["verdict"]["key"] == "let-in"
 

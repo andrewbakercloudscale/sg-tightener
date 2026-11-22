@@ -27,7 +27,12 @@ OTHER = ("Payments prod (111122223333)", "10.40.0.0/16")
 INTERNAL = f"{OTHER[1]} {OTHER[0]}"
 # the demo's names file: the partner behind the SFTP rule, and a network they say is theirs
 NAMES = [{"name": "Acme payroll", "type": "partner", "ranges": ["203.0.113.0/24", "2001:db8:acce::/48"],
-          "note": "SFTP drop for payroll files"}]  # fmt: skip
+          "note": "SFTP drop for payroll files"},
+         # stand-ins for the threat lists (sg_ipintel.THREAT_FEEDS), whose real addresses change daily
+         {"name": "blocklist.de attacker", "type": "threat", "ranges": ["198.51.100.66/32"],
+          "note": "Reported attacking SSH, mail or web servers in the last 48 hours (blocklist.de; a made-up address)"},
+         {"name": "Feodo Tracker botnet C2", "type": "threat", "ranges": ["198.51.100.99/32"],
+          "note": "Botnet command and control server (abuse.ch Feodo Tracker; a made-up address)"}]  # fmt: skip
 
 DEMO_BYTES_PER_HOUR = 150_000_000  # what the made-up flow logs "scan" per hour, for the cost estimate
 
@@ -248,6 +253,10 @@ def _patterns(vpc: str, other: tuple | None) -> list[dict]:
         pats.append({"src": _host("162.142.125.0/24", 10 + 17 * i), "to": leg, "port": 3389, "ok": True, "p": 0.3,
                      "rate": 2})  # fmt: skip
     pats.append({"src": "185.220.101.33", "to": leg, "port": 3389, "ok": True, "p": 0.15, "rate": 3})
+    # an attacker on a threat list: refused on SSH for weeks, then let in once a contractor opened ops-ssh to the
+    # world two hours ago
+    pats.append({"src": "198.51.100.66", "to": sftp, "port": 22, "ok": False, "p": 0.4, "rate": 4})
+    pats.append({"src": "198.51.100.66", "to": app[2], "port": 22, "ok": True, "p": 1.0, "rate": 30, "after": 0.1})
     # refused inside: a new service in another account trying the database, and a data centre host the ACL turns away
     pats.append({"src": o(4 * 256 + 44), "to": db, "port": 5432, "ok": False, "p": 0.9, "rate": 40, "after": 3})
     pats.append({"src": "10.200.9.9", "to": app[0], "port": 22, "ok": False, "p": 0.5, "rate": 4})
@@ -348,7 +357,8 @@ def chunk(region: str, s: int, e: int, pats: list, now: float, rnd: random.Rando
 
 def _egress(s: int, e: int, now: float, rnd: random.Random) -> list:
     """Outbound connections (read with --egress): the app servers call the database, Secrets Manager through
-    its endpoint, S3 and a payments API; and a batch worker has been calling a Tor relay for the last three days."""
+    its endpoint, S3 and a payments API; a batch worker has been calling a Tor relay for the last three days; and
+    since yesterday one app server has been calling a botnet command server."""
     h = lambda o: _host(VPC, o)
     hours = (e - s) / HOUR
     app = [("eni-0app1", h(2 * 256 + 11)), ("eni-0app2", h(2 * 256 + 12)), ("eni-0app3", h(2 * 256 + 13))]
@@ -359,6 +369,8 @@ def _egress(s: int, e: int, now: float, rnd: random.Random) -> list:
             out.append([ip, dst, eni, "6", port, max(1, int(rate * hours * rnd.uniform(0.6, 1.4)))])
     if now - e < 3 * DAY:
         out.append([h(6 * 256 + 50), "185.220.101.33", "eni-0bat1", "6", 9001, max(1, int(4 * hours))])
+    if now - e < DAY:
+        out.append([h(2 * 256 + 12), "198.51.100.99", "eni-0app2", "6", 443, max(1, int(12 * hours))])
     return out
 
 

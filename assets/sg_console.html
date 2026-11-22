@@ -163,7 +163,7 @@ details summary { cursor: pointer; font-weight: 600; }
       <select id="fAcct" aria-label="Account"><option value="">Every account</option></select>
       <label class="small"><input id="fRisky" type="checkbox"> risky ports only</label>
       <label class="small"><input id="fNew" type="checkbox"> new addresses only</label>
-      <select id="fWhere" aria-label="Where from"><option value="">Internal and external</option><option value="ext">External only</option><option value="int">Internal only</option><option value="v6">IPv6 only</option><option value="scan">Scanning only</option></select>
+      <select id="fWhere" aria-label="Where from"><option value="">Internal and external</option><option value="ext">External only</option><option value="int">Internal only</option><option value="v6">IPv6 only</option><option value="scan">Scanning only</option><option value="bad">Known malicious or Tor</option></select>
       <span class="muted small" id="fN"></span>
     </div>
     <div class="grid" id="fAccounts"></div>
@@ -451,13 +451,13 @@ details summary { cursor: pointer; font-weight: 600; }
   function drawRefused() {
     if (!refusedData) return;
     const q = $("fQ").value.toLowerCase().trim(), sev = $("fSev").value, acct = $("fAcct").value, risky = $("fRisky").checked, nw = $("fNew").checked, wh = $("fWhere").value;
-    const whereOk = (r) => !wh || (wh === "ext" ? !r.internal : wh === "int" ? r.internal : wh === "v6" ? r.v6 : r.scan);
+    const whereOk = (r) => !wh || (wh === "ext" ? !r.internal : wh === "int" ? r.internal : wh === "v6" ? r.v6 : wh === "bad" ? r.threat || r.tor : r.scan);
     const shown = refusedData.rows.filter((r) => (!sev || r.sev === sev) && (!acct || r.account === acct) && (!risky || r.risky) && (!nw || r.new) && whereOk(r) && (!q ||
       [r.account, r.account_name, r.src, r.name, r.type, r.port, r.port_class, r.verdict, r.reason, r.kind, r.region, r.eni, r.dst].join(" ").toLowerCase().includes(q)));
     $("fN").textContent = `${shown.length.toLocaleString()} of ${refusedData.rows.length.toLocaleString()}`;
     $("refusedRows").innerHTML = shown.slice(0, 2000).map((r, i) => `<tr><td><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span></td>
       <td>${esc(r.account_name || r.account)}<div class="muted small"><code style="white-space:nowrap">${esc(r.account)}</code></div></td>
-      <td><code>${esc(r.src)}</code> ${r.new ? '<span class="pill" style="--p:var(--bad)" title="First seen in the last 7 days; never before in the flow logs read">new</span>' : ""}${r.v6 ? ' <span class="pill" style="--p:var(--accent)">IPv6</span>' : ""} <span class="pill" style="--p:${r.internal ? "var(--good)" : "var(--warn)"}">${r.internal ? "internal" : "external"}</span>${r.scan ? ' <span class="pill" style="--p:var(--high)">scanning</span>' : ""}
+      <td><code>${esc(r.src)}</code> ${r.new ? '<span class="pill" style="--p:var(--bad)" title="First seen in the last 7 days; never before in the flow logs read">new</span>' : ""}${r.v6 ? ' <span class="pill" style="--p:var(--accent)">IPv6</span>' : ""} <span class="pill" style="--p:${r.internal ? "var(--good)" : "var(--warn)"}">${r.internal ? "internal" : "external"}</span>${r.scan ? ' <span class="pill" style="--p:var(--high)">scanning</span>' : ""}${r.threat ? ' <span class="pill" style="--p:var(--bad)" title="On a threat list: botnet command server, criminal netblock, compromised host or recent attacker">known malicious</span>' : ""}${r.tor ? ' <span class="pill" style="--p:var(--bad)" title="On the Tor Project\'s exit list">Tor</span>' : ""}
         <div class="muted small">${esc(r.name)}${r.type ? " · " + esc(r.type) : ""}${r.first_ever ? ` · first seen ${esc(when(r.first_ever))}${r.seen_before ? "" : r.new ? ", never before" : ""}` : ""}</div></td>
       <td><code>${esc(PROTO[r.proto] || r.proto)} ${esc(r.port)}</code>${r.risky ? " ⚠" : ""} <span class="muted small">${esc(r.port_class)}</span>
         <div class="muted small">${esc(r.kind)} ${esc(r.dst)} · ${esc(r.region)}${r.ports > 1 ? ` · ${r.ports} ports` : ""}</div></td>

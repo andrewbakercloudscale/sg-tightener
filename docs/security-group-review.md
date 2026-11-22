@@ -251,6 +251,7 @@ say "Censys, internet scanner" rather than "AS398324":
 | **Anyone's hosting** | Other networks | DigitalOcean, OVHcloud, Hetzner, Linode, Vultr, Contabo, Google Cloud and Oracle Cloud customers' servers | Anyone can rent a server there: the address says nothing about who is behind it |
 | **Scanner** | Other networks | Shodan, Censys, Shadowserver, Rapid7, BinaryEdge, Onyphe, Driftnet | Scans the whole internet for open ports, and never needs a rule |
 | **Tor or VPN** | Other networks | Every relay on the Tor Project's exit list (whatever network hosts it), Tor exit operators, Mullvad, NordVPN, Proton VPN, M247 | Whoever is behind it cannot be known |
+| **Known malicious** | Other networks | Every address on a threat list (below), wherever it is hosted | Never needs a rule. Let in is critical on remote admin or databases; a connection **out** to one is critical |
 | **Partner** | SaaS and partners | Whatever your names file calls a partner | Named by you: check the name still holds |
 | **Other** | Other networks | Every other ISP or business network | |
 
@@ -258,6 +259,41 @@ A published range wins over the AS number. Over-provisioned "SaaS" addresses cou
 providers' own ranges and networks, not anyone's hosting. Microsoft's and Google's main AS numbers
 also carry Azure and some Google Cloud services, so a source named "Microsoft" may still be a
 customer's server.
+
+### Known malicious addresses: Tor and the threat lists
+
+Besides the Tor Project's exit list, every source and every outbound destination is checked against
+four free threat lists, downloaded daily with the other lists (`threat.json` in the data directory)
+and looked up locally, so no address leaves the machine:
+
+| List | What is on it |
+|---|---|
+| [abuse.ch Feodo Tracker](https://feodotracker.abuse.ch/) | Botnet command and control servers |
+| [Spamhaus DROP](https://www.spamhaus.org/blocklists/do-not-route-or-peer/) (IPv4 and IPv6) | Netblocks run by criminals or hijacked |
+| [Proofpoint Emerging Threats](https://rules.emergingthreats.net/blockrules/) compromised IPs | Hosts known to be compromised |
+| [blocklist.de](https://www.blocklist.de/) | Addresses reported attacking SSH, mail or web servers in the last 48 hours |
+
+The first list that holds an address names it ("Feodo Tracker botnet C2"). A list wins over the AS
+number and over AWS EC2 and cloud ranges (an attacker's rented server is still an attacker), but not
+over a provider's own service: a Cloudflare or Google address on a list keeps its provider's name,
+because it carries everyone's traffic.
+
+What it changes on the page:
+
+- **Refused**: "Known malicious address refused", info: the defences working.
+- **Let in**: "Known malicious let in", **critical** on remote admin, databases and other risky
+  ports, high on the rest (not on the public web, which anyone may reach). It is in Needs attention and
+  in `watch` alerts.
+- **Outbound** (`read --egress`): "Outbound to a known malicious address", **critical**: a server
+  calling a botnet command server is how a compromised host looks.
+- **Tighten**: known malicious sources, Tor exits and scanners are **turned away, not kept**, by
+  default (source type **Turn away**), and listed under the panel.
+- **Console**: Rejected traffic marks them **known malicious** or **Tor**, with a filter.
+
+Your own threat intelligence goes in your names file with `type: threat`; it wins over the lists. In
+the demo, an attacker on blocklist.de is refused on SSH for weeks, then let in two hours ago when a
+contractor opened `ops-ssh` to the world; and an app server has been calling a Feodo botnet command
+server since yesterday.
 
 ### Your names file
 
@@ -581,6 +617,9 @@ sources left out with the reason. To undo a rule, run the same command with
 
 ## Alert mode (`watch`): real-time alerts on rejected traffic
 
+Ready-made scripts to run the alerts as a service (systemd, launchd or cron) are in
+[`deploy/alerts`](../deploy/alerts/README.md).
+
 ```bash
 # Keep it running: every 5 minutes, post rejected traffic that needs attention.
 python sg_review.py watch --regions eu-west-1 --slack https://hooks.slack.com/services/... --loop
@@ -599,6 +638,9 @@ a once-a-day read of the same day; `--no-tail` halves that and alerts up to 75 m
 
 It builds the last 24 hours and posts only the refused-traffic **Needs attention** items at or above
 `--min-severity` (default `high`) that were not posted in the last `--repeat` hours (default 24).
+A **known malicious address let in, or called out to** (see
+[Known malicious addresses](#known-malicious-addresses-tor-and-the-threat-lists)) is always posted
+too: a compromise in progress is not left for `--alerts all`.
 `--alerts all` posts the other items too (rules opened wide, internet exposure, hygiene, PrivateLink).
 Changes made to security groups outside sg-tightener are reported by `sg_db.py reconcile`, not by
 `watch` ([the database](database.md)). An item that closes is
@@ -614,7 +656,7 @@ US$0.50) is skipped and logged. With neither `--slack` nor `--email-to`, the ale
 | `--min-severity` | `high` | `critical`, `high` or `medium` |
 | `--repeat` | `24` | Hours before an item still open is posted again |
 | `--max-cost` | `0.50` | US$ cap per read |
-| `--alerts` | `refused` | `refused` (rejected traffic only) or `all` |
+| `--alerts` | `refused` | `refused` (rejected traffic, plus known malicious let in or called out to) or `all` |
 | `--loop`, `--every` | off, 5 | Keep running, once every so many minutes |
 | `--no-tail` | off | Read only to the last full hour |
 | `--ou-id`, `--org`, `--accounts` | | Watch every account in an OU or the organisation, assuming `--role-name` (default `OrganizationAccountAccessRole`, `--external-id` if needed) in each, fresh every loop |
@@ -678,7 +720,7 @@ route them to tickets or a SIEM.
 |---|---|
 | `~/.sg-tightener/review/<account>.json.gz` | What was read: flow-log slices, security groups, interfaces, VPCs, route tables, rule changes. Mode 0600 in a 0700 directory |
 | `~/.sg-tightener/review/<account>.securityhub.json` | The findings last sent to Security Hub, so the ones gone can be archived |
-| `~/.sg-tightener/ipintel/` | The public address lists (AWS, SaaS providers, Tor exits, AS numbers), refreshed daily (AS numbers weekly) |
+| `~/.sg-tightener/ipintel/` | The public address lists (AWS, SaaS providers, Tor exits, threat lists, AS numbers), refreshed daily (AS numbers weekly) |
 | `~/.sg-tightener/names.yaml` | Your names file, if you keep one there |
 | `sg-review-<account>.html` | The page. It describes your network, so treat it as confidential |
 

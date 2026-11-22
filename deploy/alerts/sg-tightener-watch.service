@@ -1,0 +1,18 @@
+# systemd: rejected-traffic alerts, every 5 minutes, restarted if it stops.
+#   sudo cp sg-tightener-watch.service /etc/systemd/system/ && sudo systemctl enable --now sg-tightener-watch
+[Unit]
+Description=sg-tightener: alerts on rejected traffic
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=sgtightener
+ExecStart=/opt/sg-tightener/deploy/alerts/sg-alerts.sh watch
+Restart=on-failure
+RestartSec=60
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/sgtightener/.sg-tightener /opt/sg-tightener
+
+[Install]
+WantedBy=multi-user.target

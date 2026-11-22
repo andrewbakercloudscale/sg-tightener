@@ -230,6 +230,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.3.0** | **Known malicious addresses**: every source and outbound destination is checked, locally and daily, against free threat lists (abuse.ch Feodo Tracker botnet servers, Spamhaus DROP, Emerging Threats compromised hosts, blocklist.de attackers) as well as Tor exits. Let in on admin or database ports, or called out to, is **critical** and always posted by `watch`; Tighten turns such sources away by default; the console marks and filters them. **Alerting scripts** in `deploy/alerts` (systemd, launchd, cron) for `watch`, hourly `reconcile` and a daily read. **`install.sh`** checks every package, downloads the address lists, and takes `--dev`; tools run outside the venv say how to install |
 | **5.2.0** | **Blast radius**: type one address in the Security Group Review (or run `sg_review.py reach ADDRESS`) and see every rule that admits it, worst first, with the interfaces behind each group, risky ports marked and rules open to all counted apart. It follows the Tighten panel: each row shows unchanged, narrowed or cut off, and the summary shows the reach after. In the demo a data centre host goes from 9 groups on 8 interfaces to 6 on 5. New **Managing the risk** guidance: the order to tighten in, flow-log blind spots, egress, hygiene, and the two numbers to report |
 | **5.1.0** | **Tighten on the timeline**: the Security Group Review's over-provisioned graph gets a **Tighten** panel. Pull each rule back to the sources that used it, with the room chosen by kind (internal, data centre, AWS, SaaS, internet), source type or name (a published or named range for Lambda, Zscaler or a partner); the graph shows the After point and the sources the change would refuse; ▼/▲ mark tightenings and widenings; rules nothing used are removed by default. In the demo, 102.4M never-seen addresses allowed become 208k. Propose it from the page in the console (**Review and tighten** on the Overview, `/review?account=ID`) or as a plan for `sg_db.py propose --plan`; two-person approval and enforce mode still apply |
 | **5.0.0** | **Surveillance first**: every account starts in surveillance mode (report and propose, never apply) until `sg_db.py mode enforce --account ID`, which needs a passing **DryRun permission check** (`sg_db.py check`); apply checks again before any change. **Per-asset groups**: `asset-plan`/`asset-propose`/`asset-apply`/`asset-revert` give one interface a group of its own from its own flows, with every asset's group changes in the audit trail (`asset-log`); auto scaling, EKS and ECS assets are refused in favour of the shared group. **IPv6**: sources named (providers, Tor, scanners, internal vs external) and private IPv6 rules tightened. **New addresses**: each source's first sighting, with "new" (never seen before) on the page, in the console, in `watch` alerts |
@@ -279,15 +280,22 @@ ports view, and a table of what to tighten, with CSV and approved.json downloads
   rule change that cut traffic off, with the command that restores it; a partner's new address; your
   own traffic or AWS health checks refused) or too open (scanners and Tor exits let in on remote
   admin), worst first. Scans the defences turned away stay out. `watch --loop` posts new
-  **rejected-traffic** items to Slack or email within minutes (every 5 minutes; `--alerts all` adds
-  the rest); `org` rolls them up across every account in an OU.
+  **rejected-traffic** items, and any known malicious address let in or called out to, to Slack or
+  email within minutes (every 5 minutes; `--alerts all` adds the rest); `org` rolls them up across
+  every account in an OU. Ready-made systemd, launchd and cron jobs for the alerts and the hourly
+  `reconcile` are in [`deploy/alerts`](deploy/alerts/README.md).
 - **Attribution:** every source is named: your VPCs and named ranges, your data centres, the AWS
   service and region, the SaaS provider, or the AS number, owner and country. The graphs can be
   coloured by kind, by network (AS number) or by port class.
 - **Source type:** each SaaS or internet source is typed from a built-in list of AS numbers and
   owner names: CDN, secure access service (Zscaler, Netskope and the like), SaaS, anyone's hosting,
-  internet scanner (Censys, Shodan and others), or Tor or VPN exit (with the Tor Project's exit
-  list). A names file adds your partners by range or AS number.
+  internet scanner (Censys, Shodan and others), Tor or VPN exit (with the Tor Project's exit
+  list), or **known malicious**: on a free threat list (abuse.ch Feodo Tracker botnet servers, Spamhaus
+  DROP, Emerging Threats compromised hosts, blocklist.de attackers), checked locally and daily. A
+  known malicious address let in on admin or database ports, or called out to, is critical, and
+  Tighten turns such sources away by default
+  ([how](docs/security-group-review.md#known-malicious-addresses-tor-and-the-threat-lists)). A names
+  file adds your partners, or your own bad addresses (`type: threat`), by range or AS number.
 - **Ports:** the busiest refused and let-in ports, each with its service and class (web, remote
   admin, database, Windows and directory, containers and more). Risky classes are marked ⚠.
 - **Tighten:** under the over-provisioned graph, fit each rule to the sources that used it, with
@@ -319,11 +327,17 @@ The full guide, with each graph explained, is [docs/security-group-review.md](do
 ```bash
 git clone https://github.com/andrewbakercloudscale/sg-tightener.git
 cd sg-tightener
-./install.sh
+./install.sh --dev                   # venv, every package (checked), the address and threat lists
 source .venv/bin/activate
-pip install -r requirements-dev.txt
 python -m pytest                     # all tests should pass
 ```
+
+`install.sh` creates `.venv`, installs `requirements.txt` (boto3, pandas, openpyxl, PyYAML), checks
+each one imports, and downloads the public address lists once. `--dev` adds pytest and moto. Run
+outside the venv, the tools say to run `./install.sh` rather than fail with a traceback. Everything is
+kept locally: security groups, rules and the audit trail in one **SQLite** file
+(`~/.sg-tightener/sg.db`, or `$SG_TIGHTENER_DB`), flow-log reads in `~/.sg-tightener/review/`, the
+address lists in `~/.sg-tightener/ipintel/`. No server or hosted database is needed.
 
 Requires Python 3.9 or later and AWS credentials: read-only
 [`iam-policy-read.json`](iam-policy-read.json) for everything except changes,
@@ -385,6 +399,7 @@ python sg_tightener.py revert --manifest manifest-<timestamp>.json
 | [Security Group Review](docs/security-group-review.md) | You want the HTML report: its parameters, its graphs, port classes, and Extract rule |
 | [File formats](docs/file-formats.md) | You are reviewing a `plan.json`, editing an `approved.json` or reading `viz-data.json` |
 | [Permissions](docs/permissions.md) | You are creating the IAM role the tools run as |
+| [Alerting scripts](deploy/alerts/README.md) | You want `watch` and `reconcile` running unattended: systemd, launchd and cron, with Slack and email |
 
 ---
 

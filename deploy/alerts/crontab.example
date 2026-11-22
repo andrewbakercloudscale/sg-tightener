@@ -1,0 +1,7 @@
+# sg-tightener alerting from cron (crontab -e). Point the path at your clone.
+# Rejected traffic that needs attention, posted within about 10 minutes:
+*/5 * * * *  /opt/sg-tightener/deploy/alerts/sg-alerts.sh watch-once >> $HOME/.sg-tightener/watch.log 2>&1
+# Security group changes made outside sg-tightener (console clicks, Terraform, scripts), hourly:
+7 * * * *    /opt/sg-tightener/deploy/alerts/sg-alerts.sh reconcile >> $HOME/.sg-tightener/reconcile.log 2>&1
+# Yesterday's flow logs read and the review page rewritten, once a day:
+30 6 * * *   /opt/sg-tightener/deploy/alerts/sg-alerts.sh daily >> $HOME/.sg-tightener/daily.log 2>&1

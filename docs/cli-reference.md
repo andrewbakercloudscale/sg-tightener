@@ -387,7 +387,7 @@ Ctrl-C during `read` stops after the slices in flight and keeps what was read.
 ## Tests
 
 ```bash
-pip install -r requirements-dev.txt
+./install.sh --dev
 python -m pytest
 ```
 
