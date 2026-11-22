@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 5.10.0 - 2026-11-22
 
 - Review page, Where traffic comes from: **Look up ports** under each row's ports lists what every
   port is commonly used for and its class (⚠ on remote admin, database, Windows and container

@@ -570,7 +570,11 @@ window chosen: the CIDR blocks seen (up to 12, then a count), the ports, the sou
 in and out, the interfaces reached, first and last seen, and a search and filter. **Look up ports**
 under a row's ports lists what each port is commonly used for (`tcp 5432` PostgreSQL, Aurora
 PostgreSQL · Database), with ⚠ on remote admin, database, Windows and container ports; hovering a
-port shows the same, and **Find** matches service names too (`postgres`, `smb`, `kafka`). This is the
+port shows the same, and **Find** matches service names too (`postgres`, `smb`, `kafka`).
+
+![Look up ports: what each port is commonly used for, with its class](images/sg-review-port-lookup.png)
+
+This is the
 low-level view of what each kind of network sends:
 
 - **On-premises**: named from the VPN connections' static routes ("Behind VPN Johannesburg DC"),
