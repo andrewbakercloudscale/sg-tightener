@@ -367,12 +367,20 @@ or a **name** (one partner, one provider). The most specific choice wins: name, 
   that are dropped, and listed as **would be refused**.
 - **Also fit rules open to every address**: off by default. A public website, API or load balancer
   must stay open.
-- **Remove rules nothing used**: off by default.
+- **Remove rules nothing used**: on by default. A rule no source used in the whole read is the
+  clearest over-provisioning; the panel warns that a disaster recovery path or a yearly job looks
+  the same, so untick it to keep them.
 
 ![The After point and the refused sources a change would turn away](images/sg-review-tighten-timeline.png)
 
-The graph's last point is drawn dashed to an **After** point: the never-seen addresses that would be
-left. The last grey bar carries how many sources the change would refuse. The table lists each rule
+In the demo, a `webhooks-in` group was opened to every AWS, GitHub and Zscaler address (▲, 9
+September). Eight days ago the network team narrowed `13.0.0.0/8` to Salesforce's `/14` (▼); the
+Lambda callers in `13.244.0.0/15` were refused at once (the grey spike) and the range was put back
+the next day (▲). Tighten with the defaults takes the account from 102.4M never-seen addresses
+allowed to 208k.
+
+The total line's last point is drawn dashed to an **After** point: the never-seen addresses that
+would be left. The last grey bar carries how many sources the change would refuse. The table lists each rule
 that changes, now and after, the never-seen addresses before and after, and the sources kept and
 turned away.
 

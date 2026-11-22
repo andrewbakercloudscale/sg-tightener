@@ -23,7 +23,9 @@ or by name (Lambda, Zscaler or a partner keep their published range). The graph'
 to what would be left, and its grey bars show refused sources, with how many the change would turn
 away. Propose it (in the console, or as a plan for `sg_db.py propose --plan`); a second person
 approves; it is applied in enforce mode. ▼ marks a tightening on the timeline: if the refused bars
-spike after one, add the source back with **Extract rule**.
+spike after one, add the source back with **Extract rule**. In the demo, Tighten takes the account
+from **102.4M never-seen addresses allowed to 208k (99.8% less)**, and the timeline shows a
+tightening that cut off Lambda callers, the refusals it caused, and the range put back the next day.
 
 | Over-provisioned, before and after | Tighten by kind, type and name |
 |---|---|
@@ -221,6 +223,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.1.1** | Tighten removes rules nothing used by default (with a warning); ▼/▲ compare the addresses a change took away and added; the demo shows a tightening that cut off Lambda callers and was put back, and 102.4M never-seen addresses allowed cut to 208k |
 | **5.1.0** | **Tighten on the timeline**: the Security Group Review's over-provisioned graph gets a **Tighten** panel. Pull each rule back to the sources that used it, with the room chosen by kind (internal, data centre, AWS, SaaS, internet), source type or name (a published or named range for Lambda, Zscaler or a partner); the graph shows the After point and the sources the change would refuse; ▼/▲ mark tightenings and widenings. Propose it from the page in the console (**Review and tighten** on the Overview, `/review?account=ID`) or as a plan for `sg_db.py propose --plan`; two-person approval and enforce mode still apply |
 | **5.0.0** | **Surveillance first**: every account starts in surveillance mode (report and propose, never apply) until `sg_db.py mode enforce --account ID`, which needs a passing **DryRun permission check** (`sg_db.py check`); apply checks again before any change. **Per-asset groups**: `asset-plan`/`asset-propose`/`asset-apply`/`asset-revert` give one interface a group of its own from its own flows, with every asset's group changes in the audit trail (`asset-log`); auto scaling, EKS and ECS assets are refused in favour of the shared group. **IPv6**: sources named (providers, Tor, scanners, internal vs external) and private IPv6 rules tightened. **New addresses**: each source's first sighting, with "new" (never seen before) on the page, in the console, in `watch` alerts |
 | **4.0.0** | **Security group console** (`sg_console.py serve`): one local web page for every account's groups and rules, change requests, the audit trail, and every rejected flow across an OU, with "Propose allowing" from a refused flow. **Two-person approval, on by default**: every change is a request with a reason and ticket that a different person approves before it is applied; `sg_tightener apply` and `sg_compact apply` now propose (`sg_db.py propose --plan`), break-glass still goes through. **Across an OU**: `sg_db.py import`/`reconcile --ou-id`, `sg_review.py watch --ou-id`, and an **All rejected traffic** table on the org page |

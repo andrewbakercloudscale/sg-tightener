@@ -1,5 +1,21 @@
 # Changelog
 
+## 5.1.1 - 2026-11-22
+
+- **Tighten removes rules nothing used by default**: a rule no source used in
+  the whole read (30 days or more) is the clearest over-provisioning. The panel
+  warns how many are removed and that a DR path or yearly job looks the same;
+  untick to keep them.
+- Rule-change markers compare address counts: ▼ when a change (or several in
+  the same period) took away more addresses than it added, ▲ otherwise, so a
+  narrowing such as `13.0.0.0/8` → `13.108.0.0/14` shows as a tightening.
+- The After point is drawn on the total line only (a rule is fitted as a whole,
+  while the lines by kind split its range by owner).
+- Demo: a `webhooks-in` group opened to every AWS, GitHub and Zscaler address,
+  a tightening that cut off Lambda callers (refusals spike) and the range put
+  back the next day. The demo now shows 102.4M never-seen addresses allowed,
+  208k after Tighten.
+
 ## 5.1.0 - 2026-11-22
 
 - **Tighten on the timeline.** The Security Group Review's over-provisioned

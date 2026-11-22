@@ -212,7 +212,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
       <div class="tools">
         <label>Keep sources last seen <select id="fitRecent"><option value="0">at any time in the read</option><option value="60">in the last 60 days</option><option value="30">in the last 30 days</option><option value="7">in the last 7 days</option></select></label>
         <label><input type="checkbox" id="fitOpen"> also fit rules open to every address (0.0.0.0/0)</label>
-        <label><input type="checkbox" id="fitUnused"> remove rules nothing used</label>
+        <label><input type="checkbox" id="fitUnused" checked> remove rules nothing used</label>
         <button type="button" class="btn" id="fitReset">Back to the defaults</button>
       </div>
       <dl class="fit-sum" id="fitSum"></dl>
@@ -344,7 +344,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   const FIT_DEFAULT = { internal: "24", datacentre: "24", aws: "range", saas: "range", internet: "exact" };
   const FIT_WHY = { internal: "your VPCs move addresses as instances come and go", datacentre: "data centre ranges are yours, but wide", aws: "AWS services use their published ranges", saas: "providers and partners move within their ranges", internet: "anyone else: only what was seen" };
   const FIT = DATA.fit || { rules: [], labels: {} };
-  const fitState = () => (state.fit = state.fit || { kind: { ...FIT_DEFAULT }, type: {}, name: {}, recent: 0, open: false, unused: false, res: null });
+  const fitState = () => (state.fit = state.fit || { kind: { ...FIT_DEFAULT }, type: {}, name: {}, recent: 0, open: false, unused: true, res: null });
   const ip4 = (s) => { const p = String(s).split("."); if (p.length !== 4) return null; let n = 0; for (const x of p) { if (!/^\d{1,3}$/.test(x) || +x > 255) return null; n = n * 256 + +x; } return n; };
   const intIp = (n) => [16777216, 65536, 256, 1].map((d) => Math.floor(n / d) % 256).join(".");
   const cidrIv = (c) => { if (!c) return null; const [a, l] = String(c).split("/"); const n = ip4(a); const len = l === undefined ? 32 : +l; if (n == null || !(len >= 0 && len <= 32)) return null; const size = 2 ** (32 - len); const lo = Math.floor(n / size) * size; return [lo, lo + size - 1]; };
@@ -462,6 +462,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
       many.length ? `<div class="xr-warn soft">${plural(many.length, "rule")} would need more than 50 ranges (a security group holds 60 rules by default): leave more room for ${esc([...new Set(many.flatMap((x) => [...x.hows]))].map((h) => Object.fromEntries(FIT_OPTS)[h]).join(", "))}, or fit those rules with <code>sg_tightener.py plan</code>.</div>` : "",
       res.refused.length ? `<div class="xr-warn">${plural(res.refused.length, "source")} that used these rules would be refused: ${res.refused.slice(0, 12).map((s) => `<code>${esc(s)}</code>`).join(", ")}${res.refused.length > 12 ? "…" : ""}. They were last seen before the cut-off chosen; a monthly batch or a DR test looks like this.</div>` : "",
       res.skipped.length ? `<div class="xr-warn soft">${res.skipped.map((x) => `${esc(x.r.gname)} ${esc(x.r.ports)} ${esc(x.r.source)}: ${esc(x.skipped)}`).join("<br>")}</div>` : "",
+      res.changed.some((x) => !x.skipped && x.r.status === "unused") ? `<div class="xr-warn soft">${plural(res.changed.filter((x) => !x.skipped && x.r.status === "unused").length, "rule")} nothing used in the whole read would be removed. A disaster recovery path or a yearly job looks like this: untick <em>remove rules nothing used</em> to keep them.</div>` : "",
       res.changed.some((x) => x.r.kind === "open") ? `<div class="xr-warn soft">Rules open to every address are fitted too. A public website, API or load balancer must stay open: untick the box, or leave those names as they are.</div>` : "",
     ].join("");
     const rows = res.changed.filter((x) => !x.skipped).sort((p, q) => q.r.never - q.neverAfter - (p.r.never - p.neverAfter));
@@ -690,11 +691,12 @@ details.xr-fold > summary { margin: 0 0 10px; }
       y: { stacked: !log, type: log ? "logarithmic" : "linear", beginAtZero: !log, grid: { color: grid }, ticks: { color: ink, precision: 0, callback: (v) => (log ? (/^1(0)*$/.test(String(v)) ? big(v) : "") : big(v)) } },
     });
     const title = (items) => `${binLabel(rep.bins[items[0].dataIndex], rep.step)}${rep.step < 86400 ? " UTC" : ""}`;
-    // The last point, "After", is what the Tighten panel's settings would leave: dashed from now.
+    // The last point, "After", is what the Tighten panel's settings would leave, dashed from now. Only the total
+    // gets one: a rule is fitted as a whole, while the lines by kind split each rule's range by who owns it.
     const res = state.fit?.res, n = rep.bins.length, cut = res ? res.delta : {};
     const after = (arr, c) => [...arr, Math.max(0, (arr[n - 1] || 0) - (c === null ? CATS.filter((k) => sel.has(k)).reduce((t, k) => t + (cut[k] || 0), 0) : cut[c] || 0)) || null];
     const dashLast = { borderDash: (ctx) => (ctx.p1DataIndex === n ? [4, 4] : undefined) };
-    const overSets = CATS.filter((c) => sel.has(c)).map((c) => ({ type: "line", yAxisID: "y", label: catName(c), data: after(rep.series.over[c].map((v) => v || null), c), borderColor: COLOR[c], backgroundColor: COLOR[c], borderWidth: 2, pointRadius: (ctx) => (ctx.dataIndex === n ? 4 : 0), stepped: true, spanGaps: true, segment: dashLast }));
+    const overSets = CATS.filter((c) => sel.has(c)).map((c) => ({ type: "line", yAxisID: "y", label: catName(c), data: [...rep.series.over[c].map((v) => v || null), null], borderColor: COLOR[c], backgroundColor: COLOR[c], borderWidth: 2, pointRadius: (ctx) => (ctx.dataIndex === n ? 4 : 0), stepped: true, spanGaps: true, segment: dashLast }));
     const total = after(rep.bins.map((_, i) => sum(rep.series.over, i) || null), null);
     overSets.unshift({ type: "line", yAxisID: "y", label: "All shown", data: total, borderColor: css("--ink"), backgroundColor: css("--ink"), borderWidth: 2.5, borderDash: [5, 4], pointRadius: (ctx) => (ctx.dataIndex === n ? 5 : 0), stepped: true, spanGaps: true });
     const refusedTotal = rep.bins.map((_, i) => sum(rep.series.refused, i));
@@ -703,8 +705,9 @@ details.xr-fold > summary { margin: 0 0 10px; }
     if (marks.length) {
       const byBin = {};
       for (const m of marks) (byBin[m.bin] = byBin[m.bin] || []).push(m);
-      // Pointing down: the change only took entries away (a tightening); up: it added or swapped some.
-      const narrowed = (ms) => ms.every((m) => !m.unknown && !m.added.length && m.removed.length);
+      // Pointing down: the change took away more addresses than it added (a tightening); up: it widened.
+      const span = (cs) => cs.reduce((t, c) => { const m = /^[\d.]+\/(\d+)$/.exec(String(c)); return t + (m ? 2 ** (32 - +m[1]) : 0); }, 0);
+      const narrowed = (ms) => !ms.some((m) => m.unknown) && span(ms.flatMap((m) => m.removed)) > span(ms.flatMap((m) => m.added));
       overSets.push({ type: "line", yAxisID: "y", label: "Rule change (▼ tightened, ▲ widened)", data: rep.bins.map((_, i) => (byBin[i] ? total[i] || 1 : null)), showLine: false, pointStyle: "triangle", pointRotation: rep.bins.map((_, i) => (byBin[i] && narrowed(byBin[i]) ? 180 : 0)), pointRadius: 8, pointHoverRadius: 10, borderColor: rep.bins.map((_, i) => css(byBin[i] && narrowed(byBin[i]) ? "--good" : "--tone-risk")), backgroundColor: rep.bins.map((_, i) => css(byBin[i] && narrowed(byBin[i]) ? "--good" : "--tone-risk")), marks: byBin });
     }
     chart("chOver", {

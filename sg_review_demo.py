@@ -70,6 +70,12 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
                                  "rules": [rule("6", 443, 443, ["10.0.0.0/8"], {"10.0.0.0/8": "default from module"})]},
         "sg-0nlb0000000000010": {"name": "payments-api-nlb", "vpc": "vpc-0demo", "tag": "",
                                  "rules": [rule("6", 443, 443, ["10.0.0.0/8"])]},
+        "sg-0hook0000000000012": {"name": "webhooks-in", "vpc": "vpc-0demo", "tag": "",
+                                  "rules": [rule("6", 443, 443, ["13.108.0.0/14", "13.244.0.0/15", "52.0.0.0/8", "54.0.0.0/8",
+                                                                 "140.82.0.0/16", "165.225.0.0/16"],
+                                                 {"52.0.0.0/8": "AWS (copied from a blog post)",
+                                                  "54.0.0.0/8": "AWS (copied from a blog post)",
+                                                  "13.244.0.0/15": "Lambda callers, put back"})]},
         "sg-0ops0000000000006": {"name": "ops-ssh", "vpc": "vpc-0demo", "tag": "",
                                  "rules": [rule("6", 22, 22, ["10.200.0.0/16"], v6=["2c0f:fb50::/32"]),
                                            rule("6", 22, 22, ["0.0.0.0/0"], {"0.0.0.0/0": "debug, remove after"})]},
@@ -96,6 +102,7 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
         "eni-0sftp": eni(h(1 * 256 + 40), ["sg-0sftp000000000004"], sub["pub"], public="198.51.100.7"),
         "eni-0bat1": eni(h(6 * 256 + 50), ["sg-0bat0000000000005", "sg-0def000000000011"], sub["app"]),
         "eni-0leg1": eni(h(1 * 256 + 60), ["sg-0leg0000000000008"], sub["pub"], public="198.51.100.9"),
+        "eni-0hook1": eni(h(1 * 256 + 70), ["sg-0hook0000000000012"], sub["pub"], public="198.51.100.12"),
         "eni-0nat1": eni(h(1 * 256 + 5), [], sub["pub"], "NAT gateway", "Interface for NAT Gateway"),
         "eni-0vpce1": eni(h(2 * 256 + 90), ["sg-0vpce000000000009"], sub["app"], "VPC endpoint",
                           "VPC Endpoint Interface vpce-0secrets"),
@@ -156,6 +163,17 @@ def history(now: float) -> dict:
         "read": True,
         "whole_since": now - 90 * DAY,
         "events": [
+            {"t": now - 75 * DAY, "name": "AuthorizeSecurityGroupIngress", "who": "integration-team", "group":
+             "sg-0hook0000000000012", "added": [["6", 443, 443, c] for c in ("13.0.0.0/8", "52.0.0.0/8", "54.0.0.0/8",
+                                                                             "140.82.0.0/16", "165.225.0.0/16")],
+             "removed": [], "unknown": False},
+            {"t": now - 8 * DAY - 6 * HOUR, "name": "RevokeSecurityGroupIngress", "who": "network-team", "group":
+             "sg-0hook0000000000012", "added": [], "removed": [["6", 443, 443, "13.0.0.0/8"]], "unknown": False},
+            {"t": now - 8 * DAY - 6 * HOUR + 30, "name": "AuthorizeSecurityGroupIngress", "who": "network-team",
+             "group": "sg-0hook0000000000012", "added": [["6", 443, 443, "13.108.0.0/14"]], "removed": [],
+             "unknown": False},
+            {"t": now - 7 * DAY - 2 * HOUR, "name": "AuthorizeSecurityGroupIngress", "who": "network-team", "group":
+             "sg-0hook0000000000012", "added": [["6", 443, 443, "13.244.0.0/15"]], "removed": [], "unknown": False},
             {"t": now - 40 * DAY, "name": "RevokeSecurityGroupIngress", "who": "network-team", "group":
              "sg-0db00000000000002", "added": [], "removed": [["6", 5432, 5432, "192.168.0.0/16"]], "unknown": False},
             {"t": now - 30 * DAY, "name": "AuthorizeSecurityGroupIngress", "who": "network-team", "group":
@@ -266,6 +284,18 @@ def _patterns(vpc: str, other: tuple | None) -> list[dict]:
         pats.append({"src": f"fd12:3456:0:4::{21 + i:x}", "to": app6, "port": 443, "ok": True, "p": 0.7, "rate": 6})
     pats.append({"src": "2602:80d:1003::17", "to": sftp6, "port": 3389, "ok": False, "p": 0.8, "rate": 2,
                  "after": 2, "sweep": True})  # fmt: skip
+    # webhooks: Lambda callers in af-south-1, GitHub hooks, staff through Zscaler, SNS and Route 53 health checks,
+    # against a rule open to every AWS, GitHub and Zscaler address. Eight days ago the network team narrowed
+    # 13.0.0.0/8 to Salesforce's /14; the Lambda callers were refused until it was put back the next day.
+    hook = ("eni-0hook1", h(256 + 70))
+    for i in range(24):
+        src = _host("13.244.0.0/15", 4 * 256 + 9 + 7 * i)
+        pats.append({"src": src, "to": hook, "port": 443, "ok": True, "p": 0.9, "rate": 40, "notonly": 8})
+        pats.append({"src": src, "to": hook, "port": 443, "ok": False, "only": [8], "rate": 40})
+    for net, n, p in (("140.82.112.0/20", 3, 0.8), ("165.225.0.0/17", 4, 0.7), ("52.95.0.0/16", 2, 0.6),
+                      ("54.228.16.0/26", 3, 1.0)):
+        for i in range(n):
+            pats.append({"src": _host(net, 3 * 256 + 5 + 7 * i), "to": hook, "port": 443, "ok": True, "p": p, "rate": 10})
     vpce = ("eni-0vpce1", h(2 * 256 + 90))
     for ip in app:
         pats.append({"src": ip[1], "to": vpce, "port": 443, "ok": True, "p": 1.0, "rate": 40})
@@ -274,6 +304,8 @@ def _patterns(vpc: str, other: tuple | None) -> list[dict]:
 
 def _active(p: dict, s: float, e: float, now: float, rnd: random.Random) -> bool:
     age_s, age_e = (now - e) / DAY, (now - s) / DAY
+    if "notonly" in p and (age_s <= p["notonly"] < age_e or int(age_s) == p["notonly"]):
+        return False
     if "only" in p:
         return any(age_s <= d < age_e or (age_e - age_s < 1 and int(age_s) == d) for d in p["only"])
     if p.get("monthly"):
