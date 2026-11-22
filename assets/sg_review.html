@@ -103,6 +103,10 @@ table.data tr:last-child td { border-bottom: none; }
 [data-tab-of][hidden] { display: none !important; }
 .net-kind td { background: var(--surface-2); font-weight: 650; }
 .net-blocks code { display: inline-block; margin: 0 6px 2px 0; }
+.port-look { margin-top: 4px; }
+.port-look summary { cursor: pointer; color: var(--accent, #2563eb); font-size: 12px; }
+.port-look ul { margin: 4px 0 0; padding-left: 16px; }
+.port-look li { margin: 2px 0; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: 0; }
 .range-sel { font: inherit; font-size: 13.5px; padding: 5px 8px; border: 1px solid var(--control-line); border-radius: 8px; background: var(--surface); color: var(--ink); max-width: 100%; }
 .acl { color: var(--tone-est); font-weight: 600; }
@@ -266,7 +270,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   <section class="section" id="networksWrap" data-tab-of="traffic">
     <h2><span class="num">4</span>Where traffic comes from</h2>
     <p class="muted section-lede">Every network that sent traffic in the time window, one row each, by kind: your VPCs and your other accounts' VPCs (named by account and VPC), your data centres (named ranges, and the routes behind your VPNs), AWS by service and region (Lambda outside a VPC uses AWS's shared EC2 ranges, so it shows as EC2 in its region), SaaS providers and partners (Salesforce, Zscaler, GitHub and so on, from their published ranges and AS numbers), and every other network by owner and AS number. Each row gives the CIDR blocks its sources fall in, how many were let in and refused, and the ports they used or tried.</p>
-    <div class="tools section-window"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div><label style="flex:1;min-width:200px">Find <input type="search" id="netQ" style="width:100%" placeholder="Salesforce, 10.40, lambda, AS14340…" spellcheck="false" autocomplete="off"></label><label>Show <select id="netShow"><option value="">let in or refused</option><option value="in">let in</option><option value="out">refused only</option></select></label></div><p class="gap-note small" hidden></p>
+    <div class="tools section-window"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div><label style="flex:1;min-width:200px">Find <input type="search" id="netQ" style="width:100%" placeholder="Salesforce, 10.40, lambda, AS14340, postgres, tcp 445…" spellcheck="false" autocomplete="off"></label><label>Show <select id="netShow"><option value="">let in or refused</option><option value="in">let in</option><option value="out">refused only</option></select></label></div><p class="gap-note small" hidden></p>
     <div class="table-wrap"><table class="data" id="networks"></table></div>
   </section>
 
@@ -1037,11 +1041,32 @@ details.xr-fold > summary { margin: 0 0 10px; }
     }).join("")}</tbody></table></div>`;
   }
 
+  // ---- Port lookup: what a port is commonly used for (the catalogue the review classes ports with)
+  function portInfo(label) {
+    const known = (DATA.port_services || {})[label];
+    const cls = (k) => (DATA.port_classes || []).find((c) => c.key === k) || { name: k, note: "", risky: false };
+    if (known) { const c = cls(known[0]); return { svc: known[1], cls: c.name, note: c.note, risky: c.risky || / 23$/.test(label) }; }
+    const m = /^(tcp|udp) (\d+)(\+?)$/.exec(label);
+    if (!m) { const c = cls(label === "all" ? "all" : "network"); return { svc: label === "all" ? "Every protocol and port" : /icmp/.test(label) ? "ICMP (ping, unreachable, path MTU)" : `IP protocol ${label}`, cls: c.name, note: c.note, risky: false }; }
+    const n = +m[2];
+    const key = m[3] || n >= 32768 ? "high" : m[1] === "tcp" && n >= 30000 ? "containers" : n < 1024 ? "low" : "registered";
+    const c = cls(key);
+    const svc = key === "high" ? "High port (replies, or an application's own)" : key === "containers" ? "Kubernetes NodePort range" : key === "low" ? "Well-known port, no common service" : "Registered port, no common service";
+    return { svc, cls: c.name, note: c.note, risky: c.risky };
+  }
+  const portText = (label) => { const i = portInfo(label); return `${label} ${i.svc} ${i.cls}`; };
+  function portCell(ports) {
+    if (!ports.length) return '<span class="muted">none</span>';
+    const line = ports.map((p) => { const i = portInfo(p); return `<span title="${esc(`${i.svc} · ${i.cls}`)}">${i.risky ? "⚠ " : ""}${esc(p)}</span>`; }).join(", ");
+    const list = ports.map((p) => { const i = portInfo(p); return `<li><code>${esc(p)}</code> ${i.risky ? "⚠ " : ""}<strong>${esc(i.svc)}</strong> <span class="muted">· ${esc(i.cls)}</span></li>`; }).join("");
+    return `${line}<details class="port-look"><summary>Look up ${ports.length === 1 ? "port" : "ports"}</summary><ul>${list}</ul></details>`;
+  }
+
   // ---- Where traffic comes from: one row per network, by kind
   function networks() {
     const rep = state.rep, q = ($("#netQ").value || "").trim().toLowerCase(), show = $("#netShow").value;
     const rows = (rep.networks || []).filter((n) => state.cats.has(n.cat) && (!show || (show === "in" ? n.in : !n.in && n.out))
-      && (!q || [n.name, n.provider, n.service, n.region, n.account, n.asn, n.what, TYPE[n.group]?.name, ...n.blocks].join(" ").toLowerCase().includes(q)));
+      && (!q || [n.name, n.provider, n.service, n.region, n.account, n.asn, n.what, TYPE[n.group]?.name, ...n.blocks, ...n.ports_in.map(portText), ...n.ports_out.map(portText)].join(" ").toLowerCase().includes(q)));
     const head = `<thead><tr><th>Network</th><th>CIDR blocks</th><th class="num-cell">Let in</th><th class="num-cell">Refused</th><th>Ports let in</th><th>Ports refused</th><th>Seen</th></tr></thead>`;
     if (!rows.length) { $("#networks").innerHTML = head + `<tbody><tr><td colspan="7" class="muted">${(rep.networks || []).length ? "No network matches." : "No traffic in this time window."}</td></tr></tbody>`; return; }
     let body = "", last = null;
@@ -1057,8 +1082,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
         + `<td class="net-blocks small">${n.blocks.map((b) => `<code>${esc(b)}</code>`).join("") || '<span class="muted">none named</span>'}${n.more_blocks ? ` <span class="muted">and ${num(n.more_blocks)} more</span>` : ""}</td>`
         + `<td class="num-cell">${n.in ? `${plural(n.in, "source")}<div class="small muted">${big(n.fin)} flows</div>` : '<span class="muted">0</span>'}</td>`
         + `<td class="num-cell">${n.out ? `${plural(n.out, "source")}<div class="small muted">${big(n.fout)} flows</div>` : '<span class="muted">0</span>'}</td>`
-        + `<td class="small">${n.ports_in.map(esc).join(", ") || '<span class="muted">none</span>'}${n.interfaces ? `<div class="muted">${plural(n.interfaces, "interface")}</div>` : ""}</td>`
-        + `<td class="small">${n.ports_out.map(esc).join(", ") || '<span class="muted">none</span>'}</td>`
+        + `<td class="small">${portCell(n.ports_in)}${n.interfaces ? `<div class="muted">${plural(n.interfaces, "interface")}</div>` : ""}</td>`
+        + `<td class="small">${portCell(n.ports_out)}</td>`
         + `<td class="small">${esc(when(n.first, false))} to ${esc(when(n.last, false))}</td></tr>`;
     }
     $("#networks").innerHTML = head + `<tbody>${body}</tbody>`;

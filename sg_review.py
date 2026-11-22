@@ -3528,6 +3528,7 @@ def page_data(doc: dict, onprem: str = "", internal: str = "", now: float | None
                          for k, (n, kind) in SOURCE_TYPES.items()],
         "port_classes": [{"key": k, "name": n, "note": note, "risky": k in RISKY_CLASSES}
                          for k, (n, note) in PORT_CLASSES.items()],
+        "port_services": {_port_label(p, n): [c, s] for (p, n), (c, s) in PORT_SERVICES.items()},
         "estimate": estimate(doc, doc["account"], list(doc["regions"]), now),
         "regions": sorted(doc["regions"]),
         "approved": {r: approved(doc, r) for r in regions if any(c["r"] == r for c in doc["chunks"])},

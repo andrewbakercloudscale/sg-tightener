@@ -759,6 +759,16 @@ def test_over_provisioning_is_attributed_by_source_type_and_network_over_time(tm
     assert sum(1 for n in se["over_by_net"] if n["cat"] == "aws" and not n["key"].endswith("|*")) <= sg_review.OVER_NETS
     assert all("networks networks" not in n["name"] for n in se["over_by_net"])
     page = tmp_path / "p.html"
-    sg_review.write_page(sg_review.page_data(doc, "", ""), str(page))
+    pd = sg_review.page_data(doc, "", "")
+    assert pd["port_services"]["tcp 5432"] == ["database", "PostgreSQL, Aurora PostgreSQL"]
+    sg_review.write_page(pd, str(page))
     text = page.read_text()
     assert 'id="overBy"' in text and 'id="overScale"' in text and 'overScale: "stack"' in text
+    assert "port-look" in text and "Look up" in text
+
+
+def test_port_lookup_catalogue_uses_table_labels():
+    """The page's port lookup is keyed by the same labels the networks table shows ("tcp 5432")."""
+    cat = {sg_review._port_label(p, n): [c, s] for (p, n), (c, s) in sg_review.PORT_SERVICES.items()}
+    assert cat["tcp 5432"] == ["database", "PostgreSQL, Aurora PostgreSQL"]
+    assert cat["tcp 445"][0] == "windows" and cat["udp 53"][1] == "DNS" and cat["tcp 443"][1] == "HTTPS"

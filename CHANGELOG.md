@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Review page, Where traffic comes from: **Look up ports** under each row's ports lists what every
+  port is commonly used for and its class (⚠ on remote admin, database, Windows and container
+  ports); hover a port for the same, and **Find** matches service names (`postgres`, `smb`).
+
 - Console sign-in: **Open the AWS sign-in page again** is now a button, next to a new **Copy sign-in
   link** button, with a hint for company sign-in pages that say "you cannot access this right now"
   after a network or VPN (for example Zscaler) change: paste the link into a private window.

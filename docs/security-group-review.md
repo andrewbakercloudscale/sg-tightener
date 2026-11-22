@@ -567,7 +567,10 @@ Replies to the account's own outbound connections are left out.
 
 One row per network, grouped by kind (internal, data centre, AWS, SaaS, other networks), for the
 window chosen: the CIDR blocks seen (up to 12, then a count), the ports, the sources and flows
-in and out, the interfaces reached, first and last seen, and a search and filter. This is the
+in and out, the interfaces reached, first and last seen, and a search and filter. **Look up ports**
+under a row's ports lists what each port is commonly used for (`tcp 5432` PostgreSQL, Aurora
+PostgreSQL · Database), with ⚠ on remote admin, database, Windows and container ports; hovering a
+port shows the same, and **Find** matches service names too (`postgres`, `smb`, `kafka`). This is the
 low-level view of what each kind of network sends:
 
 - **On-premises**: named from the VPN connections' static routes ("Behind VPN Johannesburg DC"),
