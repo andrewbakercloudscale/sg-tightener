@@ -1,5 +1,27 @@
 # Changelog
 
+## 5.7.0 - 2026-11-22
+
+- **Where traffic comes from.** A new table in the review lists one row per
+  network, grouped by kind, for the window chosen: its CIDR blocks, ports,
+  sources and flows in and out, interfaces reached, and first and last seen,
+  with a search and filter. On-premises ranges, other AWS accounts, AWS
+  services by region, Lambda outside a VPC (shown as the region's shared EC2
+  ranges, since AWS publishes no Lambda ranges) and SaaS such as Salesforce,
+  Zscaler, Okta and GitHub each show separately. Each window carries
+  `networks`.
+- **Other accounts are named automatically.** `read` records every account's
+  VPCs in `~/.sg-tightener/review/vpcs.json` (built from earlier reads the
+  first time), and the report names traffic from them as
+  "account name (id), VPC name". `--internal` still wins on the same range.
+- **Tabs.** The page is split into Traffic, PrivateLink and Exposure tabs, each
+  with its critical and high count; the address keeps the tab.
+- **PrivateLink inventory.** The PrivateLink tab lists every endpoint service
+  and interface endpoint, not just the risky ones, with the sources, networks,
+  ports and refusals through each endpoint for the window chosen
+  (`pl_inventory`).
+- The demo includes Salesforce callers and a sibling account.
+
 ## 5.6.0 - 2026-11-22
 
 - **Every graph has the time window.** The **Time window** drop-down is now on

@@ -96,6 +96,14 @@ table.data tr:last-child td { border-bottom: none; }
 .gap-note { margin: 0 0 10px; padding: 8px 12px; border-radius: 8px; border-left: 4px solid var(--muted); background: var(--surface-2); color: var(--ink-2); }
 .gap-note code { font-size: 12px; }
 .section-window { margin: 0 0 8px; }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 16px 0 0; border-bottom: 1px solid var(--border); }
+.tabs button { font: inherit; font-size: 14.5px; font-weight: 600; padding: 9px 14px; border: 0; border-bottom: 3px solid transparent; background: none; color: var(--ink-2); cursor: pointer; margin-bottom: -1px; }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.tabs .pill { margin-left: 6px; }
+[data-tab-of][hidden] { display: none !important; }
+.net-kind td { background: var(--surface-2); font-weight: 650; }
+.net-blocks code { display: inline-block; margin: 0 6px 2px 0; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: 0; }
 .range-sel { font: inherit; font-size: 13.5px; padding: 5px 8px; border: 1px solid var(--control-line); border-radius: 8px; background: var(--surface); color: var(--ink); max-width: 100%; }
 .acl { color: var(--tone-est); font-weight: 600; }
 .dr { color: var(--tone-est); }
@@ -180,18 +188,21 @@ details.xr-fold > summary { margin: 0 0 10px; }
     </div>
     <dl id="meta" class="meta"></dl>
     <div id="coverage" class="coverage" role="note" hidden></div>
+    <nav class="tabs" role="tablist" aria-label="Views">
+      <button type="button" role="tab" data-tab="traffic">Traffic</button><button type="button" role="tab" data-tab="privatelink">PrivateLink</button><button type="button" role="tab" data-tab="posture">Exposure and hygiene</button>
+    </nav>
   </section>
 
-  <div class="chips" id="chips" role="group" aria-label="Kinds of source shown"></div>
+  <div class="chips" id="chips" role="group" aria-label="Kinds of source shown" data-tab-of="traffic"></div>
 
-  <section class="section" id="attentionWrap">
+  <section class="section" id="attentionWrap" data-tab-of="traffic">
     <h2><span class="num">!</span>Needs attention</h2>
     <p class="muted section-lede">Refusals that look like something broke, and sources let in that should not have been, each with its evidence and one action, worst first, then by flows and how long it has lasted. Scans the defences turned away stay out of it: every refused source still carries its verdict in the table below.</p>
     <div class="tools section-window"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div></div><p class="gap-note small" hidden></p>
     <div id="attention"></div>
   </section>
 
-  <section class="section">
+  <section class="section" data-tab-of="traffic">
     <h2><span class="num">1</span>Refused sources</h2>
     <p class="muted section-lede">Distinct addresses turned away per period, by kind. A refused address needs a rule only if the traffic is wanted: internal and data centre sources usually are (a new service, a moved server), AWS and SaaS sometimes (health checks, webhooks, a partner's new egress), other networks rarely (scanners), so they are drawn in grey as the defences working, and in amber only in a period far above the usual level, which can mean a probe. Select a bar, or one colour in it, to list those sources; <strong>Extract rule</strong> then turns what is listed into the inbound rules that would let it in, with everything known about each source and port.</p>
     <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div><div class="field"><span>Colour by</span><div class="seg" id="refusedBy" role="group" aria-label="Colour the refused sources by"><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="scope" id="extractScope"></span><button type="button" class="btn primary" id="btnExtract">Extract rule</button></div></div><p class="gap-note small" hidden></p><div class="chart-box"><canvas id="chRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div><p id="refusedJump" class="small jump" hidden></p><p id="refusedCause" class="small jump" hidden></p></figure>
@@ -205,7 +216,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     <div class="table-wrap"><table class="data" id="refused"></table></div>
   </section>
 
-  <section class="section">
+  <section class="section" data-tab-of="traffic">
     <h2><span class="num">2</span>Over-provisioned addresses</h2>
     <p class="muted section-lede">For each security group with flow logs on all its interfaces, the addresses its rules let in that were never seen, summed over the groups, by kind. An address seen anywhere in the account in the whole read, let in or refused, is never counted. The rules in force at each time are worked back from today's through CloudTrail's record of rule changes (triangles: select one for the change). Rules open to every address (0.0.0.0/0) are listed below, not counted. The scale is logarithmic: each step down is a tenfold cut. The grey bars are the sources refused in each period: a tightening that went too far shows as refusals starting right after a triangle. <strong>After</strong>, at the right, is what the Tighten panel below would leave.</p>
     <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div></div><p class="gap-note small" hidden></p><div class="chart-box"><canvas id="chOver" role="img" aria-label="Lines of never-seen addresses allowed in over time, by kind of source, with rule changes marked, refused sources as bars, and what the Tighten panel would leave"></canvas></div></figure>
@@ -243,7 +254,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     <div class="table-wrap"><table class="data" id="rules"></table></div>
   </section>
 
-  <section class="section">
+  <section class="section" data-tab-of="traffic">
     <h2><span class="num">3</span>Active sources</h2>
     <p class="muted section-lede">Distinct addresses let in per period. Dark: also let in during the last 24 hours. Light: not seen in the last 24 hours, the sources a rule change would hurt without warning (DR tests, failovers, month-end batches). Replies to the account's own outbound connections are left out. Select a bar to list its sources.</p>
     <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div><div class="field"><span>Colour by</span><div class="seg" id="activeBy" role="group" aria-label="Colour the active sources by"><button type="button" data-by="recency">Last 24 hours</button><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div></div><p class="gap-note small" hidden></p><div class="chart-box"><canvas id="chActive" role="img" aria-label="Stacked bars of active source addresses per period, split into those also seen in the last 24 hours and those not"></canvas></div></figure>
@@ -252,8 +263,15 @@ details.xr-fold > summary { margin: 0 0 10px; }
     <div class="table-wrap"><table class="data" id="active"></table></div>
   </section>
 
-  <section class="section">
-    <h2><span class="num">4</span>Ports</h2>
+  <section class="section" id="networksWrap" data-tab-of="traffic">
+    <h2><span class="num">4</span>Where traffic comes from</h2>
+    <p class="muted section-lede">Every network that sent traffic in the time window, one row each, by kind: your VPCs and your other accounts' VPCs (named by account and VPC), your data centres (named ranges, and the routes behind your VPNs), AWS by service and region (Lambda outside a VPC uses AWS's shared EC2 ranges, so it shows as EC2 in its region), SaaS providers and partners (Salesforce, Zscaler, GitHub and so on, from their published ranges and AS numbers), and every other network by owner and AS number. Each row gives the CIDR blocks its sources fall in, how many were let in and refused, and the ports they used or tried.</p>
+    <div class="tools section-window"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div><label style="flex:1;min-width:200px">Find <input type="search" id="netQ" style="width:100%" placeholder="Salesforce, 10.40, lambda, AS14340…" spellcheck="false" autocomplete="off"></label><label>Show <select id="netShow"><option value="">let in or refused</option><option value="in">let in</option><option value="out">refused only</option></select></label></div><p class="gap-note small" hidden></p>
+    <div class="table-wrap"><table class="data" id="networks"></table></div>
+  </section>
+
+  <section class="section" data-tab-of="traffic">
+    <h2><span class="num">5</span>Ports</h2>
     <p class="muted section-lede">Distinct sources per destination port over the timeline, coloured by what the port is for. Remote admin, database, Windows and directory, and container ports (marked ⚠) give control of a host or its data when reached: a refused internet source there is the rule doing its job; one let in deserves a look. Ports from 32768 up are read as one.</p>
     <div class="tools section-window"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div></div><p class="gap-note small" hidden></p>
     <div class="grid2">
@@ -264,21 +282,27 @@ details.xr-fold > summary { margin: 0 0 10px; }
     <div class="table-wrap"><table class="data" id="portClasses"></table></div>
   </section>
 
-  <section class="section" id="privatelinkWrap">
-    <h2><span class="num">5</span>PrivateLink</h2>
+  <section class="section" id="privatelinkWrap" data-tab-of="privatelink">
+    <h2>PrivateLink</h2>
     <p class="muted section-lede">Both sides of PrivateLink. <strong>Endpoint services this account provides:</strong> who may connect (any AWS account, '*', is critical when connections are also accepted without review), whether a new connection waits for acceptance, which accounts are connected, and whether the load balancer behind it applies its security groups to PrivateLink traffic. <strong>Interface endpoints in its VPCs:</strong> security groups that let in every address or a whole network (a /16 or wider), with the callers the flow logs saw and the ranges that would cover them.</p>
+    <div class="tools section-window"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div></div><p class="gap-note small" hidden></p>
+    <h3>Findings</h3>
     <div id="privatelink"></div>
+    <h3>Endpoint services this account provides</h3>
+    <div class="table-wrap"><table class="data" id="plServices"></table></div>
+    <h3>Interface endpoints in its VPCs, and the traffic through them</h3>
+    <div class="table-wrap"><table class="data" id="plEndpoints"></table></div>
   </section>
 
-  <section class="section" id="postureWrap">
-    <h2><span class="num">6</span>Exposure and hygiene</h2>
+  <section class="section" id="postureWrap" data-tab-of="posture">
+    <h2>Exposure and hygiene</h2>
     <p class="muted section-lede">The configuration itself, beside the traffic. <strong>Internet exposure:</strong> an open rule is only an exposure when the internet can get there: a public address, a route to an internet gateway and a network ACL that lets it in. Each is checked, with the internet sources that connected. <strong>IPv6:</strong> <code>::/0</code> and wide global ranges, which IPv4 reviews miss. <strong>Outbound:</strong> open outbound rules, fitted to the destinations the flow logs saw (with <code>read --egress</code>), and connections out to Tor exits or scanners. <strong>Group hygiene:</strong> the default group in use, trust in another account's group, references to deleted groups, and one group across several tiers.</p>
     <div id="postureFilter" class="tools"></div>
     <div id="posture"></div>
   </section>
 
-  <section class="section">
-    <h2><span class="num">7</span>How it is read</h2>
+  <section class="section" data-tab-of="traffic">
+    <h2><span class="num">6</span>How it is read</h2>
     <div class="card" id="method"></div>
   </section>
   <footer id="footer"></footer>
@@ -664,7 +688,9 @@ details.xr-fold > summary { margin: 0 0 10px; }
     $("#chips").innerHTML = `<span class="muted small">Show:</span>` + rep.categories.map((c) => `<button type="button" class="chip" data-cat="${c.key}" aria-pressed="${state.cats.has(c.key)}" style="--c:${COLOR[c.key]}">${esc(c.name)}</button>`).join("");
     attention();
     privatelink();
+    plInventory();
     posture();
+    tabCounts();
     charts();
     fitControls();
     fitDraw();
@@ -976,6 +1002,68 @@ details.xr-fold > summary { margin: 0 0 10px; }
     }).join("")}</tbody></table></div>`;
   }
 
+  // ---- Where traffic comes from: one row per network, by kind
+  function networks() {
+    const rep = state.rep, q = ($("#netQ").value || "").trim().toLowerCase(), show = $("#netShow").value;
+    const rows = (rep.networks || []).filter((n) => state.cats.has(n.cat) && (!show || (show === "in" ? n.in : !n.in && n.out))
+      && (!q || [n.name, n.provider, n.service, n.region, n.account, n.asn, n.what, TYPE[n.group]?.name, ...n.blocks].join(" ").toLowerCase().includes(q)));
+    const head = `<thead><tr><th>Network</th><th>CIDR blocks</th><th class="num-cell">Let in</th><th class="num-cell">Refused</th><th>Ports let in</th><th>Ports refused</th><th>Seen</th></tr></thead>`;
+    if (!rows.length) { $("#networks").innerHTML = head + `<tbody><tr><td colspan="7" class="muted">${(rep.networks || []).length ? "No network matches." : "No traffic in this time window."}</td></tr></tbody>`; return; }
+    let body = "", last = null;
+    for (const n of rows) {
+      if (n.cat !== last) {
+        const mine = rows.filter((r) => r.cat === n.cat);
+        body += `<tr class="net-kind"><td colspan="7"><span class="dot" style="background:${COLOR[n.cat]}"></span> ${esc(catName(n.cat))} · ${plural(mine.length, "network")} · ${num(mine.reduce((t, r) => t + r.in, 0))} let in, ${num(mine.reduce((t, r) => t + r.out, 0))} refused</td></tr>`;
+        last = n.cat;
+      }
+      const type = n.group && n.group !== n.cat ? TYPE[n.group]?.name || n.group : "";
+      const facts = [type, n.service && n.service !== "AMAZON" ? `AWS ${n.service}` : "", n.region, n.account ? `account ${n.account}` : "", n.asn, n.v6 ? `${num(n.v6)} IPv6` : ""].filter(Boolean);
+      body += `<tr><td><strong>${esc(n.name)}</strong>${n.threat ? ' <span class="pill" style="--p:var(--sev-critical)">threat list</span>' : ""}<div class="small muted">${esc(facts.join(" · "))}${n.what && !type.includes(n.what) ? `<br>${esc(n.what)}` : ""}</div></td>`
+        + `<td class="net-blocks small">${n.blocks.map((b) => `<code>${esc(b)}</code>`).join("") || '<span class="muted">none named</span>'}${n.more_blocks ? ` <span class="muted">and ${num(n.more_blocks)} more</span>` : ""}</td>`
+        + `<td class="num-cell">${n.in ? `${plural(n.in, "source")}<div class="small muted">${big(n.fin)} flows</div>` : '<span class="muted">0</span>'}</td>`
+        + `<td class="num-cell">${n.out ? `${plural(n.out, "source")}<div class="small muted">${big(n.fout)} flows</div>` : '<span class="muted">0</span>'}</td>`
+        + `<td class="small">${n.ports_in.map(esc).join(", ") || '<span class="muted">none</span>'}${n.interfaces ? `<div class="muted">${plural(n.interfaces, "interface")}</div>` : ""}</td>`
+        + `<td class="small">${n.ports_out.map(esc).join(", ") || '<span class="muted">none</span>'}</td>`
+        + `<td class="small">${esc(when(n.first, false))} to ${esc(when(n.last, false))}</td></tr>`;
+    }
+    $("#networks").innerHTML = head + `<tbody>${body}</tbody>`;
+  }
+
+  const acctName = (a) => (DATA.accounts && DATA.accounts[a] ? `${DATA.accounts[a]} (${a})` : a);
+  function plInventory() {
+    const inv = state.rep.pl_inventory || { services: [], endpoints: [], read: false };
+    const sv = inv.services, ep = inv.endpoints;
+    $("#plServices").innerHTML = sv.length ? `<thead><tr><th>Service</th><th>Who may connect</th><th>Connected</th><th>Load balancer</th></tr></thead><tbody>${sv.map((s) => `<tr>
+      <td><strong>${esc(s.name)}</strong><div class="small muted"><code>${esc(s.id)}</code> · ${esc(s.region)} · ${esc(s.state)} · ${s.acceptance ? "acceptance required" : "accepted automatically"}</div></td>
+      <td class="small">${s.principals == null ? '<span class="muted">not read</span>' : s.principals.length ? s.principals.map((p) => (p === "*" ? '<span class="pill" style="--p:var(--sev-critical)">any AWS account</span>' : `<code>${esc(p)}</code>`)).join(" ") : '<span class="muted">nobody</span>'}</td>
+      <td class="small">${s.connections == null ? '<span class="muted">not read</span>' : s.connections.length ? s.connections.map((c) => `${esc(acctName(c.owner))} <span class="muted">${esc(c.id)}, ${esc(c.state)}</span>`).join("<br>") : '<span class="muted">none</span>'}</td>
+      <td class="small">${s.nlbs.map((n) => `${esc(n.name)} · security groups on PrivateLink traffic: ${n.enforce === "off" ? '<span class="pill" style="--p:var(--sev-critical)">off</span>' : esc(n.enforce)}${n.groups.length ? ` · ${esc(n.groups.join(", "))}` : ""}`).join("<br>") || '<span class="muted">none</span>'}</td></tr>`).join("")}</tbody>`
+      : `<tbody><tr><td class="muted">${inv.read ? "This account provides no endpoint service." : "Endpoint services were not read (see What this review cannot see)."}</td></tr></tbody>`;
+    $("#plEndpoints").innerHTML = ep.length ? `<thead><tr><th>Endpoint</th><th>Security groups</th><th class="num-cell">Callers</th><th>From</th><th>Ports</th></tr></thead><tbody>${ep.map((e) => `<tr>
+      <td><strong>${esc(e.name || e.id)}</strong><div class="small muted"><code>${esc(e.id)}</code> · ${esc(e.service)} · ${esc(e.vpc)} · ${esc(e.region)} · ${plural(e.enis, "interface")}</div></td>
+      <td class="small">${esc(e.groups.join(", ")) || '<span class="muted">none</span>'}${e.rules.length ? `<div class="muted">${e.rules.map(esc).join("<br>")}</div>` : ""}</td>
+      <td class="num-cell">${e.sources ? `${plural(e.sources, "source")}<div class="small muted">${big(e.flows)} flows</div>` : '<span class="muted">none seen</span>'}${e.refused ? `<div class="small" style="color:var(--sev-critical)">${plural(e.refused, "refused")}</div>` : ""}</td>
+      <td class="small">${e.networks.map(([name, cat, n]) => `<span class="dot" style="background:${COLOR[cat] || "#888"}"></span> ${esc(name)} <span class="muted">${num(n)}</span>`).join("<br>") || '<span class="muted">none in this window</span>'}</td>
+      <td class="small">${e.ports.map(esc).join(", ") || '<span class="muted">none</span>'}</td></tr>`).join("")}</tbody>`
+      : `<tbody><tr><td class="muted">${inv.read ? "No interface endpoint in the VPCs read." : "Interface endpoints were not read (see What this review cannot see)."}</td></tr></tbody>`;
+  }
+
+  // ---- Tabs: Traffic, PrivateLink, Exposure and hygiene. The tab is kept in the address (#privatelink).
+  function tabCounts() {
+    const s = state.rep.summary, bad = (m) => (m ? (m.critical || 0) + (m.high || 0) : 0);
+    const tag = (n) => (n ? ` <span class="pill" style="--p:var(--sev-critical)">${num(n)}</span>` : "");
+    const names = { traffic: "Traffic", privatelink: "PrivateLink", posture: "Exposure and hygiene" };
+    const counts = { traffic: bad(s.attention), privatelink: bad(s.privatelink), posture: bad(s.posture) };
+    for (const b of document.querySelectorAll(".tabs [data-tab]")) b.innerHTML = esc(names[b.dataset.tab]) + tag(counts[b.dataset.tab]);
+  }
+  function showTab(t) {
+    if (!["traffic", "privatelink", "posture"].includes(t)) t = "traffic";
+    state.tab = t;
+    for (const b of document.querySelectorAll(".tabs [data-tab]")) b.setAttribute("aria-selected", String(b.dataset.tab === t));
+    for (const el of document.querySelectorAll("[data-tab-of]")) el.hidden = el.dataset.tabOf !== t;
+    for (const c of Object.values(state.charts)) { try { c.resize(); } catch (_) { /* hidden */ } }
+  }
+
   const AREA = { exposure: "Internet exposure", ipv6: "IPv6", egress: "Outbound", hygiene: "Group hygiene" };
   function posture() {
     const rep = state.rep;
@@ -1020,6 +1108,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   function tables() {
     const rep = state.rep;
     const sel = state.cats;
+    networks();
     seenBar("refused");
     seenBar("active");
     const ref = refusedShown();
@@ -1399,6 +1488,15 @@ details.xr-fold > summary { margin: 0 0 10px; }
     if (ap) download(JSON.stringify(DATA.approved[ap.dataset.approved], null, 2), `approved-${DATA.account}-${ap.dataset.approved}.json`, "application/json");
   });
   render();
+  document.querySelector(".tabs").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-tab]"); if (!b) return;
+    showTab(b.dataset.tab);
+    try { history.replaceState(null, "", b.dataset.tab === "traffic" ? location.pathname + location.search : `#${b.dataset.tab}`); } catch (_) { /* file: pages */ }
+  });
+  window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+  $("#netQ").addEventListener("input", networks);
+  $("#netShow").addEventListener("change", networks);
+  showTab(location.hash.slice(1));
 })();
 </script>
 </body>

@@ -94,6 +94,11 @@ Ranges are separated by commas. Each one is a CIDR, then a space, then a name.
 
 ## On the page
 
+The page has three tabs: **Traffic** (the timelines, Needs attention, where traffic comes from,
+ports and the rules), **PrivateLink** (every endpoint service and interface endpoint, and their
+findings) and **Exposure** (internet reach and hygiene). Each tab shows its critical and high count,
+and the address keeps the tab (`#privatelink`), so a link opens on it.
+
 The **Time window** drop-down, at the top, above each timeline and in Needs attention and Ports,
 switches every graph and table between the last 24 hours (hourly bars), the last week (6-hour bars), the last 1, 3 or 6 months
 (daily bars) and the last year (a bar a week). Changing it on one graph changes them all. The page
@@ -171,7 +176,7 @@ run through the security group database (`sg_db.py exec`). These items are in th
 `watch --alerts all`. A rule changed outside sg-tightener is also found, for every change and not only
 wide ones, by `sg_db.py reconcile` ([the database](database.md)).
 
-### PrivateLink
+### PrivateLink (its own tab)
 
 ![PrivateLink: an endpoint service any account may connect to, a load balancer that does not filter PrivateLink traffic, an interface endpoint open to 10.0.0.0/8](images/sg-review-privatelink.png)
 
@@ -183,6 +188,14 @@ Both sides of PrivateLink are checked, from the same read:
 | Accepted automatically | Low | Named principals, but each new endpoint is accepted without review | `--acceptance-required` |
 | PrivateLink not filtered | Medium | The load balancer behind the service has no security group, or does not apply its groups to PrivateLink traffic | `elbv2 set-security-groups ... --enforce-security-group-inbound-rules-on-private-link-traffic on` (a load balancer created without a group must be recreated) |
 | Endpoint too open | High for `0.0.0.0/0`, medium for a `/16` or wider | An interface endpoint's security group (Secrets Manager, STS, a partner's service) lets in a whole network | The callers flow logs saw, and the ranges from the rules table that cover them |
+
+Under the findings, two inventory tables list every PrivateLink resource, risky or not:
+
+- **Endpoint services this account provides**: who may connect (with the account names where
+  known), whether each connection must be accepted, and the load balancer behind it.
+- **Interface endpoints this account uses**: the service (Secrets Manager, STS, a partner's
+  service), the VPC, its security groups, and, for the window chosen, the sources seen using it,
+  the networks they come from, the ports, and what was refused.
 
 Critical, high and medium findings join **Needs attention**, so `watch` posts them and `org` counts
 them. `sg_ou_report.py` makes the same provider checks across an organisation, and names security
@@ -525,7 +538,31 @@ Replies to the account's own outbound connections are left out.
 
 ![Active sources coloured by network](images/sg-review-active-by-network.png)
 
-### 4. Ports
+### 4. Where traffic comes from
+
+![Where traffic comes from: one row per network, grouped by kind, with its CIDR blocks, ports and traffic both ways](images/sg-review-networks.png)
+
+One row per network, grouped by kind (internal, data centre, AWS, SaaS, other networks), for the
+window chosen: the CIDR blocks seen (up to 12, then a count), the ports, the sources and flows
+in and out, the interfaces reached, first and last seen, and a search and filter. This is the
+low-level view of what each kind of network sends:
+
+- **On-premises**: named from the VPN connections' static routes ("Behind VPN Johannesburg DC"),
+  `--onprem` and your names file.
+- **Your other AWS accounts**: every account `read` has seen is remembered in
+  `~/.sg-tightener/review/vpcs.json` (beside the reads), so traffic from another account's VPC is
+  named "payments-prod (111122223333), main" with no flags. `--internal` still wins on the same
+  range. Run `read` (or `org`) once per account to fill it.
+- **AWS services**: by service and region, from AWS's published ranges.
+- **Lambda**: AWS publishes no Lambda ranges. A function outside a VPC uses the region's shared EC2
+  ranges, so it shows as "AWS EC2 (any AWS customer's server, or Lambda outside a VPC), region".
+  A function inside a VPC shows as its own interface (internal).
+- **SaaS and secure access**: from published feeds (Cloudflare, GitHub, Google, Atlassian, Okta,
+  Datadog, Fastly, Oracle) and AS numbers (Salesforce AS14340, Zscaler, Microsoft, Akamai, Zoom,
+  SendGrid and about 60 more). Any other partner or service can be named by range or AS number in
+  your names file.
+
+### 5. Ports
 
 ![Refused and let-in sources per port, coloured by port class, and the port class table](images/sg-review-ports.png)
 

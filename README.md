@@ -44,6 +44,8 @@ tightening that cut off Lambda callers, the refusals it caused, and the range pu
 | Time window: the last year, with the time not read marked No data | Blast radius of one address |
 |---|---|
 | [![Time window](docs/images/sg-review-time-window.png)](docs/images/sg-review-time-window.png) | [![Blast radius](docs/images/sg-review-blast-radius.png)](docs/images/sg-review-blast-radius.png) |
+| **Where traffic comes from: each network's CIDR blocks** | **PrivateLink, on its own tab** |
+| [![Where traffic comes from](docs/images/sg-review-networks.png)](docs/images/sg-review-networks.png) | [![PrivateLink](docs/images/sg-review-privatelink.png)](docs/images/sg-review-privatelink.png) |
 
 **Managing the risk.** Fix what is internet-reachable before what is merely open on paper; read 90
 days before removing anything; tighten remote admin and database ports first; and report two
@@ -234,6 +236,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.7.0** | **Where traffic comes from, and PrivateLink on its own tab.** A new table lists every network sending or receiving traffic, grouped by kind, with its CIDR blocks: on-premises (from VPN routes), your other AWS accounts (now named automatically once read), AWS services by region, Lambda outside a VPC, and SaaS such as Salesforce, Zscaler, Okta and GitHub. The page is split into Traffic, PrivateLink and Exposure tabs; PrivateLink lists every endpoint service and interface endpoint with the traffic through it |
 | **5.6.0** | **Every graph windowed, and no data shown as no data.** The **Time window** drop-down is now also on Needs attention and Ports, and every window can be chosen. When a window reaches back further than the flow logs read, each graph says so ("No data before 26 May: 181 of 365 days read"), shades the time not read as **No data**, and the command to fill it is given. The console's rejected traffic says which accounts have no data that far back |
 | **5.5.0** | **Time window drop-down, up to a year.** Each timeline has a **Time window** drop-down (last 24 hours, week, month, 3 months, 6 months, year), kept in step with the one at the top. `sg_review.py read --days 365` reads a year, shown a bar a week, to catch yearly traffic before a rule is removed. The console's rejected traffic also offers the last year |
 | **5.4.0** | **Extract rule: what we know, one destination at a time.** Refused traffic is let in **one rule per destination address**, numbered, each card with its own command and **Propose this one in the console**, and a warning (with the `asset-plan` command) when the destination's group is shared. Each source is marked **Familiar**, **Unfamiliar** or **Do not add**, and **What we know** shows the evidence: your instance behind the address (Name tag, **operating system**, type, groups), ports it is already let in on, rules that already allow it, first seen, what else it was refused on, and the verdict. The review reads each instance's name and OS |

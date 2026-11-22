@@ -312,7 +312,8 @@ def _patterns(vpc: str, other: tuple | None) -> list[dict]:
         pats.append({"src": f"fd12:3456:0:4::{21 + i:x}", "to": app6, "port": 443, "ok": True, "p": 0.7, "rate": 6})
     pats.append({"src": "2602:80d:1003::17", "to": sftp6, "port": 3389, "ok": False, "p": 0.8, "rate": 2,
                  "after": 2, "sweep": True})  # fmt: skip
-    # webhooks: Lambda callers in af-south-1, GitHub hooks, staff through Zscaler, SNS and Route 53 health checks,
+    # webhooks: Lambda callers in af-south-1, GitHub hooks, staff through Zscaler, SNS, Route 53 health checks and
+    # Salesforce,
     # against a rule open to every AWS, GitHub and Zscaler address. Eight days ago the network team narrowed
     # 13.0.0.0/8 to Salesforce's /14; the Lambda callers were refused until it was put back the next day.
     hook = ("eni-0hook1", h(256 + 70))
@@ -321,7 +322,7 @@ def _patterns(vpc: str, other: tuple | None) -> list[dict]:
         pats.append({"src": src, "to": hook, "port": 443, "ok": True, "p": 0.9, "rate": 40, "notonly": 8})
         pats.append({"src": src, "to": hook, "port": 443, "ok": False, "only": [8], "rate": 40})
     for net, n, p in (("140.82.112.0/20", 3, 0.8), ("165.225.0.0/17", 4, 0.7), ("52.95.0.0/16", 2, 0.6),
-                      ("54.228.16.0/26", 3, 1.0)):
+                      ("54.228.16.0/26", 3, 1.0), ("13.108.0.0/14", 3, 0.8)):  # the last: Salesforce outbound messages
         for i in range(n):
             pats.append({"src": _host(net, 3 * 256 + 5 + 7 * i), "to": hook, "port": 443, "ok": True, "p": p, "rate": 10})
     vpce = ("eni-0vpce1", h(2 * 256 + 90))
@@ -396,6 +397,10 @@ def _egress(s: int, e: int, now: float, rnd: random.Random) -> list:
 def build_doc(account: str, now: float, days: int, existing: dict | None = None) -> dict:
     doc = existing if existing and existing.get("mode") == "demo" else sg_review.new_doc(account, NAME, "demo")
     doc["egress"] = True
+    # another account in the organisation, as sg_review.vpc_index() remembers every account read: its VPC names
+    # the sources from it with no --internal
+    doc["siblings"] = [{"account": "111122223333", "name": "payments-prod",
+                        "vpcs": [[REGION, "vpc-0pay0000000001", "main", [OTHER[1]], []]]}]  # fmt: skip
     qsets = [{"format": sg_review.DEFAULT_FORMAT, "groups": ["/vpc/flow-logs"]}]
     doc["regions"][REGION] = {"snapshot": snapshot(REGION, VPC, now), "history": history(now), "taken": now,
                               "query_sets": qsets}  # fmt: skip

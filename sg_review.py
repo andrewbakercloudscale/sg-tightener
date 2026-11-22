@@ -824,6 +824,54 @@ def save(doc: dict) -> None:
     with os.fdopen(fd, "wb") as raw, gzip.open(raw, "wt") as f:
         json.dump(doc, f, separators=(",", ":"))
     os.replace(tmp, path)
+    if doc.get("mode") != "demo":
+        idx = vpc_index(build_missing=False)
+        idx[doc["account"]] = _vpcs_of(doc)
+        _save_index(idx)
+
+
+# ------------------------------------------------------------------------------------------- every account's VPCs
+# Each account read is remembered with its VPC ranges (vpcs.json beside the reads), so a source in another of
+# your accounts is named by that account and VPC in every review, without listing it in --internal.
+def _vpcs_of(doc: dict) -> dict:
+    return {"name": doc.get("name", ""),
+            "vpcs": [[region, v["id"], v.get("name") or "", v.get("cidrs") or [], v.get("cidrs6") or []]
+                     for region, x in sorted(doc["regions"].items())
+                     for v in (x.get("snapshot") or {}).get("vpcs") or []]}  # fmt: skip
+
+
+def _save_index(idx: dict) -> None:
+    path = _dir() / "vpcs.json"
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        json.dump(idx, f, separators=(",", ":"))
+    os.replace(tmp, path)
+
+
+def vpc_index(build_missing: bool = True) -> dict:
+    """{account: {name, vpcs: [[region, vpc id, vpc name, IPv4 ranges, IPv6 ranges]]}} for every account read."""
+    try:
+        idx = json.loads((_dir() / "vpcs.json").read_text())
+        if not isinstance(idx, dict):
+            idx = {}
+    except (OSError, ValueError):
+        idx = {}
+    if build_missing:  # reads saved before the index existed
+        missing = [a for a in cached_accounts() if a not in idx]
+        for a in missing:
+            doc = load(a)
+            if doc and doc.get("mode") != "demo":
+                idx[a] = _vpcs_of(doc)
+        if missing:
+            _save_index(idx)
+    return idx
+
+
+def siblings(doc: dict) -> list[dict]:
+    """Your other accounts and their VPCs: [{account, name, vpcs}]. The demo carries its own."""
+    if doc.get("mode") == "demo":
+        return doc.get("siblings") or []
+    return [{"account": a, **x} for a, x in sorted(vpc_index().items()) if a != doc["account"]]
 
 
 def forget(account: str) -> bool:
@@ -990,7 +1038,8 @@ def _iv(cidrs) -> list[tuple[int, int]]:
 class Labeller:
     """Category and name of a source address; one lookup per address."""
 
-    def __init__(self, doc: dict, onprem: str = "", internal: str = "", names: list[dict] | None = None):
+    def __init__(self, doc: dict, onprem: str = "", internal: str = "", names: list[dict] | None = None,
+                 accounts: list[dict] | None = None):  # fmt: skip
         self.intel = sg_ipintel.get()
         # (first, last, category, name, cidr, extra fields), narrowest first
         self.nets: list[tuple[int, int, str, str, str, dict]] = []
@@ -1020,6 +1069,19 @@ class Labeller:
             iv = (int(net.network_address), int(net.broadcast_address))
             others.append(iv)
             self.nets.append((*iv, "internal", name, str(net), {}))
+        # your other accounts' VPCs (after the names above, which win on the same range)
+        for acc in siblings(doc) if accounts is None else accounts:
+            who = f"{acc.get('name') or 'Account'} ({acc['account']})"
+            for region, vid, vname, cidrs, cidrs6 in acc.get("vpcs") or []:
+                label, extra = f"{who}, {vname or vid}", {"account": acc["account"], "vpc": vid, "vpc_region": region}
+                for c in cidrs:
+                    iv = sg_ipintel.cidr_iv(c)
+                    if iv:
+                        others.append(iv)
+                        self.nets.append((*iv, "internal", label, c, extra))
+                for c in cidrs6:
+                    if _net6(c):
+                        self.nets6.append((_net6(c), "internal", label, extra))
         dc = []
         for net, name in parse_ranges(onprem, "On-premises"):
             if net.version == 6:
@@ -1099,7 +1161,7 @@ class Labeller:
         for first, last, cat, name, cidr, extra in self.nets:
             if first <= n <= last:
                 out = {"cat": cat, "name": name, "range": cidr, **extra}
-                a = self.intel.asn(n) if extra else None
+                a = self.intel.asn(n) if extra and "account" not in extra else None
                 if a:  # a named external range: what the AS list knows too
                     out.update(as_num=a["asn"], owner=a["owner"], cc=a["country"], block=a["block"],
                                asn=f"AS{a['asn']} {a['owner']}".strip() + (f" ({a['country']})" if a["country"] else ""))  # fmt: skip
@@ -1150,7 +1212,7 @@ class Labeller:
         for net, cat, name, extra in self.nets6:
             if a in net:
                 out = {"cat": cat, "name": name, "range": str(net), "v6": True, **extra}
-                if extra:
+                if extra and "account" not in extra:
                     got = self.intel.asn(int(a), 6)
                     if got:
                         out.update(as_num=got["asn"], owner=got["owner"], cc=got["country"], block=got["block"],
@@ -1532,6 +1594,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         for kind, m in by_class.items()
     }
     net_series = {"refused": _net_series(rej, lab, nbins), "active": _net_series(act, lab, nbins)}
+    networks = _networks(act, rej, lab, enis)
     group_series = {"refused": _group_series(rej, lab, nbins), "active": _group_series(act, lab, nbins)}
     ports = []
     for (proto, port), use in port_use.items():
@@ -1613,6 +1676,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
     for it in attention:
         it["new"] = sum(1 for s in it["srcs"] if nov.get(s, {}).get("new"))
     privatelink = privatelink_findings(doc, rules)
+    pl_inventory = _pl_inventory(snaps, act, rej, lab, groups)
     inet_in: dict[tuple, set] = {}
     for src, a in act.items():
         if lab(src)["cat"] in ("internal", "datacentre"):
@@ -1698,12 +1762,14 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
                    "by_class": class_series, "by_net": net_series,
                    "by_group": group_series},
         "ports": ports[:60],
+        "networks": networks,
         "groups": {gid: {"name": g["name"], "region": g["region"], "vpc": g["vpc"],
                          "rules": [{"ports": ports_label(r), "sources": _entries(r)} for r in g["rules"]]}
                    for gid, g in groups.items()},
         "markers": markers,
         "attention": attention,
         "privatelink": privatelink,
+        "pl_inventory": pl_inventory,
         "posture": posture,
         "drift": drift,
         "egress_read": {"slices": egress_read, "on": bool(doc.get("egress"))},
@@ -1766,6 +1832,83 @@ def _port_label(proto: str, port: int) -> str:
 
 
 NET_TOP = 150  # networks listed per series; the rest are summed per kind of source
+
+
+NETWORKS_MAX = 400  # networks in the "Where traffic comes from" table
+NET_BLOCKS = 12  # CIDR blocks listed per network
+
+
+def _cidrs_of(block: str) -> list[str]:
+    """A range as CIDR blocks: "165.225.0.0-165.225.13.255" (an announced block) becomes 165.225.0.0/21 and
+    165.225.8.0/22 and 165.225.12.0/23."""
+    if not block or "-" not in block:
+        return [block] if block else []
+    try:
+        a, b = (ipaddress.ip_address(x.strip()) for x in block.split("-", 1))
+        return [str(n) for n in ipaddress.summarize_address_range(a, b)]
+    except (ValueError, TypeError):
+        return [block]
+
+
+def _networks(act: dict, rej: dict, lab, enis: dict) -> list[dict]:
+    """Every network traffic came from in the window, one row each: its kind and type, the CIDR blocks its sources
+    fall in (the published, named or announced range), how many sources were let in and refused, their flows, the
+    ports and interfaces they reached or tried, and when."""
+    nets: dict[str, dict] = {}
+
+    def row(src: str) -> dict:
+        lb = lab(src)
+        n = nets.get(lb["net"])
+        if n is None:
+            n = nets[lb["net"]] = {
+                "name": lb["name"], "cat": lb["cat"], "group": lb.get("group", lb["cat"]), "asn": lb.get("asn", ""),
+                "provider": lb.get("provider", ""), "service": lb.get("service", ""),
+                "region": lb.get("aws_region", "") or lb.get("vpc_region", ""), "account": lb.get("account", ""),
+                "what": lb.get("what", ""), "threat": bool(lb.get("threat")), "blocks": {}, "in": 0, "out": 0,
+                "fin": 0, "fout": 0, "pin": {}, "pout": {}, "dst": set(), "first": None, "last": None, "v6": 0}  # fmt: skip
+        for blk in _cidrs_of(lb.get("range") or lb.get("block") or ""):
+            n["blocks"][blk] = n["blocks"].get(blk, 0) + 1
+        if is_v6(src):
+            n["v6"] += 1
+        return n
+
+    def seen(n, first, last):
+        n["first"] = first if n["first"] is None else min(n["first"], first)
+        n["last"] = last if n["last"] is None else max(n["last"], last)
+
+    for src, x in act.items():
+        if not x["bins"]:
+            continue
+        n = row(src)
+        n["in"] += 1
+        n["fin"] += x["flows"]
+        seen(n, x["first"], x["last"])
+        for (eni, proto, port), f in x["targets"].items():
+            k = _port_label(proto, min(EPHEMERAL, port))
+            n["pin"][k] = n["pin"].get(k, 0) + f
+            n["dst"].add(eni)
+    for src, r in rej.items():
+        if not r["bins"]:
+            continue
+        n = row(src)
+        n["out"] += 1
+        n["fout"] += r["flows"]
+        seen(n, r["first"], r["last"])
+        for t, f in r["targets"].items():
+            k = _port_label(t[1], t[2])
+            n["pout"][k] = n["pout"].get(k, 0) + f
+            if t[0]:
+                n["dst"].add(t[0])
+    out = []
+    for n in nets.values():
+        blocks = sorted(n["blocks"].items(), key=lambda kv: -kv[1])
+        top = lambda d: [k for k, _ in sorted(d.items(), key=lambda kv: -kv[1])[:6]]
+        out.append({**{k: v for k, v in n.items() if k not in ("blocks", "pin", "pout", "dst")},
+                    "blocks": [b for b, _ in blocks[:NET_BLOCKS]], "more_blocks": max(0, len(blocks) - NET_BLOCKS),
+                    "ports_in": top(n["pin"]), "ports_out": top(n["pout"]), "interfaces": len(n["dst"])})  # fmt: skip
+    order = {c: i for i, c in enumerate(CATS)}
+    out.sort(key=lambda n: (order.get(n["cat"], 9), -(n["in"] + n["out"]), n["name"]))
+    return out[:NETWORKS_MAX]
 
 
 def _net_series(srcs: dict, lab, nbins: int) -> list[dict]:
@@ -2256,6 +2399,62 @@ def privatelink_snapshot(session, ec2, region: str, errors: list) -> dict:
         errors.append(f"interface endpoints: {describe_error(exc)[:200]}")
         out["read"] = False
     return out
+
+
+def _pl_inventory(snaps: dict, act: dict, rej: dict, lab, groups: dict) -> dict:
+    """Every endpoint service this account provides and every interface endpoint in its VPCs, open or not, with
+    the traffic through each endpoint's interfaces in the window: sources let in and refused, by network, ports."""
+    by_eni: dict[str, dict] = {}
+    for src, x in act.items():
+        if x["bins"]:
+            for (eni, proto, port), f in x["targets"].items():
+                d = by_eni.setdefault(eni, {"in": {}, "out": {}, "ports": {}})
+                d["in"][src] = d["in"].get(src, 0) + f
+                k = _port_label(proto, port)
+                d["ports"][k] = d["ports"].get(k, 0) + f
+    for src, r in rej.items():
+        if r["bins"]:
+            for t, f in r["targets"].items():
+                if t[0]:
+                    d = by_eni.setdefault(t[0], {"in": {}, "out": {}, "ports": {}})
+                    d["out"][src] = d["out"].get(src, 0) + f
+    services, endpoints = [], []
+    for region, snap in sorted(snaps.items()):
+        pl = snap.get("privatelink") or {}
+        for sv in pl.get("services") or []:
+            services.append({"region": region, "id": sv["id"], "name": sv.get("name", ""), "service": sv.get("service", ""),
+                             "state": sv.get("state", ""), "acceptance": sv.get("acceptance"),
+                             "principals": sv.get("principals"), "connections": sv.get("connections"),
+                             "nlbs": [{"name": n.get("name", ""), "enforce": n.get("enforce", ""),
+                                       "groups": [groups.get(g, {}).get("name") or g for g in n.get("groups") or []]}
+                                      for n in sv.get("nlbs") or []]})  # fmt: skip
+        for e in pl.get("endpoints") or []:
+            ins, outs, ports = {}, {}, {}
+            for eni in e.get("enis") or []:
+                d = by_eni.get(eni) or {}
+                for k, v in (d.get("in") or {}).items():
+                    ins[k] = ins.get(k, 0) + v
+                for k, v in (d.get("out") or {}).items():
+                    outs[k] = outs.get(k, 0) + v
+                for k, v in (d.get("ports") or {}).items():
+                    ports[k] = ports.get(k, 0) + v
+            nets: dict[str, list] = {}
+            for src, f in ins.items():
+                lb = lab(src)
+                n = nets.setdefault(lb["name"], [lb["cat"], 0, 0])
+                n[1] += 1
+                n[2] += f
+            rules = [f"{ports_label(r)} from {', '.join(_entries(r)[:4]) or 'a group'}"
+                     for g in e.get("groups") or [] for r in (groups.get(g) or {}).get("rules") or []]  # fmt: skip
+            endpoints.append({"region": region, "id": e["id"], "name": e.get("name", ""), "service": e.get("service", ""),
+                              "vpc": e.get("vpc", ""), "state": e.get("state", ""),
+                              "groups": [groups.get(g, {}).get("name") or g for g in e.get("groups") or []],
+                              "rules": rules[:8], "enis": len(e.get("enis") or []),
+                              "sources": len(ins), "refused": len(outs), "flows": sum(ins.values()),
+                              "ports": [k for k, _ in sorted(ports.items(), key=lambda kv: -kv[1])[:5]],
+                              "networks": sorted(([k, *v] for k, v in nets.items()), key=lambda r: -r[2])[:8]})  # fmt: skip
+    read = all((snap.get("privatelink") or {}).get("read", False) for snap in snaps.values()) if snaps else False
+    return {"services": services, "endpoints": endpoints, "read": read}
 
 
 PL_WIDE = 65536  # a source block this size (a /16) or larger on an interface endpoint is a whole network
@@ -3215,7 +3414,8 @@ def page_data(doc: dict, onprem: str = "", internal: str = "", now: float | None
         "mode": doc.get("mode", "live"),
         "first": first,
         "end": end,
-        "default": ([k for k in keys if k != "1y"] or keys)[-1],  # a year is a bar a week: offered, not opened on
+        "default": ([k for k in keys if k != "1y"] or keys)[-1],
+        "accounts": {a["account"]: a.get("name", "") for a in siblings(doc)},  # a year is a bar a week: offered, not opened on
         "ranges": ranges,
         "fit": fits[-1] or {"rules": [], "labels": {}, "cap": FIT_CAP},
         "reach": reach_model(doc),
@@ -3372,7 +3572,7 @@ def cmd_demo(args) -> int:
         sg_ipintel.refresh()
     now = time.time()
     doc = sg_review_demo.build_doc(sg_review_demo.ACCOUNT, now, 180)  # half the year window: shows what no data looks like
-    write_page(page_data(doc, "", sg_review_demo.INTERNAL, now, parse_names(sg_review_demo.NAMES)), args.out)
+    write_page(page_data(doc, "", "", now, parse_names(sg_review_demo.NAMES)), args.out)  # the other account: siblings
     LOG.info("wrote %s (a made-up account: no AWS call was made)", args.out)
     return 0
 

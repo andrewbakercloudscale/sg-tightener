@@ -606,7 +606,7 @@ def test_page_has_a_time_window_dropdown_on_each_timeline(tmp_path):
     page = tmp_path / "p.html"
     sg_review.write_page(sg_review.page_data(doc, "", demo_sg.INTERNAL), str(page))
     html = page.read_text()
-    assert html.count('class="range-sel"') == 6 and 'id="range"' in html and '"1y": "Last year"' in html
+    assert html.count('class="range-sel"') == 8 and 'id="range"' in html and '"1y": "Last year"' in html
 
 
 def test_covered_is_the_share_of_each_bin_read():
@@ -625,5 +625,59 @@ def test_every_window_is_built_and_one_longer_than_the_read_says_where_there_is_
     page = tmp_path / "p.html"
     sg_review.write_page(data, str(page))
     html = page.read_text()
-    assert html.count('class="range-sel"') == 6 and html.count('class="gap-note small"') >= 5
+    assert html.count('class="range-sel"') == 8 and html.count('class="gap-note small"') >= 5
     assert "No data before" in html and "not read, not quiet" in html and "unreadShade" in html
+
+
+# ------------------------------------------------------------------------------------- networks, accounts, PrivateLink
+def test_every_account_read_names_its_vpcs_in_the_others_reviews():
+    other = demo_sg.build_doc("111122223333", time.time(), 1)
+    other.update(mode="live", name="payments-prod")
+    other["regions"][demo_sg.REGION]["snapshot"]["vpcs"] = [{"id": "vpc-0pay", "name": "main",
+                                                              "cidrs": ["10.40.0.0/16"], "cidrs6": []}]  # fmt: skip
+    sg_review.save(other)
+    assert sg_review.vpc_index()["111122223333"]["name"] == "payments-prod"
+    doc = demo_sg.build_doc(ACCT, time.time(), 1)
+    doc["mode"] = "live"
+    lab = sg_review.Labeller(doc)
+    got = lab("10.40.3.4")
+    assert (got["cat"], got["name"], got["range"], got["account"]) == (
+        "internal", "payments-prod (111122223333), main", "10.40.0.0/16", "111122223333")
+    assert sg_review.Labeller(doc, internal="10.40.0.0/16 Payments")("10.40.3.4")["name"] == "Payments"  # named wins
+
+
+def test_networks_list_each_source_network_with_its_cidr_blocks():
+    doc = demo_sg.build_doc(ACCT, time.time(), 30)
+    rep = sg_review.build(doc, "1m", "", "", sg_review.parse_names(demo_sg.NAMES))
+    nets = {n["name"]: n for n in rep["networks"]}
+    assert nets["payments-prod (111122223333), main"]["blocks"] == ["10.40.0.0/16"]
+    assert nets["Behind VPN Johannesburg DC"]["cat"] == "datacentre" and "10.200.0.0/16" in nets["Behind VPN Johannesburg DC"]["blocks"]
+    sf = nets["Salesforce"]
+    assert sf["cat"] == "saas" and sf["in"] == 3 and sf["ports_in"] == ["tcp 443"]
+    assert all("-" not in b for n in rep["networks"] for b in n["blocks"])  # announced ranges as CIDR blocks
+    lam = next(n for n in rep["networks"] if n["service"] == "EC2" and n["region"] == "af-south-1")
+    assert "Lambda" in lam["name"] and lam["in"] == 24
+    assert [n["cat"] for n in rep["networks"]] == sorted((n["cat"] for n in rep["networks"]), key=sg_review.CATS.index)
+    assert sg_review._cidrs_of("165.225.0.0-165.225.13.255") == ["165.225.0.0/21", "165.225.8.0/22", "165.225.12.0/23"]
+
+
+def test_privatelink_inventory_lists_every_service_and_endpoint_with_its_traffic():
+    doc = demo_sg.build_doc(ACCT, time.time(), 7)
+    inv = sg_review.build(doc, "1w")["pl_inventory"]
+    assert inv["read"] and [s["name"] for s in inv["services"]] == ["payments-api"]
+    assert inv["services"][0]["principals"] == ["*"] and inv["services"][0]["nlbs"][0]["enforce"] == "off"
+    ep = inv["endpoints"][0]
+    assert ep["name"] == "secrets-manager" and ep["sources"] == 3 and ep["flows"] > 0 and ep["ports"] == ["tcp 443"]
+    assert ep["networks"][0][0] == "This account, main"
+
+
+def test_page_has_tabs_and_the_networks_table(tmp_path):
+    doc = demo_sg.build_doc(ACCT, time.time(), 7)
+    data = sg_review.page_data(doc, "", "")
+    assert data["accounts"] == {"111122223333": "payments-prod"}
+    page = tmp_path / "p.html"
+    sg_review.write_page(data, str(page))
+    html = page.read_text()
+    for needle in ('data-tab="privatelink"', 'data-tab-of="posture"', 'id="networks"', 'id="plEndpoints"',
+                   "Where traffic comes from", 'id="netQ"'):
+        assert needle in html, needle
