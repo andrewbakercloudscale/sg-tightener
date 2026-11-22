@@ -87,6 +87,17 @@ table.data tr:last-child td { border-bottom: none; }
 .cat { display: inline-block; font-size: 10.5px; font-weight: 650; padding: 0 6px; border-radius: 999px; vertical-align: 1px; white-space: nowrap; background: color-mix(in srgb, var(--c) 13%, var(--surface)); color: color-mix(in srgb, var(--c) 70%, var(--ink)); border: 1px solid color-mix(in srgb, var(--c) 40%, transparent); }
 .pill { display: inline-block; font-size: 11px; font-weight: 650; padding: 1px 7px; border-radius: 999px; white-space: nowrap; vertical-align: 1px; background: color-mix(in srgb, var(--p, var(--muted)) 14%, var(--surface)); color: color-mix(in srgb, var(--p, var(--muted)) 75%, var(--ink)); border: 1px solid color-mix(in srgb, var(--p, var(--muted)) 45%, transparent); }
 .pill.recon { --p: var(--sev-critical); }
+#chRefused { touch-action: pan-y; cursor: crosshair; }
+.rcount { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 4px 0 12px; }
+.rcount button { text-align: left; border: 1px solid var(--grid); border-left: 4px solid var(--c, var(--muted)); border-radius: 8px; background: var(--surface); color: inherit; padding: 8px 12px; cursor: pointer; font: inherit; }
+.rcount button[aria-pressed="true"] { outline: 2px solid var(--c, var(--muted)); }
+.rcount b { display: block; font-size: 22px; line-height: 1.2; }
+.rcount span { font-size: 12px; color: var(--ink-2); }
+.xr-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; list-style: none; padding: 0; margin: 0 0 12px; font-size: 13px; }
+.xr-steps li { border: 1px solid var(--grid); border-radius: 8px; padding: 8px 10px; background: var(--surface); }
+.xr-steps li b { display: block; }
+tr.xr-ask td { background: transparent; }
+.xr-ask input[type=text] { min-width: 220px; flex: 1; }
 .pill.new { --p: var(--tone-est); }
 .pill.fresh { --p: var(--tone-risk); }
 .pill.v6 { --p: var(--accent); }
@@ -209,7 +220,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   <section class="section" data-tab-of="traffic">
     <h2><span class="num">1</span>Refused sources</h2>
     <p class="muted section-lede">Distinct addresses turned away per period, by kind. A refused address needs a rule only if the traffic is wanted: internal and data centre sources usually are (a new service, a moved server), AWS and SaaS sometimes (health checks, webhooks, a partner's new egress), other networks rarely (scanners), so they are drawn in grey as the defences working, and in amber only in a period far above the usual level, which can mean a probe. Select a bar, or one colour in it, to list those sources; <strong>Extract rule</strong> then turns what is listed into the inbound rules that would let it in, with everything known about each source and port.</p>
-    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div><div class="field"><span>Colour by</span><div class="seg" id="refusedBy" role="group" aria-label="Colour the refused sources by"><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="scope" id="extractScope"></span><button type="button" class="btn primary" id="btnExtract">Extract rule</button></div></div><p class="gap-note small" hidden></p><div class="chart-box"><canvas id="chRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div><p id="refusedJump" class="small jump" hidden></p><p id="refusedCause" class="small jump" hidden></p></figure>
+    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div><div class="field"><span>Colour by</span><div class="seg" id="refusedBy" role="group" aria-label="Colour the refused sources by"><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="scope" id="extractScope"></span><button type="button" class="btn primary" id="btnExtract">Extract rule</button></div></div><p class="gap-note small" hidden></p><div class="rcount" id="refusedCount" role="group" aria-label="Refused addresses in this period"></div><div class="chart-box"><canvas id="chRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div><p id="refusedZoom" class="small"></p><p id="refusedJump" class="small jump" hidden></p><p id="refusedCause" class="small jump" hidden></p></figure>
     <div id="suggestWrap">
       <h3>Rules that would let in the refused internal and data centre sources</h3>
       <p class="muted small">Per security group and port, the refused private sources as the fewest exact ranges. Add them only if the traffic is wanted; sources a network ACL refused are left out (the ACL decides first).</p>
@@ -336,12 +347,19 @@ details.xr-fold > summary { margin: 0 0 10px; }
   const RANGE_DAYS = { "24h": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180, "1y": 365 };
   const RANGE_NAME = { "24h": "Last 24 hours", "1w": "Last week", "1m": "Last month", "3m": "Last 3 months", "6m": "Last 6 months", "1y": "Last year" };
   const NET_SHOWN = 10;
-  const state = { range: DATA.default, rep: null, cats: new Set(CATS), bin: null, mark: null, only: null, charts: {}, by: { refused: "kind", active: "recency", over: "kind" }, overScale: "stack", seen: { refused: "", active: "" }, netTop: { refused: new Set(), active: new Set() }, xr: null };
+  const state = { range: DATA.default, rep: null, cats: new Set(CATS), bin: null, mark: null, only: null, charts: {}, by: { refused: "kind", active: "recency", over: "kind" }, overScale: "stack", zoom: null, xrOk: new Map(), xrAsk: null, seen: { refused: "", active: "" }, netTop: { refused: new Set(), active: new Set() }, xr: null };
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const num = (n) => (n == null ? EMPTY : Number(n).toLocaleString("en-GB"));
   const plural = (n, one, many) => `${num(n)} ${n === 1 ? one : many || one + "s"}`;
   const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  // High risk: anything scanning ports (many ports or many targets), known scanners, threat lists, Tor and VPN exits.
+  const isHigh = (x) => !!x.sweep || ["scanner", "anon", "threat"].includes(x.group);
+  const isExternal = (x) => x.cat === "internet";
+  const guardOf = (x) => (isHigh(x) ? "high" : isExternal(x) ? "external" : "");
+  const riskWhy = (x) => (x.sweep ? `scanning ${Number(x.ports || 0).toLocaleString("en-GB")} ports on ${Number(x.dsts || 0).toLocaleString("en-GB")} addresses` : x.group === "threat" ? "on a threat list" : x.group === "anon" ? "a Tor or VPN exit" : x.group === "scanner" ? "a known internet scanner" : "");
+  const riskPill = (x) => (isHigh(x) ? ` <span class="pill recon" title="High risk: do not let this address in">High risk · ${esc(riskWhy(x))}</span>` : "");
+  const cleanReason = (t) => String(t || "").replace(/[^\w .,:#()/@+-]/g, "").trim().slice(0, 120);
   const big = (n) => (n >= 1e12 ? `${Number(n).toExponential(1).replace("e+", "×10^")}` : n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${(n / 1e3).toFixed(0)}k` : num(n));
   const bytes = (n) => { if (n == null) return EMPTY; const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1000 && i < 4) { n /= 1000; i++; } return `${n.toFixed(i ? 1 : 0)} ${u[i]}`; };
   const cost = (c) => (c == null ? "cost unknown until the first read" : c < 0.01 ? "under US$0.01" : `about US$${c.toFixed(2)}`);
@@ -664,7 +682,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
 
   function render() {
     state.rep = DATA.ranges[state.range];
-    state.bin = null; state.mark = null; state.only = null;
+    state.bin = null; state.mark = null; state.only = null; state.zoom = null;
     markRange();
     $("#read").innerHTML = readPanel();
     const rep = state.rep, s = rep.summary;
@@ -760,6 +778,40 @@ details.xr-fold > summary { margin: 0 0 10px; }
     return CLASSES.filter((c) => per[c.key]).map((c) => ({ label: c.name + (c.risky ? " ⚠" : ""), data: per[c.key], backgroundColor: CLASS_COLOR[c.key], borderWidth: 0, filter: { mode: "class", key: c.key, label: `${c.name} ports` } }));
   }
 
+  // Drag across the refused chart to zoom into a period.
+  const drag = { on: false, moved: false, just: false, x0: 0, x1: 0 };
+  const dragShade = { id: "dragShade", afterDatasetsDraw(c) {
+    if (!drag.on || !drag.moved) return;
+    const a = c.chartArea, ctx = c.ctx, l = Math.max(a.left, Math.min(drag.x0, drag.x1)), r = Math.min(a.right, Math.max(drag.x0, drag.x1));
+    ctx.save(); ctx.fillStyle = "rgba(37, 99, 235, 0.18)"; ctx.fillRect(l, a.top, r - l, a.bottom - a.top); ctx.restore();
+  } };
+  function zoomTo(i, j) {
+    const n = state.rep.bins.length;
+    i = Math.max(0, Math.min(n - 1, i)); j = Math.max(0, Math.min(n - 1, j));
+    if (j < i) [i, j] = [j, i];
+    state.zoom = i === 0 && j === n - 1 ? null : { i, j };
+    if (state.bin?.kind === "refused") state.bin = null;
+    if (state.only?.kind === "refused") state.only = null;
+    charts(); tables();
+  }
+  (() => {
+    const cv = document.getElementById("chRefused");
+    if (!cv) return;
+    const xOf = (e) => e.clientX - cv.getBoundingClientRect().left;
+    cv.addEventListener("pointerdown", (e) => { if (e.button) return; drag.on = true; drag.moved = false; drag.x0 = drag.x1 = xOf(e); });
+    cv.addEventListener("pointermove", (e) => { if (!drag.on) return; drag.x1 = xOf(e); if (Math.abs(drag.x1 - drag.x0) > 8) drag.moved = true; if (drag.moved) state.charts.chRefused?.draw(); });
+    const end = (e) => {
+      if (!drag.on) return;
+      drag.on = false;
+      const c = state.charts.chRefused;
+      if (!drag.moved || !c || e.type !== "pointerup") { c?.draw(); return; }
+      drag.just = true; setTimeout(() => { drag.just = false; }, 300);
+      const xs = c.scales.x;
+      zoomTo(Math.round(xs.getValueForPixel(Math.min(drag.x0, drag.x1))), Math.round(xs.getValueForPixel(Math.max(drag.x0, drag.x1))));
+    };
+    for (const t of ["pointerup", "pointercancel", "pointerleave"]) cv.addEventListener(t, end);
+  })();
+
   function charts() {
     const rep = state.rep;
     const labels = rep.bins.map((t) => binLabel(t, rep.step));
@@ -800,15 +852,26 @@ details.xr-fold > summary { margin: 0 0 10px; }
       for (const m of caused) (byBin[m.bin] = byBin[m.bin] || []).push(m);
       refusedSets.push({ type: "line", stack: "caused", label: "Change that broke traffic", data: rep.bins.map((_, i) => (byBin[i] ? Math.max(rTotal[i], 1) : null)), showLine: false, pointStyle: "triangle", pointRadius: 9, pointHoverRadius: 11, borderColor: css("--sev-critical"), backgroundColor: css("--sev-critical"), marks: byBin, order: -1 });
     }
+    // The high-risk sources (scanning ports, scanners, threat lists, Tor) per period, as a red line over the bars.
+    const hi = rep.bins.map(() => 0);
+    for (const x of rep.refused) if (sel.has(x.cat) && isHigh(x)) for (const b of x.bins) if (b >= 0 && b < hi.length) hi[b] += 1;
+    if (hi.some((v) => v)) refusedSets.push({ type: "line", stack: "risk", label: "High risk: scanning ports, scanners, threat lists, Tor", data: hi, borderColor: css("--sev-critical"), backgroundColor: css("--sev-critical"), borderWidth: 2, pointRadius: 2, tension: 0, order: -2, filter: { mode: "risk", key: "high", label: "high-risk sources" } });
     $("#refusedCause").hidden = !caused.length;
     $("#refusedCause").innerHTML = caused.slice(0, 3).map((m) => `<strong>Refusals began after a rule change</strong> (red triangle): ${esc(m.event.replace("SecurityGroupIngress", "").replace("SecurityGroupRules", " rules"))} on ${esc(m.name)} by ${esc(m.who || "unknown")}, ${esc(when(m.t))}, removed ${m.removed.map((x) => `<code>${esc(x)}</code>`).join(", ") || "a rule"}; ${plural(m.caused.length, "source")} let in before ${m.caused.length === 1 ? "has" : "have"} been refused since. Select the triangle to list them.`).join("<br>");
     const rPick = pick("refused", refusedSets);
     const rLabel = (c) => (c.dataset.marks ? (c.dataset.marks[c.dataIndex] || []).map((m) => `${m.event.replace("SecurityGroupIngress", "").replace("SecurityGroupRules", " rules")} on ${m.name} by ${m.who || "unknown"}: ${m.caused.length} let in before, refused since`) : c.raw ? `${c.dataset.label}: ${num(c.raw)}` : null);
+    const rScales = scales(false);
+    if (state.zoom) { rScales.x.min = state.zoom.i; rScales.x.max = state.zoom.j; }
+    const z = state.zoom;
+    $("#refusedZoom").innerHTML = z ? `<strong>Zoomed in</strong> on ${esc(zoomLabel())} (${plural(z.j - z.i + 1, "period")}): the counts, the table below and <strong>Extract rule</strong> cover only this time. <button type="button" class="btn mini" data-zoom-out>Zoom out</button>`
+      : `<span class="muted">Drag across the chart to zoom into a period: the counts, the table and <strong>Extract rule</strong> follow. The red line is the high-risk sources (scanning ports, scanners, threat lists, Tor).</span>`;
     chart("chRefused", {
       type: "bar",
       data: { labels, datasets: refusedSets },
-      options: { responsive: true, maintainAspectRatio: false, animation: false, scales: scales(false),
+      plugins: [dragShade],
+      options: { responsive: true, maintainAspectRatio: false, animation: false, scales: rScales,
         onClick: (evt, els) => {
+          if (drag.just) { drag.just = false; return; }
           const el = els.find((e) => refusedSets[e.datasetIndex]?.marks);
           if (el) { const ms = refusedSets[el.datasetIndex].marks[el.index] || []; showOnly({ kind: "refused", srcs: [...new Set(ms.flatMap((m) => m.caused))], title: `Refused since ${ms.map((m) => `the change on ${m.name} by ${m.who || "unknown"}`).join(" and ")}` }); return; }
           rPick(evt, els.filter((e) => !refusedSets[e.datasetIndex]?.marks));
@@ -952,7 +1015,10 @@ details.xr-fold > summary { margin: 0 0 10px; }
   }
 
   // Whether a listed source belongs to the bar (and colour) selected in its chart.
+  const inZoom = (x) => { const z = state.zoom; return !z || x.bins.some((v) => v >= z.i && v <= z.j); };
+  const zoomLabel = () => { const z = state.zoom, rep = state.rep; return z ? `${binLabel(rep.bins[z.i], rep.step)} to ${binLabel(rep.bins[z.j], rep.step)}${rep.step < 86400 ? " UTC" : ""}` : ""; };
   function inPick(x, kind) {
+    if (kind === "refused" && !inZoom(x)) return false;
     const o = state.only;
     if (o && o.kind === kind && !o.srcs.has(x.src)) return false;
     const b = state.bin;
@@ -965,6 +1031,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     if (f.mode === "group") return x.group === f.key;
     if (f.mode === "net-other") return x.cat === f.key && !state.netTop[kind].has(x.net);
     if (f.mode === "class") return x.targets.some((t) => t.pc?.cls === f.key);
+    if (f.mode === "risk") return isHigh(x);
     if (f.mode === "recency") return f.key === "today" ? x.today : !x.today;
     return true;
   }
@@ -978,7 +1045,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
       ? `Showing ${plural(shown, "source")}: ${esc(o.label)}. <a href="#" data-clear>Show all</a>`
       : b
       ? `Showing the ${plural(shown, "source")} in ${esc(binLabel(rep.bins[b.i], rep.step))}${rep.step < 86400 ? " UTC" : ""}${b.f ? `, ${esc(b.f.label)}` : ""}. <a href="#" data-clear>Show all</a>`
-      : `${plural(shown, "source")}${total > shown ? ` of ${num(total)}` : ""}, busiest first${kind === "refused" ? ", internal and data centre before the rest" : ""}. Select a bar in the chart to list one period's.`;
+      : kind === "refused" && state.zoom ? `Showing the ${plural(shown, "source")} refused from ${esc(zoomLabel())}. <a href="#" data-zoom-out>Zoom out</a>`
+      : `${plural(shown, "source")}${total > shown ? ` of ${num(total)}` : ""}, busiest first${kind === "refused" ? ", internal and data centre before the rest" : ""}. Select a bar in the chart to list one period's${kind === "refused" ? ", or drag across it to zoom into a period" : ""}.`;
   }
 
   // List only the sources of one "Needs attention" item in its table, and scroll to it.
@@ -1160,6 +1228,25 @@ details.xr-fold > summary { margin: 0 0 10px; }
     $(`#${kind}Seen`).innerHTML = `${opts.map(([k, label]) => `<button type="button" class="btn mini${state.seen[kind] === k ? " primary" : ""}" data-seen="${kind}|${k}">${esc(label)}</button>`).join(" ")}<span class="muted small">${esc(note)}</span>`;
   }
 
+  // The counter over the refused chart: addresses refused in the window (or the period zoomed into), by risk.
+  const RC = {
+    all: ["Refused addresses", "--accent", () => true, "in this period"],
+    high: ["High risk", "--sev-critical", isHigh, "scanning ports, scanners, threat lists, Tor"],
+    external: ["Other external", "--sev-warning", (x) => isExternal(x) && !isHigh(x), "outside your networks, not high risk, no named provider"],
+    own: ["Yours", "--good", (x) => (x.cat === "internal" || x.cat === "datacentre") && !isHigh(x), "your VPCs and data centres"],
+    known: ["AWS and SaaS", "--muted", (x) => (x.cat === "aws" || x.cat === "saas") && !isHigh(x), "published provider ranges"],
+  };
+  function refusedCount() {
+    const rep = state.rep;
+    const list = rep.refused.filter((x) => state.cats.has(x.cat) && inZoom(x));
+    const on = state.only?.kind === "refused" ? state.only.rc : null;
+    const capped = !state.zoom && rep.summary.refused > rep.refused.length;
+    $("#refusedCount").innerHTML = Object.entries(RC).map(([k, [name, c, test, note]]) => {
+      const n = list.filter(test).length;
+      return `<button type="button" data-rc="${k}" style="--c:var(${c})" aria-pressed="${on === k}"><span>${esc(name)}</span><b>${num(n)}</b><span>${esc(k === "all" && capped ? `the busiest listed, of ${num(rep.summary.refused)}` : k === "all" && state.zoom ? zoomLabel() : note)}</span></button>`;
+    }).join("");
+  }
+
   function refusedShown() {
     const order = (c) => CATS.indexOf(c);
     return state.rep.refused.filter((x) => state.cats.has(x.cat) && inPick(x, "refused") && seenOk(x, "refused")).sort((a, b) => order(a.cat) - order(b.cat) || b.flows - a.flows);
@@ -1172,13 +1259,14 @@ details.xr-fold > summary { margin: 0 0 10px; }
     seenBar("refused");
     seenBar("active");
     const ref = refusedShown();
+    refusedCount();
     filterNote("#refusedFilter", "refused", ref.length, rep.summary.refused);
     const b = state.bin?.kind === "refused" ? state.bin : null;
     $("#extractScope").textContent = ref.length ? (b ? `${plural(ref.length, "source")} selected` : `all ${plural(ref.length, "source")} listed`) : "no refused source listed";
     $("#btnExtract").disabled = !ref.length;
     const tgt = (t) => `<div class="small">${esc(t.kind)} <code>${esc(t.eni)}</code> · ${esc(portsOf(t))} ${pcChip(t.pc)} <span class="muted">${esc(t.pc?.svc || "")}</span> · ${num(t.flows)} flows${t.by ? ` · <span class="${t.by.startsWith("Network ACL") ? "acl" : ""}">refused by ${esc(t.by)}</span>` : ""}</div>`;
     $("#refused").innerHTML = ref.length
-      ? `<thead><tr><th>Source</th><th>Refused at</th><th class="num-cell">Flows</th><th>First seen</th><th>Last seen</th><th></th></tr></thead><tbody>${ref.map((x) => `<tr><td>${srcCell(x)}${x.sweep ? ` <span class="pill recon">sweeping ${num(x.ports)} ports, ${num(x.dsts)} targets</span>` : ""}${verdictBlock(x.verdict)}</td><td>${targetsInPick(x, "refused").map(tgt).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="small">${esc(when(x.first))}${firstEver(x)}</td><td class="small">${esc(when(x.last))}</td><td><button type="button" class="btn mini" data-extract="${esc(x.src)}">Extract rule</button></td></tr>`).join("")}</tbody>`
+      ? `<thead><tr><th>Source</th><th>Refused at</th><th class="num-cell">Flows</th><th>First seen</th><th>Last seen</th><th></th></tr></thead><tbody>${ref.map((x) => `<tr><td>${srcCell(x)}${riskPill(x)}${verdictBlock(x.verdict)}</td><td>${targetsInPick(x, "refused").map(tgt).join("")}</td><td class="num-cell">${num(x.flows)}</td><td class="small">${esc(when(x.first))}${firstEver(x)}</td><td class="small">${esc(when(x.last))}</td><td><button type="button" class="btn mini" data-extract="${esc(x.src)}">Extract rule</button></td></tr>`).join("")}</tbody>`
       : `<tbody><tr><td class="muted">No refused source of the kinds shown${state.bin ? " in this period" : ""}.</td></tr></tbody>`;
     $("#suggestWrap").hidden = !rep.suggestions.length;
     $("#suggest").innerHTML = `<thead><tr><th>Security group</th><th>Port</th><th>From</th><th class="num-cell">Sources</th><th class="num-cell">Flows</th><th>Ranges to add, if wanted</th></tr></thead><tbody>${rep.suggestions.map((x) => `<tr><td>${esc(x.name)} <code class="small">${esc(x.group)}</code><div class="muted small">${esc(x.region)}</div></td><td>${esc(x.ports)}<div>${pcChip(x.pc)} <span class="muted small">${esc(x.pc?.svc || "")}</span></div></td><td class="small">${x.from.map(esc).join("<br>")}</td><td class="num-cell">${num(x.sources)}</td><td class="num-cell">${num(x.flows)}</td><td><code class="small">${x.cidrs.map(esc).join("<br>")}</code></td></tr>`).join("")}</tbody>`;
@@ -1268,12 +1356,12 @@ details.xr-fold > summary { margin: 0 0 10px; }
         a.dst.add(t.dst); a.flows += t.flows; r.assets.set(t.eni, a);
         const v = x.verdict;
         const noisy = x.sweep || ["scanner", "anon", "threat"].includes(x.group) || (x.cat === "internet" && t.pc?.risky);
-        const s = r.sources.get(x.src) || { x, flows: 0, on: v ? v.wanted || (!!single && !noisy && !["scan", "internal-scan"].includes(v.key)) : !noisy };
+        const s = r.sources.get(x.src) || { x, flows: 0, on: guardOf(x) ? false : v ? v.wanted || (!!single && !noisy && !["scan", "internal-scan"].includes(v.key)) : !noisy };
         s.flows += t.flows; r.sources.set(x.src, s);
         rules.set(key, r);
       }
     }
-    const scope = single ? `One source: ${single}` : fb ? `${plural(sources.length, "refused source")} in ${binLabel(rep.bins[fb.i], rep.step)}${rep.step < 86400 ? " UTC" : ""}${fb.f ? `, ${fb.f.label}` : ""}` : `All ${plural(sources.length, "refused source")} listed for ${({ "24h": "the last 24 hours", "1w": "the last week", "1m": "the last month", "3m": "the last 3 months", "6m": "the last 6 months", "1y": "the last year" })[state.range]}`;
+    const scope = single ? `One source: ${single}` : fb ? `${plural(sources.length, "refused source")} in ${binLabel(rep.bins[fb.i], rep.step)}${rep.step < 86400 ? " UTC" : ""}${fb.f ? `, ${fb.f.label}` : ""}` : state.only?.kind === "refused" ? `${plural(sources.length, "refused source")}: ${state.only.label}${state.zoom ? `, ${zoomLabel()}` : ""}` : state.zoom ? `${plural(sources.length, "refused source")} from ${zoomLabel()}` : `All ${plural(sources.length, "refused source")} listed for ${({ "24h": "the last 24 hours", "1w": "the last week", "1m": "the last month", "3m": "the last 3 months", "6m": "the last 6 months", "1y": "the last year" })[state.range]}`;
     const restores = new Map();
     for (const x of sources) {
       const v = x.verdict;
@@ -1351,6 +1439,14 @@ details.xr-fold > summary { margin: 0 0 10px; }
     return { on, cidrs };
   }
 
+  // Adding a high-risk or external source takes a reason (and, for high risk, typing "add high risk").
+  function askRow(ri, s) {
+    const high = guardOf(s.x) === "high", key = `${ri}|${s.x.src}`;
+    const why = high ? `<strong>High risk: ${esc(s.x.src)} is ${esc(riskWhy(s.x))}.</strong> It behaves like an attacker looking for a way in: a rule for it hands over the port it was probing. Add it only if you know who it is and it must reach this port.`
+      : `<strong>External: ${esc(s.x.src)} is outside your networks</strong> (${esc(s.x.name)}), with no published provider range behind it. Anyone can hold an address like this one. Add it only if you know who it is.`;
+    return `<tr class="xr-ask"><td colspan="7"><div class="xr-warn${high ? "" : " soft"}">${why}<div class="tools"><input type="text" data-xr-reason="${esc(key)}" placeholder="Who it is and why (owner, ticket)" aria-label="Reason to add ${esc(s.x.src)}" autocomplete="off">${high ? `<input type="text" data-xr-phrase="${esc(key)}" placeholder="Type: add high risk" aria-label="Type add high risk to confirm" autocomplete="off">` : ""}<button type="button" class="btn" data-xr-confirm="${esc(key)}" disabled>${high ? "Add this high-risk source" : "Add this external source"}</button><button type="button" class="btn" data-xr-cancel>Keep it out</button></div></div></td></tr>`;
+  }
+
   function drawExtract() {
     const X = state.xr;
     const rep = state.rep;
@@ -1371,7 +1467,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
       const fresh = o.cidrs.filter((c) => { const id = `${k}|${p}|${o.r.port}|${c.cidr}`; if (seenPerm.has(id)) return false; seenPerm.add(id); return true; });
       o.perm = { proto: p, port: icmp ? -1 : o.r.port, cidrs: fresh };
       const label = `# ${i + 1} of ${live.length}: ${p} ${o.r.port}${X.split === "dst" ? ` to ${o.r.dstIp}` : ""} into ${sgDesc(rep.groups?.[o.r.group]?.name || o.r.group)}`;
-      const cmd = fresh.length ? `${label}\npython sg_db.py exec --reason 'sg_review: extracted from refused traffic' -- \\\n  aws ec2 authorize-security-group-ingress --region ${o.r.region} --group-id ${o.r.group} \\\n  --ip-permissions '${JSON.stringify([ipPerm(p, o.perm.port, fresh)])}'` : `${label}\n# covered by an earlier rule here: the same ranges into the same group`;
+      const exc = o.on.filter((sv) => guardOf(sv.x) && state.xrOk.has(sv.x.src)).map((sv) => `${sv.x.src} ${guardOf(sv.x) === "high" ? "HIGH RISK" : "external"} (${state.xrOk.get(sv.x.src)})`);
+      const cmd = fresh.length ? `${label}\npython sg_db.py exec --reason 'sg_review: extracted from refused traffic${exc.length ? `; exceptions approved: ${exc.join("; ")}` : ""}' -- \\\n  aws ec2 authorize-security-group-ingress --region ${o.r.region} --group-id ${o.r.group} \\\n  --ip-permissions '${JSON.stringify([ipPerm(p, o.perm.port, fresh)])}'` : `${label}\n# covered by an earlier rule here: the same ranges into the same group`;
       cmdOf.set(o.r, cmd); cmds.push(cmd);
       if (fresh.length) (byGroup[k] = byGroup[k] || { region: o.r.region, group: o.r.group, perms: [] }).perms.push(ipPerm(p, o.perm.port, fresh));
     }
@@ -1402,7 +1499,18 @@ details.xr-fold > summary { margin: 0 0 10px; }
     }
     if (X.capped) soft.push(`This page lists the ${num(rep.refused.length)} busiest of ${num(rep.summary.refused)} refused sources: quieter ones are not in these rules.`);
     const lv = (l) => uniq(allOn.filter((s) => s.k.level === l).map((s) => s.x.src)).length;
-    let html = `<div class="tools xr-split"><span class="small muted">One rule for each</span><span class="seg">${[["dst", "destination address"], ["group", "security group and port"]].map(([k, n]) => `<button type="button" data-xr-split="${k}" aria-pressed="${X.split === k}">${n}</button>`).join("")}</span></div>
+    const allSrc = new Map();
+    for (const r of X.rules) for (const sv of r.sources.values()) { const a = allSrc.get(sv.x.src) || { x: sv.x, on: false }; a.on = a.on || sv.on; allSrc.set(sv.x.src, a); }
+    const held = (g) => [...allSrc.values()].filter((a) => !a.on && guardOf(a.x) === g).length;
+    const safeOff = [...allSrc.values()].filter((a) => !a.on && !guardOf(a.x)).length;
+    let html = `<ol class="xr-steps">
+      <li><b>1. Period</b>${esc(X.scope)}<br><span class="muted small">Drag across the refused chart to zoom into another period.</span></li>
+      <li><b>2. Sources</b>${plural(srcs.length, "address", "addresses")} ticked<br><span class="muted small">${num(held("high"))} high risk and ${num(held("external"))} external held back: each needs a reason to add</span></li>
+      <li><b>3. Rules</b>${plural(live.length, "rule")} in ${plural(uniq(live.map((o) => o.r.group)).length, "security group")}<br><span class="muted small">one per ${X.split === "dst" ? "destination address" : "group and port"}</span></li>
+      <li><b>4. Apply</b>Copy the commands, or propose each for a second person to approve<br><span class="muted small">nothing is applied from this page</span></li>
+    </ol>
+    <div class="tools"><button type="button" class="btn primary" data-xr-bulk="safe"${safeOff ? "" : " disabled"}>Tick every source that is not high risk or external${safeOff ? ` (${num(safeOff)} more)` : ""}</button><button type="button" class="btn" data-xr-bulk="none"${srcs.length ? "" : " disabled"}>Untick all</button></div>
+    <div class="tools xr-split"><span class="small muted">One rule for each</span><span class="seg">${[["dst", "destination address"], ["group", "security group and port"]].map(([k, n]) => `<button type="button" data-xr-split="${k}" aria-pressed="${X.split === k}">${n}</button>`).join("")}</span></div>
     <dl class="xr-facts">
       <div><dt>What we know</dt><dd>${knownChip({ level: "ok" })} ${num(lv("ok"))} ${knownChip({ level: "new" })} ${num(lv("new"))} ${knownChip({ level: "bad" })} ${num(lv("bad"))}<br><span class="muted small">of the sources ticked</span></dd></div>
       <div><dt>Rules</dt><dd>${plural(live.length, "rule")} in ${plural(uniq(live.map((o) => o.r.group)).length, "security group")}${X.rules.length > live.length ? ` · ${num(X.rules.length - live.length)} with nothing ticked` : ""}</dd></div>
@@ -1414,7 +1522,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     for (const [i, rs] of (X.restores || []).entries()) html += `<div class="xr-restore"><strong>Restore the revoked rule</strong><p>${plural(rs.srcs.length, "source")} here (${rs.srcs.slice(0, 4).map((s) => `<code>${esc(s)}</code>`).join(", ")}${rs.srcs.length > 4 ? "…" : ""}) worked until ${esc(rs.event?.who || "someone")} removed <code>${esc(rs.entry)}</code> from ${esc(rs.group_name || rs.group)} on ${esc(when(rs.event?.t))}. If that removal was a mistake, putting the entry back is simpler and exact; if it was meant, untick these sources below.</p><textarea id="xrR${i}" readonly spellcheck="false">${esc(restoreCmd(rs))}</textarea><div class="tools"><button type="button" class="btn" data-copy="xrR${i}">Copy the command</button></div></div>`;
     if (warn.length) html += `<div class="xr-warn"><strong>Check before adding</strong><ul>${warn.map((w) => `<li>${w}</li>`).join("")}</ul></div>`;
     if (soft.length) html += `<div class="xr-warn soft"><strong>Worth knowing</strong><ul>${soft.map((w) => `<li>${w}</li>`).join("")}</ul></div>`;
-    html += `<p class="small muted">Ticked to start with: the sources whose verdict says something broke (broken by a change, stopped working, a client's new address, your own traffic, a partner, a known service, AWS health checks). Everything else starts unticked, scanners, Tor exits and internet sources on risky ports above all. Tick or untick any source: the ranges and the command follow.</p>`;
+    html += `<p class="small muted">Ticked to start with: the sources whose verdict says something broke (broken by a change, stopped working, a client's new address, your own traffic, a partner, a known service, AWS health checks). Everything else starts unticked. <strong>High-risk sources</strong> (anything scanning ports, known scanners, threat lists, Tor) and <strong>external sources</strong> (outside your networks, with no published provider range) cannot simply be ticked: each asks who it is and why it must be let in, and a high-risk one also asks you to type <em>add high risk</em>. The reason goes into the command and the audit trail.</p>`;
     if (!X.rules.length) html += `<p>No rule to extract: ${X.apart.length ? "every source listed is refused for a reason a new security group rule would not change (below)." : "no refused source is listed."}</p>`;
     let folded = false;
     const wasOpen = !!document.querySelector("#xrBody details.xr-fold")?.open;
@@ -1440,7 +1548,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
           <div><dt>Its inbound rules today</dt><dd class="small">${(g.rules || []).length ? g.rules.map((x) => `${esc(x.ports)} from ${x.sources.map((s) => `<code>${esc(s)}</code>`).join(", ") || "another group"}`).join("<br>") : "none"}</dd></div>
           <div><dt>Applies to</dt><dd class="small">${assets.map((a) => `${hostByEni(a.eni) ? hostLine(hostByEni(a.eni)) : `${esc(a.kind)} <code>${esc(a.eni)}</code>`} at <code>${[...a.dst].map(esc).join(", ")}</code>${a.public ? ` (public <code>${esc(a.public)}</code>)` : ""}${a.subnet ? ` · ${esc(a.subnet)}` : ""}${a.desc ? ` · <span class="muted">${esc(a.desc)}</span>` : ""} · ${num(a.flows)} refused flows`).join("<br>")}</dd></div>
         </dl>
-        <div class="table-wrap"><table class="data"><thead><tr><th></th><th>Source</th><th>Who it is</th><th>Network</th><th class="num-cell">Refused flows</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${[...r.sources.values()].sort((a, b) => b.flows - a.flows).map((s) => `<tr class="${s.on ? "" : "off"}"><td><input type="checkbox" data-xr-src="${ri}|${esc(s.x.src)}" ${s.on ? "checked" : ""} aria-label="Include ${esc(s.x.src)}"></td><td><code>${esc(s.x.src)}</code><div>${catChip(s.x.cat)} ${typeChip(s.x)}${s.x.sweep ? ` <span class="pill recon">sweeping ${num(s.x.ports)} ports, ${num(s.x.dsts)} targets</span>` : ""}</div></td><td class="small"><strong>${esc(s.x.name)}</strong><div>${knownChip(s.k)} ${esc(s.k.head)}</div><details class="xr-know"><summary>What we know</summary>${s.k.lines.map((l) => `<div>${l}</div>`).join("") || EMPTY}</details></td><td class="small">${attrFacts(s.x) || EMPTY}</td><td class="num-cell">${num(s.flows)}</td><td class="small">${esc(when(s.x.first))}</td><td class="small">${esc(when(s.x.last))}</td></tr>`).join("")}</tbody></table></div>
+        <div class="table-wrap"><table class="data"><thead><tr><th></th><th>Source</th><th>Who it is</th><th>Network</th><th class="num-cell">Refused flows</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${[...r.sources.values()].sort((a, b) => b.flows - a.flows).map((s) => `<tr class="${s.on ? "" : "off"}"><td><input type="checkbox" data-xr-src="${ri}|${esc(s.x.src)}" ${s.on ? "checked" : ""} aria-label="Include ${esc(s.x.src)}"></td><td><code>${esc(s.x.src)}</code><div>${catChip(s.x.cat)} ${typeChip(s.x)}${riskPill(s.x)}${isExternal(s.x) && !isHigh(s.x) ? ' <span class="pill" style="--p:var(--sev-warning)">External</span>' : ""}</div>${s.on && state.xrOk.has(s.x.src) ? `<div class="small">Added because: ${esc(state.xrOk.get(s.x.src))}</div>` : ""}</td><td class="small"><strong>${esc(s.x.name)}</strong><div>${knownChip(s.k)} ${esc(s.k.head)}</div><details class="xr-know"><summary>What we know</summary>${s.k.lines.map((l) => `<div>${l}</div>`).join("") || EMPTY}</details></td><td class="small">${attrFacts(s.x) || EMPTY}</td><td class="num-cell">${num(s.flows)}</td><td class="small">${esc(when(s.x.first))}</td><td class="small">${esc(when(s.x.last))}</td></tr>${state.xrAsk === `${ri}|${s.x.src}` ? askRow(ri, s) : ""}`).join("")}</tbody></table></div>
         <p class="small" style="margin:10px 0 0"><strong>Ranges to add:</strong> ${o.cidrs.length ? o.cidrs.map((c) => `<code>${esc(c.cidr)}</code>`).join(", ") + ` <span class="muted">(${plural(o.cidrs.reduce((t, c) => t + c.last - c.first + 1, 0), "address", "addresses")}, exactly the sources ticked)</span>` : `<span class="muted">none ticked</span>`}</p>
         ${o.on.length ? `<textarea id="xrC${ri}" class="xr-one" readonly spellcheck="false">${esc(cmdOf.get(r) || "")}</textarea><div class="tools"><button type="button" class="btn" data-copy="xrC${ri}">Copy this rule's command</button>${DATA.console?.token ? `<button type="button" class="btn" data-xr-propose="${ri}">Propose this one in the console</button><span class="small muted" id="xrP${ri}"></span>` : ""}</div>` : ""}
       </section>`;
@@ -1457,7 +1565,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
         region: o.r.region, vpc: o.r.vpc, group_id: o.r.group, group_name: rep.groups?.[o.r.group]?.name || "", protocol: protoName(o.r.proto), port: o.r.port,
         destination: o.r.dstIp || null, port_class: o.r.pc, assets: [...o.r.assets.values()].map((a) => ({ eni: a.eni, kind: a.kind, addresses: [...a.dst], public: a.public || null, subnet: a.subnet, refused_flows: a.flows })),
         ranges: o.cidrs.map((c) => ({ cidr: c.cidr, description: c.desc, sources: c.members.map((s) => s.x.src) })),
-        sources: o.on.map((s) => ({ address: s.x.src, known: KNOWN[s.k.level][0], known_because: s.k.head, kind: s.x.cat, name: s.x.name, source_type: s.x.group || null, provider: s.x.provider || null, range: s.x.range || null, aws_service: s.x.service || null, aws_region: s.x.aws_region || null, asn: s.x.as_num || null, owner: s.x.owner || null, country: s.x.cc || null, announced_block: s.x.block || null, refused_flows: s.flows, first_seen: s.x.first, last_seen: s.x.last, sweeping: !!s.x.sweep })),
+        sources: o.on.map((s) => ({ address: s.x.src, known: KNOWN[s.k.level][0], known_because: s.k.head, kind: s.x.cat, name: s.x.name, source_type: s.x.group || null, provider: s.x.provider || null, range: s.x.range || null, aws_service: s.x.service || null, aws_region: s.x.aws_region || null, asn: s.x.as_num || null, owner: s.x.owner || null, country: s.x.cc || null, announced_block: s.x.block || null, refused_flows: s.flows, first_seen: s.x.first, last_seen: s.x.last, sweeping: !!s.x.sweep, risk: guardOf(s.x) || null, exception_reason: state.xrOk.get(s.x.src) || null })),
       })),
       not_extracted: X.apart.map(({ x, t, why }) => ({ address: x.src, eni: t.eni, protocol: protoName(t.proto), port: t.port, reason: why })),
       ip_permissions: Object.values(byGroup).map((g) => ({ region: g.region, group_id: g.group, IpPermissions: g.perms })),
@@ -1502,7 +1610,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     const proto = { tcp: "6", udp: "17", icmp: "1" }[o.perm.proto] || o.perm.proto;
     const changes = o.perm.cidrs.map((c) => ({ group: o.r.group, op: "add", rule: { direction: "in", proto, from: o.perm.port, to: o.perm.port, source: c.cidr, description: c.desc } }));
     try {
-      const r = await fetch("/api/propose", { method: "POST", headers: { "Content-Type": "application/json", "X-SG-Token": DATA.console.token }, body: JSON.stringify({ account: DATA.account, region: o.r.region, reason: `sg_review: let in refused traffic to ${o.r.dstIp || o.r.group} on ${o.perm.proto} ${o.r.port}`, changes }) });
+      const r = await fetch("/api/propose", { method: "POST", headers: { "Content-Type": "application/json", "X-SG-Token": DATA.console.token }, body: JSON.stringify({ account: DATA.account, region: o.r.region, reason: `sg_review: let in refused traffic to ${o.r.dstIp || o.r.group} on ${o.perm.proto} ${o.r.port}${o.on.some((sv) => guardOf(sv.x)) ? `; exceptions approved: ${o.on.filter((sv) => guardOf(sv.x)).map((sv) => `${sv.x.src} ${guardOf(sv.x) === "high" ? "HIGH RISK" : "external"} (${state.xrOk.get(sv.x.src) || "no reason"})`).join("; ")}` : ""}`, changes }) });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || r.statusText);
       note.textContent = `Request #${j.id} (${j.status}): a second person approves it on the Requests tab.`;
@@ -1510,11 +1618,36 @@ details.xr-fold > summary { margin: 0 0 10px; }
   });
   $("#xrBody").addEventListener("change", (e) => {
     const cb = e.target.closest("[data-xr-src]");
-    if (cb) { const [ri, src] = cb.dataset.xrSrc.split("|"); state.xr.rules[+ri].sources.get(src).on = cb.checked; drawExtract(); return; }
+    if (cb) {
+      const [ri, src] = cb.dataset.xrSrc.split("|"), sv = state.xr.rules[+ri].sources.get(src);
+      if (cb.checked && guardOf(sv.x) && !state.xrOk.has(src)) { state.xrAsk = cb.dataset.xrSrc; drawExtract(); document.querySelector(`[data-xr-reason="${CSS.escape(cb.dataset.xrSrc)}"]`)?.focus(); return; }
+      sv.on = cb.checked; drawExtract(); return;
+    }
     const sg = e.target.closest("[data-xr-group]");
     if (sg) { state.xr.rules[+sg.dataset.xrGroup].group = sg.value; drawExtract(); }
   });
+  const askOk = (key) => {
+    const r = document.querySelector(`[data-xr-reason="${CSS.escape(key)}"]`), ph = document.querySelector(`[data-xr-phrase="${CSS.escape(key)}"]`);
+    return cleanReason(r?.value).length >= 8 && (!ph || ph.value.trim().toLowerCase() === "add high risk");
+  };
+  $("#xrBody").addEventListener("input", (e) => {
+    const key = e.target.dataset.xrReason || e.target.dataset.xrPhrase;
+    if (!key) return;
+    const b = document.querySelector(`[data-xr-confirm="${CSS.escape(key)}"]`);
+    if (b) b.disabled = !askOk(key);
+  });
   $("#xrBody").addEventListener("click", (e) => {
+    const bulk = e.target.closest("[data-xr-bulk]");
+    if (bulk) { for (const r of state.xr.rules) for (const sv of r.sources.values()) sv.on = bulk.dataset.xrBulk === "safe" ? sv.on || !guardOf(sv.x) : false; state.xrAsk = null; drawExtract(); return; }
+    const ok = e.target.closest("[data-xr-confirm]");
+    if (ok) {
+      const key = ok.dataset.xrConfirm;
+      if (!askOk(key)) return;
+      const i = key.indexOf("|"), ri = +key.slice(0, i), src = key.slice(i + 1);
+      state.xrOk.set(src, cleanReason(document.querySelector(`[data-xr-reason="${CSS.escape(key)}"]`).value));
+      state.xr.rules[ri].sources.get(src).on = true; state.xrAsk = null; drawExtract(); return;
+    }
+    if (e.target.closest("[data-xr-cancel]")) { state.xrAsk = null; drawExtract(); return; }
     if (e.target.closest("#xrCopy")) {
       const ta = $("#xrCli");
       const done = () => ($("#xrCopied").textContent = "Copied.");
@@ -1524,6 +1657,14 @@ details.xr-fold > summary { margin: 0 0 10px; }
     if (e.target.closest("#xrJson")) download(JSON.stringify(state.xr.json, null, 2), `extracted-rules-${state.rep.account}-${today()}.json`, "application/json");
   });
   document.addEventListener("click", (e) => {
+    if (e.target.closest("[data-zoom-out]")) { e.preventDefault(); zoomTo(0, state.rep.bins.length - 1); return; }
+    const rc = e.target.closest("[data-rc]");
+    if (rc) {
+      const k = rc.dataset.rc, rep = state.rep, [name, , test] = RC[k];
+      if (k === "all" || state.only?.rc === k) state.only = null;
+      else { state.bin = null; state.only = { kind: "refused", rc: k, srcs: new Set(rep.refused.filter((x) => test(x) && inZoom(x)).map((x) => x.src)), label: `the ${name.toLowerCase()} sources` }; }
+      tables(); return;
+    }
     const sb = e.target.closest("[data-seen]");
     if (sb) { const [kind, k] = sb.dataset.seen.split("|"); state.seen[kind] = k; tables(); return; }
     const cat = e.target.closest("[data-cat]");

@@ -765,6 +765,10 @@ def test_over_provisioning_is_attributed_by_source_type_and_network_over_time(tm
     text = page.read_text()
     assert 'id="overBy"' in text and 'id="overScale"' in text and 'overScale: "stack"' in text
     assert "port-look" in text and "Look up" in text
+    # refused timeline: counter, zoom, high-risk line; Extract rule holds back high-risk and external sources
+    for needle in ('id="refusedCount"', 'id="refusedZoom"', "data-zoom-out", "High risk: scanning ports",
+                   "add high risk", "data-xr-confirm", "data-xr-bulk", "xr-steps", "exceptions approved"):
+        assert needle in text, needle
 
 
 def test_port_lookup_catalogue_uses_table_labels():

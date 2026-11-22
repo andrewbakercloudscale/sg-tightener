@@ -398,6 +398,18 @@ the traffic is wanted:
 - A period with more than five times the usual number of refused internet sources (and at least 20)
   turns amber and is named under the graph, because it can mean the account is being probed.
 
+**The counter** above the graph counts the addresses refused in the window, or in the period zoomed
+into: **High risk** (anything scanning ports, that is 10 or more ports or 5 or more addresses, plus
+known scanners, threat lists and Tor or VPN exits), **Other external** (outside your networks, with
+no named provider), **Yours** (your VPCs and data centres) and **AWS and SaaS**. Select a box to list
+those sources. The **red line** on the graph is the high-risk sources in each period; select it to
+list them. Every high-risk source in the table carries a red **High risk** pill saying why.
+
+**Drag across the graph to zoom into a period.** The counter, the table and **Extract rule** then
+cover only that time; **Zoom out** goes back to the whole window.
+
+![The refused timeline zoomed into a period: the counter by risk, the red high-risk line, and Zoom out](images/sg-review-refused-zoom.png)
+
 Select a bar to list who was refused. The table below the graph suggests a rule for internal and
 data centre sources. **Extract rule** turns any of the refused sources into rules you can apply;
 see [Extract rule](#extract-rule) below.
@@ -644,9 +656,26 @@ python sg_tightener.py plan --region eu-west-1 --approved approved.json --out pl
 
 ### Extract rule
 
+Extract rule is a four-step process, shown at the top of the dialog: **1. Period** (the window, or the
+period you zoomed into on the graph), **2. Sources** (how many are ticked, and how many high-risk and
+external ones are held back), **3. Rules**, **4. Apply** (copy the commands, or propose each for a
+second person to approve). **Tick every source that is not high risk or external** adds all the rest
+in one go.
+
+![Extract rule: the four steps, with high-risk and external sources held back](images/sg-review-extract-steps.png)
+
+**High-risk and external sources cannot simply be ticked.** Ticking one opens a box that asks who it
+is and why it must be let in (at least 8 characters, an owner or a ticket); a high-risk source also
+asks you to type `add high risk`. Only then is it added. The reason goes into the command's
+`--reason` ("exceptions approved: 162.142.125.197 HIGH RISK (Pen test by Acme, ticket SEC-142)"),
+into the change request when proposed from the console, and into the JSON (`risk`,
+`exception_reason`), so the audit trail shows who let a scanner in and why.
+
+![Adding a high-risk source: a reason and the words add high risk are needed](images/sg-review-extract-high-risk.png)
+
 The verdicts set the starting ticks. Sources whose verdict says the traffic is wanted (broken by a
 change, stopped working, a new address of a client, your own traffic, a partner, a known service,
-health checks) start ticked; scanners, Tor exits and internet sources on risky ports start unticked.
+health checks) start ticked; high-risk and external sources always start unticked.
 When a rule change caused the refusal, the dialog first offers **Restore the revoked rule**: the exact
 entry back, which is simpler than adding the sources one by one.
 

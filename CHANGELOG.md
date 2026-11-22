@@ -1,5 +1,19 @@
 # Changelog
 
+## 5.11.0 - 2026-11-22
+
+- Refused timeline: a **counter** of refused addresses in the window or zoomed period, split into High
+  risk, Other external, Yours, and AWS and SaaS (select a box to list them), and a **red line** of the
+  high-risk sources per period.
+- **High risk**: any source scanning ports (10 or more ports, or 5 or more addresses), known scanners,
+  threat lists and Tor or VPN exits get a red High risk pill saying why.
+- **Drag across the refused graph to zoom** into a period; the counter, the table and Extract rule
+  follow, and **Zoom out** goes back.
+- **Extract rule as a four-step process** (Period, Sources, Rules, Apply), with **Tick every source
+  that is not high risk or external**. High-risk and external sources always start unticked and
+  cannot simply be ticked: each needs a reason, and a high-risk one also needs `add high risk` typed.
+  The reason goes into the command's `--reason`, the console change request and the JSON.
+
 ## 5.10.0 - 2026-11-22
 
 - Review page, Where traffic comes from: **Look up ports** under each row's ports lists what every
