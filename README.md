@@ -9,6 +9,19 @@ log evidence, not by a CIDR block someone typed into Terraform years ago.**
 
 Website: <https://cloudtorepo.com/tightener.html>
 
+> **Security groups are not static configuration.** A group written once with big IP buckets in it
+> (`10.0.0.0/8`, "the data centre /16") and never changed again is a standing risk, not a finished
+> job. Large on-premises CIDR blocks are the worst of it: every AWS account that trusts the corporate
+> range is reachable from every laptop, build server and forgotten VM behind the VPN or Direct
+> Connect. That backhaul is a single pathway from one compromised on-premises host to **every AWS
+> account** that lets the range in.
+>
+> Shrinking those pools safely needs a **management and observability mechanism**, not a one-off
+> clean-up: evidence of who really connects, a view of every network and its CIDR blocks, a timeline
+> that shows the moment a change cuts someone off, and two-person approval to apply it. That is what
+> sg-tightener gives teams: the confidence and the oversight to manage the size of their IP pools
+> down, account by account, and keep them down.
+
 ---
 
 ## See it first
@@ -236,6 +249,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.7.1** | **Five fixes from testing.** A range several accounts share (every default VPC) is no longer pinned on one of them; your names file and `--onprem` win over automatic account naming; `forget` removes the account from `vpcs.json`; unattributed sources show their address as the block; AWS's catch-all range is no longer "AWS AWS" |
 | **5.7.0** | **Where traffic comes from, and PrivateLink on its own tab.** A new table lists every network sending or receiving traffic, grouped by kind, with its CIDR blocks: on-premises (from VPN routes), your other AWS accounts (now named automatically once read), AWS services by region, Lambda outside a VPC, and SaaS such as Salesforce, Zscaler, Okta and GitHub. The page is split into Traffic, PrivateLink and Exposure tabs; PrivateLink lists every endpoint service and interface endpoint with the traffic through it |
 | **5.6.0** | **Every graph windowed, and no data shown as no data.** The **Time window** drop-down is now also on Needs attention and Ports, and every window can be chosen. When a window reaches back further than the flow logs read, each graph says so ("No data before 26 May: 181 of 365 days read"), shades the time not read as **No data**, and the command to fill it is given. The console's rejected traffic says which accounts have no data that far back |
 | **5.5.0** | **Time window drop-down, up to a year.** Each timeline has a **Time window** drop-down (last 24 hours, week, month, 3 months, 6 months, year), kept in step with the one at the top. `sg_review.py read --days 365` reads a year, shown a bar a week, to catch yearly traffic before a rule is removed. The console's rejected traffic also offers the last year |

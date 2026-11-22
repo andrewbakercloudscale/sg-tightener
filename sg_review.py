@@ -856,14 +856,18 @@ def vpc_index(build_missing: bool = True) -> dict:
             idx = {}
     except (OSError, ValueError):
         idx = {}
-    if build_missing:  # reads saved before the index existed
-        missing = [a for a in cached_accounts() if a not in idx]
+    if build_missing:  # reads saved before the index existed; reads deleted since
+        cached = cached_accounts()
+        gone = [a for a in idx if a not in cached]
+        for a in gone:
+            del idx[a]
+        missing = [a for a in cached if a not in idx]
         for a in missing:
             doc = load(a)
-            if doc and doc.get("mode") != "demo":
-                idx[a] = _vpcs_of(doc)
-        if missing:
+            idx[a] = _vpcs_of(doc) if doc and doc.get("mode") != "demo" else None  # null: not looked at again
+        if gone or missing:
             _save_index(idx)
+        idx = {a: x for a, x in idx.items() if x}
     return idx
 
 
@@ -875,6 +879,9 @@ def siblings(doc: dict) -> list[dict]:
 
 
 def forget(account: str) -> bool:
+    idx = vpc_index(build_missing=False)
+    if idx.pop(account, None) is not None:  # a forgotten account no longer names sources in other reviews
+        _save_index(idx)
     try:
         _path(account).unlink()
         return True
@@ -1069,19 +1076,33 @@ class Labeller:
             iv = (int(net.network_address), int(net.broadcast_address))
             others.append(iv)
             self.nets.append((*iv, "internal", name, str(net), {}))
-        # your other accounts' VPCs (after the names above, which win on the same range)
+        # your other accounts' VPCs (named ranges win on the same range)
+        # The same range in several accounts (every default VPC is 172.31.0.0/16) cannot say which one a source is
+        # in, so it is named for all of them rather than for whichever was read first.
+        by_cidr: dict[str, list] = {}
+        sib: list = []  # added after every range you named (--internal, --onprem, VPNs, the names file): those win
+        sib6: list = []
         for acc in siblings(doc) if accounts is None else accounts:
             who = f"{acc.get('name') or 'Account'} ({acc['account']})"
             for region, vid, vname, cidrs, cidrs6 in acc.get("vpcs") or []:
-                label, extra = f"{who}, {vname or vid}", {"account": acc["account"], "vpc": vid, "vpc_region": region}
-                for c in cidrs:
-                    iv = sg_ipintel.cidr_iv(c)
-                    if iv:
-                        others.append(iv)
-                        self.nets.append((*iv, "internal", label, c, extra))
-                for c in cidrs6:
-                    if _net6(c):
-                        self.nets6.append((_net6(c), "internal", label, extra))
+                for c in [*cidrs, *cidrs6]:
+                    by_cidr.setdefault(c, []).append((who, acc["account"], vid, vname, region))
+        for c, hits in by_cidr.items():
+            if len(hits) == 1:
+                who, acct, vid, vname, region = hits[0]
+                label, extra = f"{who}, {vname or vid}", {"account": acct, "vpc": vid, "vpc_region": region}
+            else:
+                accts = sorted({h[0] for h in hits})
+                label = f"One of {len(accts)} accounts ({', '.join(accts)})" if len(accts) > 1 else \
+                    f"{accts[0]}, one of {len(hits)} VPCs"  # fmt: skip
+                extra = {"account": "" if len(accts) > 1 else hits[0][1], "vpc": "", "vpc_region": "",
+                         "accounts": sorted({h[1] for h in hits})}  # fmt: skip
+            iv = sg_ipintel.cidr_iv(c) if ":" not in c else None
+            if iv:
+                others.append(iv)
+                sib.append((*iv, "internal", label, c, extra))
+            elif _net6(c):
+                sib6.append((_net6(c), "internal", label, extra))
         dc = []
         for net, name in parse_ranges(onprem, "On-premises"):
             if net.version == 6:
@@ -1115,6 +1136,8 @@ class Labeller:
                 self.nets.append((*iv, kind, e["name"], str(net), extra))
             for a in e["asn"]:
                 self.name_asn[a] = {"cat": kind, **extra}
+        self.nets += sib
+        self.nets6 += sib6
         self.nets.sort(key=lambda n: n[1] - n[0])
         self.nets6.sort(key=lambda n: -n[0].prefixlen)
         M, S = sg_ipintel.merge, sg_ipintel.subtract
@@ -1866,7 +1889,8 @@ def _networks(act: dict, rej: dict, lab, enis: dict) -> list[dict]:
                 "region": lb.get("aws_region", "") or lb.get("vpc_region", ""), "account": lb.get("account", ""),
                 "what": lb.get("what", ""), "threat": bool(lb.get("threat")), "blocks": {}, "in": 0, "out": 0,
                 "fin": 0, "fout": 0, "pin": {}, "pout": {}, "dst": set(), "first": None, "last": None, "v6": 0}  # fmt: skip
-        for blk in _cidrs_of(lb.get("range") or lb.get("block") or ""):
+        # a source in no published, named or announced range is shown as its own address, not as "none named"
+        for blk in _cidrs_of(lb.get("range") or lb.get("block") or "") or [f"{src}/{128 if is_v6(src) else 32}"]:
             n["blocks"][blk] = n["blocks"].get(blk, 0) + 1
         if is_v6(src):
             n["v6"] += 1

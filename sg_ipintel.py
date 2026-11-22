@@ -288,7 +288,7 @@ AWS_SERVICE = {
     "ROUTE53": "Route 53", "ROUTE53_RESOLVER": "Route 53 Resolver", "CODEBUILD": "CodeBuild",
     "EC2_INSTANCE_CONNECT": "EC2 Instance Connect", "WORKSPACES_GATEWAYS": "WorkSpaces", "CLOUD9": "Cloud9",
     "KINESIS_VIDEO_STREAMS": "Kinesis Video Streams", "CHIME_VOICECONNECTOR": "Chime", "AMAZON_CONNECT": "Connect",
-    "AMAZON_APPFLOW": "AppFlow", "EBS": "EBS", "AMAZON": "AWS",
+    "AMAZON_APPFLOW": "AppFlow", "EBS": "EBS", "AMAZON": "(any AWS service)",
 }  # fmt: skip
 
 _lock = threading.Lock()

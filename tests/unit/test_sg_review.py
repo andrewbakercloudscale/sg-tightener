@@ -681,3 +681,65 @@ def test_page_has_tabs_and_the_networks_table(tmp_path):
     for needle in ('data-tab="privatelink"', 'data-tab-of="posture"', 'id="networks"', 'id="plEndpoints"',
                    "Where traffic comes from", 'id="netQ"'):
         assert needle in html, needle
+
+
+# ------------------------------------------------------------------------------------- 5.7.1 fixes
+def _acc(acct, name, *vpcs):
+    return {"account": acct, "name": name, "vpcs": [["eu-west-1", vid, vn, [c], []] for vid, vn, c in vpcs]}
+
+
+def test_a_range_in_several_accounts_is_not_pinned_on_the_first_one_read():
+    doc = demo_sg.build_doc(ACCT, time.time(), 1)
+    lab = sg_review.Labeller(doc, accounts=[_acc("111111111111", "a", ("vpc-a", "default", "172.31.0.0/16")),
+                                            _acc("222222222222", "b", ("vpc-b", "default", "172.31.0.0/16"),
+                                                 ("vpc-c", "core", "10.9.0.0/16"))])  # fmt: skip
+    shared = lab("172.31.5.5")
+    assert shared["cat"] == "internal" and shared["account"] == ""
+    assert shared["name"] == "One of 2 accounts (a (111111111111), b (222222222222))"
+    assert shared["accounts"] == ["111111111111", "222222222222"]
+    assert lab("10.9.1.1")["account"] == "222222222222"
+
+
+def test_names_file_and_onprem_win_over_automatic_account_naming():
+    doc = demo_sg.build_doc(ACCT, time.time(), 1)
+    names = sg_review.parse_names([{"name": "Payments platform", "type": "internal", "ranges": ["10.40.0.0/16"]},
+                                   {"name": "Zurich DC", "type": "datacentre", "ranges": ["10.41.0.0/16"]}])  # fmt: skip
+    acc = [_acc("111111111111", "a", ("vpc-a", "main", "10.40.0.0/16"), ("vpc-z", "z", "10.41.0.0/16"),
+                ("vpc-j", "j", "10.42.0.0/16"), ("vpc-q", "q", "10.43.0.0/16"))]  # fmt: skip
+    lab = sg_review.Labeller(doc, "10.42.0.0/16 Joburg", "", names, accounts=acc)
+    assert lab("10.40.1.1")["name"] == "Payments platform"
+    assert (lab("10.41.1.1")["name"], lab("10.41.1.1")["cat"]) == ("Zurich DC", "datacentre")
+    assert (lab("10.42.1.1")["name"], lab("10.42.1.1")["cat"]) == ("Joburg", "datacentre")
+    assert lab("10.43.1.1")["name"] == "a (111111111111), q"
+
+
+def test_forgetting_an_account_stops_it_naming_sources_and_stale_entries_are_dropped():
+    other = demo_sg.build_doc("333344445555", time.time(), 1)
+    other.update(mode="live", name="gone-soon")
+    other["regions"][demo_sg.REGION]["snapshot"]["vpcs"] = [{"id": "vpc-0g", "name": "main",
+                                                              "cidrs": ["10.77.0.0/16"], "cidrs6": []}]  # fmt: skip
+    sg_review.save(other)
+    doc = demo_sg.build_doc(ACCT, time.time(), 1)
+    doc["mode"] = "live"
+    assert sg_review.Labeller(doc)("10.77.1.1")["name"] == "gone-soon (333344445555), main"
+    assert sg_review.forget("333344445555")
+    assert "333344445555" not in sg_review.vpc_index()
+    assert sg_review.Labeller(doc)("10.77.1.1")["name"] != "gone-soon (333344445555), main"
+    idx = sg_review.vpc_index(build_missing=False)  # a read deleted by hand
+    idx["999988887777"] = {"name": "deleted", "vpcs": []}
+    sg_review._save_index(idx)
+    assert "999988887777" not in sg_review.vpc_index()
+
+
+def test_unattributed_sources_show_their_own_address_as_the_block():
+    doc = demo_sg.build_doc(ACCT, time.time(), 30)
+    rep = sg_review.build(doc, "1m", "", "", sg_review.parse_names(demo_sg.NAMES))
+    unknown = next(n for n in rep["networks"] if n["name"] == "Unknown network")
+    assert unknown["blocks"] and all(b.endswith(("/32", "/128")) for b in unknown["blocks"])
+    assert all(n["blocks"] for n in rep["networks"])
+
+
+def test_aws_catch_all_range_is_not_named_aws_aws():
+    intel = ipintel.Intel([("52.95.0.0/20", "AMAZON", "us-east-2")], [], [])
+    got = intel.label("52.95.1.1")
+    assert got["kind"] == "aws" and "AWS AWS" not in got["name"] and got["name"] == "AWS (any AWS service), us-east-2"

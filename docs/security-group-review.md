@@ -6,6 +6,14 @@
 > network, trusting a whole CIDR block is a high-risk strategy. sg-tightener treats every allowed
 > IP address as risk: it takes security group sources out of static configuration and, from VPC flow
 > log evidence, fits each group's limited rules to the fewest addresses that cover the real callers.
+>
+> **Large on-premises CIDR blocks are a backhaul risk.** A rule that trusts the whole corporate range
+> lets every on-premises host, over VPN or Direct Connect, reach that group. When many accounts trust
+> the same range, one compromised laptop or server on-premises has a path into every one of them.
+> Shrinking those pools needs a management and observability mechanism, not a one-off clean-up:
+> this page is the observability half (who connects, from which network and CIDR block, and what a
+> change would refuse) and [the console](console.md) the management half (proposals, two-person
+> approval, enforce mode, and the timeline that shows a mistake within minutes).
 > See [The shift: IP addresses are risk, not configuration](../README.md#the-shift-ip-addresses-are-risk-not-configuration).
 
 `sg_review.py` sets every inbound security group rule in one account against the traffic the
@@ -551,8 +559,10 @@ low-level view of what each kind of network sends:
   `--onprem` and your names file.
 - **Your other AWS accounts**: every account `read` has seen is remembered in
   `~/.sg-tightener/review/vpcs.json` (beside the reads), so traffic from another account's VPC is
-  named "payments-prod (111122223333), main" with no flags. `--internal` still wins on the same
-  range. Run `read` (or `org`) once per account to fill it.
+  named "payments-prod (111122223333), main" with no flags. Any range you name (`--internal`,
+  `--onprem`, VPN routes, the names file) wins on the same range, a range several accounts share
+  (every default VPC is 172.31.0.0/16) is named "One of N accounts", and `forget` removes an
+  account. Run `read` (or `org`) once per account to fill it.
 - **AWS services**: by service and region, from AWS's published ranges.
 - **Lambda**: AWS publishes no Lambda ranges. A function outside a VPC uses the region's shared EC2
   ranges, so it shows as "AWS EC2 (any AWS customer's server, or Lambda outside a VPC), region".

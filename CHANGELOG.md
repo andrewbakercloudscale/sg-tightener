@@ -1,5 +1,26 @@
 # Changelog
 
+## 5.7.1 - 2026-11-22
+
+Five bugs found testing 5.7.0, each with a regression test:
+
+- **A range in several accounts was named for whichever was read first.** Every
+  default VPC is 172.31.0.0/16, so a source there was pinned on one account. A
+  range shared by several accounts is now named "One of N accounts (...)".
+- **Your names file and `--onprem` lost to automatic account naming** on the
+  same range. Every range you name (`--internal`, `--onprem`, VPN routes, the
+  names file) now wins.
+- **`forget` left the account in `vpcs.json`**, so it kept naming sources in
+  other reviews. It is now removed, and entries for reads deleted by hand are
+  dropped.
+- **Unattributed sources showed "none named"** in the networks table. They now
+  show their own address as the block.
+- **AWS's catch-all range was named "AWS AWS"**. It is now "AWS (any AWS
+  service)".
+- README, the review guide and the blog now open with why security groups are
+  not static configuration, the backhaul risk of large on-premises CIDR blocks,
+  and the need for a management and observability mechanism to shrink them.
+
 ## 5.7.0 - 2026-11-22
 
 - **Where traffic comes from.** A new table in the review lists one row per
