@@ -1,5 +1,26 @@
 # Changelog
 
+## 5.12.0 - 2026-11-22
+
+- Console **Risk overview** tab: every account `sg_review.py` has read, side by side, for one time
+  window (24 hours to a year).
+- **Headline tiles** across all accounts: critical items, high-risk sources let in, rules open to the
+  internet on risky ports, outbound calls to threat lists, never-seen addresses allowed in, rules to
+  tighten or remove, and high-risk probing that was refused.
+- **Risk by account** heatmap: eight risk dimensions per account (needs attention, high-risk let in,
+  open to the internet on risky ports, outbound to threat lists, never-seen addresses allowed, rules to
+  tighten, probing, blind spots), coloured green to red, with a risk score, worst account first, and
+  each account's mode.
+- **Over-provisioned by owner**: the never-seen addresses the rules allow, split by who owns them
+  (internal, data centre and other private, AWS, SaaS and partners, other networks), or by source type
+  (secure access, SaaS and big tech, ISP and business), for all accounts together and per account, by
+  size or by share.
+- **Over-provisioned over time** and **high-risk probing over time**, summed across the accounts.
+- **Open to the internet by port class** with every risky open rule, **high-risk sources let in**,
+  the **biggest rules to tighten** across accounts, and **blind spots** (coverage gaps, groups without
+  flow logs, under a week of evidence, accounts in the console never read).
+- `GET /api/macro?range=` returns the same per account, cached until an account is read again.
+
 ## 5.11.0 - 2026-11-22
 
 - Refused timeline: a **counter** of refused addresses in the window or zoomed period, split into High

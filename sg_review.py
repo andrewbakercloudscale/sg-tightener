@@ -4100,6 +4100,70 @@ def refused_rows(account: str, name: str, rep: dict, limit: int = ORG_REFUSED) -
     return out
 
 
+HIGH_RISK_TYPES = ("scanner", "anon", "threat")
+OPEN_SOURCES = ("0.0.0.0/0", "::/0")
+
+
+def _high_risk(r: dict) -> bool:
+    """Scanning ports (many ports or many addresses), a known scanner, a threat list, a Tor or VPN exit."""
+    return bool(r.get("sweep")) or r.get("group") in HIGH_RISK_TYPES
+
+
+def macro_row(account: str, name: str, rep: dict, mode: str = "") -> dict:
+    """One account's numbers for the all-accounts risk overview: over-provisioning by owner, exposure, probing."""
+    s = rep.get("summary") or {}
+    se = rep.get("series") or {}
+    rules = rep.get("rules") or []
+    refused, active = rep.get("refused") or [], rep.get("active") or []
+    v4 = [r for r in rules if ":" not in str(r.get("source", ""))]
+    open_rules = [r for r in rules if r.get("source") in OPEN_SOURCES]
+    open_risky = [r for r in open_rules if (r.get("pc") or {}).get("risky")]
+    posture = rep.get("posture") or []
+    hi_ref = [r for r in refused if _high_risk(r)]
+    hi_act = [r for r in active if r.get("group") in HIGH_RISK_TYPES]  # active rows carry no sweep: the type is what counts
+    bins = rep.get("bins") or []
+    hi_series = [0] * len(bins)
+    for r in hi_ref:
+        for b in r.get("bins") or []:
+            if 0 <= b < len(bins):
+                hi_series[b] += 1
+    classes: dict[str, int] = {}
+    for r in open_rules:
+        k = (r.get("pc") or {}).get("name") or "Other"
+        classes[k] = classes.get(k, 0) + 1
+    cov = rep.get("covered") or [1.0]
+    top = sorted((r for r in v4 if r.get("status") in ("tighten", "unused") and r.get("never")),
+                 key=lambda r: -r["never"])[:5]
+    return {
+        "account": account, "name": name, "mode": mode, "end": rep.get("end"), "step": rep.get("step"),
+        "bins": bins, "covered": round(sum(cov) / len(cov), 2), "history_days": s.get("history_days", 0),
+        "over_now": s.get("over_now", 0), "over_by_cat": s.get("over_by_cat", {}),
+        "over_by_type": {k: (v[-1] if v else 0) for k, v in (se.get("over_by_group") or {}).items()},
+        "over_series": {k: list(v) for k, v in (se.get("over") or {}).items()},
+        "refused_series": {k: list(v) for k, v in (se.get("refused") or {}).items()},
+        "high_series": hi_series,
+        "rules": len(rules), "tighten": s.get("tighten", 0), "unused": s.get("unused", 0),
+        "open": len(open_rules), "open_risky": len(open_risky),
+        "open_risky_list": [{"group": r.get("gname") or r.get("group"), "ports": r.get("ports"), "source": r.get("source"),
+                             "service": (r.get("pc") or {}).get("svc", ""), "region": r.get("region"),
+                             "enis": r.get("enis", 0)} for r in open_risky[:10]],
+        "open_classes": classes,
+        "top_rules": [{"group": r.get("gname") or r.get("group"), "ports": r.get("ports"), "source": r.get("source"),
+                       "never": r.get("never", 0), "status": r.get("status"), "region": r.get("region")} for r in top],
+        "refused": s.get("refused", 0), "high_refused": len(hi_ref), "high_active": len(hi_act),
+        "high_active_list": [{"src": r["src"], "name": r.get("name", ""), "type": r.get("group", ""),
+                              "ports": sorted({f"{PROTO_NAME.get(str(t.get('proto')), t.get('proto'))} {t.get('port')}"
+                                               for t in (r.get("targets") or [])})[:4],
+                              "flows": r.get("flows", 0), "last": r.get("last")} for r in hi_act[:10]],
+        "external_refused": sum(1 for r in refused if r.get("cat") == "internet" and not _high_risk(r)),
+        "internal_refused": s.get("refused_internal", 0),
+        "attention": s.get("attention", {}), "posture": s.get("posture", {}),
+        "egress_bad": sum(1 for p in posture if p.get("area") == "egress" and p.get("sev") in ("critical", "high")),
+        "exposure": sum(1 for p in posture if p.get("area") == "exposure" and p.get("sev") in ("critical", "high")),
+        "not_logged": s.get("not_logged", 0), "new_refused": s.get("new_refused", 0),
+    }
+
+
 def org_row(account: str, name: str, rep: dict | None, status: str, page: str = "", error: str = "") -> dict:
     """One account in the roll-up: its verdict counts and its "Needs attention" items."""
     rep = rep or {}

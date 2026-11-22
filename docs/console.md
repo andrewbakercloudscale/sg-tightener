@@ -75,11 +75,12 @@ bookmark keeps working; `serve --new-token` makes a new one and old bookmarks st
 
 ![Overview, signed in: every account and region in the database](images/sg-console-overview.png)
 
-## The five tabs
+## The six tabs
 
 | Tab | What it shows and does |
 |---|---|
 | **Overview** | Every account and region: its **mode** (surveillance or enforce), groups, rules, assets, changes waiting to be applied, **whether this identity can apply there** (with a **Check** button: a DryRun of every write, nothing changes), when AWS was last read. The approvals mode, who you are acting as, and whether the audit trail's hash chain is intact. For an account `sg_review.py` has read, **Review and tighten** opens its Security Group Review (`/review?account=ID`), whose **Tighten** panel proposes the fitted rules here as a change request ([how](security-group-review.md#tighten-pull-the-room-back-by-kind-type-and-name)) |
+| **Risk overview** | Every account `sg_review.py` has read, side by side: headline tiles, a risk heatmap, over-provisioning by owner and over time, internet exposure, high-risk sources let in, the biggest rules to tighten, and blind spots ([below](#risk-overview-every-account)) |
 | **Security groups** | Pick an account and region. Every group and rule, marked *to add* (approved, not in AWS yet) or *to remove* (in AWS, not wanted). **Propose a change**, **Propose removing** a rule, **Reconcile with AWS**, **Apply approved changes** (press twice; off in surveillance mode), **Propose keeping what AWS holds**. Below, every **asset** (network interface): what it is attached to, its addresses and groups, whether it can have a group of its own (auto scaling, EKS, ECS and AWS-managed interfaces cannot), and its **History** of group changes |
 | **Change requests** | Requests waiting for approval, approved, applied, rejected, withdrawn. Approve, or reject with a note, someone else's request; withdraw your own. Apply an approved one. An **asset request** (from `sg_db.py asset-propose`) shows the interface, the group it gets, the rules narrowed and why, and once approved **Create the group and move** the interface |
 | **Audit trail** | Every entry, newest first, searchable (who, why, ticket, group, rule) and filtered by time and origin. Changes made outside the tool are red, with who made them from CloudTrail |
@@ -149,6 +150,44 @@ To apply or reconcile in another account, the console assumes `--role-name` (def
 - **The database is the boundary.** The console adds no privileges: AWS still decides what the
   identity may do, and the database still refuses a self-approval. The database file is `0600` in a
   `0700` directory.
+
+## Risk overview: every account
+
+The **Risk overview** tab answers "where is the risk, across everything?" from the reads `sg_review.py`
+keeps for each account, for the chosen time window (24 hours to a year). Select an account name to
+open its review.
+
+- **Tiles**: accounts read, critical items to act on, high-risk sources let in, rules open to the
+  internet on risky ports, outbound calls to threat lists, never-seen addresses allowed in, rules to
+  tighten or remove, and high-risk sources probing (refused).
+- **Risk by account**: a heatmap, one row per account, worst first. Each of eight dimensions is
+  green (nothing found), amber (worth a look), orange (high) or red (act now); the **risk score** adds
+  the levels across the row. The dimensions are needs attention (critical / high), high-risk sources
+  let in, open to the internet on risky ports (and other open rules), outbound to threat lists,
+  never-seen addresses allowed, rules to tighten, high-risk probing, and blind spots.
+
+![Risk by account: eight dimensions per account, worst first](images/sg-console-risk-heatmap.png)
+
+- **Over-provisioned by owner**: the addresses the rules let in today that were never seen in the flow
+  logs, split by who owns them: internal (your VPCs), data centre and other private space, AWS, SaaS
+  and partners, and other networks. **By source type** splits by secure access, SaaS and big tech, and
+  ISP and business instead. **Share** shows each account as 100% to compare the mix. Pull back the
+  biggest owner first: unused private space and whole provider ranges are usually most of it.
+
+![Over-provisioned by owner, by kind and size](images/sg-console-over-by-owner.png)
+
+![By source type, as a share](images/sg-console-over-by-owner-share.png)
+
+- **Over time**: never-seen addresses allowed, summed across accounts (each tightening is a step
+  down), and high-risk probing per period (a jump means someone is looking).
+- **Open to the internet, by port class**, with every rule open to `0.0.0.0/0` or `::/0` on a risky
+  port; **high-risk sources let in** (scanners, threat lists, Tor exits a rule allowed); the **biggest
+  rules to tighten** across accounts; and **blind spots**: coverage under 98% of the window, groups
+  without flow logs, under 7 days of evidence, and accounts in the console never read.
+
+![The whole Risk overview](images/sg-console-risk-overview.png)
+
+The same data is at `GET /api/macro?range=1m` (`24h`, `1w`, `1m`, `3m`, `6m`, `1y`).
 
 ## Rejected traffic across an OU
 

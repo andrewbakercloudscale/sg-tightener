@@ -86,6 +86,31 @@ details summary { cursor: pointer; font-weight: 600; }
 .switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
 .switch input:checked { background: var(--good); } .switch input:checked::after { left: 21px; }
 .bar-track { height: 8px; background: var(--grid); border-radius: 999px; overflow: hidden; margin: 6px 0; } .bar-fill { height: 100%; background: var(--accent); }
+.mtiles { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.mtile { border-left: 4px solid var(--c, var(--muted)); }
+.mtile b { font-size: 26px; }
+table.heat td.h { text-align: center; font-variant-numeric: tabular-nums; font-weight: 650; border: 2px solid var(--surface); border-radius: 6px; }
+table.heat td:first-child { white-space: nowrap; }
+table.heat td.l0 { background: color-mix(in srgb, var(--good) 12%, transparent); }
+table.heat td.l1 { background: color-mix(in srgb, var(--warn) 22%, transparent); }
+table.heat td.l2 { background: color-mix(in srgb, var(--high) 30%, transparent); }
+table.heat td.l3 { background: color-mix(in srgb, var(--bad) 38%, transparent); }
+table.heat th.h { text-align: center; text-transform: none; letter-spacing: 0; font-size: 11.5px; max-width: 110px; }
+.stack { display: flex; height: 18px; border-radius: 4px; overflow: hidden; background: var(--grid); }
+.stack span { display: block; height: 100%; }
+.orow { display: grid; grid-template-columns: minmax(120px, 220px) 1fr 80px; gap: 10px; align-items: center; margin: 6px 0; font-size: 13px; }
+.orow .t { text-align: right; font-variant-numeric: tabular-nums; font-weight: 650; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--ink-2); margin: 6px 0 10px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.seg { display: inline-flex; border: 1px solid var(--control-line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: var(--surface); color: var(--ink-2); font: inherit; font-size: 12.5px; font-weight: 600; padding: 5px 10px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 14px; }
+.two > * { min-width: 0; }
+#mHeat, #mExposure, #mLetIn, #mTop, #mBlind { overflow-x: auto; max-width: 100%; }
+.two > .card { margin-bottom: 0; }
+svg.tl { width: 100%; height: auto; display: block; }
+svg.tl text { fill: var(--ink-2); font-size: 11px; }
 .steps { margin: 6px 0 0; padding-left: 20px; } .steps li { margin: 3px 0; }
 @media (max-width: 640px) { th, td { padding: 6px; } .bar h1 { font-size: 15px; } }
 </style>
@@ -95,6 +120,7 @@ details summary { cursor: pointer; font-weight: 600; }
   <div class="bar"><h1>Security Group Console</h1><span class="who" id="who"></span><span class="who" id="mode"></span></div>
   <nav role="tablist">
     <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+    <button role="tab" data-tab="macro" aria-selected="false">Risk overview</button>
     <button role="tab" data-tab="groups" aria-selected="false">Security groups</button>
     <button role="tab" data-tab="requests" aria-selected="false">Change requests<span class="count" id="pendingCount" hidden></span></button>
     <button role="tab" data-tab="audit" aria-selected="false">Audit trail</button>
@@ -202,6 +228,29 @@ details summary { cursor: pointer; font-weight: 600; }
     <div class="card scroll"><table><thead><tr><th>#</th><th>When</th><th>Who</th><th>What</th><th>Where</th><th>Why</th></tr></thead><tbody id="auditRows"></tbody></table></div>
   </section>
 
+  <section id="tab-macro" hidden>
+    <h2>Risk overview: every account</h2>
+    <p class="lede">Every account <code>sg_review.py</code> has read, side by side: how much the security groups let in that nobody uses, whose addresses those are, what is open to the internet, who is probing, and what got in that should not have. Select an account to open its review.</p>
+    <div class="tools">
+      <select id="mRange" aria-label="Time window"><option value="24h">Last 24 hours</option><option value="1w">Last week</option><option value="1m" selected>Last month</option><option value="3m">Last 3 months</option><option value="6m">Last 6 months</option><option value="1y">Last year</option></select>
+      <span class="muted small" id="mNote"></span>
+    </div>
+    <div class="grid mtiles" id="mTiles"></div>
+    <div class="card"><h3 style="margin-top:0">Risk by account</h3><p class="muted small">Worst first. Red: act now. Orange: high. Amber: worth a look. Green: nothing found. The risk score adds the levels across the row.</p><div class="scroll"><table class="heat" id="mHeat"></table></div></div>
+    <div class="card"><h3 style="margin-top:0">Over-provisioned by owner</h3>
+      <p class="muted small">Addresses the rules let in today that were never seen in the flow logs, by who they belong to. Pull back the biggest owner first: private space nobody uses and whole provider ranges are usually most of it.</p>
+      <div class="tools"><span class="seg" id="mBy"><button data-by="cat" aria-pressed="true">By kind</button><button data-by="type" aria-pressed="false">By source type</button></span><span class="seg" id="mScale"><button data-scale="abs" aria-pressed="true">Size</button><button data-scale="share" aria-pressed="false">Share</button></span></div>
+      <div id="mOwner"></div></div>
+    <div class="card"><h3 style="margin-top:0">Over-provisioned over time, every account</h3><p class="muted small">Never-seen addresses allowed, summed across the accounts, by kind. Each tightening shows as a step down; a step up is a rule widened or an account whose evidence starts later joining the sum.</p><div id="mOverTime"></div>
+      <h3>High-risk sources probing, every account</h3><p class="muted small">Sources scanning ports, known scanners, threat lists and Tor exits refused in each period. Refused means the defences held; a jump means someone is looking.</p><div id="mHighTime"></div></div>
+    <div class="two">
+      <div class="card"><h3 style="margin-top:0">Open to the internet, by port class</h3><div id="mExposure"></div></div>
+      <div class="card"><h3 style="margin-top:0">High-risk sources let in</h3><p class="muted small">Scanners, threat lists and Tor exits that a rule let in. The most urgent thing on this page.</p><div id="mLetIn"></div></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h3 style="margin-top:0">Biggest rules to tighten, every account</h3><div id="mTop"></div></div>
+    <div class="card"><h3 style="margin-top:0">Blind spots</h3><div id="mBlind"></div></div>
+  </section>
+
   <section id="tab-refused" hidden>
     <h2>Rejected traffic across the accounts</h2>
     <p class="lede">Every source the security groups and network ACLs turned away, in every account <code>sg_review.py</code> has read (all of an OU with <code>sg_review.py org</code>, kept fresh by <code>sg_review.py watch --org --loop</code>), worst verdict first.</p>
@@ -259,7 +308,7 @@ details summary { cursor: pointer; font-weight: 600; }
   function show(tab) {
     for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
     for (const s of document.querySelectorAll("main > section")) s.hidden = s.id !== "tab-" + tab;
-    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, overview: loadState})[tab]?.())
+    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, macro: loadMacro, overview: loadState})[tab]?.())
       .catch((e) => flash(e.message, true));
   }
 
@@ -656,6 +705,127 @@ details summary { cursor: pointer; font-weight: 600; }
     });
   }
   $("fRange").addEventListener("change", loadRefused);
+
+  // ---- Risk overview: every account at once
+  let M = null;
+  const mv = {by: "cat", scale: "abs"};
+  const KCOL = {internal: "#2a78d6", datacentre: "#7357c9", aws: "#e8a317", saas: "#2f9e5b", internet: "#d03b3b"};
+  const TCOL = {internal: "#2a78d6", datacentre: "#7357c9", aws: "#e8a317", cdn: "#4fa3a5", security: "#0f9d9a", saas: "#2f9e5b", partner: "#8bc34a", hosting: "#b1afa6", scanner: "#e0673a", anon: "#8a5a2b", threat: "#9b1c1c", other: "#d03b3b"};
+  const big = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : Number(n || 0).toLocaleString();
+  const nm = (a) => a.name ? `${esc(a.name)} <span class="muted small">${esc(a.account)}</span>` : esc(a.account);
+  const acctLink = (a) => `<a href="/review?account=${encodeURIComponent(a.account)}" target="_blank" rel="noopener">${nm(a)}</a>`;
+  const sum = (xs, f) => xs.reduce((t, x) => t + (f(x) || 0), 0);
+  const DIMS = [
+    ["Needs attention", (a) => `${a.attention.critical || 0} / ${a.attention.high || 0}`, (a) => (a.attention.critical ? 3 : a.attention.high ? 2 : a.attention.medium ? 1 : 0), "critical / high items in the account's Needs attention box"],
+    ["High-risk let in", (a) => a.high_active, (a) => (a.high_active ? 3 : 0), "scanners, threat lists or Tor exits a rule let in"],
+    ["Open to internet, risky ports", (a) => `${a.open_risky}${a.open > a.open_risky ? ` <span class="small muted">+${a.open - a.open_risky}</span>` : ""}`, (a) => (a.open_risky ? 3 : a.open ? 1 : 0), "rules open to 0.0.0.0/0 or ::/0 on remote admin, database, Windows or container ports (+ other ports)"],
+    ["Outbound to threat lists", (a) => a.egress_bad, (a) => (a.egress_bad ? 3 : 0), "connections out to known malicious addresses, and other high outbound findings"],
+    ["Never-seen addresses allowed", (a) => big(a.over_now), (a) => (a.over_now > 1e7 ? 3 : a.over_now > 1e6 ? 2 : a.over_now > 1e4 ? 1 : 0), "over-provisioning: allowed in, never seen"],
+    ["Rules to tighten", (a) => a.tighten + a.unused, (a) => (a.tighten + a.unused > 10 ? 2 : a.tighten + a.unused ? 1 : 0), "rules wider than their traffic, plus rules nothing used"],
+    ["Probing (high risk, refused)", (a) => a.high_refused, (a) => (a.high_refused > 100 ? 2 : a.high_refused ? 1 : 0), "scanners and scans the rules turned away: the defences working, but someone is looking"],
+    ["Blind spots", (a) => (a.covered < 0.98 ? `${Math.round(a.covered * 100)}% read` : a.not_logged ? `${a.not_logged} not logged` : "none"), (a) => (a.covered < 0.98 || a.not_logged ? 2 : 0), "time not read, or groups without flow logs: risk this page cannot see"],
+  ];
+  const score = (a) => DIMS.reduce((t, d) => t + d[2](a), 0);
+
+  async function loadMacro() {
+    $("mNote").textContent = "Reading…";
+    M = await api(`/api/macro?range=${encodeURIComponent($("mRange").value)}`);
+    drawMacro();
+  }
+  function drawMacro() {
+    const A = [...M.accounts].sort((a, b) => score(b) - score(a) || b.over_now - a.over_now);
+    $("mNote").textContent = A.length ? `${A.length} account${A.length === 1 ? "" : "s"} read` : "";
+    if (!A.length) {
+      for (const id of ["mTiles", "mHeat", "mOwner", "mOverTime", "mHighTime", "mExposure", "mLetIn", "mTop", "mBlind"]) $(id).innerHTML = "";
+      $("mTiles").innerHTML = '<div class="card">No account has been read yet. Read one on the Overview (or run <code>sg_review.py read</code>, or <code>sg_review.py org</code> for a whole OU).</div>';
+      return;
+    }
+    const tile = (c, n, label) => `<div class="card stat mtile" style="--c:var(${c})"><b>${n}</b><span>${label}</span></div>`;
+    const att = sum(A, (a) => a.attention.critical), hiIn = sum(A, (a) => a.high_active), openR = sum(A, (a) => a.open_risky), egress = sum(A, (a) => a.egress_bad);
+    $("mTiles").innerHTML = [
+      tile("--accent", A.length, "accounts read"),
+      tile(att ? "--bad" : "--good", att, "critical items to act on"),
+      tile(hiIn ? "--bad" : "--good", hiIn, "high-risk sources let in"),
+      tile(openR ? "--bad" : "--good", openR, "rules open to the internet on risky ports"),
+      tile(egress ? "--bad" : "--good", egress, "outbound to threat lists"),
+      tile("--high", big(sum(A, (a) => a.over_now)), "never-seen addresses allowed in"),
+      tile("--warn", sum(A, (a) => a.tighten + a.unused), "rules to tighten or remove"),
+      tile("--muted", big(sum(A, (a) => a.high_refused)), "high-risk sources probing (refused)"),
+    ].join("");
+    $("mHeat").innerHTML = `<thead><tr><th>Account</th><th class="h">Risk score</th>${DIMS.map((d) => `<th class="h" title="${esc(d[3])}">${esc(d[0])}</th>`).join("")}<th>Mode</th></tr></thead><tbody>${A.map((a) => {
+      const sc = score(a);
+      return `<tr><td>${acctLink(a)}</td><td class="h l${sc >= 10 ? 3 : sc >= 6 ? 2 : sc >= 2 ? 1 : 0}">${sc}</td>${DIMS.map((d) => `<td class="h l${d[2](a)}" title="${esc(d[3])}">${d[1](a)}</td>`).join("")}<td>${modePill(a.mode)}</td></tr>`;
+    }).join("")}</tbody>`;
+    drawOwner(A);
+    drawTimes(A);
+    // exposure by port class
+    const cls = {};
+    for (const a of A) for (const [k, n] of Object.entries(a.open_classes || {})) cls[k] = (cls[k] || 0) + n;
+    const cmax = Math.max(1, ...Object.values(cls));
+    const risky = A.flatMap((a) => a.open_risky_list.map((r) => ({...r, a})));
+    $("mExposure").innerHTML = Object.keys(cls).length
+      ? Object.entries(cls).sort((p, q) => q[1] - p[1]).map(([k, n]) => `<div class="orow"><span>${esc(k)}</span><div class="stack"><span style="width:${(n / cmax) * 100}%;background:${/admin|Database|Windows|Container/i.test(k) ? "var(--bad)" : "var(--accent)"}"></span></div><span class="t">${n}</span></div>`).join("")
+        + (risky.length ? `<table class="small" style="margin-top:10px"><thead><tr><th>Account</th><th>Group</th><th>Port</th><th>Open to</th></tr></thead><tbody>${risky.slice(0, 15).map((r) => `<tr><td>${acctLink(r.a)}</td><td>${esc(r.group)}</td><td>${esc(r.ports)} <span class="muted">${esc(r.service)}</span></td><td><code>${esc(r.source)}</code></td></tr>`).join("")}</tbody></table>` : "")
+      : '<p class="muted">No rule in any account is open to the whole internet.</p>';
+    const inn = A.flatMap((a) => a.high_active_list.map((r) => ({...r, a}))).sort((p, q) => q.flows - p.flows);
+    const TYPE = {scanner: "Scanner", anon: "Tor or VPN exit", threat: "Threat list"};
+    $("mLetIn").innerHTML = inn.length ? `<table class="small"><thead><tr><th>Account</th><th>Source</th><th>Let in on</th><th>Flows</th><th>Last</th></tr></thead><tbody>${inn.slice(0, 20).map((r) => `<tr><td>${acctLink(r.a)}</td><td><code>${esc(r.src)}</code> <span class="pill" style="--p:var(--bad)">${esc(TYPE[r.type] || r.type)}</span><div class="muted">${esc(r.name)}</div></td><td>${r.ports.map(esc).join(", ")}</td><td>${Number(r.flows).toLocaleString()}</td><td>${esc(when(r.last))}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">None: no scanner, threat-list address or Tor exit was let in.</p>';
+    const top = A.flatMap((a) => a.top_rules.map((r) => ({...r, a}))).sort((p, q) => q.never - p.never).slice(0, 12);
+    $("mTop").innerHTML = top.length ? `<table class="small"><thead><tr><th>Account</th><th>Group</th><th>Port</th><th>Allows</th><th>Never seen</th><th></th></tr></thead><tbody>${top.map((r) => `<tr><td>${acctLink(r.a)}</td><td>${esc(r.group)} <span class="muted">${esc(r.region)}</span></td><td>${esc(r.ports)}</td><td><code>${esc(r.source)}</code></td><td><b>${big(r.never)}</b></td><td>${r.status === "unused" ? '<span class="pill" style="--p:var(--warn)">nothing used it</span>' : '<span class="pill" style="--p:var(--high)">tighten</span>'}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">Nothing to tighten.</p>';
+    const read = new Set(A.map((a) => a.account));
+    const notRead = (S?.accounts || []).filter((a) => !read.has(a.account));
+    const blind = [
+      ...A.filter((a) => a.covered < 0.98).map((a) => `<li>${acctLink(a)}: only ${Math.round(a.covered * 100)}% of this window read. Read it again for the rest.</li>`),
+      ...A.filter((a) => a.not_logged).map((a) => `<li>${acctLink(a)}: ${a.not_logged} security group${a.not_logged === 1 ? " has" : "s have"} interfaces without VPC flow logs; nothing about ${a.not_logged === 1 ? "it" : "them"} is measured.</li>`),
+      ...A.filter((a) => a.history_days < 7).map((a) => `<li>${acctLink(a)}: only ${a.history_days.toFixed(1)} days of evidence. A weekly or monthly job may not have run yet: do not remove rules on this alone.</li>`),
+      ...notRead.map((a) => `<li>${nm(a)}: in the console but not read, so it is not on this page.</li>`),
+    ];
+    $("mBlind").innerHTML = blind.length ? `<ul class="steps">${blind.join("")}</ul>` : '<p class="muted">None: every account read covers the whole window and every group has flow logs.</p>';
+  }
+  function drawOwner(A) {
+    const by = mv.by, COL = by === "cat" ? KCOL : TCOL, NAMES = by === "cat" ? M.kinds : M.types;
+    const parts = (a) => (by === "cat" ? a.over_by_cat : a.over_by_type) || {};
+    const keys = Object.keys(NAMES).filter((k) => A.some((a) => parts(a)[k]));
+    const tot = {};
+    for (const a of A) for (const k of keys) tot[k] = (tot[k] || 0) + (parts(a)[k] || 0);
+    const T = sum(keys, (k) => tot[k]);
+    const max = Math.max(1, ...A.map((a) => sum(keys, (k) => parts(a)[k])));
+    const bar = (p, total, width) => `<div class="stack" style="width:${width}%">${keys.filter((k) => p[k]).map((k) => `<span style="width:${(p[k] / total) * 100}%;background:${COL[k] || "#8f8d86"}" title="${esc(NAMES[k])}: ${big(p[k])} (${Math.round((p[k] / total) * 100)}%)"></span>`).join("")}</div>`;
+    const legend = `<div class="legend">${keys.map((k) => `<span><i style="background:${COL[k] || "#8f8d86"}"></i>${esc(NAMES[k])} <b>${big(tot[k])}</b> <span class="muted">${T ? Math.round((tot[k] / T) * 100) : 0}%</span></span>`).join("")}</div>`;
+    $("mOwner").innerHTML = T ? `${legend}<div class="orow"><b>All accounts</b>${bar(tot, T, 100)}<span class="t">${big(T)}</span></div><hr style="border:0;border-top:1px solid var(--grid)">${[...A].sort((a, b) => sum(keys, (k) => parts(b)[k]) - sum(keys, (k) => parts(a)[k])).map((a) => {
+      const t = sum(keys, (k) => parts(a)[k]);
+      return `<div class="orow"><span>${acctLink(a)}</span><div>${t ? bar(parts(a), t, mv.scale === "share" ? 100 : Math.max(1, (t / max) * 100)) : '<span class="muted small">nothing over-provisioned</span>'}</div><span class="t">${big(t)}</span></div>`;
+    }).join("")}` : '<p class="muted">Nothing over-provisioned: every rule fits what was seen.</p>';
+  }
+  // Sum each account's series on the shared time axis (the same window has the same step in every account).
+  function aligned(A, pick) {
+    const at = new Map();
+    for (const a of A) a.bins.forEach((t, i) => { const v = pick(a, i); const cur = at.get(t) || {}; for (const [k, n] of Object.entries(v)) cur[k] = (cur[k] || 0) + n; at.set(t, cur); });
+    const ts = [...at.keys()].sort((p, q) => p - q);
+    return {ts, rows: ts.map((t) => at.get(t))};
+  }
+  function svgStack(ts, rows, keys, COL, NAMES, h = 200) {
+    if (!ts.length) return '<p class="muted">No data in this window.</p>';
+    const W = 1000, P = {l: 56, r: 10, t: 10, b: 24}, iw = W - P.l - P.r, ih = h - P.t - P.b;
+    const tot = rows.map((r) => sum(keys, (k) => r[k]));
+    const max = Math.max(1, ...tot), bw = iw / ts.length;
+    let out = "";
+    rows.forEach((r, i) => { let y = P.t + ih; for (const k of keys) { const v = r[k] || 0; if (!v) continue; const hh = (v / max) * ih; y -= hh; out += `<rect x="${(P.l + i * bw).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${hh.toFixed(1)}" fill="${COL[k] || "#8f8d86"}"><title>${esc(new Date(ts[i] * 1000).toISOString().slice(0, 10))} ${esc(NAMES[k] || k)}: ${big(v)}</title></rect>`; } });
+    const d = (t) => new Date(t * 1000).toISOString().slice(0, 10);
+    const axis = `<line x1="${P.l}" y1="${P.t + ih}" x2="${W - P.r}" y2="${P.t + ih}" style="stroke:var(--grid)"/><text x="${P.l - 6}" y="${P.t + 10}" text-anchor="end">${big(max)}</text><text x="${P.l - 6}" y="${P.t + ih}" text-anchor="end">0</text><text x="${P.l}" y="${h - 6}">${d(ts[0])}</text><text x="${W - P.r}" y="${h - 6}" text-anchor="end">${d(ts[ts.length - 1])}</text>`;
+    const legend = keys.length > 1 ? `<div class="legend">${keys.map((k) => `<span><i style="background:${COL[k] || "#8f8d86"}"></i>${esc(NAMES[k] || k)}</span>`).join("")}</div>` : "";
+    return `${legend}<svg class="tl" viewBox="0 0 ${W} ${h}" role="img" aria-label="Stacked bars over time">${axis}${out}</svg>`;
+  }
+  function drawTimes(A) {
+    const keys = Object.keys(M.kinds);
+    const o = aligned(A, (a, i) => Object.fromEntries(keys.map((k) => [k, (a.over_series[k] || [])[i] || 0])));
+    $("mOverTime").innerHTML = svgStack(o.ts, o.rows, keys.filter((k) => o.rows.some((r) => r[k])), KCOL, M.kinds);
+    const hi = aligned(A, (a, i) => ({high: a.high_series[i] || 0}));
+    $("mHighTime").innerHTML = hi.rows.some((r) => r.high) ? svgStack(hi.ts, hi.rows, ["high"], {high: "#d03b3b"}, {high: "High-risk sources"}, 150) : '<p class="muted">No high-risk source was refused in this window.</p>';
+  }
+  $("mRange").addEventListener("change", () => act(null, loadMacro));
+  $("mBy").addEventListener("click", (e) => { const b = e.target.closest("[data-by]"); if (!b || !M) return; mv.by = b.dataset.by; for (const x of $("mBy").children) x.setAttribute("aria-pressed", String(x === b)); drawOwner(M.accounts); });
+  $("mScale").addEventListener("click", (e) => { const b = e.target.closest("[data-scale]"); if (!b || !M) return; mv.scale = b.dataset.scale; for (const x of $("mScale").children) x.setAttribute("aria-pressed", String(x === b)); drawOwner(M.accounts); });
   for (const id of ["fQ", "fSev", "fAcct", "fRisky", "fNew", "fWhere"]) $(id).addEventListener("input", drawRefused);
 
   loadState().catch((e) => flash(e.message, true));

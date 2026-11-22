@@ -164,6 +164,38 @@ def test_rejected_traffic_across_every_account_read(console):
     assert {"src", "port", "verdict", "groups", "account_name"} <= set(got["rows"][0])
 
 
+def test_risk_overview_compares_every_account_read(console):
+    p = console["port"]
+    assert _req(p, "GET", "/api/macro?range=2y")[0] == 400
+    _, empty, _ = _req(p, "GET", "/api/macro?range=1m")
+    assert empty["accounts"] == [] and empty["kinds"] and empty["types"]
+    for acct, name, days in ((demo.ACCOUNT, "demo-prod", 30), ("444455556666", "data-prod", 14)):
+        doc = demo.build_doc(acct, time.time(), days)
+        doc["name"] = name
+        sg_review.save(doc)
+    status, got, _ = _req(p, "GET", "/api/macro?range=1m")
+    assert status == 200 and {a["account"] for a in got["accounts"]} == {demo.ACCOUNT, "444455556666"}
+    a = next(x for x in got["accounts"] if x["account"] == demo.ACCOUNT)
+    assert a["name"] == "demo-prod" and a["mode"] == "surveillance"
+    assert a["over_now"] > 0 and abs(sum(a["over_by_cat"].values()) - a["over_now"]) <= 1
+    assert abs(sum(a["over_by_type"].values()) - a["over_now"]) <= 1
+    assert all(len(v) == len(a["bins"]) for v in a["over_series"].values()) and len(a["high_series"]) == len(a["bins"])
+    assert a["open_risky"] >= 1 and all(r["ports"] and r["service"] for r in a["open_risky_list"])
+    assert a["high_active"] >= 1 and a["high_refused"] >= 1
+    assert a["external_refused"] + a["internal_refused"] <= a["refused"] + 1
+    assert a["top_rules"] and a["top_rules"][0]["never"] >= a["top_rules"][-1]["never"]
+    assert set(a["attention"]) >= {"critical", "high", "medium"}
+    again = _req(p, "GET", "/api/macro?range=1m")[1]
+    assert again["accounts"] == got["accounts"], "cached while the read has not changed"
+
+
+def test_the_page_has_the_risk_overview():
+    page = sg_console.ASSET.read_text()
+    for needle in ('data-tab="macro"', 'id="tab-macro"', 'id="mHeat"', 'id="mOwner"', 'id="mOverTime"', 'id="mExposure"',
+                   'id="mLetIn"', 'id="mBlind"', "/api/macro"):
+        assert needle in page
+
+
 def test_overview_shows_each_accounts_mode_and_assets(console):
     p = console["port"]
     _, state, _ = _req(p, "GET", "/api/state")

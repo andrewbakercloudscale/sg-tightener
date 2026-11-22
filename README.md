@@ -184,7 +184,7 @@ or `serve` for now), at a bookmarkable 127.0.0.1 address. **Sign in with AWS SSO
 your accounts and a read-only role in each, and **Read**: the security groups go in, the flow-log cost
 is shown before anything is spent, and **Review and tighten** opens each account's review. No AWS CLI
 or command line is needed after that. Over the database it shows every account's groups and rules, change requests to propose and approve, the audit trail
-to search, and **every rejected flow across an OU** in one table. Every change is a request with a
+to search, a **Risk overview** of every account (a risk heatmap and over-provisioning by owner), and **every rejected flow across an OU** in one table. Every change is a request with a
 reason and ticket, and **a different person must approve it** before it is applied. Proposal,
 approval and apply are each audited; break-glass (`sg_extend`) still goes straight through, flagged.
 See [the console](docs/console.md).
@@ -194,6 +194,10 @@ See [the console](docs/console.md).
 | ![Sign in](docs/images/sg-console-sso-signin.png) | ![Choose accounts](docs/images/sg-console-sso-accounts.png) | ![Read](docs/images/sg-console-sso-read.png) |
 
 ![The console overview, signed in](docs/images/sg-console-overview.png)
+
+![Risk overview: every account's risk side by side](docs/images/sg-console-risk-heatmap.png)
+
+![Over-provisioned by owner, across every account](docs/images/sg-console-over-by-owner.png)
 
 ![The console: every rejected flow across the accounts](docs/images/sg-console-rejected-traffic.png)
 
@@ -260,6 +264,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.12.0** | **Risk overview across every account.** A new console tab puts every account read side by side: headline tiles, a **risk heatmap** (eight dimensions per account, worst first), **over-provisioned by owner** (internal, data centre, AWS, SaaS, other networks, or by source type; size or share), over-provisioning and high-risk probing over time, rules open to the internet on risky ports, high-risk sources let in, the biggest rules to tighten, and blind spots |
 | **5.11.0** | **Refused timeline you can zoom, with a risk counter, and a guarded Extract rule.** A counter of refused addresses (High risk, Other external, Yours, AWS and SaaS) and a red line of high-risk sources; anything scanning ports is flagged **High risk**. Drag across the graph to zoom into a period, then **Extract rule** walks through Period, Sources, Rules, Apply: high-risk and external sources are held back and need a reason (and `add high risk` typed) to be added, recorded in the command and the audit trail |
 | **5.10.0** | **Look up ports.** In Where traffic comes from, **Look up ports** under each network's ports lists what every port is commonly used for (`tcp 5432` PostgreSQL · Database), with ⚠ on remote admin, database, Windows and container ports; hover a port for the same, and **Find** matches service names (`postgres`, `smb`). Console sign-in: **Open the AWS sign-in page again** is a button, with **Copy sign-in link** for a private window when a VPN change blocks the company sign-in |
 | **5.9.0** | **A web console for everyone, always running, with AWS SSO sign-in.** `sg_console.py install` (or the **Always running** switch) keeps the console running in the background at a bookmarkable address. **Sign in with AWS SSO** on the page (IAM Identity Center device sign-in, no AWS CLI needed; an `aws sso login` session is reused), choose your accounts and a role in each, and **Read**: security groups go into the console, the flow-log cost is shown before it is spent, with progress and Stop, then **Review and tighten** |

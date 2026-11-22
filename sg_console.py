@@ -234,6 +234,43 @@ class Console:
         data["console"] = {"token": token}
         return sg_review.render_page(data)
 
+    def macro(self, range_key: str = "1m") -> dict:
+        """Every account sg_review has read, side by side: over-provisioning by owner, exposure, probing, attention."""
+        import sg_review
+
+        if range_key not in RANGES:
+            raise ConsoleError(400, f"range must be one of {', '.join(RANGES)}")
+        modes = {}
+        try:
+            st = self.store()
+            try:
+                names = st.account_names()
+                modes = {a: st.mode(a) for a, _ in st.regions()}
+            finally:
+                st.close()
+        except Exception:  # noqa: BLE001 - the overview still works from the reads alone
+            names = {}
+        rows = []
+        for account in sg_review.cached_accounts():
+            try:
+                mtime = sg_review._path(account).stat().st_mtime
+            except OSError:
+                continue
+            key = ("macro", account, mtime, range_key)
+            got = self._refused_cache.get(key)
+            if got is None:
+                doc = sg_review.load(account)
+                if not doc or not any(c["st"] in ("ok", "cut") for c in doc["chunks"]):
+                    continue
+                rep = sg_review.build(doc, range_key, names=sg_review.load_names())
+                got = sg_review.macro_row(account, doc.get("name") or names.get(account, ""), rep)
+                self._refused_cache = {k: v for k, v in self._refused_cache.items() if not (k[0] == "macro" and k[1] == account)}
+                self._refused_cache[key] = got
+            rows.append({**got, "mode": modes.get(account, "surveillance")})
+        kinds = {k: sg_review.CAT_NAME[k] for k in sg_review.CATS}
+        types = {k: n for k, (n, _) in sg_review.SOURCE_TYPES.items()}
+        return {"range": range_key, "accounts": rows, "kinds": kinds, "types": types}
+
     def refused(self, range_key: str = "24h") -> dict:
         """Every refused source across the accounts sg_review has read, worst verdict first."""
         import sg_review
@@ -849,6 +886,8 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.audit(q))
                 if url.path == "/api/requests":
                     return self._json(200, console.requests(q.get("status", "")))
+                if url.path == "/api/macro":
+                    return self._json(200, console.macro(q.get("range", "1m")))
                 if url.path == "/api/refused":
                     return self._json(200, console.refused(q.get("range", "24h")))
                 if url.path == "/api/sso":
