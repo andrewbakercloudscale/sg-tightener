@@ -260,3 +260,25 @@ def test_the_page_has_sign_in_read_and_always_running():
     for needle in ('id="ssoGo"', 'id="ssoAccounts"', 'id="chosenRows"', 'id="svcOn"', "/api/sso/start", "/api/read/confirm",
                    "/api/autostart"):
         assert needle in page
+
+
+def test_on_macos_a_copy_in_a_protected_folder_is_bundled_so_the_background_copy_can_read_it(tmp_path, monkeypatch):
+    src = tmp_path / "Desktop" / "sg-tightener"
+    (src / "assets").mkdir(parents=True)
+    (src / "assets" / "sg_console.html").write_text("page")
+    (src / "sg_console.py").write_text("# app")
+    monkeypatch.setattr(sg_console, "RUNTIME", ("six",))
+
+    class R:
+        returncode, stdout, stderr = 0, "", ""
+
+    svc = sg_console.Service(["/venv/bin/python", str(src / "sg_console.py"), "serve", "--service"], system="Darwin",
+                             home=tmp_path, src=src, run=lambda cmd, **k: R())
+    assert svc.needs_copy()
+    svc.install()
+    p = plistlib.loads(svc.path.read_bytes())
+    app = tmp_path / ".sg-tightener" / "app"
+    assert p["ProgramArguments"][1] == str(app / "sg_console.py") and (app / "assets" / "sg_console.html").exists()
+    assert p["EnvironmentVariables"]["PYTHONPATH"] == str(app / "lib") and (app / "lib" / "six.py").exists()
+    assert "/venv/" not in p["ProgramArguments"][0]
+    assert not sg_console.Service([], system="Darwin", home=tmp_path, src=tmp_path / "code").needs_copy()

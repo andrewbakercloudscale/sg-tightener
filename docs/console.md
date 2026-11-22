@@ -52,7 +52,10 @@ in the background, starts it when you log in and restarts it if it stops: a laun
 (`~/Library/LaunchAgents/com.sg-tightener.console.plist`), a systemd user service on Linux
 (`~/.config/systemd/user/sg-console.service`). Turning it on from a console started by hand hands
 over to the background copy at the same address; the page reloads by itself. Its log is
-`~/.sg-tightener/console.log`. Proxy and CA bundle settings (`HTTPS_PROXY`, `AWS_CA_BUNDLE`, …) in
+`~/.sg-tightener/console.log`. macOS does not let background programs read Desktop, Documents,
+Downloads or iCloud Drive, so when sg-tightener lives there, turning it on copies the tool and the
+packages it runs on (about 30 MB) to `~/.sg-tightener/app` and runs that copy; after updating
+sg-tightener, turn Always running off and on again (or run `install` again) to refresh it. Proxy and CA bundle settings (`HTTPS_PROXY`, `AWS_CA_BUNDLE`, …) in
 the environment it was turned on from are carried over. On Windows, start `sg_console.py serve` from
 Task Scheduler at log on.
 

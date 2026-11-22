@@ -53,6 +53,8 @@ RANGES = ("24h", "1w", "1m", "3m", "6m", "1y")
 LABEL = "com.sg-tightener.console"
 UNIT = "sg-console.service"
 COOKIE_AGE = 30 * 86400
+PROTECTED = ("Desktop", "Documents", "Downloads", "Library/Mobile Documents")  # macOS keeps background programs out
+RUNTIME = ("boto3", "pyyaml")
 PASS_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy", "AWS_CA_BUNDLE",
             "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE", "SG_TIGHTENER_DB")
 
@@ -604,12 +606,62 @@ class Service:
     service (Linux), running ``serve --service`` with the same port, database and data directory."""
 
     def __init__(self, cmd: list[str], running_as_service: bool = False, system: str | None = None, run=subprocess.run,
-                 home: Path | None = None):  # fmt: skip
-        self.cmd = cmd
+                 home: Path | None = None, src: Path | None = None):  # fmt: skip
+        self.cmd = list(cmd)
         self.running_as_service = running_as_service
         self.system = system or platform.system()
         self._run = run
         self.home = home or Path.home()
+        self.src = src or Path(__file__).resolve().parent
+        self.pythonpath = ""
+
+    @property
+    def app_dir(self) -> Path:
+        return self.home / ".sg-tightener" / "app"
+
+    def needs_copy(self) -> bool:
+        """macOS does not let a background program read Desktop, Documents, Downloads or iCloud Drive."""
+        if self.system != "Darwin":
+            return False
+        src = self.src.resolve()
+        return any(src == (self.home / p).resolve() or (self.home / p).resolve() in src.parents for p in PROTECTED)
+
+    def bundle(self) -> None:
+        """Copy the tool and the packages it runs on to ~/.sg-tightener/app, and run that copy with the base
+        Python (a virtual environment in a protected folder cannot be read either)."""
+        import importlib.metadata as md
+        import re
+        import shutil
+
+        dest, tmp = self.app_dir, self.app_dir.with_name("app.new")
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.copytree(self.src / "assets", tmp / "assets")
+        for f in self.src.glob("*.py"):
+            shutil.copy2(f, tmp / f.name)
+        seen, todo = set(), list(RUNTIME)
+        while todo:
+            name = todo.pop()
+            key = name.lower().replace("_", "-")
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                dist = md.distribution(name)
+            except md.PackageNotFoundError:
+                continue
+            todo += [re.split(r"[ <>=!;\[(~]", r, 1)[0] for r in dist.requires or [] if "extra ==" not in r]
+            for f in dist.files or []:
+                if f.parts[0] == ".." or f.suffix == ".pyc":
+                    continue
+                out = tmp / "lib" / f
+                out.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(dist.locate_file(f), out)
+        shutil.rmtree(dest, ignore_errors=True)
+        tmp.rename(dest)
+        base = Path(sys.base_prefix) / "bin" / f"python{sys.version_info[0]}.{sys.version_info[1]}"
+        self.cmd[0] = str(base if base.exists() else Path(sys.executable))
+        self.cmd[1] = str(dest / Path(self.cmd[1]).name)
+        self.pythonpath = str(dest / "lib")
 
     @property
     def supported(self) -> bool:
@@ -622,12 +674,14 @@ class Service:
         return self.home / ".config" / "systemd" / "user" / UNIT
 
     def status(self) -> dict:
-        return {"supported": self.supported, "installed": self.supported and self.path.exists(),
+        return {"supported": self.supported, "installed": self.supported and self.path.exists(), "copy": self.needs_copy(),
                 "running_as_service": self.running_as_service, "system": self.system, "file": str(self.path)}
 
     def _env(self) -> dict:
         env = {k: os.environ[k] for k in PASS_ENV if os.environ.get(k)}
         env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
+        if self.pythonpath:
+            env["PYTHONPATH"] = self.pythonpath
         return env
 
     def content(self) -> bytes:
@@ -648,6 +702,8 @@ class Service:
                                     "`sg_console.py serve` from Task Scheduler at log on")  # fmt: skip
         self.path.parent.mkdir(parents=True, exist_ok=True)
         (self.home / ".sg-tightener").mkdir(parents=True, exist_ok=True)
+        if self.needs_copy():
+            self.bundle()
         self.path.write_bytes(self.content())
         if self.system == "Darwin":
             target = f"gui/{os.getuid()}"

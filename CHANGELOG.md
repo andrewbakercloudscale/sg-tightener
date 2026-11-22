@@ -17,7 +17,9 @@
   running** switch on the page: a launchd agent (macOS) or systemd user service
   (Linux) that starts at login and restarts the console if it stops. A console
   started by hand hands over to it at the same address. `sg_console.py open`
-  opens the console.
+  opens the console. On macOS, a copy in Desktop, Documents, Downloads or iCloud
+  Drive (which background programs cannot read) is copied with its packages to
+  `~/.sg-tightener/app` and run from there.
 - The console's address keeps its token across restarts
   (`~/.sg-tightener/console-token`), so a bookmark works; `serve --new-token`
   replaces it. The cookie lasts 30 days. `serve` opens the browser.
