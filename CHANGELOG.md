@@ -1,5 +1,24 @@
 # Changelog
 
+## 5.13.0 - 2026-11-23
+
+- Console **Over-provisioning** tab for leaders: over-provisioned addresses by account and by asset,
+  rated red, amber or green, and whether they are coming down.
+- **Over-exposure per asset**: for every network interface, the addresses its security groups let
+  reach it that were never seen in the flow logs (IPv4, all its groups together). **Green** up to 256
+  (a /24), **amber** up to 65,536 (a /16), **red** above that or open to the internet on a remote
+  admin, database, Windows or container port. An account is red if any asset is red.
+- **KPIs**: never-seen addresses allowed in and the change over the window, assets right-sized (green)
+  against a 90% target, red and amber assets and their change, average over-exposure per asset and the
+  worst asset, accounts green, assets to fix to reach the target, and rules to tighten.
+- **Assets by rating over time**, a **by-account** table (rating, red/amber/green split, right-sized
+  share against the target, over-provisioned now, change and trend, average per asset, worst asset,
+  and **Reduce**, which opens the account's Tighten panel), **biggest wins** (rules ranked by
+  never-seen addresses times the assets they reach), and **every asset**, filtered by account, rating
+  and text.
+- `sg_review.build(..., assets=True)` adds the per-asset rows; `GET /api/macro` now carries them and
+  the thresholds.
+
 ## 5.12.0 - 2026-11-22
 
 - Console **Risk overview** tab: every account `sg_review.py` has read, side by side, for one time

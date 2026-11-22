@@ -776,3 +776,10 @@ def test_port_lookup_catalogue_uses_table_labels():
     cat = {sg_review._port_label(p, n): [c, s] for (p, n), (c, s) in sg_review.PORT_SERVICES.items()}
     assert cat["tcp 5432"] == ["database", "PostgreSQL, Aurora PostgreSQL"]
     assert cat["tcp 445"][0] == "windows" and cat["udp 53"][1] == "DNS" and cat["tcp 443"][1] == "HTTPS"
+
+
+def test_asset_rag_thresholds():
+    assert sg_review.asset_rag(0) == "green" and sg_review.asset_rag(sg_review.RAG_GREEN_MAX) == "green"
+    assert sg_review.asset_rag(sg_review.RAG_GREEN_MAX + 1) == "amber"
+    assert sg_review.asset_rag(sg_review.RAG_AMBER_MAX) == "amber" and sg_review.asset_rag(sg_review.RAG_AMBER_MAX + 1) == "red"
+    assert sg_review.asset_rag(0, open_risky=True) == "red"

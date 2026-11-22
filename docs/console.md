@@ -75,12 +75,13 @@ bookmark keeps working; `serve --new-token` makes a new one and old bookmarks st
 
 ![Overview, signed in: every account and region in the database](images/sg-console-overview.png)
 
-## The six tabs
+## The seven tabs
 
 | Tab | What it shows and does |
 |---|---|
 | **Overview** | Every account and region: its **mode** (surveillance or enforce), groups, rules, assets, changes waiting to be applied, **whether this identity can apply there** (with a **Check** button: a DryRun of every write, nothing changes), when AWS was last read. The approvals mode, who you are acting as, and whether the audit trail's hash chain is intact. For an account `sg_review.py` has read, **Review and tighten** opens its Security Group Review (`/review?account=ID`), whose **Tighten** panel proposes the fitted rules here as a change request ([how](security-group-review.md#tighten-pull-the-room-back-by-kind-type-and-name)) |
 | **Risk overview** | Every account `sg_review.py` has read, side by side: headline tiles, a risk heatmap, over-provisioning by owner and over time, internet exposure, high-risk sources let in, the biggest rules to tighten, and blind spots ([below](#risk-overview-every-account)) |
+| **Over-provisioning** | For leaders: over-provisioned addresses by account and per asset, rated red, amber or green, with KPIs, the trend, and **Reduce** into each account's Tighten panel ([below](#over-provisioning-by-account-and-asset)) |
 | **Security groups** | Pick an account and region. Every group and rule, marked *to add* (approved, not in AWS yet) or *to remove* (in AWS, not wanted). **Propose a change**, **Propose removing** a rule, **Reconcile with AWS**, **Apply approved changes** (press twice; off in surveillance mode), **Propose keeping what AWS holds**. Below, every **asset** (network interface): what it is attached to, its addresses and groups, whether it can have a group of its own (auto scaling, EKS, ECS and AWS-managed interfaces cannot), and its **History** of group changes |
 | **Change requests** | Requests waiting for approval, approved, applied, rejected, withdrawn. Approve, or reject with a note, someone else's request; withdraw your own. Apply an approved one. An **asset request** (from `sg_db.py asset-propose`) shows the interface, the group it gets, the rules narrowed and why, and once approved **Create the group and move** the interface |
 | **Audit trail** | Every entry, newest first, searchable (who, why, ticket, group, rule) and filtered by time and origin. Changes made outside the tool are red, with who made them from CloudTrail |
@@ -188,6 +189,48 @@ open its review.
 ![The whole Risk overview](images/sg-console-risk-overview.png)
 
 The same data is at `GET /api/macro?range=1m` (`24h`, `1w`, `1m`, `3m`, `6m`, `1y`).
+
+## Over-provisioning: by account and asset
+
+The **Over-provisioning** tab is the leaders' view: how much each account lets in that nobody uses,
+which assets carry it, and whether it is coming down.
+
+**Over-exposure per asset** is, for one network interface, the number of addresses its security groups
+(all of them together) let reach it that were never seen in the flow logs. IPv4; a rule open to the
+whole internet is not counted in the number (it would swamp it) but is shown, and makes the asset red
+on a risky port.
+
+| Rating | Over-exposure of the asset |
+|---|---|
+| **Green** (right-sized) | up to 256 never-seen addresses, a /24 |
+| **Amber** | up to 65,536, a /16 |
+| **Red** | more than 65,536, or open to the internet on a remote admin, database, Windows or container port |
+
+An account is red if any of its assets is red, amber if any is amber, green otherwise. Assets whose
+groups have no flow logs are not rated (they are counted as not logged).
+
+**KPIs**: never-seen addresses allowed in across every account and the change over the window; assets
+right-sized (the share rated green) against a **90% target**; red and amber assets and their change;
+average over-exposure per asset and the worst asset; accounts green; assets left to fix to reach the
+target; rules to tighten or remove.
+
+![Over-provisioning KPIs and assets by rating over time](images/sg-console-over-provisioning.png)
+
+- **Assets by rating over time**: red, amber and green assets at the end of each period, across every
+  account. Red shrinking and green growing is the goal.
+- **By account**, worst first: rating, the red/amber/green split, right-sized share against the target,
+  over-provisioned now, change in the window with a trend line, average per asset, worst asset, and
+  **Reduce**, which opens the account's review whose **Tighten** panel proposes the fitted rules for
+  two-person approval.
+
+![By account: rating, split, right-sized share, change, trend and Reduce](images/sg-console-over-by-account.png)
+
+- **Biggest wins**: the rules that would fix the most, ranked by never-seen addresses times the assets
+  the rule reaches.
+- **Every asset**: rating, asset (name, kind, interface, region, public IP), groups, over-exposure,
+  change in the window, and risky ports open to the internet; filter by account, rating and text.
+
+![Every asset in an account, rated](images/sg-console-over-per-asset.png)
 
 ## Rejected traffic across an OU
 

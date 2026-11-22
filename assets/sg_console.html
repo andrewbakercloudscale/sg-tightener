@@ -107,7 +107,16 @@ table.heat th.h { text-align: center; text-transform: none; letter-spacing: 0; f
 .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 14px; }
 .two > * { min-width: 0; }
-#mHeat, #mExposure, #mLetIn, #mTop, #mBlind { overflow-x: auto; max-width: 100%; }
+#mHeat, #mExposure, #mLetIn, #mTop, #mBlind, #oAccounts, #oAssets, #oWins { overflow-x: auto; max-width: 100%; }
+.rag { display: inline-block; min-width: 54px; text-align: center; font-size: 11.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; color: #fff; }
+.rag.red { background: #c62828; } .rag.amber { background: #e8a317; color: #241a00; } .rag.green { background: #2e7d32; }
+.chips { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.chips button { font: inherit; font-size: 12.5px; font-weight: 600; border: 1px solid var(--control-line); background: var(--surface); color: var(--ink-2); border-radius: 999px; padding: 4px 10px; cursor: pointer; }
+.chips button[aria-pressed="true"] { border-color: var(--accent); color: var(--ink); background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.delta.down { color: var(--good); } .delta.up { color: var(--bad); } .delta { font-size: 12px; font-weight: 650; white-space: nowrap; }
+.target { position: relative; } .target::after { content: ""; position: absolute; top: -3px; bottom: -3px; left: var(--t); width: 2px; background: var(--ink); }
+svg.spark { width: 110px; height: 26px; display: block; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .two > .card { margin-bottom: 0; }
 svg.tl { width: 100%; height: auto; display: block; }
 svg.tl text { fill: var(--ink-2); font-size: 11px; }
@@ -121,6 +130,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
   <nav role="tablist">
     <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
     <button role="tab" data-tab="macro" aria-selected="false">Risk overview</button>
+    <button role="tab" data-tab="over" aria-selected="false">Over-provisioning</button>
     <button role="tab" data-tab="groups" aria-selected="false">Security groups</button>
     <button role="tab" data-tab="requests" aria-selected="false">Change requests<span class="count" id="pendingCount" hidden></span></button>
     <button role="tab" data-tab="audit" aria-selected="false">Audit trail</button>
@@ -251,6 +261,23 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     <div class="card"><h3 style="margin-top:0">Blind spots</h3><div id="mBlind"></div></div>
   </section>
 
+  <section id="tab-over" hidden>
+    <h2>Over-provisioning: every account, every asset</h2>
+    <p class="lede">How many addresses the security groups let reach each asset that were never seen in the flow logs, rated red, amber or green, by account, and whether it is coming down. <b>Reduce</b> opens the account's review, whose <b>Tighten</b> panel proposes the fitted rules for approval.</p>
+    <div class="tools">
+      <select id="oRange" aria-label="Time window"><option value="1w">Last week</option><option value="1m" selected>Last month</option><option value="3m">Last 3 months</option><option value="6m">Last 6 months</option><option value="1y">Last year</option></select>
+      <span class="muted small" id="oNote"></span>
+    </div>
+    <p class="small muted" id="oRagNote"></p>
+    <div class="grid mtiles" id="oTiles"></div>
+    <div class="card"><h3 style="margin-top:0">Assets by rating over time, every account</h3><p class="muted small">Each bar counts the assets in each rating at the end of that period. Red shrinking and green growing is the goal; a red step up is a rule widened or a new asset.</p><div id="oRagTime"></div></div>
+    <div class="card"><h3 style="margin-top:0">By account</h3><p class="muted small">Worst first. An account is red if any asset is red. <b>Right-sized</b> is the share of its assets rated green; the line marks the target.</p><div id="oAccounts"></div></div>
+    <div class="card"><h3 style="margin-top:0">Biggest wins: the rules that would fix the most</h3><p class="muted small">Ranked by never-seen addresses times the assets the rule reaches. Tighten these first.</p><div id="oWins"></div></div>
+    <div class="card"><h3 style="margin-top:0">Every asset</h3>
+      <div class="tools"><select id="oAcct" aria-label="Account"><option value="">Every account</option></select><span class="chips" id="oRag"><button data-r="red" aria-pressed="true">Red</button><button data-r="amber" aria-pressed="true">Amber</button><button data-r="green" aria-pressed="false">Green</button></span><input id="oQ" type="search" placeholder="Filter: asset, group, kind, port…" aria-label="Filter assets"><span class="muted small" id="oN"></span></div>
+      <div id="oAssets"></div></div>
+  </section>
+
   <section id="tab-refused" hidden>
     <h2>Rejected traffic across the accounts</h2>
     <p class="lede">Every source the security groups and network ACLs turned away, in every account <code>sg_review.py</code> has read (all of an OU with <code>sg_review.py org</code>, kept fresh by <code>sg_review.py watch --org --loop</code>), worst verdict first.</p>
@@ -308,7 +335,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
   function show(tab) {
     for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
     for (const s of document.querySelectorAll("main > section")) s.hidden = s.id !== "tab-" + tab;
-    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, macro: loadMacro, overview: loadState})[tab]?.())
+    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, macro: loadMacro, over: loadOver, overview: loadState})[tab]?.())
       .catch((e) => flash(e.message, true));
   }
 
@@ -827,6 +854,95 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
   $("mBy").addEventListener("click", (e) => { const b = e.target.closest("[data-by]"); if (!b || !M) return; mv.by = b.dataset.by; for (const x of $("mBy").children) x.setAttribute("aria-pressed", String(x === b)); drawOwner(M.accounts); });
   $("mScale").addEventListener("click", (e) => { const b = e.target.closest("[data-scale]"); if (!b || !M) return; mv.scale = b.dataset.scale; for (const x of $("mScale").children) x.setAttribute("aria-pressed", String(x === b)); drawOwner(M.accounts); });
   for (const id of ["fQ", "fSev", "fAcct", "fRisky", "fNew", "fWhere"]) $(id).addEventListener("input", drawRefused);
+
+  // ---- Over-provisioning: RAG per asset, per account, and the trend
+  let O = null;
+  const TARGET = 0.9;  // share of assets rated green
+  const RAGC = {red: "#c62828", amber: "#e8a317", green: "#2e7d32"}, RAGN = {red: "Red", amber: "Amber", green: "Green"};
+  const ragPill = (r) => `<span class="rag ${r}">${RAGN[r]}</span>`;
+  const RANK = {red: 0, amber: 1, green: 2};
+  const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
+  function delta(now, then, fmt = big) {
+    if (!then && !now) return '<span class="delta muted">no change</span>';
+    const d = now - then;
+    if (!d) return '<span class="delta muted">no change</span>';
+    return `<span class="delta ${d < 0 ? "down" : "up"}">${d < 0 ? "▼" : "▲"} ${fmt(Math.abs(d))}${then ? ` (${Math.round((Math.abs(d) / then) * 100)}%)` : ""}</span>`;
+  }
+  function spark(xs) {
+    if (!xs || xs.length < 2) return "";
+    const W = 110, H = 26, max = Math.max(1, ...xs), min = Math.min(...xs), rng = Math.max(1, max - min);
+    const pts = xs.map((v, i) => `${((i / (xs.length - 1)) * (W - 2) + 1).toFixed(1)},${(H - 2 - ((v - min) / rng) * (H - 4)).toFixed(1)}`).join(" ");
+    const col = xs[xs.length - 1] < xs[0] ? "var(--good)" : xs[xs.length - 1] > xs[0] ? "var(--bad)" : "var(--muted)";
+    return `<svg class="spark" viewBox="0 0 ${W} ${H}" aria-hidden="true"><polyline points="${pts}" fill="none" style="stroke:${col}" stroke-width="2"/></svg>`;
+  }
+  async function loadOver() {
+    if (!S) await loadState().catch(() => {});
+    $("oNote").textContent = "Reading…";
+    O = await api(`/api/macro?range=${encodeURIComponent($("oRange").value)}`);
+    const fa = $("oAcct"), keep = fa.value;
+    fa.innerHTML = '<option value="">Every account</option>' + O.accounts.map((a) => `<option value="${esc(a.account)}">${esc(a.name || a.account)}</option>`).join("");
+    fa.value = keep;
+    drawOver();
+  }
+  function drawOver() {
+    const A = [...O.accounts].sort((a, b) => RANK[a.rag] - RANK[b.rag] || pct(a.asset_rag.green, a.assets_total) - pct(b.asset_rag.green, b.assets_total) || b.over_now - a.over_now);
+    $("oNote").textContent = A.length ? `${A.length} account${A.length === 1 ? "" : "s"} read` : "";
+    $("oRagNote").innerHTML = `${ragPill("green")} up to ${big(O.rag.green_max)} never-seen addresses can reach the asset (a /24) · ${ragPill("amber")} up to ${big(O.rag.amber_max)} (a /16) · ${ragPill("red")} more, or open to the internet on a remote admin, database, Windows or container port. IPv4; rules open to the whole internet on other ports are listed but not counted.`;
+    if (!A.length) {
+      for (const id of ["oTiles", "oRagTime", "oAccounts", "oWins", "oAssets"]) $(id).innerHTML = "";
+      $("oTiles").innerHTML = '<div class="card">No account has been read yet. Read one on the Overview (or run <code>sg_review.py read</code>, or <code>sg_review.py org</code> for a whole OU).</div>';
+      return;
+    }
+    const tot = (k) => sum(A, (a) => a.asset_rag[k]), tot0 = (k) => sum(A, (a) => a.asset_rag_start[k]);
+    const assets = sum(A, (a) => a.assets_total), green = tot("green"), red = tot("red"), amber = tot("amber");
+    const over = sum(A, (a) => a.over_now), over0 = sum(A, (a) => a.over_start);
+    const toFix = Math.max(0, Math.ceil(TARGET * assets) - green);
+    const all = A.flatMap((a) => a.assets);
+    const avg = assets ? Math.round(sum(all, (x) => x.over) / Math.max(1, all.length)) : 0;
+    const worst = [...all].sort((p, q) => q.over - p.over)[0];
+    const tile = (c, n, label, extra = "") => `<div class="card stat mtile" style="--c:${c}"><b>${n}</b><span>${label}</span>${extra ? `<div style="margin-top:4px">${extra}</div>` : ""}</div>`;
+    $("oTiles").innerHTML = [
+      tile("var(--high)", big(over), "never-seen addresses allowed in, every account", delta(over, over0)),
+      tile(pct(green, assets) >= TARGET * 100 ? RAGC.green : RAGC.amber, `${pct(green, assets)}%`, `assets right-sized (${green} of ${assets}); target ${Math.round(TARGET * 100)}%`, `<div class="bar-track target" style="--t:${TARGET * 100}%"><div class="bar-fill" style="width:${pct(green, assets)}%;background:${RAGC.green}"></div></div>`),
+      tile(RAGC.red, red, "red assets", delta(red, tot0("red"), String)),
+      tile(RAGC.amber, amber, "amber assets", delta(amber, tot0("amber"), String)),
+      tile("var(--accent)", big(avg), "average over-exposure per asset", `<span class="muted small">worst: ${worst ? `${esc(worst.name || worst.eni)} ${big(worst.over)}` : "none"}</span>`),
+      tile(A.some((a) => a.rag === "red") ? RAGC.red : RAGC.green, `${A.filter((a) => a.rag === "green").length} of ${A.length}`, "accounts green"),
+      tile(toFix ? RAGC.amber : RAGC.green, toFix, `assets to fix to reach ${Math.round(TARGET * 100)}% right-sized`),
+      tile("var(--warn)", sum(A, (a) => a.tighten + a.unused), "rules to tighten or remove"),
+    ].join("");
+    const r = aligned(A, (a, i) => ({red: a.asset_rag_series.red[i] || 0, amber: a.asset_rag_series.amber[i] || 0, green: a.asset_rag_series.green[i] || 0}));
+    $("oRagTime").innerHTML = svgStack(r.ts, r.rows, ["red", "amber", "green"], RAGC, RAGN, 180);
+    $("oAccounts").innerHTML = `<table class="small"><thead><tr><th>Rating</th><th>Account</th><th>Assets: red, amber, green</th><th>Right-sized</th><th class="num">Over-provisioned</th><th>Change in window</th><th>Trend</th><th class="num">Average per asset</th><th>Worst asset</th><th></th></tr></thead><tbody>${A.map((a) => {
+      const n = a.assets_total, w = a.assets[0];
+      const stack = n ? `<div class="stack" style="min-width:120px">${["red", "amber", "green"].filter((k) => a.asset_rag[k]).map((k) => `<span style="width:${(a.asset_rag[k] / n) * 100}%;background:${RAGC[k]}" title="${RAGN[k]}: ${a.asset_rag[k]}"></span>`).join("")}</div><div class="muted">${a.asset_rag.red} / ${a.asset_rag.amber} / ${a.asset_rag.green}${a.assets_unlogged ? ` · ${a.assets_unlogged} not logged` : ""}</div>` : '<span class="muted">no logged assets</span>';
+      const g = pct(a.asset_rag.green, n);
+      return `<tr><td>${ragPill(a.rag)}</td><td style="white-space:nowrap">${acctLink(a)}</td><td>${stack}</td>
+        <td style="min-width:90px"><b>${g}%</b><div class="bar-track target" style="--t:${TARGET * 100}%"><div class="bar-fill" style="width:${g}%;background:${g >= TARGET * 100 ? RAGC.green : RAGC.amber}"></div></div></td>
+        <td class="num"><b>${big(a.over_now)}</b></td><td>${delta(a.over_now, a.over_start)}</td><td>${spark(a.over_total_series)}</td>
+        <td class="num">${big(a.asset_over_avg)}</td><td>${w ? `${esc(w.name || w.eni)} <span class="muted">${big(w.over)}</span>` : ""}</td>
+        <td><a class="btn" href="/review?account=${encodeURIComponent(a.account)}" target="_blank" rel="noopener">Reduce</a></td></tr>`;
+    }).join("")}</tbody></table>`;
+    const wins = A.flatMap((a) => a.top_rules.map((x) => ({...x, a}))).sort((p, q) => q.never * Math.max(1, q.enis) - p.never * Math.max(1, p.enis)).slice(0, 12);
+    $("oWins").innerHTML = wins.length ? `<table class="small"><thead><tr><th>Account</th><th>Group</th><th>Port</th><th>Allows</th><th class="num">Never seen</th><th class="num">Assets reached</th><th></th></tr></thead><tbody>${wins.map((x) => `<tr><td style="white-space:nowrap">${acctLink(x.a)}</td><td>${esc(x.group)} <span class="muted">${esc(x.region)}</span></td><td>${esc(x.ports)}</td><td><code>${esc(x.source)}</code></td><td class="num"><b>${big(x.never)}</b></td><td class="num">${x.enis}</td><td>${x.status === "unused" ? '<span class="pill" style="--p:var(--warn)">remove: nothing used it</span>' : '<span class="pill" style="--p:var(--high)">tighten</span>'}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">Nothing to tighten.</p>';
+    drawAssets(A);
+  }
+  function drawAssets(A) {
+    const acct = $("oAcct").value, q = $("oQ").value.toLowerCase().trim();
+    const on = new Set([...$("oRag").children].filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.dataset.r));
+    const all = A.filter((a) => !acct || a.account === acct).flatMap((a) => a.assets.map((x) => ({...x, a})));
+    const shown = all.filter((x) => on.has(x.rag) && (!q || [x.name, x.eni, x.kind, x.region, x.instance, ...x.groups, ...x.open_risky].join(" ").toLowerCase().includes(q)))
+      .sort((p, q2) => RANK[p.rag] - RANK[q2.rag] || q2.over - p.over);
+    $("oN").textContent = `${shown.length.toLocaleString()} of ${all.length.toLocaleString()} assets`;
+    $("oAssets").innerHTML = shown.length ? `<table class="small"><thead><tr><th>Rating</th><th>Account</th><th>Asset</th><th>Groups</th><th class="num">Over-exposure</th><th>Change in window</th><th>Open to the internet</th></tr></thead><tbody>${shown.slice(0, 500).map((x) => `<tr><td>${ragPill(x.rag)}</td><td style="white-space:nowrap">${acctLink(x.a)}</td>
+      <td><b>${esc(x.name || x.eni)}</b>${x.public ? ' <span class="pill" style="--p:var(--warn)">public IP</span>' : ""}<div class="muted">${esc(x.kind)} · <code>${esc(x.eni)}</code> · ${esc(x.region)}</div></td>
+      <td>${x.groups.map(esc).join(", ")}</td><td class="num"><b>${big(x.over)}</b></td><td>${delta(x.over, x.start)}</td>
+      <td>${x.open_risky.length ? x.open_risky.map((p) => `<span class="pill" style="--p:var(--bad)">${esc(p)}</span>`).join(" ") : x.open ? `<span class="muted">${x.open} rule${x.open === 1 ? "" : "s"}, not risky ports</span>` : '<span class="muted">no</span>'}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">No asset matches.</p>';
+  }
+  $("oRange").addEventListener("change", () => act(null, loadOver));
+  $("oAcct").addEventListener("change", () => O && drawAssets(O.accounts));
+  $("oQ").addEventListener("input", () => O && drawAssets(O.accounts));
+  $("oRag").addEventListener("click", (e) => { const b = e.target.closest("[data-r]"); if (!b || !O) return; b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true")); drawAssets(O.accounts); });
 
   loadState().catch((e) => flash(e.message, true));
 })();

@@ -262,14 +262,15 @@ class Console:
                 doc = sg_review.load(account)
                 if not doc or not any(c["st"] in ("ok", "cut") for c in doc["chunks"]):
                     continue
-                rep = sg_review.build(doc, range_key, names=sg_review.load_names())
+                rep = sg_review.build(doc, range_key, names=sg_review.load_names(), assets=True)
                 got = sg_review.macro_row(account, doc.get("name") or names.get(account, ""), rep)
                 self._refused_cache = {k: v for k, v in self._refused_cache.items() if not (k[0] == "macro" and k[1] == account)}
                 self._refused_cache[key] = got
             rows.append({**got, "mode": modes.get(account, "surveillance")})
         kinds = {k: sg_review.CAT_NAME[k] for k in sg_review.CATS}
         types = {k: n for k, (n, _) in sg_review.SOURCE_TYPES.items()}
-        return {"range": range_key, "accounts": rows, "kinds": kinds, "types": types}
+        rag = {"green_max": sg_review.RAG_GREEN_MAX, "amber_max": sg_review.RAG_AMBER_MAX}
+        return {"range": range_key, "accounts": rows, "kinds": kinds, "types": types, "rag": rag}
 
     def refused(self, range_key: str = "24h") -> dict:
         """Every refused source across the accounts sg_review has read, worst verdict first."""

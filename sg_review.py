@@ -1486,7 +1486,8 @@ def _state_at(now_entries: set, events: list, t: float) -> tuple[set, bool]:
     return state, known
 
 
-def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = "", names: list | None = None) -> dict:
+def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = "", names: list | None = None,
+          assets: bool = False) -> dict:
     span, step = RANGES.get(range_key, RANGES["1m"])
     chunks = [c for c in doc["chunks"] if c["st"] in ("ok", "cut")]
     lab = Labeller(doc, onprem, internal, names)
@@ -1652,14 +1653,21 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         g["id"]: {(r["proto"], r["from"], r["to"], s) for r in g["rules"] for s in _entries(r)} for g in logged_groups
     }
     memo: dict[tuple, list] = {}
+    # Per asset (network interface): never-seen addresses that can reach it through any of its groups, per period.
+    logged_ids = {g["id"] for g in logged_groups}
+    asset_enis = [e for e, x in enis.items() if x["groups"]] if assets else []
+    asset_over: dict[str, list] = {e: [0] * nbins for e in asset_enis}
+    asset_memo: dict[tuple, int] = {}
     for i, t0 in enumerate(bins):
         t = min(t0 + step, end)
         total = [0] * len(CATS)
+        gkeys: dict[str, frozenset] = {}
         for g in logged_groups:
             state, known = _state_at(now_entries[g["id"]], ev_by_group.get(g["id"], []), t)
             if not known:
                 frozen_groups.add(g["id"])
             key = (g["region"], frozenset(x[3] for x in state if x[3] != "0.0.0.0/0"))
+            gkeys[g["id"]] = key[1]
             if key not in memo:
                 iv = sg_ipintel.merge([v for src in key[1] for v in expand(src, key[0])])
                 over = sg_ipintel.subtract(iv, seen_iv)
@@ -1670,6 +1678,12 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
                 over_attr.setdefault(nk, [0] * nbins)[i] += n
         for k, n in zip(CATS, total):
             over_series[k][i] = n
+        for e in asset_enis:
+            akey = (enis[e]["region"], frozenset().union(*(gkeys.get(gid, frozenset()) for gid in enis[e]["groups"])))
+            if akey not in asset_memo:
+                iv = sg_ipintel.merge([v for src in akey[1] for v in expand(src, akey[0])])
+                asset_memo[akey] = sg_ipintel.size(sg_ipintel.subtract(iv, seen_iv))
+            asset_over[e][i] = asset_memo[akey]
     markers = [
         {"t": ev["t"], "bin": int((ev["t"] - start) // step), "group": ev["group"],
          "name": groups.get(ev["group"], {}).get("name", ev["group"]), "event": ev["name"], "who": ev["who"],
@@ -1680,6 +1694,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
     rules = _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_first, cut_regions, end)
     fit = fit_model(rules, lab)
     open_rules = [r for r in rules if r["status"] == "open"]
+    asset_rows = _asset_rows(asset_enis, asset_over, enis, groups, snaps, rules, logged_ids) if assets else None
 
     # ---- verdicts: why each source was refused, and which let-in sources look wrong
     ctx = _Ctx(lab, enis, groups, snaps, ev_by_group, accepted_rows, rej, end)
@@ -1796,6 +1811,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         "markers": markers,
         "attention": attention,
         "privatelink": privatelink,
+        **({"assets": asset_rows} if assets else {}),
         "pl_inventory": pl_inventory,
         "posture": posture,
         "drift": drift,
@@ -4109,6 +4125,41 @@ def _high_risk(r: dict) -> bool:
     return bool(r.get("sweep")) or r.get("group") in HIGH_RISK_TYPES
 
 
+# Over-exposure per asset, RAG: never-seen addresses that can reach one network interface through its groups.
+RAG_GREEN_MAX = 256  # a /24 or less of addresses nobody used
+RAG_AMBER_MAX = 65536  # up to a /16; more, or open to the internet on a risky port, is red
+
+
+def asset_rag(over: int, open_risky: bool = False) -> str:
+    if open_risky or over > RAG_AMBER_MAX:
+        return "red"
+    return "amber" if over > RAG_GREEN_MAX else "green"
+
+
+def _asset_rows(asset_enis, asset_over, enis, groups, snaps, rules, logged_ids) -> list[dict]:
+    """One row per interface with groups: what it is, its over-exposure now and per period, internet-open rules."""
+    open_by_group: dict[str, list] = {}
+    for r in rules:
+        if r.get("source") in OPEN_SOURCES:
+            open_by_group.setdefault(r["group"], []).append(r)
+    out = []
+    for e in asset_enis:
+        x = enis[e]
+        inst = ((snaps.get(x["region"]) or {}).get("instances") or {}).get(x.get("instance") or "", {})
+        opens = [r for gid in x["groups"] for r in open_by_group.get(gid, [])]
+        risky = sorted({f'{r["ports"]} {(r.get("pc") or {}).get("svc", "")}'.strip() for r in opens if (r.get("pc") or {}).get("risky")})
+        series = asset_over[e]
+        out.append({
+            "eni": e, "region": x["region"], "kind": x.get("kind", ""), "name": inst.get("name") or x.get("desc", ""),
+            "instance": x.get("instance", ""), "public": bool(x.get("public")),
+            "groups": [groups[g]["name"] if g in groups else g for g in x["groups"]],
+            "over": series[-1] if series else 0, "series": series,
+            "open": len(opens), "open_risky": risky,
+            "logged": all(g in logged_ids for g in x["groups"] if g in groups),
+        })
+    return out
+
+
 def macro_row(account: str, name: str, rep: dict, mode: str = "") -> dict:
     """One account's numbers for the all-accounts risk overview: over-provisioning by owner, exposure, probing."""
     s = rep.get("summary") or {}
@@ -4133,7 +4184,20 @@ def macro_row(account: str, name: str, rep: dict, mode: str = "") -> dict:
         classes[k] = classes.get(k, 0) + 1
     cov = rep.get("covered") or [1.0]
     top = sorted((r for r in v4 if r.get("status") in ("tighten", "unused") and r.get("never")),
-                 key=lambda r: -r["never"])[:5]
+                 key=lambda r: (-r["never"] * max(1, r.get("enis", 0)), -r["never"]))[:8]
+    assets = [a for a in rep.get("assets") or [] if a["logged"]]
+    for a in assets:
+        a["rag"] = asset_rag(a["over"], bool(a["open_risky"]))
+        a["start"] = a["series"][0] if a["series"] else 0
+    rag_series = {k: [0] * len(bins) for k in ("red", "amber", "green")}
+    for a in assets:
+        for i, n in enumerate(a["series"][: len(bins)]):
+            rag_series[asset_rag(n, bool(a["open_risky"]))][i] += 1
+    rag = {k: sum(1 for a in assets if a["rag"] == k) for k in ("red", "amber", "green")}
+    rag_start = {k: v[0] if v else 0 for k, v in rag_series.items()}
+    overs = sorted(a["over"] for a in assets)
+    worst = sorted(assets, key=lambda a: ({"red": 0, "amber": 1, "green": 2}[a["rag"]], -a["over"]))
+    over_series_tot = [sum(v[i] for v in (se.get("over") or {}).values()) for i in range(len(bins))]
     return {
         "account": account, "name": name, "mode": mode, "end": rep.get("end"), "step": rep.get("step"),
         "bins": bins, "covered": round(sum(cov) / len(cov), 2), "history_days": s.get("history_days", 0),
@@ -4149,7 +4213,16 @@ def macro_row(account: str, name: str, rep: dict, mode: str = "") -> dict:
                              "enis": r.get("enis", 0)} for r in open_risky[:10]],
         "open_classes": classes,
         "top_rules": [{"group": r.get("gname") or r.get("group"), "ports": r.get("ports"), "source": r.get("source"),
-                       "never": r.get("never", 0), "status": r.get("status"), "region": r.get("region")} for r in top],
+                       "never": r.get("never", 0), "status": r.get("status"), "region": r.get("region"),
+                       "enis": r.get("enis", 0)} for r in top],
+        "over_start": over_series_tot[0] if over_series_tot else 0, "over_total_series": over_series_tot,
+        "assets_total": len(assets), "assets_unlogged": len(rep.get("assets") or []) - len(assets),
+        "asset_rag": rag, "asset_rag_start": rag_start, "asset_rag_series": rag_series,
+        "asset_over_avg": round(sum(overs) / len(overs)) if overs else 0,
+        "asset_over_median": overs[len(overs) // 2] if overs else 0,
+        "rag": "red" if rag["red"] else "amber" if rag["amber"] else "green",
+        "assets": [{k: a[k] for k in ("eni", "region", "kind", "name", "instance", "public", "groups", "over", "start",
+                                      "open", "open_risky", "rag")} for a in worst[:200]],
         "refused": s.get("refused", 0), "high_refused": len(hi_ref), "high_active": len(hi_act),
         "high_active_list": [{"src": r["src"], "name": r.get("name", ""), "type": r.get("group", ""),
                               "ports": sorted({f"{PROTO_NAME.get(str(t.get('proto')), t.get('proto'))} {t.get('port')}"

@@ -183,7 +183,17 @@ def test_risk_overview_compares_every_account_read(console):
     assert a["open_risky"] >= 1 and all(r["ports"] and r["service"] for r in a["open_risky_list"])
     assert a["high_active"] >= 1 and a["high_refused"] >= 1
     assert a["external_refused"] + a["internal_refused"] <= a["refused"] + 1
-    assert a["top_rules"] and a["top_rules"][0]["never"] >= a["top_rules"][-1]["never"]
+    impact = [r["never"] * max(1, r["enis"]) for r in a["top_rules"]]
+    assert impact and impact == sorted(impact, reverse=True), "biggest wins first: never seen times assets reached"
+    # over-exposure per asset, rated red / amber / green
+    assert got["rag"] == {"green_max": sg_review.RAG_GREEN_MAX, "amber_max": sg_review.RAG_AMBER_MAX}
+    assert a["assets_total"] == sum(a["asset_rag"].values()) == len(a["assets"]) > 0
+    by_eni = {x["eni"]: x for x in a["assets"]}
+    assert by_eni["eni-0leg1"]["rag"] == "red" and by_eni["eni-0leg1"]["open_risky"], "RDP open to the internet is red"
+    assert by_eni["eni-0app1"]["over"] > sg_review.RAG_AMBER_MAX and by_eni["eni-0app1"]["rag"] == "red"
+    assert by_eni["eni-0alb1"]["rag"] == "green", "open on 443 is listed, not counted"
+    assert all(sum(a["asset_rag_series"][k][i] for k in a["asset_rag"]) == a["assets_total"] for i in range(len(a["bins"])))
+    assert a["rag"] == "red" and a["over_start"] == a["over_total_series"][0]
     assert set(a["attention"]) >= {"critical", "high", "medium"}
     again = _req(p, "GET", "/api/macro?range=1m")[1]
     assert again["accounts"] == got["accounts"], "cached while the read has not changed"
@@ -192,7 +202,8 @@ def test_risk_overview_compares_every_account_read(console):
 def test_the_page_has_the_risk_overview():
     page = sg_console.ASSET.read_text()
     for needle in ('data-tab="macro"', 'id="tab-macro"', 'id="mHeat"', 'id="mOwner"', 'id="mOverTime"', 'id="mExposure"',
-                   'id="mLetIn"', 'id="mBlind"', "/api/macro"):
+                   'id="mLetIn"', 'id="mBlind"', "/api/macro", 'data-tab="over"', 'id="oTiles"', 'id="oAccounts"',
+                   'id="oAssets"', 'id="oRagTime"', 'id="oWins"'):
         assert needle in page
 
 
