@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Console sign-in: **Open the AWS sign-in page again** is now a button, next to a new **Copy sign-in
+  link** button, with a hint for company sign-in pages that say "you cannot access this right now"
+  after a network or VPN (for example Zscaler) change: paste the link into a private window.
+- README and `docs/console.md` show the sign-in, code, account picker, read and signed-in overview
+  screens.
+
 ## 5.9.0 - 2026-11-22
 
 - **Sign in with AWS SSO in the console.** The Overview has **AWS sign-in**: the

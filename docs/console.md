@@ -23,9 +23,20 @@ No AWS CLI, profile or command line is needed after the console is running.
    filled in when your `~/.aws/config` already has them. **Sign in with AWS SSO** opens the AWS
    sign-in page in a new tab with a code; check the code matches and approve. If you already ran
    `aws sso login` for the same portal, you are signed in straight away.
+
+   ![AWS sign-in on the Overview, with the Always running switch](images/sg-console-sso-signin.png)
+
+   ![The code to check on the AWS sign-in page](images/sg-console-sso-code.png)
+
+   If your company's sign-in page says **you cannot access this right now** after you changed network
+   or turned on a VPN such as Zscaler, the browser is reusing its earlier sign-in. **Copy sign-in
+   link**, paste it into a private (incognito) window (or quit and reopen the browser) and approve the
+   same code; **Open the AWS sign-in page again** reopens it in a normal tab.
 2. **Choose accounts.** Every account your sign-in can use is listed, each with your roles there
    (read-only roles such as `ReadOnlyAccess` or `SecurityAudit` first). Tick the accounts, pick a role
    for each, **Use these accounts**.
+
+   ![Choose accounts and a role in each, read-only roles first](images/sg-console-sso-accounts.png)
 3. **Read.** Pick the regions (`all` reads every enabled region) and how far back (start with 1 day),
    then **Read**. The account's security groups and network interfaces go into the console at once
    (free). The console then works out how much VPC flow log there is to read and shows the cost
@@ -62,7 +73,7 @@ Task Scheduler at log on.
 The address keeps the same token across restarts (`~/.sg-tightener/console-token`, mode `0600`), so a
 bookmark keeps working; `serve --new-token` makes a new one and old bookmarks stop working.
 
-![Overview: every account and region in the database](images/sg-console-overview.png)
+![Overview, signed in: every account and region in the database](images/sg-console-overview.png)
 
 ## The five tabs
 

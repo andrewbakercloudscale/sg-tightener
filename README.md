@@ -189,6 +189,12 @@ reason and ticket, and **a different person must approve it** before it is appli
 approval and apply are each audited; break-glass (`sg_extend`) still goes straight through, flagged.
 See [the console](docs/console.md).
 
+| Sign in with AWS SSO | Choose accounts and roles | Read, cost shown first |
+|---|---|---|
+| ![Sign in](docs/images/sg-console-sso-signin.png) | ![Choose accounts](docs/images/sg-console-sso-accounts.png) | ![Read](docs/images/sg-console-sso-read.png) |
+
+![The console overview, signed in](docs/images/sg-console-overview.png)
+
 ![The console: every rejected flow across the accounts](docs/images/sg-console-rejected-traffic.png)
 
 ### Surveillance first, then apply per account, per group or per asset

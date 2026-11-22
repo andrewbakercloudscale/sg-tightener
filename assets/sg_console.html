@@ -122,7 +122,8 @@ details summary { cursor: pointer; font-weight: 600; }
       <div id="ssoWait" hidden>
         <p>An AWS sign-in page has opened in a new tab. Check it shows this code, then approve:</p>
         <div class="code" id="ssoCode"></div>
-        <p class="small"><a id="ssoLink" target="_blank" rel="noopener">Open the AWS sign-in page again</a> · <button class="btn" id="ssoCancel">Cancel</button></p>
+        <div class="tools"><a class="btn primary" id="ssoLink" target="_blank" rel="noopener">Open the AWS sign-in page again</a><button class="btn" id="ssoCopy">Copy sign-in link</button><button class="btn" id="ssoCancel">Cancel</button></div>
+        <p class="muted small">Your company's sign-in says <b>you cannot access this right now</b> after you changed network or turned on a VPN such as Zscaler? The browser is still using its earlier sign-in and connection. Select <b>Copy sign-in link</b> and paste it into a private (incognito) window, or quit and reopen the browser, then approve the same code.</p>
       </div>
       <div id="ssoIn" hidden>
         <p><span class="pill" style="--p:var(--good)">signed in</span> <span id="ssoWho" class="small"></span> <button class="btn" id="ssoOutBtn">Sign out</button></p>
@@ -384,6 +385,11 @@ details summary { cursor: pointer; font-weight: 600; }
       if (r.signed_in) { if (tab) tab.close(); } else if (tab) { tab.opener = null; tab.location.href = r.url; }
     } catch (e) { if (tab) tab.close(); throw e; }
     await loadSso();
+  }));
+  $("ssoCopy").addEventListener("click", () => act($("ssoCopy"), async () => {
+    const url = $("ssoLink").href;
+    try { await navigator.clipboard.writeText(url); flash("Sign-in link copied: paste it into a private (incognito) window and approve the code."); }
+    catch (e) { flash(`Copy this link into a private (incognito) window: ${url}`); }
   }));
   $("ssoCancel").addEventListener("click", () => act($("ssoCancel"), async () => { await api("/api/sso/signout", {}); clearInterval(ssoTimer); ssoTimer = null; await loadState(); }));
   $("ssoOutBtn").addEventListener("click", () => act($("ssoOutBtn"), async () => { await api("/api/sso/signout", {}); ssoAccounts = null; await loadState(); }));
