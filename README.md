@@ -179,8 +179,11 @@ How it works:
 
 ### One console for every account, with two-person approval
 
-`python sg_console.py serve` opens a local web console (127.0.0.1 only, one-time token) over the
-database: every account's groups and rules, change requests to propose and approve, the audit trail
+`python sg_console.py install` runs a local web console that is **always running** (starts at login;
+or `serve` for now), at a bookmarkable 127.0.0.1 address. **Sign in with AWS SSO on the page**, choose
+your accounts and a read-only role in each, and **Read**: the security groups go in, the flow-log cost
+is shown before anything is spent, and **Review and tighten** opens each account's review. No AWS CLI
+or command line is needed after that. Over the database it shows every account's groups and rules, change requests to propose and approve, the audit trail
 to search, and **every rejected flow across an OU** in one table. Every change is a request with a
 reason and ticket, and **a different person must approve it** before it is applied. Proposal,
 approval and apply are each audited; break-glass (`sg_extend`) still goes straight through, flagged.
@@ -251,6 +254,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.9.0** | **A web console for everyone, always running, with AWS SSO sign-in.** `sg_console.py install` (or the **Always running** switch) keeps the console running in the background at a bookmarkable address. **Sign in with AWS SSO** on the page (IAM Identity Center device sign-in, no AWS CLI needed; an `aws sso login` session is reused), choose your accounts and a role in each, and **Read**: security groups go into the console, the flow-log cost is shown before it is spent, with progress and Stop, then **Review and tighten** |
 | **5.8.1** | **Unused addresses by owner, as a stacked timeline.** The over-provisioned graph now stacks the never-seen addresses allowed in at each time by who they belong to (internal, data centre, AWS, SaaS, other), so you see both how many and whose, and each tightening as a step down. **Scale** switches to one line each on a log scale |
 | **5.8.0** | **Over-provisioning by type and owner, over time.** The over-provisioned graph has **Colour by**: kind, source type, or network, so you can see who the never-seen addresses belong to (your VPCs, other accounts, the routes behind a VPN, private space nobody uses, AWS by service and region, SaaS providers) and which to pull back first |
 | **5.7.1** | **Five fixes from testing.** A range several accounts share (every default VPC) is no longer pinned on one of them; your names file and `--onprem` win over automatic account naming; `forget` removes the account from `vpcs.json`; unattributed sources show their address as the block; AWS's catch-all range is no longer "AWS AWS" |
@@ -283,6 +287,7 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
 |---|---|---|
 | [`sg_assets.py`](sg_assets.py) | Every network interface and its groups, and a group of its own for one asset from its own flows (used by `sg_db.py assets`, `asset-plan`, `asset-apply`) | Creates `sgt-<eni>-…` and moves the interface onto it, in enforce mode, once approved |
 | [`sg_console.py`](sg_console.py) | Local web console over the database: every account's groups, change requests to propose and approve, the audit trail, rejected traffic across an OU | Apply and reconcile from the page, recorded in the database |
+| [`sg_sso.py`](sg_sso.py) | AWS SSO (IAM Identity Center) sign-in for the console: the device sign-in, your accounts and roles, short-lived credentials per account | Nothing (reads only) |
 | [`sg_db.py`](sg_db.py) | The security group database: `import`, `reconcile` (one account or an OU), change requests (`add`/`remove`/`exec`/`propose`, `approve`/`reject`/`cancel`), `apply`, `adopt`, `create-group`, `log`, `verify` | `apply`, `exec`, `create-group`; every change recorded |
 | [`sg_tightener.py`](sg_tightener.py) | Main loop: `analyse` → `plan` → `apply` → `revert` | `apply` and `revert` only, recorded in the database |
 | [`sg_diagnose.py`](sg_diagnose.py) | After an apply: find private sources the destination's groups now refuse, mark what the tightening caused, print the command that restores them | No |

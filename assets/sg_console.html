@@ -77,6 +77,16 @@ a.btn { text-decoration: none; display: inline-block; }
 .form .wide { grid-column: 1 / -1; }
 details summary { cursor: pointer; font-weight: 600; }
 [hidden] { display: none !important; }
+.code { font: 700 26px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; padding: 8px 14px; border: 2px dashed var(--accent); border-radius: 10px; display: inline-block; margin: 6px 0; }
+.acct-list { max-height: 360px; overflow: auto; border: 1px solid var(--grid); border-radius: 8px; }
+.acct-list label { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--grid); font-weight: 400; color: var(--ink); }
+.acct-list label:last-child { border-bottom: 0; }
+.switch { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; cursor: pointer; }
+.switch input { width: 40px; height: 22px; appearance: none; -webkit-appearance: none; background: var(--control-line); border-radius: 999px; position: relative; cursor: pointer; border: 0; padding: 0; }
+.switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+.switch input:checked { background: var(--good); } .switch input:checked::after { left: 21px; }
+.bar-track { height: 8px; background: var(--grid); border-radius: 999px; overflow: hidden; margin: 6px 0; } .bar-fill { height: 100%; background: var(--accent); }
+.steps { margin: 6px 0 0; padding-left: 20px; } .steps li { margin: 3px 0; }
 @media (max-width: 640px) { th, td { padding: 6px; } .bar h1 { font-size: 15px; } }
 </style>
 </head>
@@ -97,6 +107,44 @@ details summary { cursor: pointer; font-weight: 600; }
   <section id="tab-overview">
     <h2>Every account in the database</h2>
     <p class="lede">The database is the source of truth for security groups: every group and rule, as wanted and as AWS last held it. Changes are change requests: one person proposes, a different person approves, then they are applied. Changes made in AWS outside the tool are found by Reconcile. An account in <b>surveillance</b> mode is only reported on: what to change, and change requests, but nothing is applied. In <b>enforce</b> mode approved changes can be applied, once a permission check (DryRun, nothing changes) shows this identity can make them.</p>
+    <div class="card" id="ssoCard" hidden>
+      <h3 style="margin-top:0">AWS sign-in</h3>
+      <div id="ssoOut">
+        <p class="muted">Sign in with your company's AWS SSO (IAM Identity Center) to see your own accounts. Nothing is changed in AWS: the console reads until two people approve a change in an account switched to enforce mode.</p>
+        <div class="form">
+          <label class="wide">AWS access portal address<input id="ssoUrl" placeholder="https://your-company.awsapps.com/start" list="ssoPortals" autocomplete="url"></label>
+          <datalist id="ssoPortals"></datalist>
+          <label>Identity Center region<input id="ssoRegion" placeholder="eu-west-1"></label>
+          <div><button class="btn primary" id="ssoGo">Sign in with AWS SSO</button></div>
+        </div>
+        <p class="muted small" id="ssoHint"></p>
+      </div>
+      <div id="ssoWait" hidden>
+        <p>An AWS sign-in page has opened in a new tab. Check it shows this code, then approve:</p>
+        <div class="code" id="ssoCode"></div>
+        <p class="small"><a id="ssoLink" target="_blank" rel="noopener">Open the AWS sign-in page again</a> · <button class="btn" id="ssoCancel">Cancel</button></p>
+      </div>
+      <div id="ssoIn" hidden>
+        <p><span class="pill" style="--p:var(--good)">signed in</span> <span id="ssoWho" class="small"></span> <button class="btn" id="ssoOutBtn">Sign out</button></p>
+        <div id="ssoPick">
+          <p class="muted small">Choose the accounts to look at, and the role to use in each (read-only roles are listed first).</p>
+          <div class="tools"><input id="ssoFilter" type="search" placeholder="Filter accounts…" aria-label="Filter accounts"><button class="btn" id="ssoAll">Select all shown</button><button class="btn" id="ssoNone">Clear</button><span class="muted small" id="ssoN"></span></div>
+          <div class="acct-list" id="ssoAccounts"><p class="muted" style="padding:8px">Loading your accounts…</p></div>
+          <div class="tools"><button class="btn primary" id="ssoUse">Use these accounts</button></div>
+        </div>
+        <div id="ssoChosen" hidden>
+          <h3>Read your accounts</h3>
+          <p class="muted small">Reading an account puts its security groups into the console and reads its VPC flow logs (who connected, and who was refused). The cost of reading flow logs is shown before anything is spent; start with 1 day. <button class="btn" id="ssoChange">Change accounts</button></p>
+          <div class="tools"><label class="small">Regions <input id="rdRegions" value="all" size="22" aria-label="Regions" title="all, or a list such as eu-west-1,us-east-1"></label>
+            <label class="small">How far back <select id="rdDays"><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="365">1 year</option></select></label></div>
+          <div class="scroll"><table><thead><tr><th>Account</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody id="chosenRows"></tbody></table></div>
+        </div>
+      </div>
+    </div>
+    <div class="card" id="svcCard" hidden>
+      <label class="switch"><input type="checkbox" id="svcOn" role="switch"> Always running</label>
+      <p class="muted small" id="svcText" style="margin:6px 0 0"></p>
+    </div>
     <div class="grid" id="stats"></div>
     <div class="card scroll"><table><thead><tr><th>Account</th><th>Mode</th><th>Region</th><th>Groups</th><th>Rules</th><th>Assets</th><th>To apply</th><th>Can apply here?</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table></div>
   </section>
@@ -232,7 +280,7 @@ details summary { cursor: pointer; font-weight: 600; }
       <td>${esc(r.region)}</td><td>${r.groups}</td><td>${r.rules}</td><td>${r.assets}</td><td>${r.pending ? `<span class="pill" style="--p:var(--warn)">${r.pending}</span>` : "0"}</td>
       <td class="small">${permCell(r.permissions)} <button class="btn" data-check="${i}">Check</button></td>
       <td class="small">${esc(when(r.synced_at))}</td><td><button class="btn" data-open="${i}">Open</button>${r.reviewed ? ` <a class="btn" href="/review?account=${encodeURIComponent(r.account)}" target="_blank" rel="noopener">Review and tighten</a>` : ""}</td></tr>`).join("")
-      || '<tr><td colspan="10" class="muted">Nothing yet: run <code>sg_db.py import --regions … [--ou-id …]</code>.</td></tr>';
+      || `<tr><td colspan="10" class="muted">${S.sso ? "Nothing yet: sign in with AWS SSO above, choose your accounts and select Read." : "Nothing yet: run <code>sg_db.py import --regions … [--ou-id …]</code>."}</td></tr>`;
     for (const b of document.querySelectorAll("[data-check]")) b.addEventListener("click", () => act(b, async () => {
       const r = regions[+b.dataset.check];
       const res = await api("/api/check", {account: r.account, region: r.region});
@@ -243,12 +291,131 @@ details summary { cursor: pointer; font-weight: 600; }
     for (const b of document.querySelectorAll("[data-open]")) b.addEventListener("click", () => {
       const r = regions[+b.dataset.open]; $("gWhere").value = `${r.account}|${r.region}`; show("groups");
     });
+    drawService();
+    if (S.sso) await loadSso();
     const sel = $("gWhere"), keep = sel.value;
     sel.innerHTML = regions.map((r) => `<option value="${esc(r.account)}|${esc(r.region)}">${esc(r.name || r.account)} · ${esc(r.region)}</option>`).join("");
     if (keep) sel.value = keep;
     const fa = $("fAcct"), fk = fa.value;
     fa.innerHTML = '<option value="">Every account</option>' + S.accounts.map((a) => `<option value="${esc(a.account)}">${esc(a.name || a.account)}</option>`).join("");
     fa.value = fk;
+  }
+
+  // ---- AWS sign-in
+  let SSO = null, ssoAccounts = null, ssoTimer = null, jobTimer = null;
+  async function loadSso() {
+    SSO = await api("/api/sso");
+    $("ssoCard").hidden = false;
+    $("ssoOut").hidden = SSO.signed_in || !!SSO.pending;
+    $("ssoWait").hidden = !SSO.pending || SSO.signed_in;
+    $("ssoIn").hidden = !SSO.signed_in;
+    if (!SSO.signed_in && !SSO.pending) {
+      const portals = SSO.portals || [];
+      $("ssoPortals").innerHTML = portals.map((p) => `<option value="${esc(p.start_url)}">${esc(p.name)}</option>`).join("");
+      if (!$("ssoUrl").value) { $("ssoUrl").value = SSO.start_url || portals[0]?.start_url || ""; $("ssoRegion").value = SSO.region || portals[0]?.region || ""; }
+      $("ssoHint").textContent = SSO.error || (portals.length ? `Found ${portals.length} portal(s) in your AWS settings.` : "Your AWS administrator can give you the portal address: it is the page you open to choose an AWS account.");
+      $("ssoHint").style.color = SSO.error ? "var(--bad)" : "";
+    }
+    if (SSO.pending) { $("ssoCode").textContent = SSO.pending.code; $("ssoLink").href = SSO.pending.url; }
+    if (SSO.pending && !ssoTimer) ssoTimer = setInterval(async () => {
+      try { const s = await api("/api/sso"); if (!s.pending) { clearInterval(ssoTimer); ssoTimer = null; ssoAccounts = null; await loadState(); } } catch (e) { /* keep waiting */ }
+    }, 2000);
+    if (SSO.signed_in) {
+      $("ssoWho").textContent = `${SSO.start_url}${SSO.expires ? ` · until ${when(SSO.expires)} UTC` : ""}${SSO.from === "aws cli" ? " · from aws sso login" : ""}`;
+      const picking = !SSO.chosen.length || $("ssoPick").dataset.open === "1";
+      $("ssoPick").hidden = !picking; $("ssoChosen").hidden = picking;
+      if (picking) await loadSsoAccounts(); else drawChosen();
+    }
+  }
+  async function loadSsoAccounts() {
+    if (!ssoAccounts) {
+      try { ssoAccounts = await api("/api/sso/accounts"); } catch (e) { $("ssoAccounts").innerHTML = `<p style="padding:8px;color:var(--bad)">${esc(e.message)}</p>`; return; }
+    }
+    const chosen = new Map(SSO.chosen.map((c) => [c.account, c.role]));
+    $("ssoAccounts").innerHTML = ssoAccounts.map((a, i) => `<label data-q="${esc((a.name + " " + a.account + " " + a.email).toLowerCase())}"><input type="checkbox" data-acct="${i}"${chosen.has(a.account) ? " checked" : ""}>
+      <span>${esc(a.name || a.account)} <span class="muted small"><code>${esc(a.account)}</code></span></span>
+      <select data-role="${i}" aria-label="Role in ${esc(a.name || a.account)}">${a.roles.map((r) => `<option${chosen.get(a.account) === r ? " selected" : ""}>${esc(r)}</option>`).join("")}</select></label>`).join("")
+      || '<p class="muted" style="padding:8px">This sign-in has no AWS accounts.</p>';
+    ssoFilter();
+  }
+  function ssoFilter() {
+    const q = $("ssoFilter").value.trim().toLowerCase(); let n = 0;
+    for (const l of $("ssoAccounts").querySelectorAll("label")) { l.hidden = !!q && !l.dataset.q.includes(q); if (!l.hidden) n++; }
+    $("ssoN").textContent = ssoAccounts ? `${n} of ${ssoAccounts.length} accounts` : "";
+  }
+  const jobFor = (acct) => (S.jobs || []).find((j) => j.account === acct);
+  const usd = (c) => c == null ? "cost not known yet" : `about US$${Number(c).toFixed(2)}`;
+  function jobCell(j) {
+    if (!j) return '<span class="muted">not read yet</span>';
+    const last = esc(j.lines[j.lines.length - 1] || "");
+    if (j.status === "starting") return `<span class="pill" style="--p:var(--accent)">reading security groups…</span><div class="muted small">${last}</div>`;
+    if (j.status === "confirm") return `<b>Ready to read flow logs:</b> ${esc(j.hours)} hours in ${esc((j.logs_in || []).join(", "))}, ${esc(usd(j.cost))}.<div class="tools" style="margin:6px 0 0"><button class="btn primary" data-go="${j.id}">Read flow logs (${esc(usd(j.cost))})</button><button class="btn" data-stop="${j.id}">Not now</button></div>`;
+    if (j.status === "running") { const pct = j.total ? Math.round(100 * j.done / j.total) : 0; return `<span class="pill" style="--p:var(--accent)">reading flow logs</span> ${j.done} of ${j.total} · ${(j.bytes / 1e9).toFixed(2)} GB<div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><button class="btn" data-stop="${j.id}">Stop</button>`; }
+    const p = {done: "var(--good)", failed: "var(--bad)", stopped: "var(--warn)", cancelled: "var(--muted)"}[j.status] || "var(--muted)";
+    return `<span class="pill" style="--p:${p}">${esc(j.status)}</span> <span class="muted small">${esc(when(j.started))}</span><details class="small"><summary>Details</summary><ul class="steps">${j.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`;
+  }
+  function drawChosen() {
+    const reviewed = new Set(S.accounts.filter((a) => a.reviewed).map((a) => a.account));
+    $("chosenRows").innerHTML = SSO.chosen.map((c) => { const j = jobFor(c.account); const busy = j && ["starting", "confirm", "running"].includes(j.status);
+      return `<tr><td>${esc(c.name || c.account)}<div class="muted small"><code>${esc(c.account)}</code></div></td><td class="small">${esc(c.role)}</td><td>${jobCell(j)}</td>
+      <td><button class="btn${reviewed.has(c.account) ? "" : " primary"}" data-read="${esc(c.account)}"${busy ? " disabled" : ""}>${reviewed.has(c.account) ? "Read again" : "Read"}</button>${reviewed.has(c.account) ? ` <a class="btn primary" href="/review?account=${encodeURIComponent(c.account)}" target="_blank" rel="noopener">Review and tighten</a>` : ""}</td></tr>`; }).join("");
+    for (const b of document.querySelectorAll("[data-read]")) b.addEventListener("click", () => act(b, async () => {
+      await api("/api/read", {account: b.dataset.read, regions: $("rdRegions").value, days: +$("rdDays").value}); await pollJobs();
+    }));
+    for (const b of document.querySelectorAll("[data-go]")) b.addEventListener("click", () => act(b, async () => { await api("/api/read/confirm", {id: +b.dataset.go}); await pollJobs(); }));
+    for (const b of document.querySelectorAll("[data-stop]")) b.addEventListener("click", () => act(b, async () => { await api("/api/read/stop", {id: +b.dataset.stop}); await pollJobs(); }));
+    const live = (S.jobs || []).filter((j) => ["starting", "running"].includes(j.status));
+    for (const j of live) liveJobs.add(j.id);
+    if (live.length && !jobTimer) jobTimer = setTimeout(pollJobs, 1500);
+  }
+  let liveJobs = new Set();
+  async function pollJobs() {
+    if (jobTimer) { clearTimeout(jobTimer); jobTimer = null; }
+    S.jobs = await api("/api/jobs");
+    const live = new Set(S.jobs.filter((j) => ["starting", "running"].includes(j.status)).map((j) => j.id));
+    const finished = [...liveJobs].some((id) => !live.has(id));  // a read moved on: groups or traffic changed
+    liveJobs = live;
+    if (finished) await loadState(); else drawChosen();
+  }
+  $("ssoGo").addEventListener("click", () => act($("ssoGo"), async () => {
+    const tab = window.open("about:blank", "_blank");  // opened in the click, so the browser allows it
+    try {
+      const r = await api("/api/sso/start", {start_url: $("ssoUrl").value, region: $("ssoRegion").value});
+      if (r.signed_in) { if (tab) tab.close(); } else if (tab) { tab.opener = null; tab.location.href = r.url; }
+    } catch (e) { if (tab) tab.close(); throw e; }
+    await loadSso();
+  }));
+  $("ssoCancel").addEventListener("click", () => act($("ssoCancel"), async () => { await api("/api/sso/signout", {}); clearInterval(ssoTimer); ssoTimer = null; await loadState(); }));
+  $("ssoOutBtn").addEventListener("click", () => act($("ssoOutBtn"), async () => { await api("/api/sso/signout", {}); ssoAccounts = null; await loadState(); }));
+  $("ssoFilter").addEventListener("input", ssoFilter);
+  $("ssoAll").addEventListener("click", () => { for (const l of $("ssoAccounts").querySelectorAll("label")) if (!l.hidden) l.querySelector("input").checked = true; });
+  $("ssoNone").addEventListener("click", () => { for (const i of $("ssoAccounts").querySelectorAll("input")) i.checked = false; });
+  $("ssoChange").addEventListener("click", async () => { $("ssoPick").dataset.open = "1"; await loadSso(); });
+  $("ssoUse").addEventListener("click", () => act($("ssoUse"), async () => {
+    const picks = [...$("ssoAccounts").querySelectorAll("input[data-acct]:checked")].map((i) => ({account: ssoAccounts[+i.dataset.acct].account, role: $("ssoAccounts").querySelector(`[data-role="${i.dataset.acct}"]`).value}));
+    if (!picks.length) throw new Error("Choose at least one account.");
+    await api("/api/sso/choose", {accounts: picks}); $("ssoPick").dataset.open = ""; await loadState();
+  }));
+
+  // ---- always running
+  function drawService() {
+    const s = S.service; $("svcCard").hidden = !s;
+    if (!s) return;
+    $("svcOn").checked = s.installed; $("svcOn").disabled = !s.supported;
+    $("svcText").innerHTML = !s.supported ? `Always running is set up on macOS and Linux. On ${esc(s.system)}, start the console from Task Scheduler at log on.`
+      : s.installed ? `On: the console runs in the background, starts when you log in, and restarts if it stops. Bookmark this page: it stays at the same address. ${s.running_as_service ? "" : "<b>This copy was started by hand; the background one takes over when it stops.</b>"}`
+      : "Off: the console stops when the window that started it closes. Turn on to keep it running in the background and start it when you log in.";
+  }
+  $("svcOn").addEventListener("change", () => act($("svcOn"), async () => {
+    const on = $("svcOn").checked;
+    const r = await api("/api/autostart", {on});
+    if (r.handover) { flash("Always running is on. The console is moving to the background: this page reloads in a few seconds."); setTimeout(waitBack, 4000); return; }
+    if (r.stopping) { flash("Always running is off. The console stops now; start it again with: python sg_console.py serve"); return; }
+    flash(on ? "Always running is on: the console starts when you log in." : "Always running is off.");
+    await loadState();
+  }));
+  async function waitBack() {
+    try { await api("/api/state"); location.reload(); } catch (e) { setTimeout(waitBack, 2000); }
   }
 
   // ---- groups

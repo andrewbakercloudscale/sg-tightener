@@ -1,5 +1,28 @@
 # Changelog
 
+## 5.9.0 - 2026-11-22
+
+- **Sign in with AWS SSO in the console.** The Overview has **AWS sign-in**: the
+  access portal address and region (read from `~/.aws/config` when there), then
+  IAM Identity Center's device sign-in in a new tab. No AWS CLI is needed, and a
+  token from `aws sso login` for the same portal is used. Every account the
+  sign-in can use is listed with its roles, read-only roles first; the accounts
+  chosen and a role in each are what the console acts in (`sg_sso.py`). The
+  token is cached `0600`; role credentials stay in memory. **Sign out** ends it.
+- **Read an account from the page.** **Read** puts the account's security groups
+  and interfaces into the database (every enabled region, or a list), works out
+  the flow logs to read and shows the cost before anything is spent; **Read flow
+  logs** reads them with a progress bar and **Stop**. Then **Review and tighten**.
+- **Always running.** `sg_console.py install` / `uninstall` and an **Always
+  running** switch on the page: a launchd agent (macOS) or systemd user service
+  (Linux) that starts at login and restarts the console if it stops. A console
+  started by hand hands over to it at the same address. `sg_console.py open`
+  opens the console.
+- The console's address keeps its token across restarts
+  (`~/.sg-tightener/console-token`), so a bookmark works; `serve --new-token`
+  replaces it. The cookie lasts 30 days. `serve` opens the browser.
+- `sg_review.run_read` takes a `progress` callback.
+
 ## 5.8.1 - 2026-11-22
 
 - **The over-provisioned graph is a stacked timeline by default.** Each bar is

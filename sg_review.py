@@ -3420,7 +3420,7 @@ def plan_tail(doc: dict, regions: Sequence[str], now: float) -> list[tuple]:
     return tasks
 
 
-def run_read(sess, doc: dict, tasks: list[tuple], days: int, now: float, cancelled=lambda: False) -> dict:
+def run_read(sess, doc: dict, tasks: list[tuple], days: int, now: float, cancelled=lambda: False, progress=None) -> dict:
     """Read the slices into ``doc`` (saved every dozen slices and at the end). A task with a sixth element
     True is a tail slice: its chunks are marked so the hourly read replaces them."""
     lock = threading.Lock()
@@ -3447,6 +3447,8 @@ def run_read(sess, doc: dict, tasks: list[tuple], days: int, now: float, cancell
             done = state["done"]
             if done % 12 == 0:
                 save(doc)
+            if progress:
+                progress(done, len(tasks), state["bytes"])
         print(f"\r  {done} of {len(tasks)} slices · {_gb(state['bytes'])} scanned, "
               f"{_cost(state['bytes'] / 1e9 * INSIGHTS_PER_GB)}   ", end="", file=sys.stderr, flush=True)  # fmt: skip
 
