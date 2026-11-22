@@ -41,9 +41,9 @@ tightening that cut off Lambda callers, the refusals it caused, and the range pu
 |---|---|
 | [![Extract rule](docs/images/sg-review-extract-rule.png)](docs/images/sg-review-extract-rule.png) | [![What we know](docs/images/sg-review-extract-know.png)](docs/images/sg-review-extract-know.png) |
 
-| Blast radius of one address |
-|---|
-| [![Blast radius](docs/images/sg-review-blast-radius.png)](docs/images/sg-review-blast-radius.png) |
+| Time window: the last year, a bar a week | Blast radius of one address |
+|---|---|
+| [![Time window](docs/images/sg-review-time-window.png)](docs/images/sg-review-time-window.png) | [![Blast radius](docs/images/sg-review-blast-radius.png)](docs/images/sg-review-blast-radius.png) |
 
 **Managing the risk.** Fix what is internet-reachable before what is merely open on paper; read 90
 days before removing anything; tighten remote admin and database ports first; and report two
@@ -234,6 +234,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.5.0** | **Time window drop-down, up to a year.** Each timeline has a **Time window** drop-down (last 24 hours, week, month, 3 months, 6 months, year), kept in step with the one at the top. `sg_review.py read --days 365` reads a year, shown a bar a week, to catch yearly traffic before a rule is removed. The console's rejected traffic also offers the last year |
 | **5.4.0** | **Extract rule: what we know, one destination at a time.** Refused traffic is let in **one rule per destination address**, numbered, each card with its own command and **Propose this one in the console**, and a warning (with the `asset-plan` command) when the destination's group is shared. Each source is marked **Familiar**, **Unfamiliar** or **Do not add**, and **What we know** shows the evidence: your instance behind the address (Name tag, **operating system**, type, groups), ports it is already let in on, rules that already allow it, first seen, what else it was refused on, and the verdict. The review reads each instance's name and OS |
 | **5.3.0** | **Known malicious addresses**: every source and outbound destination is checked, locally and daily, against free threat lists (abuse.ch Feodo Tracker botnet servers, Spamhaus DROP, Emerging Threats compromised hosts, blocklist.de attackers) as well as Tor exits. Let in on admin or database ports, or called out to, is **critical** and always posted by `watch`; Tighten turns such sources away by default; the console marks and filters them. **Alerting scripts** in `deploy/alerts` (systemd, launchd, cron) for `watch`, hourly `reconcile` and a daily read. **`install.sh`** checks every package, downloads the address lists, and takes `--dev`; tools run outside the venv say how to install |
 | **5.2.0** | **Blast radius**: type one address in the Security Group Review (or run `sg_review.py reach ADDRESS`) and see every rule that admits it, worst first, with the interfaces behind each group, risky ports marked and rules open to all counted apart. It follows the Tighten panel: each row shows unchanged, narrowed or cut off, and the summary shows the reach after. In the demo a data centre host goes from 9 groups on 8 interfaces to 6 on 5. New **Managing the risk** guidance: the order to tighten in, flow-log blind spots, egress, hygiene, and the two numbers to report |
@@ -322,7 +323,7 @@ The graphs are [at the top of this page](#see-it-first).
 | Parameter | What it changes |
 |---|---|
 | `read --regions eu-west-1,us-east-1` | Regions read; one page covers them all |
-| `read --days 1\|7\|30\|90\|180` | How far back. This decides which timeline buttons (24 h, 1 week, 1/3/6 months) work. Start with `1`, which measures the cost of longer reads; each read asks before spending |
+| `read --days 1\|7\|30\|90\|180\|365` | How far back. This decides which **Time window** choices (last 24 hours, week, 1/3/6 months, year) work. Start with `1`, which measures the cost of longer reads; each read asks before spending |
 | `read --profile P` / `--name N` / `--yes` | Credentials, the account name shown on the page, and skipping the `yes` prompt |
 | `report --onprem "10.200.0.0/16 Johannesburg DC"` | Names your data centres (purple in the graphs) |
 | `report --internal "10.40.0.0/16 Payments prod"` | Counts your other accounts' ranges as internal (blue) |

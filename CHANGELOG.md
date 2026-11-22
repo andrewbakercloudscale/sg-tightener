@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.5.0 - 2026-11-22
+
+- **Time window drop-down.** The review's timeline buttons are now a **Time
+  window** drop-down (last 24 hours, week, month, 3 months, 6 months, year), at
+  the top and above each timeline (refused, over-provisioned, let in), all kept
+  in step. Windows not read yet are greyed out with the days to read.
+- **A year.** `sg_review.py read --days 365` (and `watch`) reads back a year,
+  shown a bar a week ("w/c 5 Nov"), to see yearly batches and DR tests before a
+  rule is removed. The page still opens on the longest window up to 6 months.
+  The console's rejected traffic offers **Last year** too. The demo covers a
+  year.
+
 ## 5.4.0 - 2026-11-22
 
 - **Extract rule, one destination at a time.** Refused traffic is turned into

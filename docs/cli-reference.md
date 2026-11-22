@@ -343,7 +343,7 @@ python sg_review.py securityhub [--account ID] [--range 1w] [--profile P] [--out
 | Flag | Default | Meaning |
 |---|---|---|
 | `read --regions` | required | Regions to read. The account is the credentials' own |
-| `read --days` | `1` | `1`, `7`, `30`, `90` or `180`. Only time not read before is read. Start with `1`: it measures the bytes per second, and longer reads are estimated from it |
+| `read --days` | `1` | `1`, `7`, `30`, `90`, `180` or `365`. Only time not read before is read. Start with `1`: it measures the bytes per second, and longer reads are estimated from it |
 | `read --profile` | credential chain | AWS profile, for example an `aws sso login` one |
 | `read --name` | account alias | Name shown in the report |
 | `read --egress` | off | Also read outbound connections, so the report can fit outbound rules and flag connections to Tor exits or scanners. Each read costs about half as much again. Once given it stays on for that account |

@@ -36,7 +36,7 @@ LOG = logging.getLogger("sg_console")
 ASSET = Path(__file__).resolve().parent / "assets" / "sg_console.html"
 COOKIE = "sgc"
 MAX_BODY = 1 << 20
-RANGES = ("24h", "1w", "1m", "3m", "6m")
+RANGES = ("24h", "1w", "1m", "3m", "6m", "1y")
 
 
 class ConsoleError(Exception):

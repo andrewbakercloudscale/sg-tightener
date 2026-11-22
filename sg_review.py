@@ -29,7 +29,7 @@ Modes:
   forget    Delete what was read for an account.
 
 Usage:
-  sg_review.py read     --regions eu-west-1[,us-east-1] [--days 1|7|30|90|180] [--profile P] [--yes]
+  sg_review.py read     --regions eu-west-1[,us-east-1] [--days 1|7|30|90|180|365] [--profile P] [--yes]
   sg_review.py report   [--account ID] [--onprem "10.200.0.0/16 Johannesburg DC, ..."]
                         [--internal "10.40.0.0/16 Payments prod, ..."] [--names FILE] [--offline] [--out FILE]
   sg_review.py approved --region R [--account ID] [--out approved.json]
@@ -765,13 +765,14 @@ def utcnow() -> datetime:
 
 SCHEMA = 1
 HOUR, SIX, DAY = 3600, 6 * 3600, 86400
-READ_DAYS = (1, 7, 30, 90, 180)
+READ_DAYS = (1, 7, 30, 90, 180, 365)
 RANGES = {
     "24h": (DAY, HOUR),
     "1w": (7 * DAY, SIX),
     "1m": (30 * DAY, DAY),
     "3m": (90 * DAY, DAY),
     "6m": (180 * DAY, DAY),
+    "1y": (365 * DAY, 7 * DAY),  # a bar a week
 }
 LAG = 900  # flow logs reach CloudWatch up to ~10 minutes late: the newest quarter hour is left for the next read
 TAIL_LAG = 300  # watch also reads from the last full hour up to five minutes ago ("tail" slices), to alert in minutes
@@ -3192,7 +3193,7 @@ def page_data(doc: dict, onprem: str = "", internal: str = "", now: float | None
         "mode": doc.get("mode", "live"),
         "first": first,
         "end": end,
-        "default": keys[-1],
+        "default": ([k for k in keys if k != "1y"] or keys)[-1],  # a year is a bar a week: offered, not opened on
         "ranges": ranges,
         "fit": fits[-1] or {"rules": [], "labels": {}, "cap": FIT_CAP},
         "reach": reach_model(doc),
@@ -3348,7 +3349,7 @@ def cmd_demo(args) -> int:
     if not args.offline:
         sg_ipintel.refresh()
     now = time.time()
-    doc = sg_review_demo.build_doc(sg_review_demo.ACCOUNT, now, 180)
+    doc = sg_review_demo.build_doc(sg_review_demo.ACCOUNT, now, 365)
     write_page(page_data(doc, "", sg_review_demo.INTERNAL, now, parse_names(sg_review_demo.NAMES)), args.out)
     LOG.info("wrote %s (a made-up account: no AWS call was made)", args.out)
     return 0
@@ -3984,7 +3985,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("read", help="read an account's flow logs (live, read-only, cost confirmed first)")
     r.add_argument("--regions", required=True, help="comma-separated regions")
-    r.add_argument("--days", type=int, default=1, help="read back this far: 1, 7, 30, 90 or 180 (default 1)")
+    r.add_argument("--days", type=int, default=1, help="read back this far: 1, 7, 30, 90, 180 or 365 (default 1)")
     r.add_argument("--profile", help="AWS profile (default: the usual credential chain)")
     r.add_argument("--name", help="a name for the account in the report (default: its alias)")
     r.add_argument("--egress", action="store_true", help="also read outbound connections, so the report can fit "
@@ -4058,8 +4059,8 @@ def _build_parser() -> argparse.ArgumentParser:
     g.add_argument("--external-id", default="", help="external id for the role, if it needs one")
     g.add_argument("--ou-id", help="read the accounts in this OU and the OUs under it (default: the whole organisation)")
     g.add_argument("--accounts", help="only these comma-separated account ids")
-    g.add_argument("--days", type=int, default=1, help="read back this far: 1, 7, 30, 90 or 180 (default 1)")
-    g.add_argument("--range", default="1w", help="the range the roll-up counts: 24h, 1w, 1m, 3m or 6m (default 1w, or "
+    g.add_argument("--days", type=int, default=1, help="read back this far: 1, 7, 30, 90, 180 or 365 (default 1)")
+    g.add_argument("--range", default="1w", help="the range the roll-up counts: 24h, 1w, 1m, 3m, 6m or 1y (default 1w, or "
                    "the longest read when shorter)")
     g.add_argument("--out-dir", default="sg-review-org", help="where the roll-up and the account pages go")
     g.add_argument("--yes", action="store_true", help="skip the typed confirmation")
@@ -4070,7 +4071,7 @@ def _build_parser() -> argparse.ArgumentParser:
     h = sub.add_parser("securityhub", help="send an account's findings to AWS Security Hub (ASFF), archiving the "
                        "ones no longer open")
     h.add_argument("--account", help="the account read (default: the only one)")
-    h.add_argument("--range", default="1w", help="the range the findings come from: 24h, 1w, 1m, 3m or 6m (default 1w)")
+    h.add_argument("--range", default="1w", help="the range the findings come from: 24h, 1w, 1m, 3m, 6m or 1y (default 1w)")
     h.add_argument("--profile", help="AWS profile to send with (default: the usual credential chain)")
     h.add_argument("--onprem", default="", help="data centre ranges to name, as for report")
     h.add_argument("--internal", default="", help="your other accounts' ranges, as for report")

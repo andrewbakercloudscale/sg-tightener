@@ -93,6 +93,7 @@ table.data tr:last-child td { border-bottom: none; }
 .filter { margin: 10px 0 6px; }
 .tools { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 6px 0 8px; font-size: 13px; }
 .tools select { font: inherit; }
+.range-sel { font: inherit; font-size: 13.5px; padding: 5px 8px; border: 1px solid var(--control-line); border-radius: 8px; background: var(--surface); color: var(--ink); max-width: 100%; }
 .acl { color: var(--tone-est); font-weight: 600; }
 .dr { color: var(--tone-est); }
 .jump { margin: 8px 0 0; padding: 6px 10px; border-left: 3px solid var(--sev-warning); }
@@ -170,9 +171,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     <p class="muted">Every inbound rule in one account set against the traffic its VPC flow logs actually carried, over time. Three timelines: who was refused (needs a rule, if wanted), how many allowed addresses were never seen (over-provisioned, and what to take away), and who was let in (with sources not seen in the last 24 hours apart, so DR tests, failovers and monthly batches stand out). Each source is named: this account or a range you call internal, a data centre, AWS (and which service), a SaaS provider, or the network by AS number.</p>
     <div class="card">
       <div class="pick">
-        <div class="field"><span>Timeline</span><div class="seg" id="range" role="group" aria-label="Timeline">
-          <button type="button" data-range="24h">24 hours</button><button type="button" data-range="1w">1 week</button><button type="button" data-range="1m">1 month</button><button type="button" data-range="3m">3 months</button><button type="button" data-range="6m">6 months</button>
-        </div></div>
+        <div class="field"><span>Time window</span><select class="range-sel" id="range" aria-label="Time window"></select></div>
       </div>
       <div id="read" class="read"></div>
     </div>
@@ -191,7 +190,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   <section class="section">
     <h2><span class="num">1</span>Refused sources</h2>
     <p class="muted section-lede">Distinct addresses turned away per period, by kind. A refused address needs a rule only if the traffic is wanted: internal and data centre sources usually are (a new service, a moved server), AWS and SaaS sometimes (health checks, webhooks, a partner's new egress), other networks rarely (scanners), so they are drawn in grey as the defences working, and in amber only in a period far above the usual level, which can mean a probe. Select a bar, or one colour in it, to list those sources; <strong>Extract rule</strong> then turns what is listed into the inbound rules that would let it in, with everything known about each source and port.</p>
-    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Colour by</span><div class="seg" id="refusedBy" role="group" aria-label="Colour the refused sources by"><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="scope" id="extractScope"></span><button type="button" class="btn primary" id="btnExtract">Extract rule</button></div></div><div class="chart-box"><canvas id="chRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div><p id="refusedJump" class="small jump" hidden></p><p id="refusedCause" class="small jump" hidden></p></figure>
+    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div><div class="field"><span>Colour by</span><div class="seg" id="refusedBy" role="group" aria-label="Colour the refused sources by"><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="scope" id="extractScope"></span><button type="button" class="btn primary" id="btnExtract">Extract rule</button></div></div><div class="chart-box"><canvas id="chRefused" role="img" aria-label="Stacked bars of refused source addresses per period, by kind of source"></canvas></div><p id="refusedJump" class="small jump" hidden></p><p id="refusedCause" class="small jump" hidden></p></figure>
     <div id="suggestWrap">
       <h3>Rules that would let in the refused internal and data centre sources</h3>
       <p class="muted small">Per security group and port, the refused private sources as the fewest exact ranges. Add them only if the traffic is wanted; sources a network ACL refused are left out (the ACL decides first).</p>
@@ -205,7 +204,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   <section class="section">
     <h2><span class="num">2</span>Over-provisioned addresses</h2>
     <p class="muted section-lede">For each security group with flow logs on all its interfaces, the addresses its rules let in that were never seen, summed over the groups, by kind. An address seen anywhere in the account in the whole read, let in or refused, is never counted. The rules in force at each time are worked back from today's through CloudTrail's record of rule changes (triangles: select one for the change). Rules open to every address (0.0.0.0/0) are listed below, not counted. The scale is logarithmic: each step down is a tenfold cut. The grey bars are the sources refused in each period: a tightening that went too far shows as refusals starting right after a triangle. <strong>After</strong>, at the right, is what the Tighten panel below would leave.</p>
-    <figure class="card" style="margin:0 0 16px"><div class="chart-box"><canvas id="chOver" role="img" aria-label="Lines of never-seen addresses allowed in over time, by kind of source, with rule changes marked, refused sources as bars, and what the Tighten panel would leave"></canvas></div></figure>
+    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div></div><div class="chart-box"><canvas id="chOver" role="img" aria-label="Lines of never-seen addresses allowed in over time, by kind of source, with rule changes marked, refused sources as bars, and what the Tighten panel would leave"></canvas></div></figure>
     <div class="card fit" id="fitWrap">
       <h3 style="margin-top:0">Tighten: how much room to leave, by kind, type and name</h3>
       <p class="muted small" id="fitLede"></p>
@@ -243,7 +242,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   <section class="section">
     <h2><span class="num">3</span>Active sources</h2>
     <p class="muted section-lede">Distinct addresses let in per period. Dark: also let in during the last 24 hours. Light: not seen in the last 24 hours, the sources a rule change would hurt without warning (DR tests, failovers, month-end batches). Replies to the account's own outbound connections are left out. Select a bar to list its sources.</p>
-    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Colour by</span><div class="seg" id="activeBy" role="group" aria-label="Colour the active sources by"><button type="button" data-by="recency">Last 24 hours</button><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div></div><div class="chart-box"><canvas id="chActive" role="img" aria-label="Stacked bars of active source addresses per period, split into those also seen in the last 24 hours and those not"></canvas></div></figure>
+    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div><div class="field"><span>Colour by</span><div class="seg" id="activeBy" role="group" aria-label="Colour the active sources by"><button type="button" data-by="recency">Last 24 hours</button><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network (AS number)</button><button type="button" data-by="class">Port class</button></div></div></div><div class="chart-box"><canvas id="chActive" role="img" aria-label="Stacked bars of active source addresses per period, split into those also seen in the last 24 hours and those not"></canvas></div></figure>
     <div class="tools" id="activeSeen"></div>
     <p class="filter muted small" id="activeFilter"></p>
     <div class="table-wrap"><table class="data" id="active"></table></div>
@@ -301,7 +300,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
   const CLASS = Object.fromEntries(CLASSES.map((c) => [c.key, c]));
   const STATUS = { tighten: "Tighten", unused: "Unused", open: "Open to all", watch: "Too early", incomplete: "Incomplete", "not logged": "Not logged", used: "In use" };
   const STATUS_TONE = { tighten: "--tone-risk", unused: "--sev-critical", open: "--warn-ink", watch: "--muted", incomplete: "--muted", "not logged": "--muted", used: "--good" };
-  const RANGE_DAYS = { "24h": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180 };
+  const RANGE_DAYS = { "24h": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180, "1y": 365 };
+  const RANGE_NAME = { "24h": "Last 24 hours", "1w": "Last week", "1m": "Last month", "3m": "Last 3 months", "6m": "Last 6 months", "1y": "Last year" };
   const NET_SHOWN = 10;
   const state = { range: DATA.default, rep: null, cats: new Set(CATS), bin: null, mark: null, only: null, charts: {}, by: { refused: "kind", active: "recency" }, seen: { refused: "", active: "" }, netTop: { refused: new Set(), active: new Set() }, xr: null };
 
@@ -315,6 +315,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   const when = (t, withTime = true) => (t ? new Date(t * 1000).toLocaleString("en-GB", { timeZone: "UTC", day: "numeric", month: "short", ...(withTime ? { hour: "2-digit", minute: "2-digit" } : {}) }) + (withTime ? " UTC" : "") : EMPTY);
   function binLabel(t, step) {
     const d = new Date(t * 1000);
+    if (step >= 604800) return `w/c ${d.toLocaleDateString("en-GB", { timeZone: "UTC", day: "numeric", month: "short" })}`;
     if (step >= 86400) return d.toLocaleDateString("en-GB", { timeZone: "UTC", day: "numeric", month: "short" });
     if (step >= 21600) return d.toLocaleString("en-GB", { timeZone: "UTC", weekday: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
     return d.toLocaleTimeString("en-GB", { timeZone: "UTC", hour: "2-digit", minute: "2-digit" });
@@ -574,12 +575,11 @@ details.xr-fold > summary { margin: 0 0 10px; }
   }
 
   function markRange() {
-    for (const b of document.querySelectorAll("#range button")) {
-      const have = !!DATA.ranges[b.dataset.range];
-      b.disabled = !have;
-      b.title = have ? "" : `Read ${RANGE_DAYS[b.dataset.range]} days first`;
-      b.setAttribute("aria-pressed", String(b.dataset.range === state.range));
-    }
+    const opts = Object.keys(RANGE_NAME).map((k) => {
+      const have = !!DATA.ranges[k];
+      return `<option value="${k}"${k === state.range ? " selected" : ""}${have ? "" : " disabled"}>${RANGE_NAME[k]}${have ? "" : ` (read ${RANGE_DAYS[k]} days first)`}</option>`;
+    }).join("");
+    for (const sel of document.querySelectorAll(".range-sel")) { sel.innerHTML = opts; sel.value = state.range; }
     for (const kind of ["refused", "active"]) for (const b of document.querySelectorAll(`#${kind}By button`)) b.setAttribute("aria-pressed", String(b.dataset.by === state.by[kind]));
   }
 
@@ -1073,7 +1073,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
         rules.set(key, r);
       }
     }
-    const scope = single ? `One source: ${single}` : fb ? `${plural(sources.length, "refused source")} in ${binLabel(rep.bins[fb.i], rep.step)}${rep.step < 86400 ? " UTC" : ""}${fb.f ? `, ${fb.f.label}` : ""}` : `All ${plural(sources.length, "refused source")} listed for ${({ "24h": "the last 24 hours", "1w": "the last week", "1m": "the last month", "3m": "the last 3 months", "6m": "the last 6 months" })[state.range]}`;
+    const scope = single ? `One source: ${single}` : fb ? `${plural(sources.length, "refused source")} in ${binLabel(rep.bins[fb.i], rep.step)}${rep.step < 86400 ? " UTC" : ""}${fb.f ? `, ${fb.f.label}` : ""}` : `All ${plural(sources.length, "refused source")} listed for ${({ "24h": "the last 24 hours", "1w": "the last week", "1m": "the last month", "3m": "the last 3 months", "6m": "the last 6 months", "1y": "the last year" })[state.range]}`;
     const restores = new Map();
     for (const x of sources) {
       const v = x.verdict;
@@ -1264,7 +1264,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     };
   }
 
-  $("#range").addEventListener("click", (e) => { const b = e.target.closest("[data-range]"); if (!b || b.disabled) return; state.range = b.dataset.range; render(); });
+  for (const sel of document.querySelectorAll(".range-sel")) sel.addEventListener("change", () => { if (!DATA.ranges[sel.value]) return; state.range = sel.value; render(); });
   for (const kind of ["refused", "active"]) $(`#${kind}By`).addEventListener("click", (e) => { const b = e.target.closest("[data-by]"); if (!b) return; state.by[kind] = b.dataset.by; if (state.bin?.kind === kind) state.bin = null; markRange(); charts(); tables(); });
   $("#ruleStatus").addEventListener("change", () => tables());
   $("#reachIp").addEventListener("input", () => reachDraw());

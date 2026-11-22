@@ -141,7 +141,8 @@ def test_bad_input_is_a_400_not_a_traceback(console):
     assert _req(p, "POST", "/api/propose", {"account": ACCOUNT, "region": REGION, "reason": "x",
                                             "changes": [{"group": GID, "op": "add", "rule": {}}]})[0] == 400
     assert _req(p, "POST", "/api/decide", {"id": "x", "action": "approve"})[0] == 400
-    assert _req(p, "GET", "/api/refused?range=1y")[0] == 400
+    assert _req(p, "GET", "/api/refused?range=2y")[0] == 400
+    assert _req(p, "GET", "/api/refused?range=1y")[0] == 200
     assert _req(p, "GET", "/api/nope")[0] == 404
 
 

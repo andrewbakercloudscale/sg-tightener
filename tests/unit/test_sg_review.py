@@ -590,3 +590,20 @@ def test_page_extract_rule_shows_what_we_know_and_splits_by_destination(tmp_path
     for needle in ("What we know", "data-xr-split", "destination address", "Copy this rule's command",
                    "Propose this one in the console", "Already let in", "Already allowed by", "Your interface"):
         assert needle in html, needle
+
+
+def test_a_year_read_offers_a_year_a_bar_a_week_but_opens_on_six_months():
+    doc = demo_sg.build_doc(ACCT, time.time(), 365)
+    data = sg_review.page_data(doc, "", demo_sg.INTERNAL)
+    assert list(data["ranges"]) == ["24h", "1w", "1m", "3m", "6m", "1y"] and data["default"] == "6m"
+    year = data["ranges"]["1y"]
+    assert year["step"] == 7 * sg_review.DAY and 52 <= len(year["bins"]) <= 54
+    assert 365 in sg_review.READ_DAYS
+
+
+def test_page_has_a_time_window_dropdown_on_each_timeline(tmp_path):
+    doc = demo_sg.build_doc(ACCT, time.time(), 7)
+    page = tmp_path / "p.html"
+    sg_review.write_page(sg_review.page_data(doc, "", demo_sg.INTERNAL), str(page))
+    html = page.read_text()
+    assert html.count('class="range-sel"') == 4 and 'id="range"' in html and '"1y": "Last year"' in html

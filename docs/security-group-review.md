@@ -54,7 +54,7 @@ python sg_review.py demo            # -> sg-review-demo.html
 | Parameter | Values | Effect on the graphs |
 |---|---|---|
 | `--regions` | `eu-west-1,us-east-1` | Which regions' security groups and flow logs are read. All regions appear on one page, and approved.json downloads are per region |
-| `--days` | `1`, `7`, `30`, `90`, `180` (default `1`) | How far back is read. It decides which **Timeline** buttons work: `1` gives 24 hours; `7` adds 1 week; `30` adds 1 month; `90` adds 3 months; `180` adds 6 months. Buttons for ranges not read are greyed out. Rules are only called *unused* or *Tighten* after 30 days of evidence |
+| `--days` | `1`, `7`, `30`, `90`, `180`, `365` (default `1`) | How far back is read. It decides which **Time window** choices work: `1` gives the last 24 hours; `7` adds the last week; `30` the last month; `90` the last 3 months; `180` the last 6 months; `365` the last year. Windows not read are greyed out and say how many days to read. Rules are only called *unused* or *Tighten* after 30 days of evidence |
 | `--profile` | an AWS profile | The credentials to read with. The account is whichever one those credentials belong to |
 | `--name` | text | The account name shown in the header (default: the account alias) |
 | `--egress` | flag | Also read outbound connections: fills the outbound findings in [Exposure and hygiene](#exposure-and-hygiene). About half as much again per read; stays on for the account |
@@ -94,8 +94,15 @@ Ranges are separated by commas. Each one is a CIDR, then a space, then a name.
 
 ## On the page
 
-The **Timeline** buttons switch the graphs between 24 hours (hourly bars), 1 week (6-hour bars),
-and 1, 3 or 6 months (daily bars). The **Show** chips switch each kind of source on or off in every
+The **Time window** drop-down, at the top and above each timeline, switches every graph and table
+between the last 24 hours (hourly bars), the last week (6-hour bars), the last 1, 3 or 6 months
+(daily bars) and the last year (a bar a week). Changing it on one graph changes them all. The page
+opens on the longest window up to 6 months; a year is there to spot seasonal and yearly traffic
+(year-end batches, annual DR tests) before a rule is taken away.
+
+![The refused timeline over the last year, a bar a week, with the Time window drop-down](images/sg-review-time-window.png)
+
+ The **Show** chips switch each kind of source on or off in every
 graph and table. The kinds are internal, data centre, AWS, SaaS and other networks.
 
 ### Needs attention

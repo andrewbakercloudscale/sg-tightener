@@ -157,7 +157,7 @@ details summary { cursor: pointer; font-weight: 600; }
     <h2>Rejected traffic across the accounts</h2>
     <p class="lede">Every source the security groups and network ACLs turned away, in every account <code>sg_review.py</code> has read (all of an OU with <code>sg_review.py org</code>, kept fresh by <code>sg_review.py watch --org --loop</code>), worst verdict first.</p>
     <div class="tools">
-      <select id="fRange" aria-label="Range"><option value="24h">Last 24 hours</option><option value="1w">Last week</option><option value="1m">Last month</option><option value="3m">Last 3 months</option><option value="6m">Last 6 months</option></select>
+      <select id="fRange" aria-label="Range"><option value="24h">Last 24 hours</option><option value="1w">Last week</option><option value="1m">Last month</option><option value="3m">Last 3 months</option><option value="6m">Last 6 months</option><option value="1y">Last year</option></select>
       <input id="fQ" type="search" placeholder="Filter: account, source, owner, port, verdict…" aria-label="Filter rejected traffic">
       <select id="fSev" aria-label="Severity"><option value="">Every severity</option><option>critical</option><option>high</option><option>medium</option><option>low</option><option>info</option></select>
       <select id="fAcct" aria-label="Account"><option value="">Every account</option></select>
