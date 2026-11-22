@@ -1683,6 +1683,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         }  # fmt: skip
     not_logged = [g for g in groups.values() if g["enis"] and not logged(g)]
     last = len(bins) - 1
+    covered = _covered(chunks, bins, step, end)
     return {
         "account": doc["account"],
         "name": doc.get("name", ""),
@@ -1690,6 +1691,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         "range": range_key if range_key in RANGES else "1m",
         "step": step,
         "bins": bins,
+        "covered": covered,
         "end": end,
         "categories": [{"key": k, "name": CAT_NAME[k]} for k in CATS],
         "series": {"refused": rej_series, "over": over_series, "active_today": act_today, "active_older": act_older,
@@ -3169,6 +3171,25 @@ def _cost(c: float | None) -> str:
 
 
 # ------------------------------------------------------------------------------------------- the page
+def _covered(chunks: list, bins: list, step: int, end: int) -> list:
+    """The share of each bin (0 to 1) that flow logs were read for, in any region: 0 is a bin with no data."""
+    ivs: list = []
+    for s, e in sorted((c["s"], c["e"]) for c in chunks):
+        if ivs and s <= ivs[-1][1]:
+            ivs[-1][1] = max(ivs[-1][1], e)
+        else:
+            ivs.append([s, e])
+    out = []
+    for b in bins:
+        lo, hi = b, min(b + step, end)
+        if hi <= lo:
+            out.append(1.0)
+            continue
+        got = sum(max(0, min(hi, e) - max(lo, s)) for s, e in ivs)
+        out.append(round(min(1.0, got / (hi - lo)), 2))
+    return out
+
+
 def _evidence(doc: dict) -> tuple[int | None, int | None]:
     ok = [c for c in doc["chunks"] if c["st"] in ("ok", "cut")]
     if not ok:
@@ -3182,7 +3203,8 @@ def page_data(doc: dict, onprem: str = "", internal: str = "", now: float | None
     first, end = _evidence(doc)
     days = (end - first) / DAY if first is not None else 0
     keys = [k for k, (span, _) in RANGES.items() if span <= (days + 0.5) * DAY] or ["24h"]
-    ranges = {k: build(doc, k, onprem, internal, names) for k in keys}
+    # every window is built, read or not: one longer than the read shows its unread part as having no data
+    ranges = {k: build(doc, k, onprem, internal, names) for k in RANGES}
     fits = [rep.pop("fit", None) for rep in ranges.values()]  # the rules are read over the whole read: keep one
     regions = [r for r, x in doc["regions"].items() if x.get("query_sets")]
     return {
@@ -3349,7 +3371,7 @@ def cmd_demo(args) -> int:
     if not args.offline:
         sg_ipintel.refresh()
     now = time.time()
-    doc = sg_review_demo.build_doc(sg_review_demo.ACCOUNT, now, 365)
+    doc = sg_review_demo.build_doc(sg_review_demo.ACCOUNT, now, 180)  # half the year window: shows what no data looks like
     write_page(page_data(doc, "", sg_review_demo.INTERNAL, now, parse_names(sg_review_demo.NAMES)), args.out)
     LOG.info("wrote %s (a made-up account: no AWS call was made)", args.out)
     return 0

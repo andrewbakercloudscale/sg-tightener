@@ -1,5 +1,24 @@
 # Changelog
 
+## 5.6.0 - 2026-11-22
+
+- **Every graph has the time window.** The **Time window** drop-down is now on
+  Needs attention and Ports as well as the top and the three timelines, all in
+  step. (Exposure, PrivateLink and the rules table describe the configuration
+  now and do not change with the window.)
+- **No data is shown as no data.** Every window is built, whatever was read.
+  When one reaches back further than the flow logs read, a note beside each
+  graph says from when there is data and how many of the window's days were
+  read, the time not read is shaded and labelled **No data** on each timeline,
+  the over-provisioned lines stop where the data does, and the `read --days`
+  command that fills it is given. Partly read periods are shaded lighter. The
+  drop-down marks such windows "data for N days only" or "no data". Each
+  window carries `covered`, the share of each bar read.
+- The console's rejected traffic says which accounts have no data for the
+  window chosen, and from when they do (`first`, `covered` per account).
+- The demo reads 180 days again, so its year window shows what missing data
+  looks like.
+
 ## 5.5.0 - 2026-11-22
 
 - **Time window drop-down.** The review's timeline buttons are now a **Time

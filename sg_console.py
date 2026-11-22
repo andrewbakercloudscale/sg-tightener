@@ -202,9 +202,12 @@ class Console:
                     continue
                 rep = sg_review.build(doc, range_key)
                 name = doc.get("name", "")
+                cov = rep.get("covered") or [1.0]
                 got = {"rows": sg_review.refused_rows(account, name, rep, limit=1000),
                        "account": {"account": account, "name": name, "refused": rep["summary"]["refused"],
-                                   "attention": rep["summary"]["attention"], "end": rep.get("end")}}  # fmt: skip
+                                   "attention": rep["summary"]["attention"], "end": rep.get("end"),
+                                   "first": sg_review._evidence(doc)[0],
+                                   "covered": round(sum(cov) / len(cov), 2)}}  # fmt: skip
                 self._refused_cache = {k: v for k, v in self._refused_cache.items() if k[0] != account}
                 self._refused_cache[key] = got
             rows += got["rows"]

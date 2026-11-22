@@ -156,6 +156,9 @@ def test_rejected_traffic_across_every_account_read(console):
     status, got, _ = _req(p, "GET", "/api/refused?range=1w")
     assert status == 200 and got["rows"]
     assert got["accounts"][0]["account"] == demo.ACCOUNT and got["accounts"][0]["refused"] > 0
+    assert got["accounts"][0]["covered"] == 1.0 and got["accounts"][0]["first"]
+    _, year, _ = _req(p, "GET", "/api/refused?range=1y")
+    assert 0 < year["accounts"][0]["covered"] < 0.1  # a week of a year: the page says what has no data
     ranks = [sg_review.SEV_RANK[r["sev"]] for r in got["rows"]]
     assert ranks == sorted(ranks), "worst verdict first"
     assert {"src", "port", "verdict", "groups", "account_name"} <= set(got["rows"][0])

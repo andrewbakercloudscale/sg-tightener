@@ -41,7 +41,7 @@ tightening that cut off Lambda callers, the refusals it caused, and the range pu
 |---|---|
 | [![Extract rule](docs/images/sg-review-extract-rule.png)](docs/images/sg-review-extract-rule.png) | [![What we know](docs/images/sg-review-extract-know.png)](docs/images/sg-review-extract-know.png) |
 
-| Time window: the last year, a bar a week | Blast radius of one address |
+| Time window: the last year, with the time not read marked No data | Blast radius of one address |
 |---|---|
 | [![Time window](docs/images/sg-review-time-window.png)](docs/images/sg-review-time-window.png) | [![Blast radius](docs/images/sg-review-blast-radius.png)](docs/images/sg-review-blast-radius.png) |
 
@@ -234,6 +234,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.6.0** | **Every graph windowed, and no data shown as no data.** The **Time window** drop-down is now also on Needs attention and Ports, and every window can be chosen. When a window reaches back further than the flow logs read, each graph says so ("No data before 26 May: 181 of 365 days read"), shades the time not read as **No data**, and the command to fill it is given. The console's rejected traffic says which accounts have no data that far back |
 | **5.5.0** | **Time window drop-down, up to a year.** Each timeline has a **Time window** drop-down (last 24 hours, week, month, 3 months, 6 months, year), kept in step with the one at the top. `sg_review.py read --days 365` reads a year, shown a bar a week, to catch yearly traffic before a rule is removed. The console's rejected traffic also offers the last year |
 | **5.4.0** | **Extract rule: what we know, one destination at a time.** Refused traffic is let in **one rule per destination address**, numbered, each card with its own command and **Propose this one in the console**, and a warning (with the `asset-plan` command) when the destination's group is shared. Each source is marked **Familiar**, **Unfamiliar** or **Do not add**, and **What we know** shows the evidence: your instance behind the address (Name tag, **operating system**, type, groups), ports it is already let in on, rules that already allow it, first seen, what else it was refused on, and the verdict. The review reads each instance's name and OS |
 | **5.3.0** | **Known malicious addresses**: every source and outbound destination is checked, locally and daily, against free threat lists (abuse.ch Feodo Tracker botnet servers, Spamhaus DROP, Emerging Threats compromised hosts, blocklist.de attackers) as well as Tor exits. Let in on admin or database ports, or called out to, is **critical** and always posted by `watch`; Tighten turns such sources away by default; the console marks and filters them. **Alerting scripts** in `deploy/alerts` (systemd, launchd, cron) for `watch`, hourly `reconcile` and a daily read. **`install.sh`** checks every package, downloads the address lists, and takes `--dev`; tools run outside the venv say how to install |

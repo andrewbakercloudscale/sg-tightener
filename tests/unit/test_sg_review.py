@@ -168,12 +168,12 @@ def test_approved_json_is_sg_tightener_v2(report):
 
 
 # ----------------------------------------------------------------------------------- page and CLI
-def test_page_has_every_range_read_and_cannot_be_broken_out_of(tmp_path):
+def test_page_has_every_window_and_cannot_be_broken_out_of(tmp_path):
     doc = demo_sg.build_doc(ACCT, time.time(), 30)
     g = doc["regions"][demo_sg.REGION]["snapshot"]["groups"]["sg-0app0000000000001"]
     g["name"] = "</script><script>alert(1)</script>"
     data = sg_review.page_data(doc, "", demo_sg.INTERNAL)
-    assert list(data["ranges"]) == ["24h", "1w", "1m"] and data["default"] == "1m"
+    assert list(data["ranges"]) == list(sg_review.RANGES) and data["default"] == "1m"  # every window, read or not
     assert data["approved"][demo_sg.REGION]["schema"] == "sg-tightener.approved/v2"
     page = sg_review.render_page(data)
     assert page.count("</script>") == 3  # the data, the chart library and the page's own script
@@ -606,4 +606,24 @@ def test_page_has_a_time_window_dropdown_on_each_timeline(tmp_path):
     page = tmp_path / "p.html"
     sg_review.write_page(sg_review.page_data(doc, "", demo_sg.INTERNAL), str(page))
     html = page.read_text()
-    assert html.count('class="range-sel"') == 4 and 'id="range"' in html and '"1y": "Last year"' in html
+    assert html.count('class="range-sel"') == 6 and 'id="range"' in html and '"1y": "Last year"' in html
+
+
+def test_covered_is_the_share_of_each_bin_read():
+    D = sg_review.DAY
+    chunks = [{"s": 2 * D, "e": 3 * D}, {"s": 3 * D, "e": 3 * D + D // 2}, {"s": 5 * D, "e": 6 * D}]
+    assert sg_review._covered(chunks, [0, D, 2 * D, 3 * D, 4 * D, 5 * D], D, 6 * D) == [0, 0, 1.0, 0.5, 0, 1.0]
+
+
+def test_every_window_is_built_and_one_longer_than_the_read_says_where_there_is_no_data(tmp_path):
+    doc = demo_sg.build_doc(ACCT, time.time(), 7)
+    data = sg_review.page_data(doc, "", demo_sg.INTERNAL)
+    assert list(data["ranges"]) == list(sg_review.RANGES) and data["default"] == "1w"
+    year = data["ranges"]["1y"]["covered"]
+    assert year[0] == 0 and year[-1] == 1.0 and sum(1 for v in year if v > 0) <= 3
+    assert all(v == 1.0 for v in data["ranges"]["24h"]["covered"])
+    page = tmp_path / "p.html"
+    sg_review.write_page(data, str(page))
+    html = page.read_text()
+    assert html.count('class="range-sel"') == 6 and html.count('class="gap-note small"') >= 5
+    assert "No data before" in html and "not read, not quiet" in html and "unreadShade" in html
