@@ -331,6 +331,7 @@ python sg_review.py report   [--account ID] [--onprem "10.200.0.0/16 Johannesbur
 python sg_review.py approved --region eu-west-1 [--account ID] [--out approved.json]
 python sg_review.py demo     [--offline] [--out sg-review-demo.html]
 python sg_review.py names    [--out FILE]
+python sg_review.py reach    ADDRESS [--account ID] [--json]
 python sg_review.py forget   --account ID
 python sg_review.py watch    --regions R [--slack URL] [--email-to A,B] [--min-severity high] [--repeat 24] \
                              [--max-cost 0.50] [--alerts refused|all] [--no-tail] [--loop [--every 5]]

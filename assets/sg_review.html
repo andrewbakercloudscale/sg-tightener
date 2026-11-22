@@ -220,6 +220,13 @@ details.xr-fold > summary { margin: 0 0 10px; }
       <div class="table-wrap"><table class="data" id="fitRules"></table></div>
       <div id="fitOut"></div>
     </div>
+    <div class="card fit" id="reachWrap">
+      <h3 style="margin-top:0">Blast radius: what can one address reach?</h3>
+      <p class="muted small">If this host were compromised (a data centre laptop, a build server, a partner's address), every security group, port and interface its address is let in to today, and after the Tighten settings above. A rule reaches it when one of its ranges holds the address, or when it lets in a group the address's own interface is in.</p>
+      <div class="tools"><label style="flex:1;min-width:220px">Address <input type="text" id="reachIp" style="width:100%" placeholder="10.200.4.21" spellcheck="false" autocomplete="off"></label><span id="reachPicks" class="small"></span></div>
+      <dl class="fit-sum" id="reachSum"></dl>
+      <div class="table-wrap"><table id="reachRules"></table></div>
+    </div>
     <h3>Rules, and what to change</h3>
     <p class="muted small" id="rulesNote"></p>
     <div class="tools">
@@ -473,6 +480,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     const cmds = regions.map((r) => `# ${r}: propose the change; a second person approves it; then apply it\npython sg_db.py propose --plan ${file(r)} --reason '${fitReason()}'\npython sg_db.py requests\npython sg_db.py approve <id>      # someone else\npython sg_db.py apply --region ${r}\n# Then watch Refused sources: refusals right after the change mean a source was cut off; Extract rule puts it back.`).join("\n\n");
     $("#fitOut").innerHTML = regions.length ? `<h3>Propose it</h3>${DATA.console ? `<div class="tools"><label style="flex:1;min-width:240px">Reason <input type="text" id="fitWhy" style="width:100%" value="${esc(fitReason())}"></label><button type="button" class="btn primary" id="fitPropose">Propose in the console</button><span class="small muted" id="fitDone"></span></div>` : ""}<p class="small muted">The plan revokes each rule as it is and authorises the fitted ranges. It goes through <code>sg_db.py propose</code>: recorded with the reason, approved by a second person, applied only in enforce mode, and in the audit trail.</p><textarea readonly spellcheck="false" id="fitCli">${esc(cmds)}</textarea><div class="tools">${regions.map((r) => `<button type="button" class="btn${DATA.console ? "" : " primary"}" data-fitplan="${esc(r)}">Download ${esc(file(r))}</button>`).join("")}<button type="button" class="btn" id="fitCopy">Copy the commands</button><span class="small muted" id="fitCopied"></span></div>` : "";
     overChart();
+    reachDraw();
   }
   async function fitPropose(btn) {
     const res = state.fit.res, plans = fitPlans(res), out = [];
@@ -487,6 +495,62 @@ details.xr-fold > summary { margin: 0 0 10px; }
       }
       $("#fitDone").textContent = `${out.join("; ")}. A second person approves it on the console's Requests tab, then Apply.`;
     } catch (e) { $("#fitDone").textContent = `Not proposed: ${e.message}`; btn.disabled = false; }
+  }
+
+  // ---- blast radius: what one address can reach, now and after the Tighten settings
+  const ipBig = (a) => { if (!a.includes(":")) { const n = ip4(a); return n == null ? null : [4, BigInt(n)]; }
+    let [h, t] = a.split("::"); const hs = h ? h.split(":") : [], ts = t !== undefined && t ? t.split(":") : [];
+    if (t === undefined && hs.length !== 8) return null;
+    const parts = [...hs, ...Array(8 - hs.length - ts.length).fill("0"), ...ts];
+    if (parts.length !== 8 || parts.some((x) => !/^[0-9a-f]{1,4}$/i.test(x))) return null;
+    return [6, parts.reduce((v, x) => (v << 16n) + BigInt(parseInt(x, 16)), 0n)]; };
+  const inCidr = (ip, c) => { const [a, l] = String(c).split("/"); const n = ipBig(a); if (!n || !ip || n[0] !== ip[0]) return false;
+    const bits = n[0] === 4 ? 32n : 128n, len = BigInt(l ?? bits), sh = bits - len; return (n[1] >> sh) === (ip[1] >> sh); };
+  function reachOf(addr) {
+    const R = DATA.reach || { rules: [], assets: {} }, ip = ipBig(addr.trim());
+    if (!ip) return null;
+    const own = new Set(Object.entries(R.assets).filter(([, xs]) => xs.some((a) => a[2] === addr.trim() || (a[4] || []).includes(addr.trim()))).map(([g]) => g));
+    const res = state.fit?.res || fitCompute();
+    const fitted = new Map(res.all.map((x) => [`${x.r.group}|${x.r.proto}|${x.r.from}|${x.r.to}|${x.r.source}`, x]));
+    const rows = [];
+    for (const r of R.rules) {
+      let via = r.cidrs.find((c) => inCidr(ip, c)), byRange = !!via;
+      if (!via) { const g = r.refs.find((x) => own.has(x)); if (g) via = `member of ${g}`; }
+      if (!via) continue;
+      let after = "kept";
+      const x = byRange && fitted.get(`${r.group}|${r.proto}|${r.from}|${r.to}|${via}`);
+      if (x && !x.same && !x.skipped) after = x.cidrs.some((c) => inCidr(ip, c)) ? "narrowed" : "removed";
+      rows.push({ ...r, via, after, assets: R.assets[r.group] || [] });
+    }
+    rows.sort((p, q) => (q.risky - p.risky) || (q.assets.length - p.assets.length) || p.gname.localeCompare(q.gname));
+    return { rows, own: [...own] };
+  }
+  function reachDraw() {
+    const wrap = $("#reachWrap");
+    if (!wrap) return;
+    const R = DATA.reach || { rules: [] };
+    wrap.hidden = !R.rules.length;
+    if (!$("#reachPicks").dataset.done) {
+      const picks = [], seen = new Set();
+      for (const [kind, label] of [["datacentre", "a data centre host"], ["internal", "an internal host"], ["saas", "a partner or SaaS address"], ["internet", "an internet address"]]) {
+        const src = Object.entries(FIT.labels).find(([a, lb]) => lb[0] === kind && !seen.has(a));
+        if (src) { seen.add(src[0]); picks.push(`<button type="button" class="btn" data-reach="${esc(src[0])}" title="${esc(label)}">${esc(src[0])}</button>`); }
+      }
+      picks.push(`<button type="button" class="btn" data-reach="198.51.100.200" title="anyone on the internet">anyone</button>`);
+      $("#reachPicks").innerHTML = `Try: ${picks.join(" ")}`;
+      $("#reachPicks").dataset.done = "1";
+      if (!$("#reachIp").value) $("#reachIp").value = (Object.entries(FIT.labels).find(([, lb]) => lb[0] === "datacentre") || Object.entries(FIT.labels)[0] || ["10.0.0.1"])[0];
+    }
+    const got = reachOf($("#reachIp").value);
+    if (!got) { $("#reachSum").innerHTML = ""; $("#reachRules").innerHTML = `<tbody><tr><td class="muted">Type an IPv4 or IPv6 address.</td></tr></tbody>`; return; }
+    const sum = (rows) => ({ g: new Set(rows.map((x) => x.group)).size, i: new Set(rows.flatMap((x) => x.assets.map((a) => a[0]))).size, k: new Set(rows.filter((x) => x.risky).map((x) => x.group + x.ports)).size });
+    const now = sum(got.rows), aft = sum(got.rows.filter((x) => x.after !== "removed"));
+    const arrow = (a, b) => (a === b ? num(a) : `${num(a)} → <strong>${num(b)}</strong>`);
+    $("#reachSum").innerHTML = [["Security groups", arrow(now.g, aft.g)], ["Interfaces", arrow(now.i, aft.i)], ["Risky ports (admin, databases…)", arrow(now.k, aft.k)],
+      ["Only because a rule is open to all", num(got.rows.filter((x) => x.via === "0.0.0.0/0" || x.via === "::/0").length)]].map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")
+      + (got.own.length ? `<div><dt>Its own interface is in</dt><dd class="small">${got.own.map((g) => `<code>${esc(g)}</code>`).join(" ")}</dd></div>` : "");
+    const pill = { kept: "", narrowed: `<span class="pill" style="--p:var(--good)">still reachable, rule narrowed</span>`, removed: `<span class="pill" style="--p:var(--good)">cut off</span>` };
+    $("#reachRules").innerHTML = got.rows.length ? `<thead><tr><th>Security group</th><th>Ports</th><th>Let in by</th><th>Interfaces</th><th>After Tighten</th></tr></thead><tbody>${got.rows.map((x) => `<tr><td>${esc(x.gname || x.group)}<div class="small muted"><code>${esc(x.group)}</code> · ${esc(x.region)}</div></td><td>${x.risky ? "⚠ " : ""}${esc(x.ports)}${x.svc ? `<div class="small muted">${esc(x.svc)}</div>` : ""}</td><td><code>${esc(x.via)}</code>${x.via === "0.0.0.0/0" || x.via === "::/0" ? ` <span class="pill" style="--p:var(--warn-ink)">open to all</span>` : ""}</td><td>${x.assets.length ? x.assets.slice(0, 4).map((a) => `${esc(a[1] || "interface")} <code>${esc(a[2])}</code>`).join("<br>") + (x.assets.length > 4 ? `<br><span class="small muted">and ${num(x.assets.length - 4)} more</span>` : "") : `<span class="muted">none attached</span>`}</td><td>${pill[x.after] || '<span class="muted">unchanged</span>'}</td></tr>`).join("")}</tbody>` : `<tbody><tr><td class="muted">No security group lets this address in.</td></tr></tbody>`;
   }
 
   function readPanel() {
@@ -1139,6 +1203,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
   $("#range").addEventListener("click", (e) => { const b = e.target.closest("[data-range]"); if (!b || b.disabled) return; state.range = b.dataset.range; render(); });
   for (const kind of ["refused", "active"]) $(`#${kind}By`).addEventListener("click", (e) => { const b = e.target.closest("[data-by]"); if (!b) return; state.by[kind] = b.dataset.by; if (state.bin?.kind === kind) state.bin = null; markRange(); charts(); tables(); });
   $("#ruleStatus").addEventListener("change", () => tables());
+  $("#reachIp").addEventListener("input", () => reachDraw());
+  $("#reachWrap").addEventListener("click", (e) => { const b = e.target.closest("[data-reach]"); if (b) { $("#reachIp").value = b.dataset.reach; reachDraw(); } });
   $("#fitWrap").addEventListener("change", (e) => {
     const f = fitState(), t = e.target;
     if (t.dataset.fit) { const [k, ...rest] = t.dataset.fit.split(":"); const key = rest.join(":"); if (t.value) f[k][key] = t.value; else delete f[k][key]; }

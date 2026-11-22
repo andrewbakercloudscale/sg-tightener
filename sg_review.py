@@ -2817,6 +2817,63 @@ def fit_model(rules: list[dict], lab) -> dict:
     return {"rules": out, "labels": labels, "cap": FIT_CAP}
 
 
+def reach_model(doc: dict) -> dict:
+    """Every inbound rule in the account and the interfaces each group is on, for "what can this address reach":
+    the blast radius of one compromised host. A rule reaches an address when one of its ranges holds it, or
+    when it lets in a group the address's own interface is in."""
+    rules, assets = [], {}
+    for region, x in sorted(doc["regions"].items()):
+        snap = x.get("snapshot") or {}
+        for eni, e in sorted((snap.get("enis") or {}).items()):
+            for g in e.get("groups") or []:
+                assets.setdefault(g, []).append([eni, e.get("kind", ""), (e.get("ips") or [""])[0], e.get("public", ""),
+                                                 list(e.get("ipv6") or [])])  # fmt: skip
+        for gid, g in sorted((snap.get("groups") or {}).items()):
+            for r in g.get("rules") or []:
+                cidrs = list(r.get("cidrs") or []) + list(r.get("cidrs6") or []) + (["::/0"] if r.get("any6") and "::/0" not in (r.get("cidrs6") or []) else [])
+                refs = list(r.get("refs") or [])
+                if not cidrs and not refs:
+                    continue
+                pc = rule_port_class(r)
+                rules.append({"region": region, "group": gid, "gname": g.get("name", ""), "proto": str(r["proto"]),
+                              "from": r["from"], "to": r["to"], "ports": ports_label(r), "cidrs": cidrs, "refs": refs,
+                              "cls": pc.get("cls", ""), "svc": pc.get("svc", ""), "risky": bool(pc.get("risky"))})  # fmt: skip
+    return {"rules": rules, "assets": assets}
+
+
+def reach(model: dict, address: str) -> dict:
+    """What one address can reach: each rule that lets it in (by range, or by a group its interface is in), with
+    the interfaces behind it. Answers "if this host were compromised, how far could it get?"."""
+    try:
+        ip = ipaddress.ip_address(address.strip())
+    except ValueError:
+        raise SystemExit(f"not an IP address: {address!r}")
+    own = {g for g, xs in model["assets"].items() for a in xs if str(ip) in ([a[2]] + list(a[4]))}
+    rows = []
+    for r in model["rules"]:
+        via = next((c for c in r["cidrs"] if _in_cidr(ip, c)), None)
+        if via is None:
+            via = next((f"member of {g}" for g in r["refs"] if g in own), None)
+        if via is None:
+            continue
+        rows.append({**{k: r[k] for k in ("region", "group", "gname", "proto", "from", "to", "ports", "cls", "svc",
+                                          "risky")}, "via": via, "assets": model["assets"].get(r["group"], [])})  # fmt: skip
+    rows.sort(key=lambda x: (not x["risky"], -len(x["assets"]), x["gname"], x["from"]))
+    enis = {a[0] for x in rows for a in x["assets"]}
+    return {"address": str(ip), "groups_in": sorted(own), "rows": rows,
+            "summary": {"groups": len({x["group"] for x in rows}), "interfaces": len(enis),
+                        "risky": len({(x["group"], x["ports"]) for x in rows if x["risky"]}),
+                        "open_to_all": sum(x["via"] in ("0.0.0.0/0", "::/0") for x in rows)}}
+
+
+def _in_cidr(ip, cidr: str) -> bool:
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return False
+    return ip.version == net.version and ip in net
+
+
 def _subnets(ips) -> set[int]:
     """The /64 subnets (top 64 bits) of IPv6 addresses."""
     return {int(a) >> 64 for a in ips}
@@ -3084,6 +3141,7 @@ def page_data(doc: dict, onprem: str = "", internal: str = "", now: float | None
         "default": keys[-1],
         "ranges": ranges,
         "fit": fits[-1] or {"rules": [], "labels": {}, "cap": FIT_CAP},
+        "reach": reach_model(doc),
         "names": len(names or []),
         "source_types": [{"key": k, "name": n, "kind": kind, "note": sg_ipintel.GROUP_NOTE.get(k, "")}
                          for k, (n, kind) in SOURCE_TYPES.items()],
@@ -3238,6 +3296,27 @@ def cmd_demo(args) -> int:
     doc = sg_review_demo.build_doc(sg_review_demo.ACCOUNT, now, 180)
     write_page(page_data(doc, "", sg_review_demo.INTERNAL, now, parse_names(sg_review_demo.NAMES)), args.out)
     LOG.info("wrote %s (a made-up account: no AWS call was made)", args.out)
+    return 0
+
+
+def cmd_reach(args) -> int:
+    account = _pick_account(args.account)
+    doc = load(account)
+    if not doc:
+        raise SystemExit(f"nothing read for {account}: run `sg_review.py read` first")
+    got = reach(reach_model(doc), args.address)
+    if args.json:
+        print(json.dumps(got, indent=2))
+        return 0
+    s = got["summary"]
+    print(f"{got['address']} can reach {s['groups']} security group(s) on {s['interfaces']} interface(s); "
+          f"{s['risky']} on risky ports, {s['open_to_all']} only because the rule is open to every address")
+    if got["groups_in"]:
+        print(f"  its own interface is in {', '.join(got['groups_in'])}")
+    for x in got["rows"]:
+        kinds = sorted({a[1] or "interface" for a in x["assets"]})
+        print(f"  {'!' if x['risky'] else ' '} {x['gname'] or x['group']:<22} {x['ports']:<14} {x['region']:<12} "
+              f"via {x['via']:<20} {len(x['assets'])} interface(s): {', '.join(kinds)[:60]}")
     return 0
 
 
@@ -3866,6 +3945,11 @@ def _build_parser() -> argparse.ArgumentParser:
     d.add_argument("--out", default="sg-review-demo.html")
     d.add_argument("--offline", action="store_true", help="do not refresh the public address lists")
     d.set_defaults(fn=cmd_demo)
+    rc = sub.add_parser("reach", help="blast radius: every security group, port and interface one address can reach")
+    rc.add_argument("address", help="an IPv4 or IPv6 address, such as a data centre laptop or a build server")
+    rc.add_argument("--account")
+    rc.add_argument("--json", action="store_true", help="print JSON")
+    rc.set_defaults(fn=cmd_reach)
     n = sub.add_parser("names", help="check the names file, or write an example one if there is none")
     n.add_argument("--out", help="the names file (default ~/.sg-tightener/names.yaml)")
     n.set_defaults(fn=cmd_names)

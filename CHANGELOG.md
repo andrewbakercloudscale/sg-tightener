@@ -1,5 +1,24 @@
 # Changelog
 
+## 5.2.0 - 2026-11-22
+
+- **Blast radius.** The Security Group Review has a new card under the
+  Tighten panel: type one address (or pick a data centre, internal, SaaS,
+  internet or "anyone" address) and see every rule that admits it, worst
+  first: the group, ports, the range or group reference that lets it in, and
+  the network interfaces behind the group. Risky ports are marked and rules
+  open to every address are counted apart. Each row shows what the Tighten
+  settings would do to it (unchanged, narrowed or cut off) and the summary
+  shows the reach before and after. In the demo, data centre host 10.200.4.22
+  goes from 9 groups on 8 interfaces to 6 on 5.
+- **`sg_review.py reach ADDRESS [--account ID] [--json]`**: the same from the
+  command line, from what was already read; no AWS call.
+- **Managing the risk.** New guidance in the Security Group Review guide and
+  the README: internet-reachable before open on paper, read 90 days before
+  removing anything, tighten admin and database ports first, flow-log blind
+  spots, egress, group hygiene, recording changes made outside the tool, and
+  the two numbers to report.
+
 ## 5.1.0 - 2026-11-22
 
 - **Tighten on the timeline.** The Security Group Review's over-provisioned

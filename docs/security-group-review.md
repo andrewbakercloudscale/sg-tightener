@@ -84,6 +84,7 @@ Ranges are separated by commas. Each one is a CIDR, then a space, then a name.
 | `approved --region R [--account ID] [--out approved.json]` | Writes sg-tightener's `approved.json` from the review, ready for `sg_tightener.py plan`. The same file can be downloaded from the page |
 | `demo [--offline] [--out FILE]` | The page for a made-up account |
 | `names [--out FILE]` | Checks the names file and lists what it names, or writes an example one if there is none |
+| `reach ADDRESS [--account ID] [--json]` | Blast radius: every rule that admits the address, worst first, with the interfaces behind each group. See [Blast radius](#blast-radius-what-can-one-address-reach) |
 | `forget --account ID` | Deletes what was read for that account |
 | `watch --regions R [--slack URL] [--email-to A]` | Alert mode: reads only the newest flow logs and posts the new **Needs attention** items. See [Alert mode](#alert-mode-watch) |
 | `org --regions R [--ou-id OU] [--role-name ROLE]` | Reads every account in an OU and writes a roll-up of what needs attention in each. See [Every account in an OU](#every-account-in-an-ou-org) |
@@ -399,6 +400,65 @@ python sg_db.py apply --region eu-west-1   # enforce mode only
 
 After the apply, the change is a ▼ on this graph and the next read shows whether refusals spiked.
 If they did, select the spike on the refused graph and **Extract rule** to put the source back.
+
+#### Blast radius: what can one address reach?
+
+Under the Tighten panel, type an address (or pick one: a data centre host, an internal host, a SaaS
+or internet source, or "anyone") and the page lists every rule that admits it, worst first: the
+security group, protocol and ports, the range or group reference that lets it in, and the network
+interfaces behind that group (EC2, RDS, load balancers, endpoints). Rules on risky ports (remote
+admin, databases, Windows and directory) are marked ⚠, and rules that admit it only because they are
+open to every address are counted apart.
+
+It answers the question an incident asks first: **if this host is compromised, what can it get
+to?** It also follows the panel. Each row shows what Tighten would do to it (unchanged, still
+reachable with the rule narrowed, or cut off), and the summary shows the reach before and after. In the demo, data centre host
+10.200.4.22 reaches 9 groups on 8 interfaces, 4 of them on risky ports; with the default Tighten it
+reaches 6 groups on 5 interfaces, and 4 once the rules open to all are fitted too.
+
+![Blast radius of one address, before and after Tighten](images/sg-review-blast-radius.png)
+
+The same from the command line, from what was already read (no AWS call):
+
+```bash
+python sg_review.py reach 10.200.4.22 [--account ID] [--json]
+# 10.200.4.22 can reach 9 security group(s) on 8 interface(s); 4 on risky ports, 3 only because the rule is open to every address
+#   ! default                tcp 22         eu-west-1    via 10.0.0.0/8           1 interface(s): EC2 instance
+#   ...
+```
+
+An address inside one of your own groups' interfaces also reaches every rule that names that group
+as its source ("member of app-servers").
+
+## Managing the risk
+
+What the graphs are telling you, and the order to act in:
+
+- **Internet-reachable is not the same as open on paper.** A 0.0.0.0/0 rule on a group with no
+  public interface is hygiene; the same rule on an interface with a public address is exposure. The
+  **Exposure and hygiene** box separates the two; fix the second first.
+- **Read 90 days before removing anything.** Monthly batch jobs, quarter-end reports and DR tests
+  are invisible in a week of flow logs. The Tighten panel's recency setting shows what a shorter
+  window would cut off.
+- **Tighten in risk order.** Remote admin and database ports open to the internet first; then wide
+  internal ranges (10.0.0.0/8) onto databases and admin ports; then everything else. Blast radius
+  shows which hosts gain the most from each change.
+- **Know what flow logs cannot see.** Traffic a rule would admit but nobody sent is not evidence it
+  is unneeded, and flow logs that were off or filtered leave gaps. Check that every VPC has flow
+  logs for the whole window before trusting "never seen"; where it does not, keep the room or read
+  longer.
+- **Watch the way out too.** With `read --egress`, connections out to Tor exits and scanners
+  are flagged and open outbound rules are fitted to the destinations used (Exposure and hygiene).
+- **Clean the hygiene findings.** Rules in the default group, cross-account group references, groups
+  shared across tiers and references to groups that no longer exist all widen reach without
+  showing up as traffic.
+- **Record changes made outside the tool.** Run `sg_db.py reconcile` hourly from cron
+  so a console edit shows up on the timeline instead of as a mystery spike.
+- **Report two numbers.** The never-seen addresses allowed (what you could be attacked from) and the
+  time to restore after a tightening refused something legitimate (how safe it is to keep going).
+  Both should trend down.
+- **Surveillance mode is evidence.** Running for weeks before enforcing is not a delay; it is the
+  record that each removed rule was unused, which is what an auditor and a change board ask for.
 
 ### 3. Active sources
 

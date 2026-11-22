@@ -183,7 +183,7 @@ def test_page_has_every_range_read_and_cannot_be_broken_out_of(tmp_path):
     assert json.loads(body)["ranges"]["1m"]["rules"]
 
 
-def test_cli_demo_report_approved_and_forget(tmp_path, monkeypatch):
+def test_cli_demo_report_approved_and_forget(tmp_path, monkeypatch, capsys):
     out = tmp_path / "demo.html"
     assert sg_review.main(["--data-dir", str(tmp_path / "d"), "demo", "--offline", "--out", str(out)]) == 0
     assert "Security Group Review" in out.read_text()
@@ -195,6 +195,10 @@ def test_cli_demo_report_approved_and_forget(tmp_path, monkeypatch):
     assert sg_review.main(["--data-dir", str(ipintel.DATA_DIR), "approved", "--region", demo_sg.REGION,
                            "--out", str(ap)]) == 0  # fmt: skip
     assert json.loads(ap.read_text())["flows"]
+    assert sg_review.main(["--data-dir", str(ipintel.DATA_DIR), "reach", "10.200.4.21", "--account", ACCT]) == 0
+    assert "can reach" in capsys.readouterr().out
+    assert sg_review.main(["--data-dir", str(ipintel.DATA_DIR), "reach", "10.200.4.21", "--account", ACCT, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["summary"]["groups"] > 0
     assert sg_review.main(["--data-dir", str(ipintel.DATA_DIR), "forget", "--account", ACCT]) == 0
     assert sg_review.load(ACCT) is None
     with pytest.raises(SystemExit):
@@ -455,3 +459,33 @@ def test_page_carries_the_tighten_panel_and_its_plan_goes_through_propose():
     got = sg_db.plan_changes(plan, ACCT)
     assert [(op, r[4]) for _, op, r, _ in got] == [("remove", "10.0.0.0/8"), ("add", "10.20.1.0/24"), ("add", "10.40.3.0/24")]
     assert {r[:4] for _, _, r, _ in got} == {(sg_db.IN, "tcp", 443, 443)}
+
+
+# ----------------------------------------------------------------------------------- blast radius
+def test_reach_lists_what_one_address_can_reach_by_range_and_by_group():
+    doc = demo_sg.build_doc(ACCT, time.time(), 7)
+    model = sg_review.reach_model(doc)
+    dc = sg_review.reach(model, "10.200.4.21")  # a data centre host, over the VPN
+    by = {(x["gname"], x["ports"]): x for x in dc["rows"]}
+    assert by[("ops-ssh", "tcp 22")]["risky"] and by[("app-servers", "tcp 443")]["via"] == "10.0.0.0/8"
+    assert len(by[("app-servers", "tcp 443")]["assets"]) == 3
+    assert dc["rows"][0]["risky"], "risky ports first"
+    assert dc["summary"]["open_to_all"] == 3 and dc["groups_in"] == []
+    app = sg_review.reach(model, "10.20.2.11")  # an app server: its own group is known
+    assert app["groups_in"] == ["sg-0app0000000000001"]
+    assert ("payments-db", "tcp 5432") in {(x["gname"], x["ports"]) for x in app["rows"]}
+    anyone = sg_review.reach(model, "198.51.100.200")
+    assert {x["via"] for x in anyone["rows"]} == {"0.0.0.0/0"}
+    v6 = sg_review.reach(model, "2001:db8:acce:10::25")
+    assert [x["gname"] for x in v6["rows"]] == ["partner-sftp"]
+    with pytest.raises(SystemExit):
+        sg_review.reach(model, "not-an-ip")
+
+
+def test_page_carries_the_blast_radius_panel():
+    doc = demo_sg.build_doc(ACCT, time.time(), 7)
+    data = sg_review.page_data(doc, "", demo_sg.INTERNAL)
+    assert data["reach"]["rules"] and "sg-0app0000000000001" in data["reach"]["assets"]
+    page = sg_review.render_page(data)
+    for needle in ('id="reachWrap"', 'id="reachIp"', 'id="reachRules"', "function reachOf"):
+        assert needle in page, needle
