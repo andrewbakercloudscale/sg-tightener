@@ -57,6 +57,8 @@ tightening that cut off Lambda callers, the refusals it caused, and the range pu
 | Time window: the last year, with the time not read marked No data | Blast radius of one address |
 |---|---|
 | [![Time window](docs/images/sg-review-time-window.png)](docs/images/sg-review-time-window.png) | [![Blast radius](docs/images/sg-review-blast-radius.png)](docs/images/sg-review-blast-radius.png) |
+| **Over-provisioning over time, by network** | **Over-provisioning over time, by source type** |
+| [![Over-provisioned by network](docs/images/sg-review-over-by-network.png)](docs/images/sg-review-over-by-network.png) | [![Over-provisioned by source type](docs/images/sg-review-over-by-source-type.png)](docs/images/sg-review-over-by-source-type.png) |
 | **Where traffic comes from: each network's CIDR blocks** | **PrivateLink, on its own tab** |
 | [![Where traffic comes from](docs/images/sg-review-networks.png)](docs/images/sg-review-networks.png) | [![PrivateLink](docs/images/sg-review-privatelink.png)](docs/images/sg-review-privatelink.png) |
 
@@ -249,6 +251,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.8.0** | **Over-provisioning by type and owner, over time.** The over-provisioned graph has **Colour by**: kind, source type, or network, so you can see who the never-seen addresses belong to (your VPCs, other accounts, the routes behind a VPN, private space nobody uses, AWS by service and region, SaaS providers) and which to pull back first |
 | **5.7.1** | **Five fixes from testing.** A range several accounts share (every default VPC) is no longer pinned on one of them; your names file and `--onprem` win over automatic account naming; `forget` removes the account from `vpcs.json`; unattributed sources show their address as the block; AWS's catch-all range is no longer "AWS AWS" |
 | **5.7.0** | **Where traffic comes from, and PrivateLink on its own tab.** A new table lists every network sending or receiving traffic, grouped by kind, with its CIDR blocks: on-premises (from VPN routes), your other AWS accounts (now named automatically once read), AWS services by region, Lambda outside a VPC, and SaaS such as Salesforce, Zscaler, Okta and GitHub. The page is split into Traffic, PrivateLink and Exposure tabs; PrivateLink lists every endpoint service and interface endpoint with the traffic through it |
 | **5.6.0** | **Every graph windowed, and no data shown as no data.** The **Time window** drop-down is now also on Needs attention and Ports, and every window can be chosen. When a window reaches back further than the flow logs read, each graph says so ("No data before 26 May: 181 of 365 days read"), shades the time not read as **No data**, and the command to fill it is given. The console's rejected traffic says which accounts have no data that far back |

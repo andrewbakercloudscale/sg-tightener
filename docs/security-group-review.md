@@ -406,6 +406,8 @@ see [Extract rule](#extract-rule) below.
 
 ![Never-seen addresses allowed in, on a log scale, with rule changes marked](images/sg-review-over-provisioned.png)
 
+![The same graph coloured by network: private space in no VPC, the VPN's routes, AWS EC2 by region, SaaS providers](images/sg-review-over-by-network.png)
+
 This graph counts addresses the rules let in that were **never seen anywhere in the account**. It
 is summed over every security group that has flow logs on all its interfaces.
 
@@ -413,6 +415,13 @@ is summed over every security group that has flow logs on all its interfaces.
   rule changes. Each triangle is a change; select one to see it.
 - Rules open to `0.0.0.0/0` are listed in the rules table and not counted here.
 - The scale is logarithmic, so each step down is a tenfold cut.
+- **Colour by** splits the never-seen addresses by **kind**, by **source type**, or by **network**:
+  who each never-seen address belongs to. Your VPCs, your other accounts' VPCs, the routes behind
+  each VPN and your named ranges come first; then private space no VPC or named range uses, each
+  AWS service and region, each SaaS provider, and each AS. The biggest three of each kind are named
+  and the rest summed per kind (`over_by_net`, `over_by_group` in each window's series). This is
+  what tells you which kind of over-provisioning to pull back first, usually private space a
+  `10.0.0.0/8` rule lets in.
 - ▼ (green) is a change that only took entries away, a tightening; ▲ (orange) added or swapped
   some. The grey bars, on the right scale, are the sources refused each day: a spike just after a ▼
   means the tightening cut someone off.

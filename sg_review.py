@@ -1645,6 +1645,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         return _iv([entry])
 
     over_series = zeros()
+    over_attr: dict[tuple, list] = {}  # (cat, type, name) -> never-seen addresses allowed in, per period
     frozen_groups = set()
     logged_groups = [g for g in groups.values() if logged(g)]
     now_entries = {
@@ -1662,8 +1663,11 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
             if key not in memo:
                 iv = sg_ipintel.merge([v for src in key[1] for v in expand(src, key[0])])
                 over = sg_ipintel.subtract(iv, seen_iv)
-                memo[key] = [sg_ipintel.size(sg_ipintel.intersect(over, lab.cat_iv[k])) for k in CATS]
-            total = [a + b for a, b in zip(total, memo[key])]
+                memo[key] = ([sg_ipintel.size(sg_ipintel.intersect(over, lab.cat_iv[k])) for k in CATS],
+                             _over_attr(over, lab))
+            total = [a + b for a, b in zip(total, memo[key][0])]
+            for nk, n in memo[key][1].items():
+                over_attr.setdefault(nk, [0] * nbins)[i] += n
         for k, n in zip(CATS, total):
             over_series[k][i] = n
     markers = [
@@ -1783,7 +1787,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         "categories": [{"key": k, "name": CAT_NAME[k]} for k in CATS],
         "series": {"refused": rej_series, "over": over_series, "active_today": act_today, "active_older": act_older,
                    "by_class": class_series, "by_net": net_series,
-                   "by_group": group_series},
+                   "by_group": group_series, **_over_by(over_attr, nbins)},
         "ports": ports[:60],
         "networks": networks,
         "groups": {gid: {"name": g["name"], "region": g["region"], "vpc": g["vpc"],
@@ -1935,6 +1939,79 @@ def _networks(act: dict, rej: dict, lab, enis: dict) -> list[dict]:
     return out[:NETWORKS_MAX]
 
 
+
+OVER_NETS = 3  # networks of each kind named on the over-provisioned graph; the rest are summed per kind
+OVER_STEPS = 4000  # owners' blocks looked up per set of rules; beyond that the rest is summed per kind
+
+
+def _over_attr(over: list, lab) -> dict[tuple, int]:
+    """Who the never-seen addresses a rule lets in belong to: {(kind, source type, name): addresses}. Your VPCs,
+    your other accounts' VPCs, VPN routes and named ranges first (narrowest first), then what is left by the owner
+    of each piece: private space in no VPC or named range, an AWS service and region, a SaaS provider, an AS."""
+    out: dict[tuple, int] = {}
+    rem = over
+    for f, last, cat, name, _c, extra in lab.nets:
+        if not rem:
+            break
+        part = sg_ipintel.intersect(rem, [(f, last)])
+        n = sg_ipintel.size(part)
+        if n:
+            k = (cat, extra.get("group", cat), name)
+            out[k] = out.get(k, 0) + n
+            rem = sg_ipintel.subtract(rem, part)
+    steps = OVER_STEPS
+    for cat in CATS:
+        for a, b in sg_ipintel.intersect(rem, lab.cat_iv[cat]):
+            while a <= b:  # piece by piece: each owner's published, named or announced block
+                if steps <= 0:
+                    k = (cat, cat, f"{CAT_NAME[cat]}, not split further")
+                    out[k] = out.get(k, 0) + b - a + 1
+                    break
+                steps -= 1
+                lb = lab(str(ipaddress.IPv4Address(a)))
+                ext = _extent(lb.get("range") or lb.get("prefix") or lb.get("block") or "")
+                hi = min(b, ext[1]) if ext and ext[0] <= a <= ext[1] else b
+                same = lb["cat"] == cat
+                k = (cat, lb.get("group", cat) if same else cat, lb["name"] if same else CAT_NAME[cat])
+                out[k] = out.get(k, 0) + hi - a + 1
+                a = hi + 1
+    return out
+
+
+def _extent(block: str) -> tuple[int, int] | None:
+    """A CIDR block or an "a-b" range as (first, last)."""
+    if "-" in block:
+        try:
+            lo, hi = (int(ipaddress.IPv4Address(x.strip())) for x in block.split("-", 1))
+            return lo, hi
+        except ValueError:
+            return None
+    return sg_ipintel.cidr_iv(block) if block and ":" not in block else None
+
+
+def _over_by(over_attr: dict, nbins: int) -> dict:
+    """The over-provisioned series by source type (over_by_group) and by network (over_by_net: the biggest few of
+    each kind now, then "N more" per kind)."""
+    by_group: dict[str, list] = {}
+    for (_cat, grp, _name), data in over_attr.items():
+        d = by_group.setdefault(grp, [0] * nbins)
+        for i, v in enumerate(data):
+            d[i] += v
+    nets = [{"key": f"{c}|{n}", "name": n, "cat": c, "group": g, "data": d, "now": d[-1] if d else 0,
+             "peak": max(d) if d else 0} for (c, g, n), d in over_attr.items()]  # fmt: skip
+    nets.sort(key=lambda n: (-n["now"], -n["peak"], n["name"]))
+    top, rest = [], []
+    for n in nets:  # the biggest few of each kind, so your VPCs and data centres are not crowded out by AWS
+        (top if sum(1 for t in top if t["cat"] == n["cat"]) < OVER_NETS else rest).append(n)
+    for cat in CATS:
+        mine = [n for n in rest if n["cat"] == cat]
+        if mine:
+            d = [sum(n["data"][i] for n in mine) for i in range(nbins)]
+            top.append({"key": f"{cat}|*", "name": f"{len(mine)} more networks ({CAT_NAME[cat]})", "cat": cat,
+                        "group": "", "data": d, "now": d[-1] if d else 0, "peak": max(d) if d else 0})  # fmt: skip
+    return {"over_by_group": {g: by_group[g] for g in SOURCE_TYPES if g in by_group}, "over_by_net": top}
+
+
 def _net_series(srcs: dict, lab, nbins: int) -> list[dict]:
     """Distinct sources per period for each network a source belongs to (an AS number, an AWS service, a named
     range), busiest first."""
@@ -1954,7 +2031,7 @@ def _net_series(srcs: dict, lab, nbins: int) -> list[dict]:
     for cat in CATS:
         mine = [n for n in rest if n["cat"] == cat]
         if mine:
-            out.append({"key": f"{cat}|*", "name": f"{len(mine)} more {CAT_NAME[cat]} networks", "cat": cat,
+            out.append({"key": f"{cat}|*", "name": f"{len(mine)} more networks ({CAT_NAME[cat]})", "cat": cat,
                         "group": "", "asn": "", "sources": sum(n["sources"] for n in mine),
                         "data": [sum(n["data"][i] for n in mine) for i in range(nbins)]})  # fmt: skip
     return out

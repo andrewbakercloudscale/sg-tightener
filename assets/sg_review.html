@@ -218,8 +218,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
 
   <section class="section" data-tab-of="traffic">
     <h2><span class="num">2</span>Over-provisioned addresses</h2>
-    <p class="muted section-lede">For each security group with flow logs on all its interfaces, the addresses its rules let in that were never seen, summed over the groups, by kind. An address seen anywhere in the account in the whole read, let in or refused, is never counted. The rules in force at each time are worked back from today's through CloudTrail's record of rule changes (triangles: select one for the change). Rules open to every address (0.0.0.0/0) are listed below, not counted. The scale is logarithmic: each step down is a tenfold cut. The grey bars are the sources refused in each period: a tightening that went too far shows as refusals starting right after a triangle. <strong>After</strong>, at the right, is what the Tighten panel below would leave.</p>
-    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div></div><p class="gap-note small" hidden></p><div class="chart-box"><canvas id="chOver" role="img" aria-label="Lines of never-seen addresses allowed in over time, by kind of source, with rule changes marked, refused sources as bars, and what the Tighten panel would leave"></canvas></div></figure>
+    <p class="muted section-lede">For each security group with flow logs on all its interfaces, the addresses its rules let in that were never seen, summed over the groups. <strong>Colour by</strong> shows who they belong to: by kind, by source type, or by network (your VPCs, another account's VPC, the routes behind a VPN, private space in no VPC or named range, an AWS service and region, a SaaS provider), so you can see which kind of over-provisioning to pull back first. An address seen anywhere in the account in the whole read, let in or refused, is never counted. The rules in force at each time are worked back from today's through CloudTrail's record of rule changes (triangles: select one for the change). Rules open to every address (0.0.0.0/0) are listed below, not counted. The scale is logarithmic: each step down is a tenfold cut. The grey bars are the sources refused in each period: a tightening that went too far shows as refusals starting right after a triangle. <strong>After</strong>, at the right, is what the Tighten panel below would leave.</p>
+    <figure class="card" style="margin:0 0 16px"><div class="chart-tools"><div class="field"><span>Time window</span><select class="range-sel" aria-label="Time window"></select></div><div class="field"><span>Colour by</span><div class="seg" id="overBy" role="group" aria-label="Colour the over-provisioned addresses by"><button type="button" data-by="kind">Kind</button><button type="button" data-by="group">Source type</button><button type="button" data-by="net">Network</button></div></div></div><p class="gap-note small" hidden></p><div class="chart-box"><canvas id="chOver" role="img" aria-label="Lines of never-seen addresses allowed in over time, by kind of source, with rule changes marked, refused sources as bars, and what the Tighten panel would leave"></canvas></div></figure>
     <div class="card fit" id="fitWrap">
       <h3 style="margin-top:0">Tighten: how much room to leave, by kind, type and name</h3>
       <p class="muted small" id="fitLede"></p>
@@ -332,7 +332,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   const RANGE_DAYS = { "24h": 1, "1w": 7, "1m": 30, "3m": 90, "6m": 180, "1y": 365 };
   const RANGE_NAME = { "24h": "Last 24 hours", "1w": "Last week", "1m": "Last month", "3m": "Last 3 months", "6m": "Last 6 months", "1y": "Last year" };
   const NET_SHOWN = 10;
-  const state = { range: DATA.default, rep: null, cats: new Set(CATS), bin: null, mark: null, only: null, charts: {}, by: { refused: "kind", active: "recency" }, seen: { refused: "", active: "" }, netTop: { refused: new Set(), active: new Set() }, xr: null };
+  const state = { range: DATA.default, rep: null, cats: new Set(CATS), bin: null, mark: null, only: null, charts: {}, by: { refused: "kind", active: "recency", over: "kind" }, seen: { refused: "", active: "" }, netTop: { refused: new Set(), active: new Set() }, xr: null };
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const num = (n) => (n == null ? EMPTY : Number(n).toLocaleString("en-GB"));
@@ -654,7 +654,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
     for (const sel of document.querySelectorAll(".range-sel")) { sel.innerHTML = opts; sel.value = state.range; }
     const note = gapNote();
     for (const el of document.querySelectorAll(".gap-note")) { el.hidden = !note; el.innerHTML = note; }
-    for (const kind of ["refused", "active"]) for (const b of document.querySelectorAll(`#${kind}By button`)) b.setAttribute("aria-pressed", String(b.dataset.by === state.by[kind]));
+    for (const kind of ["refused", "active", "over"]) for (const b of document.querySelectorAll(`#${kind}By button`)) b.setAttribute("aria-pressed", String(b.dataset.by === state.by[kind]));
   }
 
   function render() {
@@ -844,7 +844,24 @@ details.xr-fold > summary { margin: 0 0 10px; }
     const after = (arr, c) => [...arr, Math.max(0, (arr[n - 1] || 0) - (c === null ? CATS.filter((k) => sel.has(k)).reduce((t, k) => t + (cut[k] || 0), 0) : cut[c] || 0)) || null];
     const wasRead = (i) => !rep.covered || (rep.covered[i] ?? 1) > 0; // no line where nothing was read
     const dashLast = { borderDash: (ctx) => (ctx.p1DataIndex === n ? [4, 4] : undefined) };
-    const overSets = CATS.filter((c) => sel.has(c)).map((c) => ({ type: "line", yAxisID: "y", label: catName(c), data: [...rep.series.over[c].map((v, i) => (wasRead(i) ? v || null : null)), null], borderColor: COLOR[c], backgroundColor: COLOR[c], borderWidth: 2, pointRadius: (ctx) => (ctx.dataIndex === n ? 4 : 0), stepped: true, spanGaps: true, segment: dashLast }));
+    // Colour by kind (with an After point each), by source type, or by network: who the never-seen addresses belong
+    // to (your VPCs, another account's VPC, a VPN's routes, private space nobody uses, an AWS service, a SaaS provider).
+    const oby = state.by.over;
+    const line = (label, arr, color, extra) => ({ type: "line", yAxisID: "y", label, data: [...arr.map((v, i) => (wasRead(i) ? v || null : null)), null], borderColor: color, backgroundColor: color, borderWidth: 2, pointRadius: 0, stepped: true, spanGaps: true, ...extra });
+    let overSets;
+    if (oby === "group") {
+      const m = rep.series.over_by_group || {};
+      overSets = TYPES.filter((t) => m[t.key] && sel.has(t.kind)).map((t) => line(t.name, m[t.key], TYPE_COLOR[t.key] || "#888"));
+    } else if (oby === "net") {
+      const nets = (rep.series.over_by_net || []).filter((x) => sel.has(x.cat));
+      overSets = [];
+      for (const c of CATS) {
+        const mine = nets.filter((x) => x.cat === c);
+        mine.forEach((x, i) => overSets.push(line(x.name, x.data, shade(COLOR[c], i, mine.length + 1), x.key.endsWith("|*") ? { borderDash: [2, 3] } : {})));
+      }
+    } else {
+      overSets = CATS.filter((c) => sel.has(c)).map((c) => ({ type: "line", yAxisID: "y", label: catName(c), data: [...rep.series.over[c].map((v, i) => (wasRead(i) ? v || null : null)), null], borderColor: COLOR[c], backgroundColor: COLOR[c], borderWidth: 2, pointRadius: (ctx) => (ctx.dataIndex === n ? 4 : 0), stepped: true, spanGaps: true, segment: dashLast }));
+    }
     const total = after(rep.bins.map((_, i) => (wasRead(i) ? sum(rep.series.over, i) || null : null)), null);
     overSets.unshift({ type: "line", yAxisID: "y", label: "All shown", data: total, borderColor: css("--ink"), backgroundColor: css("--ink"), borderWidth: 2.5, borderDash: [5, 4], pointRadius: (ctx) => (ctx.dataIndex === n ? 5 : 0), stepped: true, spanGaps: true });
     const refusedTotal = rep.bins.map((_, i) => sum(rep.series.refused, i));
@@ -1405,6 +1422,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
   }
 
   for (const sel of document.querySelectorAll(".range-sel")) sel.addEventListener("change", () => { if (!DATA.ranges[sel.value]) return; state.range = sel.value; render(); });
+  $("#overBy").addEventListener("click", (e) => { const b = e.target.closest("[data-by]"); if (!b) return; state.by.over = b.dataset.by; markRange(); overChart(); });
   for (const kind of ["refused", "active"]) $(`#${kind}By`).addEventListener("click", (e) => { const b = e.target.closest("[data-by]"); if (!b) return; state.by[kind] = b.dataset.by; if (state.bin?.kind === kind) state.bin = null; markRange(); charts(); tables(); });
   $("#ruleStatus").addEventListener("change", () => tables());
   $("#reachIp").addEventListener("input", () => reachDraw());

@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.8.0 - 2026-11-22
+
+- **Over-provisioning by type and owner, over time.** The over-provisioned
+  graph gains **Colour by**: kind, source type or network. By network, each
+  never-seen address is attributed once: your VPCs, your other accounts' VPCs,
+  the routes behind each VPN and your named ranges first, then private space
+  no VPC or named range uses, each AWS service and region, each SaaS provider
+  and each AS. The biggest three of each kind are named and the rest summed per
+  kind. Each window's series carry `over_by_net` and `over_by_group`.
+- "N more networks (kind)" replaces "N more External: other networks networks".
+- The blog post and guide show the over-provisioning graph by network.
+
 ## 5.7.1 - 2026-11-22
 
 Five bugs found testing 5.7.0, each with a regression test:

@@ -743,3 +743,21 @@ def test_aws_catch_all_range_is_not_named_aws_aws():
     intel = ipintel.Intel([("52.95.0.0/20", "AMAZON", "us-east-2")], [], [])
     got = intel.label("52.95.1.1")
     assert got["kind"] == "aws" and "AWS AWS" not in got["name"] and got["name"] == "AWS (any AWS service), us-east-2"
+
+
+def test_over_provisioning_is_attributed_by_source_type_and_network_over_time(tmp_path):
+    doc = demo_sg.build_doc(ACCT, time.time(), 90)
+    rep = sg_review.build(doc, "3m", "", "", sg_review.parse_names(demo_sg.NAMES))
+    se, nb = rep["series"], len(rep["bins"])
+    total = [sum(se["over"][k][i] for k in sg_review.CATS) for i in range(nb)]
+    assert [sum(n["data"][i] for n in se["over_by_net"]) for i in range(nb)] == total  # every address attributed once
+    assert [sum(d[i] for d in se["over_by_group"].values()) for i in range(nb)] == total
+    names = {n["name"]: n for n in se["over_by_net"]}
+    for want in ("This account, main", "payments-prod (111122223333), main", "Behind VPN Johannesburg DC", "Salesforce"):
+        assert want in names, want
+    assert names["Behind VPN Johannesburg DC"]["cat"] == "datacentre"
+    assert sum(1 for n in se["over_by_net"] if n["cat"] == "aws" and not n["key"].endswith("|*")) <= sg_review.OVER_NETS
+    assert all("networks networks" not in n["name"] for n in se["over_by_net"])
+    page = tmp_path / "p.html"
+    sg_review.write_page(sg_review.page_data(doc, "", ""), str(page))
+    assert 'id="overBy"' in page.read_text()
