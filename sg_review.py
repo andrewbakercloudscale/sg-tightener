@@ -451,6 +451,46 @@ def _stale_refs(ec2, vpc_ids: list[str], errors: list) -> list[dict]:
     return out
 
 
+def _instances(ec2, ids: list[str], errors: list) -> dict:
+    """What each attached instance is, for the page to say what sits behind an address: its Name tag, operating
+    system (Linux/UNIX, Windows, Red Hat …), type and launch time."""
+    out: dict = {}
+    for i in range(0, len(ids), 100):
+        try:
+            for res in ec2.describe_instances(InstanceIds=ids[i:i + 100]).get("Reservations", []):
+                for inst in res.get("Instances", []):
+                    launched = inst.get("LaunchTime")
+                    out[inst["InstanceId"]] = {
+                        "name": _name(inst.get("Tags")),
+                        "os": inst.get("PlatformDetails") or ("Windows" if inst.get("Platform") == "windows" else "Linux/UNIX"),
+                        "type": inst.get("InstanceType", ""),
+                        "launched": launched.timestamp() if hasattr(launched, "timestamp") else None,
+                        "image": inst.get("ImageId", ""),
+                    }  # fmt: skip
+        except (ClientError, BotoCoreError) as exc:
+            errors.append(f"instances: {exc}")
+            break
+    return out
+
+
+def hosts_model(doc: dict) -> dict:
+    """Every address of the account's own interfaces, and what is behind each: so a refused source inside your
+    VPCs, or a destination, is named down to the instance, its name and operating system, and its groups."""
+    by_ip: dict[str, str] = {}
+    enis: dict[str, list] = {}
+    for region, x in doc["regions"].items():
+        snap = x.get("snapshot") or {}
+        groups, insts = snap.get("groups") or {}, snap.get("instances") or {}
+        for eid, e in (snap.get("enis") or {}).items():
+            inst = insts.get(e.get("instance") or "") or {}
+            enis[eid] = [e.get("kind", ""), e.get("instance", ""), inst.get("name", ""), inst.get("os", ""),
+                         inst.get("type", ""), [groups.get(g, {}).get("name") or g for g in e.get("groups") or []],
+                         region, e.get("desc", "")]  # fmt: skip
+            for ip in (e.get("ips") or []) + (e.get("ipv6") or []) + ([e["public"]] if e.get("public") else []):
+                by_ip.setdefault(ip, eid)
+    return {"by_ip": by_ip, "enis": enis}
+
+
 def snapshot(session, region: str) -> dict:
     ec2 = session.client("ec2", region_name=region, config=BOTO_CONFIG)
     out: dict = {"errors": []}
@@ -485,6 +525,7 @@ def snapshot(session, region: str) -> dict:
             "prefixes6": [p["Ipv6Prefix"] for p in e.get("Ipv6Prefixes") or [] if p.get("Ipv6Prefix")],
         }
     out["enis"] = enis
+    out["instances"] = _instances(ec2, sorted({e["instance"] for e in enis.values() if e["instance"]}), out["errors"])
     out["routes"] = _internet_routes(ec2, out["errors"])
     out["stale"] = _stale_refs(ec2, [v["id"] for v in out["vpcs"]], out["errors"])
     pls: dict = {}
@@ -3155,6 +3196,7 @@ def page_data(doc: dict, onprem: str = "", internal: str = "", now: float | None
         "ranges": ranges,
         "fit": fits[-1] or {"rules": [], "labels": {}, "cap": FIT_CAP},
         "reach": reach_model(doc),
+        "hosts": hosts_model(doc),
         "names": len(names or []),
         "source_types": [{"key": k, "name": n, "kind": kind, "note": sg_ipintel.GROUP_NOTE.get(k, "")}
                          for k, (n, kind) in SOURCE_TYPES.items()],

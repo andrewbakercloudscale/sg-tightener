@@ -37,9 +37,13 @@ tightening that cut off Lambda callers, the refusals it caused, and the range pu
 | **By source type** | **By port class** | **Ports** |
 | [![Refused sources by source type](docs/images/sg-review-refused-by-source-type.png)](docs/images/sg-review-refused-by-source-type.png) | [![Refused sources by port class](docs/images/sg-review-refused-by-port-class.png)](docs/images/sg-review-refused-by-port-class.png) | [![Ports](docs/images/sg-review-ports.png)](docs/images/sg-review-ports.png) |
 
-| Blast radius of one address | Extract rule |
+| Extract rule: one rule per destination | What we know about a refused source |
 |---|---|
-| [![Blast radius](docs/images/sg-review-blast-radius.png)](docs/images/sg-review-blast-radius.png) | [![Extract rule](docs/images/sg-review-extract-rule.png)](docs/images/sg-review-extract-rule.png) |
+| [![Extract rule](docs/images/sg-review-extract-rule.png)](docs/images/sg-review-extract-rule.png) | [![What we know](docs/images/sg-review-extract-know.png)](docs/images/sg-review-extract-know.png) |
+
+| Blast radius of one address |
+|---|
+| [![Blast radius](docs/images/sg-review-blast-radius.png)](docs/images/sg-review-blast-radius.png) |
 
 **Managing the risk.** Fix what is internet-reachable before what is merely open on paper; read 90
 days before removing anything; tighten remote admin and database ports first; and report two
@@ -230,6 +234,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.4.0** | **Extract rule: what we know, one destination at a time.** Refused traffic is let in **one rule per destination address**, numbered, each card with its own command and **Propose this one in the console**, and a warning (with the `asset-plan` command) when the destination's group is shared. Each source is marked **Familiar**, **Unfamiliar** or **Do not add**, and **What we know** shows the evidence: your instance behind the address (Name tag, **operating system**, type, groups), ports it is already let in on, rules that already allow it, first seen, what else it was refused on, and the verdict. The review reads each instance's name and OS |
 | **5.3.0** | **Known malicious addresses**: every source and outbound destination is checked, locally and daily, against free threat lists (abuse.ch Feodo Tracker botnet servers, Spamhaus DROP, Emerging Threats compromised hosts, blocklist.de attackers) as well as Tor exits. Let in on admin or database ports, or called out to, is **critical** and always posted by `watch`; Tighten turns such sources away by default; the console marks and filters them. **Alerting scripts** in `deploy/alerts` (systemd, launchd, cron) for `watch`, hourly `reconcile` and a daily read. **`install.sh`** checks every package, downloads the address lists, and takes `--dev`; tools run outside the venv say how to install |
 | **5.2.0** | **Blast radius**: type one address in the Security Group Review (or run `sg_review.py reach ADDRESS`) and see every rule that admits it, worst first, with the interfaces behind each group, risky ports marked and rules open to all counted apart. It follows the Tighten panel: each row shows unchanged, narrowed or cut off, and the summary shows the reach after. In the demo a data centre host goes from 9 groups on 8 interfaces to 6 on 5. New **Managing the risk** guidance: the order to tighten in, flow-log blind spots, egress, hygiene, and the two numbers to report |
 | **5.1.0** | **Tighten on the timeline**: the Security Group Review's over-provisioned graph gets a **Tighten** panel. Pull each rule back to the sources that used it, with the room chosen by kind (internal, data centre, AWS, SaaS, internet), source type or name (a published or named range for Lambda, Zscaler or a partner); the graph shows the After point and the sources the change would refuse; ▼/▲ mark tightenings and widenings; rules nothing used are removed by default. In the demo, 102.4M never-seen addresses allowed become 208k. Propose it from the page in the console (**Review and tighten** on the Overview, `/review?account=ID`) or as a plan for `sg_db.py propose --plan`; two-person approval and enforce mode still apply |
@@ -305,8 +310,12 @@ ports view, and a table of what to tighten, with CSV and approved.json downloads
   each group, and what Tighten would leave; `sg_review.py reach ADDRESS` does the same from the
   command line ([how](docs/security-group-review.md#blast-radius-what-can-one-address-reach)).
 - **Extract rule:** on the refused graph, this turns the sources selected into the inbound rules
-  that would let them in. It shows everything known about each source, port and asset, then writes
-  the AWS CLI commands and a JSON file. Nothing is applied.
+  that would let them in, **one rule per destination address**, numbered, each with its own command
+  (or console proposal), so nothing is added in one go. Each source is marked **Familiar**,
+  **Unfamiliar** or **Do not add**, with what vouches for it: your own instance (its name and
+  operating system), ports it is already let in on, rules that already allow it, how long it has been
+  seen, its owner and network, or a threat list. Nothing is applied
+  ([how](docs/security-group-review.md#extract-rule)).
 
 The graphs are [at the top of this page](#see-it-first).
 

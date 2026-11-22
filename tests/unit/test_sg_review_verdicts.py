@@ -110,7 +110,7 @@ def test_scanners_and_tor_let_in_on_remote_admin_are_critical(week):
 
 def test_own_traffic_acl_health_and_known_services_are_medium(week):
     _, rep = week
-    assert {s for it in _items(rep, "internal") for s in it["srcs"]} >= {"10.20.5.61", "10.40.4.44"}
+    assert {s for it in _items(rep, "internal") for s in it["srcs"]} >= {"10.20.6.50", "10.40.4.44"}
     assert _items(rep, "nacl")[0]["srcs"] == ["10.200.9.9"]
     assert _items(rep, "health") and _items(rep, "service")
     for key in ("internal", "nacl", "health", "service"):

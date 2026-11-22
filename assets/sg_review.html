@@ -122,6 +122,9 @@ dialog.xr::backdrop { background: rgba(0,0,0,.45); }
 .xr-warn { margin: 0 0 12px; padding: 10px 14px; border-radius: 8px; border-left: 4px solid var(--sev-critical); background: color-mix(in srgb, var(--sev-critical) 10%, var(--surface)); font-size: 13px; }
 .xr-warn.soft { border-left-color: var(--sev-warning); background: color-mix(in srgb, var(--sev-warning) 12%, var(--surface)); }
 .xr-warn ul { margin: 4px 0 0; padding-left: 18px; }
+.xr-one { width: 100%; min-height: 84px; margin-top: 8px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 8px; border-radius: 8px; border: 1px solid var(--control-line); background: var(--surface-2); color: var(--ink); resize: vertical; }
+.xr-know { margin-top: 4px; } .xr-know summary { cursor: pointer; color: var(--accent); font-weight: 600; } .xr-know div { margin: 3px 0; line-height: 1.4; }
+.xr-split .seg { grid-template-columns: repeat(2, auto); }
 .xr-out textarea { width: 100%; min-height: 150px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 10px; border-radius: 8px; border: 1px solid var(--control-line); background: var(--surface-2); color: var(--ink); resize: vertical; }
 tr.off td { opacity: .5; }
 details.xr-fold { margin: 0 0 14px; }
@@ -1044,6 +1047,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
 
   function openExtract(single) {
     const rep = state.rep;
+    state.xrSingle = single;
+    const split = state.xrSplit || "dst";
     const sources = single ? rep.refused.filter((x) => x.src === single) : refusedShown();
     const fb = state.bin?.kind === "refused" ? state.bin : null;
     const rules = new Map(), apart = [];
@@ -1056,8 +1061,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
           : t.port >= 32768 ? "ports from 32768 up are read as one, so the exact port is not known"
           : ip2n(x.src) == null && !isV6(x.src) ? "not an IP address" : "";
         if (why) { apart.push({ x, t, why }); continue; }
-        const key = `${t.groups[0]}|${t.proto}|${t.port}`;
-        const r = rules.get(key) || { key, group: t.groups[0], groups: new Set(), proto: t.proto, port: t.port, pc: t.pc, region: t.region, vpc: t.vpc, assets: new Map(), sources: new Map() };
+        const key = split === "dst" ? `${t.eni}|${t.dst}|${t.proto}|${t.port}` : `${t.groups[0]}|${t.proto}|${t.port}`;
+        const r = rules.get(key) || { key, dstIp: split === "dst" ? t.dst : "", eni: t.eni, group: t.groups[0], groups: new Set(), proto: t.proto, port: t.port, pc: t.pc, region: t.region, vpc: t.vpc, assets: new Map(), sources: new Map() };
         t.groups.forEach((g) => r.groups.add(g));
         const a = r.assets.get(t.eni) || { eni: t.eni, kind: t.kind, dst: new Set(), public: t.public, subnet: t.subnet, desc: t.desc, flows: 0 };
         a.dst.add(t.dst); a.flows += t.flows; r.assets.set(t.eni, a);
@@ -1076,13 +1081,53 @@ details.xr-fold > summary { margin: 0 0 10px; }
     }
     const ticked = (r) => [...r.sources.values()].some((s) => s.on);
     const flows = (r) => [...r.sources.values()].reduce((t, s) => t + s.flows, 0);
-    state.xr = { rules: [...rules.values()].sort((a, b) => ticked(b) - ticked(a) || flows(b) - flows(a)), apart, restores: [...restores.values()], scope, capped: !single && rep.summary.refused > rep.refused.length };
+    state.xr = { split, rules: [...rules.values()].sort((a, b) => ticked(b) - ticked(a) || flows(b) - flows(a)), apart, restores: [...restores.values()], scope, capped: !single && rep.summary.refused > rep.refused.length };
     $("#xrScope").textContent = `${scope} · kinds shown: ${[...state.cats].map(catName).join(", ")}`;
     drawExtract();
     const d = $("#xr");
     if (typeof d.showModal === "function") d.showModal(); else d.setAttribute("open", "");
     d.scrollTop = 0;
   }
+
+  // ---- what is known about an address: your own interface, let in elsewhere, allowed by a rule, seen before
+  const HOSTS = DATA.hosts || { by_ip: {}, enis: {} };
+  const hostByEni = (eni) => { const h = HOSTS.enis[eni]; return h ? { eni, kind: h[0], inst: h[1], name: h[2], os: h[3], type: h[4], groups: h[5] || [], region: h[6], desc: h[7] } : null; };
+  const hostOf = (ip) => (HOSTS.by_ip[ip] ? hostByEni(HOSTS.by_ip[ip]) : null);
+  const hostLine = (h) => [`${esc(h.kind)}${h.name ? ` <strong>${esc(h.name)}</strong>` : ""}${h.inst ? ` <code>${esc(h.inst)}</code>` : ""}`, h.os && `${esc(h.os)}${h.type ? `, ${esc(h.type)}` : ""}`, `<code>${esc(h.eni)}</code>`, h.groups.length && `groups ${h.groups.map(esc).join(", ")}`].filter(Boolean).join(" · ");
+  const KNOWN = { ok: ["Familiar", "var(--good)"], new: ["Unfamiliar", "var(--warn)"], bad: ["Do not add", "var(--bad)"] };
+  const ago = (t) => Math.max(0, Math.round((DATA.end - t) / 86400));
+  function knownOf(x, here) {
+    const rep = state.rep, why = [], lines = [];
+    const host = hostOf(x.src);
+    const act = (rep.active || []).find((a) => a.src === x.src);
+    const allowed = (ip2n(x.src) != null || isV6(x.src)) ? reachOf(x.src).rows.filter((r) => r.via !== "0.0.0.0/0" && r.via !== "::/0") : [];
+    const bad = ["threat", "anon", "scanner"].includes(x.group) || x.sweep;
+    if (host) { lines.push(`<strong>Your interface:</strong> ${hostLine(host)}`); why.push(`your ${host.kind}${host.name ? ` ${host.name}` : ""}${host.os ? ` (${host.os})` : ""}`); }
+    if (act) {
+      const ts = (act.targets || []).slice(0, 4).map((t) => { const h = hostByEni(t.eni); return `${esc(protoName(t.proto))} ${esc(t.port)} ${t.pc ? `(${esc(t.pc.svc)})` : ""} to ${h ? `${esc(h.kind)}${h.name ? ` ${esc(h.name)}` : ""}` : `<code>${esc(t.eni)}</code>`}: ${num(t.flows)} flows`; });
+      lines.push(`<strong>Already let in:</strong> ${ts.join("; ")}${(act.targets || []).length > 4 ? "…" : ""} · ${esc(when(act.first))} to ${esc(when(act.last))}`);
+      why.push(`let in on ${(act.targets || []).map((t) => `${protoName(t.proto)} ${t.port}`).filter((v, i, a) => a.indexOf(v) === i).slice(0, 3).join(", ")} already`);
+    }
+    if (allowed.length) {
+      lines.push(`<strong>Already allowed by:</strong> ${allowed.slice(0, 3).map((r) => `${esc(r.gname)} ${esc(r.ports)} via <code>${esc(r.via)}</code>`).join("; ")}${allowed.length > 3 ? ` and ${num(allowed.length - 3)} more` : ""}`);
+      if (!act) why.push(`allowed by ${allowed[0].gname} ${allowed[0].ports}`);
+    }
+    const first = x.first_ever || x.first;
+    if (first) lines.push(`<strong>First seen:</strong> ${esc(when(first))} (${plural(ago(first), "day")} ago)${x.new ? ` · <strong>new</strong>: never before in the flow logs read` : x.seen_before ? " · seen before this range" : ""}`);
+    if (first && ago(first) >= 30 && !x.new) why.push(`seen for ${plural(ago(first), "day")}`);
+    const tried = (x.targets || []).filter((t) => !here || t.eni !== here.eni || t.port !== here.port);
+    if (tried.length) lines.push(`<strong>Also refused:</strong> ${tried.slice(0, 4).map((t) => { const h = hostByEni(t.eni); return `${esc(protoName(t.proto))} ${esc(t.port)} to <code>${esc(t.dst || t.eni)}</code>${h?.name ? ` ${esc(h.name)}` : ""}`; }).join("; ")}${tried.length > 4 ? ` and ${num(tried.length - 4)} more` : ""}`);
+    if (x.verdict) lines.push(`<strong>Verdict:</strong> ${esc(x.verdict.label)}: ${esc(x.verdict.reason)}`);
+    if (x.cat === "internal" || x.cat === "datacentre") why.push(x.cat === "internal" ? "inside your VPCs" : "your data centre");
+    if (x.named) why.push(`named in your names file`);
+    if (x.cat === "aws" && x.service && !["EC2", "AMAZON"].includes(x.service)) why.push(`AWS ${x.service} published range`);
+    if (x.group === "saas") why.push(`${x.provider || x.name}'s published range`);
+    const level = bad ? "bad" : why.length ? "ok" : "new";
+    const head = bad ? (x.group === "threat" ? `on a threat list (${x.name})` : x.group === "anon" ? "a Tor or VPN exit" : x.group === "scanner" ? "an internet scanner" : `sweeping ${num(x.ports)} ports`)
+      : why.length ? why.slice(0, 3).join("; ") : `${x.cat === "internet" ? "an outside network" : catName(x.cat)} not let in anywhere${x.new ? ", first seen this week" : ""}: find out who it is first`;
+    return { level, head, lines };
+  }
+  const knownChip = (k) => `<span class="pill" style="--p:${KNOWN[k.level][1]}">${KNOWN[k.level][0]}</span>`;
 
   function attrFacts(x) {
     const out = [];
@@ -1109,8 +1154,27 @@ details.xr-fold > summary { margin: 0 0 10px; }
   function drawExtract() {
     const X = state.xr;
     const rep = state.rep;
+    for (const r of X.rules) for (const sv of r.sources.values()) sv.k = sv.k || knownOf(sv.x, r);
+    const cmdOf = new Map();
     const outs = X.rules.map((r) => ({ r, ...ruleOut(r) }));
     const live = outs.filter((o) => o.on.length);
+    X.outs = outs;
+    const ipPerm = (p, port, cidrs) => {
+      const v4 = cidrs.filter((c) => !c.v6), v6 = cidrs.filter((c) => c.v6);
+      return { IpProtocol: p, FromPort: port, ToPort: port, ...(v4.length ? { IpRanges: v4.map((c) => ({ CidrIp: c.cidr, Description: c.desc })) } : {}), ...(v6.length ? { Ipv6Ranges: v6.map((c) => ({ CidrIpv6: c.cidr, Description: c.desc })) } : {}) };
+    };
+    const byGroup = {}, seenPerm = new Set(), cmds = [];
+    for (const [i, o] of live.entries()) {
+      const k = `${o.r.region}|${o.r.group}`;
+      const icmp = String(o.r.proto) === "1" || String(o.r.proto) === "58";
+      const p = ["6", "17"].includes(String(o.r.proto)) ? protoName(o.r.proto) : String(o.r.proto) === "1" ? "icmp" : String(o.r.proto);
+      const fresh = o.cidrs.filter((c) => { const id = `${k}|${p}|${o.r.port}|${c.cidr}`; if (seenPerm.has(id)) return false; seenPerm.add(id); return true; });
+      o.perm = { proto: p, port: icmp ? -1 : o.r.port, cidrs: fresh };
+      const label = `# ${i + 1} of ${live.length}: ${p} ${o.r.port}${X.split === "dst" ? ` to ${o.r.dstIp}` : ""} into ${sgDesc(rep.groups?.[o.r.group]?.name || o.r.group)}`;
+      const cmd = fresh.length ? `${label}\npython sg_db.py exec --reason 'sg_review: extracted from refused traffic' -- \\\n  aws ec2 authorize-security-group-ingress --region ${o.r.region} --group-id ${o.r.group} \\\n  --ip-permissions '${JSON.stringify([ipPerm(p, o.perm.port, fresh)])}'` : `${label}\n# covered by an earlier rule here: the same ranges into the same group`;
+      cmdOf.set(o.r, cmd); cmds.push(cmd);
+      if (fresh.length) (byGroup[k] = byGroup[k] || { region: o.r.region, group: o.r.group, perms: [] }).perms.push(ipPerm(p, o.perm.port, fresh));
+    }
     const allOn = live.flatMap((o) => o.on);
     const uniq = (a) => [...new Set(a.filter(Boolean))];
     const srcs = uniq(allOn.map((s) => s.x.src));
@@ -1137,7 +1201,10 @@ details.xr-fold > summary { margin: 0 0 10px; }
       if (o.r.groups.size > 1) soft.push(`The interfaces on ${esc(port)} have ${o.r.groups.size} security groups (${[...o.r.groups].map((g) => esc(rep.groups?.[g]?.name || g)).join(", ")}): the rule goes on the first; choose another below if it fits better.`);
     }
     if (X.capped) soft.push(`This page lists the ${num(rep.refused.length)} busiest of ${num(rep.summary.refused)} refused sources: quieter ones are not in these rules.`);
-    let html = `<dl class="xr-facts">
+    const lv = (l) => uniq(allOn.filter((s) => s.k.level === l).map((s) => s.x.src)).length;
+    let html = `<div class="tools xr-split"><span class="small muted">One rule for each</span><span class="seg">${[["dst", "destination address"], ["group", "security group and port"]].map(([k, n]) => `<button type="button" data-xr-split="${k}" aria-pressed="${X.split === k}">${n}</button>`).join("")}</span></div>
+    <dl class="xr-facts">
+      <div><dt>What we know</dt><dd>${knownChip({ level: "ok" })} ${num(lv("ok"))} ${knownChip({ level: "new" })} ${num(lv("new"))} ${knownChip({ level: "bad" })} ${num(lv("bad"))}<br><span class="muted small">of the sources ticked</span></dd></div>
       <div><dt>Rules</dt><dd>${plural(live.length, "rule")} in ${plural(uniq(live.map((o) => o.r.group)).length, "security group")}${X.rules.length > live.length ? ` · ${num(X.rules.length - live.length)} with nothing ticked` : ""}</dd></div>
       <div><dt>Sources added</dt><dd>${plural(srcs.length, "address", "addresses")} in ${plural(live.reduce((t, o) => t + o.cidrs.length, 0), "range")} (${plural(addrs, "address", "addresses")} let in)</dd></div>
       <div><dt>Kinds</dt><dd>${byCat.map(([c, n]) => `${catChip(c)} ${num(n)}`).join(" ") || EMPTY}</dd></div>
@@ -1162,42 +1229,35 @@ details.xr-fold > summary { margin: 0 0 10px; }
       }
       const g = rep.groups?.[r.group] || {};
       const assets = [...r.assets.values()];
-      html += `<section class="xr-rule"><h3>Allow ${esc(protoName(r.proto))} ${esc(r.port)} into ${esc(g.name || r.group)} <code class="small">${esc(r.group)}</code></h3>
+      const dh = hostByEni(r.eni);
+      const others = X.split === "dst" ? ((DATA.reach?.assets || {})[r.group] || []).filter((a) => a[0] !== r.eni) : [];
+      const n = live.findIndex((o2) => o2.r === r);
+      html += `<section class="xr-rule"><h3>${n >= 0 ? `${n + 1} of ${live.length} · ` : ""}${X.split === "dst" ? `Allow ${esc(protoName(r.proto))} ${esc(r.port)} to <code>${esc(r.dstIp)}</code>${dh?.name ? ` ${esc(dh.name)}` : ""} <span class="muted small">via ${esc(g.name || r.group)} <code>${esc(r.group)}</code></span>` : `Allow ${esc(protoName(r.proto))} ${esc(r.port)} into ${esc(g.name || r.group)} <code class="small">${esc(r.group)}</code>`}</h3>
+        ${others.length ? `<div class="xr-warn soft small">${esc(g.name || r.group)} is also on ${plural(others.length, "other interface")} (${others.slice(0, 4).map((a) => `${esc(a[1])} <code>${esc(a[2])}</code>`).join(", ")}${others.length > 4 ? "…" : ""}): a rule in it lets these sources reach those too. To let them reach only <code>${esc(r.dstIp)}</code>, give its interface a group of its own first: <code>sg_db.py asset-plan --region ${esc(r.region)} --eni ${esc(r.eni)}</code>.</div>` : ""}
         <div>${pcChip(r.pc)} <strong>${esc(r.pc?.svc || "")}</strong> <span class="muted small">— ${esc(CLASS[r.pc?.cls]?.note || "")}</span></div>
         <dl class="xr-facts">
           <div><dt>Security group</dt><dd>${r.groups.size > 1 ? `<select data-xr-group="${ri}">${[...r.groups].map((gid) => `<option value="${esc(gid)}"${gid === r.group ? " selected" : ""}>${esc(rep.groups?.[gid]?.name || gid)} (${esc(gid)})</option>`).join("")}</select>` : `${esc(g.name || r.group)} <code>${esc(r.group)}</code>`}<br><span class="muted">${esc(r.region)} · ${esc(r.vpc)}</span></dd></div>
           <div><dt>Its inbound rules today</dt><dd class="small">${(g.rules || []).length ? g.rules.map((x) => `${esc(x.ports)} from ${x.sources.map((s) => `<code>${esc(s)}</code>`).join(", ") || "another group"}`).join("<br>") : "none"}</dd></div>
-          <div><dt>Applies to</dt><dd class="small">${assets.map((a) => `${esc(a.kind)} <code>${esc(a.eni)}</code> at <code>${[...a.dst].map(esc).join(", ")}</code>${a.public ? ` (public <code>${esc(a.public)}</code>)` : ""}${a.subnet ? ` · ${esc(a.subnet)}` : ""}${a.desc ? ` · <span class="muted">${esc(a.desc)}</span>` : ""} · ${num(a.flows)} refused flows`).join("<br>")}</dd></div>
+          <div><dt>Applies to</dt><dd class="small">${assets.map((a) => `${hostByEni(a.eni) ? hostLine(hostByEni(a.eni)) : `${esc(a.kind)} <code>${esc(a.eni)}</code>`} at <code>${[...a.dst].map(esc).join(", ")}</code>${a.public ? ` (public <code>${esc(a.public)}</code>)` : ""}${a.subnet ? ` · ${esc(a.subnet)}` : ""}${a.desc ? ` · <span class="muted">${esc(a.desc)}</span>` : ""} · ${num(a.flows)} refused flows`).join("<br>")}</dd></div>
         </dl>
-        <div class="table-wrap"><table class="data"><thead><tr><th></th><th>Source</th><th>Who it is</th><th>Network</th><th class="num-cell">Refused flows</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${[...r.sources.values()].sort((a, b) => b.flows - a.flows).map((s) => `<tr class="${s.on ? "" : "off"}"><td><input type="checkbox" data-xr-src="${ri}|${esc(s.x.src)}" ${s.on ? "checked" : ""} aria-label="Include ${esc(s.x.src)}"></td><td><code>${esc(s.x.src)}</code><div>${catChip(s.x.cat)} ${typeChip(s.x)}${s.x.sweep ? ` <span class="pill recon">sweeping ${num(s.x.ports)} ports, ${num(s.x.dsts)} targets</span>` : ""}</div></td><td class="small"><strong>${esc(s.x.name)}</strong></td><td class="small">${attrFacts(s.x) || EMPTY}</td><td class="num-cell">${num(s.flows)}</td><td class="small">${esc(when(s.x.first))}</td><td class="small">${esc(when(s.x.last))}</td></tr>`).join("")}</tbody></table></div>
+        <div class="table-wrap"><table class="data"><thead><tr><th></th><th>Source</th><th>Who it is</th><th>Network</th><th class="num-cell">Refused flows</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${[...r.sources.values()].sort((a, b) => b.flows - a.flows).map((s) => `<tr class="${s.on ? "" : "off"}"><td><input type="checkbox" data-xr-src="${ri}|${esc(s.x.src)}" ${s.on ? "checked" : ""} aria-label="Include ${esc(s.x.src)}"></td><td><code>${esc(s.x.src)}</code><div>${catChip(s.x.cat)} ${typeChip(s.x)}${s.x.sweep ? ` <span class="pill recon">sweeping ${num(s.x.ports)} ports, ${num(s.x.dsts)} targets</span>` : ""}</div></td><td class="small"><strong>${esc(s.x.name)}</strong><div>${knownChip(s.k)} ${esc(s.k.head)}</div><details class="xr-know"><summary>What we know</summary>${s.k.lines.map((l) => `<div>${l}</div>`).join("") || EMPTY}</details></td><td class="small">${attrFacts(s.x) || EMPTY}</td><td class="num-cell">${num(s.flows)}</td><td class="small">${esc(when(s.x.first))}</td><td class="small">${esc(when(s.x.last))}</td></tr>`).join("")}</tbody></table></div>
         <p class="small" style="margin:10px 0 0"><strong>Ranges to add:</strong> ${o.cidrs.length ? o.cidrs.map((c) => `<code>${esc(c.cidr)}</code>`).join(", ") + ` <span class="muted">(${plural(o.cidrs.reduce((t, c) => t + c.last - c.first + 1, 0), "address", "addresses")}, exactly the sources ticked)</span>` : `<span class="muted">none ticked</span>`}</p>
+        ${o.on.length ? `<textarea id="xrC${ri}" class="xr-one" readonly spellcheck="false">${esc(cmdOf.get(r) || "")}</textarea><div class="tools"><button type="button" class="btn" data-copy="xrC${ri}">Copy this rule's command</button>${DATA.console?.token ? `<button type="button" class="btn" data-xr-propose="${ri}">Propose this one in the console</button><span class="small muted" id="xrP${ri}"></span>` : ""}</div>` : ""}
       </section>`;
     });
     if (folded) html += `</details>`;
     if (X.apart.length) {
       html += `<h3>Refused, but not for a new rule to fix</h3><div class="table-wrap"><table class="data"><thead><tr><th>Source</th><th>At</th><th>Why no rule</th></tr></thead><tbody>${X.apart.slice(0, 100).map(({ x, t, why }) => `<tr><td><code>${esc(x.src)}</code> ${catChip(x.cat)}<div class="small">${esc(x.name)}</div></td><td class="small">${esc(portsOf(t))} ${pcChip(t.pc)} on <code>${esc(t.eni)}</code></td><td class="small">${esc(why)}</td></tr>`).join("")}</tbody></table></div>`;
     }
-    const ipPerm = (p, port, cidrs) => {
-      const v4 = cidrs.filter((c) => !c.v6), v6 = cidrs.filter((c) => c.v6);
-      return { IpProtocol: p, FromPort: port, ToPort: port, ...(v4.length ? { IpRanges: v4.map((c) => ({ CidrIp: c.cidr, Description: c.desc })) } : {}), ...(v6.length ? { Ipv6Ranges: v6.map((c) => ({ CidrIpv6: c.cidr, Description: c.desc })) } : {}) };
-    };
-    const byGroup = {};
-    for (const o of live) {
-      const k = `${o.r.region}|${o.r.group}`;
-      const icmp = String(o.r.proto) === "1" || String(o.r.proto) === "58";
-      const p = ["6", "17"].includes(String(o.r.proto)) ? protoName(o.r.proto) : String(o.r.proto) === "1" ? "icmp" : String(o.r.proto);
-      (byGroup[k] = byGroup[k] || { region: o.r.region, group: o.r.group, perms: [] }).perms.push(ipPerm(p, icmp ? -1 : o.r.port, o.cidrs));
-    }
-    const cmds = Object.values(byGroup).map((g) => `# ${sgDesc(rep.groups?.[g.group]?.name || g.group)}: ${g.perms.map((p) => `${p.IpProtocol} ${p.FromPort}`).join(", ")}\npython sg_db.py exec --reason 'sg_review: extracted from refused traffic' -- \\\n  aws ec2 authorize-security-group-ingress --region ${g.region} --group-id ${g.group} \\\n  --ip-permissions '${JSON.stringify(g.perms)}'`);
-    html += `<h3>Apply</h3><div class="xr-out"><p class="small muted">Nothing has been applied. Run with credentials that can change these groups, after the change has been approved: <code>sg_db.py exec</code> records it in the security group database, with the reason, then makes it in AWS. To undo, run the same command with <code>revoke-security-group-ingress</code>.</p><textarea id="xrCli" readonly spellcheck="false">${esc(cmds.join("\n\n") || "# Nothing ticked")}</textarea><div class="tools"><button type="button" class="btn primary" id="xrCopy"${cmds.length ? "" : " disabled"}>Copy the commands</button><button type="button" class="btn" id="xrJson"${cmds.length ? "" : " disabled"}>Download the rules (JSON)</button><span class="small muted" id="xrCopied"></span></div></div>`;
+    html += `<h3>Apply</h3><div class="xr-out"><p class="small muted">Nothing has been applied. ${X.split === "dst" ? "One rule for each destination address, numbered, so they can be added one at a time: add one, check the refusals stop, then the next (each card above has its own command). " : ""}Run with credentials that can change these groups, after the change has been approved: <code>sg_db.py exec</code> records it in the security group database, with the reason, then makes it in AWS. To undo, run the same command with <code>revoke-security-group-ingress</code>.</p><textarea id="xrCli" readonly spellcheck="false">${esc(cmds.join("\n\n") || "# Nothing ticked")}</textarea><div class="tools"><button type="button" class="btn primary" id="xrCopy"${cmds.length ? "" : " disabled"}>Copy the commands</button><button type="button" class="btn" id="xrJson"${cmds.length ? "" : " disabled"}>Download the rules (JSON)</button><span class="small muted" id="xrCopied"></span></div></div>`;
     $("#xrBody").innerHTML = html;
     X.json = {
       schema: "sg-tightener.extracted-rules/v1", account: rep.account, generated_at: new Date().toISOString(), scope: X.scope,
       rules: live.map((o) => ({
         region: o.r.region, vpc: o.r.vpc, group_id: o.r.group, group_name: rep.groups?.[o.r.group]?.name || "", protocol: protoName(o.r.proto), port: o.r.port,
-        port_class: o.r.pc, assets: [...o.r.assets.values()].map((a) => ({ eni: a.eni, kind: a.kind, addresses: [...a.dst], public: a.public || null, subnet: a.subnet, refused_flows: a.flows })),
+        destination: o.r.dstIp || null, port_class: o.r.pc, assets: [...o.r.assets.values()].map((a) => ({ eni: a.eni, kind: a.kind, addresses: [...a.dst], public: a.public || null, subnet: a.subnet, refused_flows: a.flows })),
         ranges: o.cidrs.map((c) => ({ cidr: c.cidr, description: c.desc, sources: c.members.map((s) => s.x.src) })),
-        sources: o.on.map((s) => ({ address: s.x.src, kind: s.x.cat, name: s.x.name, source_type: s.x.group || null, provider: s.x.provider || null, range: s.x.range || null, aws_service: s.x.service || null, aws_region: s.x.aws_region || null, asn: s.x.as_num || null, owner: s.x.owner || null, country: s.x.cc || null, announced_block: s.x.block || null, refused_flows: s.flows, first_seen: s.x.first, last_seen: s.x.last, sweeping: !!s.x.sweep })),
+        sources: o.on.map((s) => ({ address: s.x.src, known: KNOWN[s.k.level][0], known_because: s.k.head, kind: s.x.cat, name: s.x.name, source_type: s.x.group || null, provider: s.x.provider || null, range: s.x.range || null, aws_service: s.x.service || null, aws_region: s.x.aws_region || null, asn: s.x.as_num || null, owner: s.x.owner || null, country: s.x.cc || null, announced_block: s.x.block || null, refused_flows: s.flows, first_seen: s.x.first, last_seen: s.x.last, sweeping: !!s.x.sweep })),
       })),
       not_extracted: X.apart.map(({ x, t, why }) => ({ address: x.src, eni: t.eni, protocol: protoName(t.proto), port: t.port, reason: why })),
       ip_permissions: Object.values(byGroup).map((g) => ({ region: g.region, group_id: g.group, IpPermissions: g.perms })),
@@ -1229,6 +1289,23 @@ details.xr-fold > summary { margin: 0 0 10px; }
   $("#btnCsv").addEventListener("click", () => csv());
   $("#btnExtract").addEventListener("click", () => openExtract(null));
   $("#xrClose").addEventListener("click", () => $("#xr").close ? $("#xr").close() : $("#xr").removeAttribute("open"));
+  $("#xrBody").addEventListener("click", async (e) => {
+    const sp = e.target.closest("[data-xr-split]");
+    if (sp) { state.xrSplit = sp.dataset.xrSplit; openExtract(state.xrSingle); return; }
+    const pr = e.target.closest("[data-xr-propose]");
+    if (!pr) return;
+    const ri = +pr.dataset.xrPropose, o = state.xr.outs.find((x) => x.r === state.xr.rules[ri]), note = $(`#xrP${ri}`);
+    if (!o?.perm?.cidrs.length) { note.textContent = "Nothing new to add: an earlier rule covers it."; return; }
+    pr.disabled = true; note.textContent = "Proposing…";
+    const proto = { tcp: "6", udp: "17", icmp: "1" }[o.perm.proto] || o.perm.proto;
+    const changes = o.perm.cidrs.map((c) => ({ group: o.r.group, op: "add", rule: { direction: "in", proto, from: o.perm.port, to: o.perm.port, source: c.cidr, description: c.desc } }));
+    try {
+      const r = await fetch("/api/propose", { method: "POST", headers: { "Content-Type": "application/json", "X-SG-Token": DATA.console.token }, body: JSON.stringify({ account: DATA.account, region: o.r.region, reason: `sg_review: let in refused traffic to ${o.r.dstIp || o.r.group} on ${o.perm.proto} ${o.r.port}`, changes }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || r.statusText);
+      note.textContent = `Request #${j.id} (${j.status}): a second person approves it on the Requests tab.`;
+    } catch (err) { note.textContent = `Not proposed: ${err.message}`; pr.disabled = false; }
+  });
   $("#xrBody").addEventListener("change", (e) => {
     const cb = e.target.closest("[data-xr-src]");
     if (cb) { const [ri, src] = cb.dataset.xrSrc.split("|"); state.xr.rules[+ri].sources.get(src).on = cb.checked; drawExtract(); return; }

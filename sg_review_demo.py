@@ -41,6 +41,23 @@ def _host(cidr: str, offset: int) -> str:
     return str(ipaddress.IPv4Network(cidr, strict=False).network_address + offset)
 
 
+# What runs on each made-up instance: its Name tag and operating system
+INSTANCES = {"eni-0app1": ("app-1", "Linux/UNIX", "m6i.large"), "eni-0app2": ("app-2", "Linux/UNIX", "m6i.large"),
+             "eni-0app3": ("app-3", "Linux/UNIX", "m6i.large"), "eni-0sftp": ("sftp-gateway", "Linux/UNIX", "t3.small"),
+             "eni-0bat1": ("batch-worker-1", "Red Hat Enterprise Linux", "c6i.xlarge"),
+             "eni-0leg1": ("legacy-jumpbox", "Windows", "t3.medium"),
+             "eni-0hook1": ("webhooks-in", "Linux/UNIX", "t3.small")}  # fmt: skip
+
+
+def _instances(enis: dict, now: float) -> dict:
+    out = {}
+    for eid, e in enis.items():
+        if e.get("instance"):
+            name, os_, typ = INSTANCES.get(eid, (eid, "Linux/UNIX", "t3.micro"))
+            out[e["instance"]] = {"name": name, "os": os_, "type": typ, "launched": now - 200 * 86400, "image": "ami-0demo"}
+    return out
+
+
 def snapshot(region: str, vpc: str, now: float) -> dict:
     h = lambda o: _host(vpc, o)
     sub = {"app": "subnet-0a11", "db": "subnet-0b22", "pub": "subnet-0c33", "ops": "subnet-0d44"}
@@ -95,8 +112,9 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
         g["egress"] = out_all
 
     def eni(ip, groups_, subnet, kind="EC2 instance", desc="", public=""):
+        inst = f"i-0{ip.replace('.', '')[-8:]}{'0' * 8}"[:19] if kind == "EC2 instance" else ""
         return {"ips": [ip], "prefixes": [], "groups": groups_, "subnet": subnet, "vpc": "vpc-0demo", "kind": kind,
-                "desc": desc, "instance": "", "public": public}  # fmt: skip
+                "desc": desc, "instance": inst, "public": public}  # fmt: skip
 
     enis = {
         "eni-0app1": eni(h(2 * 256 + 11), ["sg-0app0000000000001"], sub["app"]),
@@ -124,6 +142,7 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
         "vpcs": [{"id": "vpc-0demo", "name": "main", "cidrs": [vpc], "cidrs6": [VPC6]}],
         "groups": groups,
         "enis": enis,
+        "instances": _instances(enis, now),
         "prefix_lists": {},
         "nacls": {s: nacl for s in sub.values()},
         "vpns": [{"name": "Johannesburg DC", "routes": ["10.200.0.0/16", ONPREM6]}],
@@ -271,7 +290,7 @@ def _patterns(vpc: str, other: tuple | None) -> list[dict]:
     pats.append({"src": "185.220.101.33", "to": alb, "port": 3389, "ok": False, "p": 0.2, "rate": 1, "sweep": True})
     # more ports: batch workers trying a cache on an app server, a data centre producer trying the batch workers'
     # Kafka port, the internal Prometheus scraping node exporters, and scanners on the ports they always try
-    pats.append({"src": h(5 * 256 + 61), "to": app[1], "port": 6379, "ok": False, "p": 0.7, "rate": 15, "after": 10})
+    pats.append({"src": h(6 * 256 + 50), "to": app[1], "port": 6379, "ok": False, "p": 0.7, "rate": 15, "after": 10})
     pats.append({"src": "10.200.4.30", "to": bat, "port": 9092, "ok": False, "p": 0.5, "rate": 10, "after": 25})
     for ip in app:
         pats.append({"src": h(7 * 256 + 9), "to": ip, "port": 9100, "ok": True, "p": 1.0, "rate": 120})

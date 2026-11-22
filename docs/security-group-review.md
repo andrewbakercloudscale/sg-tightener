@@ -574,13 +574,41 @@ source.
 
 ![Extract rule: the proposed rules, with each source's attribution and the port's class](images/sg-review-extract-rule.png)
 
-For each proposed rule (one per security group, protocol and port) the window shows:
+**One rule for each destination address**, by default. Each card is one destination (the interface
+that refused the traffic) and one port, numbered "1 of 7", with its own command, its own **Copy this
+rule's command** button and, opened from the console, **Propose this one in the console**. So the
+refused ranges are not added in one go: add one, check its refusals stop, then the next. When the
+destination's security group is also on other interfaces, the card says so (a rule in a group reaches
+every member) and gives the `sg_db.py asset-plan` command that gives that one interface a group of
+its own first. Two cards that would add the same range to the same group are written once. **One rule
+for each security group and port** at the top switches back to the grouped view.
+
+![One destination's card: what is known about each source, and its own command](images/sg-review-extract-know.png)
+
+**What we know about each source.** Every source carries a verdict on how well it is known, and the
+reasons:
+
+| Chip | When | Reasons it gives |
+|---|---|---|
+| **Familiar** | Something vouches for it | Your own interface (the instance, its Name tag, its **operating system**, type and groups); already **let in** elsewhere (which port, to which instance, how many flows, since when); already **allowed by** another rule (which group, port and range); seen for 30 days or more; inside your VPCs or data centre; a named partner; an AWS service's or a SaaS provider's published range |
+| **Unfamiliar** | Nothing does | An outside network not let in anywhere, perhaps first seen this week: find out who it is before adding it |
+| **Do not add** | It is bad | On a threat list, a Tor or VPN exit, an internet scanner, or sweeping many ports |
+
+**What we know** opens the evidence: the interface behind the address if it is yours, every port it
+is already let in on, the rules that already allow it, when it was first seen (and whether it is
+new), what else it was refused on, and the verdict. The top of the window counts how many of the
+sources ticked are familiar, unfamiliar and not to add. The operating system comes from EC2
+(`PlatformDetails`: Linux/UNIX, Windows, Red Hat and so on), read with the security groups; for an
+outside address no operating system can be known from flow logs.
+
+For each proposed rule the window shows:
 
 - **The port**: its class and service, and what reaching that class means.
 - **The security group**: name, id, region and VPC, and its inbound rules today. When the
   interfaces refused have more than one group, you can choose which group gets the rule.
 - **The assets it applies to**: each interface refused, with its kind (EC2 instance, RDS database,
-  load balancer and so on), private and public address, subnet, description, and refused flows.
+  load balancer and so on), the instance's Name tag, operating system and type, private and public
+  address, subnet, description, and refused flows.
 - **Every source**, with a tick box: the address, its kind, who it is, and everything known about
   its network. That means the published range and the AWS service and region; or the AS number,
   owner, country and announced block; or your named range. It also shows the refused flows, when the
@@ -607,7 +635,7 @@ deleted, or the port is 32768 or higher, where ports are read as one.
 ![Extract rule: the AWS CLI commands and the JSON download](images/sg-review-extract-apply.png)
 
 **Nothing is applied.** The window writes one `aws ec2 authorize-security-group-ingress` command per
-security group, ready to copy. Each range carries a description naming its sources and the
+card, numbered in order, ready to copy one at a time or all together. Each range carries a description naming its sources and the
 service, for example `sg_review 2026-11-21: Behind VPN Johannesburg DC - Kafka, MSK`. **Download the
 rules (JSON)** saves the same rules with the full attribution of every source and asset, and the
 sources left out with the reason. To undo a rule, run the same command with

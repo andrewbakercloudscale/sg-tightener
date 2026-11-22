@@ -1,5 +1,25 @@
 # Changelog
 
+## 5.4.0 - 2026-11-22
+
+- **Extract rule, one destination at a time.** Refused traffic is turned into
+  one rule per destination address by default, numbered "1 of 7", each card
+  with its own command, a **Copy this rule's command** button and, opened from
+  the console, **Propose this one in the console**: add one, check its refusals
+  stop, then the next. A card warns when the destination's security group is on
+  other interfaces too, with the `sg_db.py asset-plan` command that gives the
+  interface a group of its own. The same range into the same group is written
+  once. A toggle switches back to one rule per security group and port.
+- **What we know about each source.** Every source is marked **Familiar**,
+  **Unfamiliar** or **Do not add**, with the reasons; **What we know** opens
+  the evidence: your own interface behind the address (instance, Name tag,
+  operating system, type, groups), ports it is already let in on, rules that
+  already allow it, first seen and whether it is new, what else it was refused
+  on, and the verdict. The window counts the sources ticked by each.
+- `sg_review read` reads each attached instance (`ec2:DescribeInstances`, in the
+  read-only policy) for its Name tag, operating system and type; destinations
+  in Extract rule show them too. The demo names its instances.
+
 ## 5.3.0 - 2026-11-22
 
 - **Known malicious addresses.** Every source and outbound destination is

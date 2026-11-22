@@ -553,3 +553,40 @@ def test_watch_always_posts_known_malicious_items():
     assert [i["label"] for i in sg_review.alert_items(items)] == [
         "Refused", "Known malicious let in", "Outbound to a known malicious address"]  # fmt: skip
     assert len(sg_review.alert_items(items, "all")) == 5
+
+
+# ------------------------------------------------------------------------------------------ extract rule
+def test_hosts_name_each_address_down_to_the_instance_and_its_os():
+    doc = demo_sg.build_doc(ACCT, time.time(), 3)
+    h = sg_review.hosts_model(doc)
+    eni = h["by_ip"]["10.20.6.50"]
+    kind, inst, name, os_, _typ, groups, region, _desc = h["enis"][eni]
+    assert (eni, kind, name, os_, region) == ("eni-0bat1", "EC2 instance", "batch-worker-1", "Red Hat Enterprise Linux", demo_sg.REGION)
+    assert inst.startswith("i-") and "batch-workers" in groups
+    assert h["by_ip"]["198.51.100.9"] == "eni-0leg1" and h["enis"]["eni-0leg1"][3] == "Windows"  # by public address too
+
+
+def test_instances_are_read_with_name_and_os():
+    class Ec2:
+        def describe_instances(self, InstanceIds):
+            return {"Reservations": [{"Instances": [
+                {"InstanceId": "i-1", "Tags": [{"Key": "Name", "Value": "web-1"}], "PlatformDetails": "Windows",
+                 "InstanceType": "t3.small", "ImageId": "ami-1"},
+                {"InstanceId": "i-2", "InstanceType": "t3.micro"}]}]}  # fmt: skip
+
+    errors: list = []
+    got = sg_review._instances(Ec2(), ["i-1", "i-2"], errors)
+    assert got["i-1"]["name"] == "web-1" and got["i-1"]["os"] == "Windows" and got["i-2"]["os"] == "Linux/UNIX"
+    assert not errors
+
+
+def test_page_extract_rule_shows_what_we_know_and_splits_by_destination(tmp_path):
+    doc = demo_sg.build_doc(ACCT, time.time(), 7)
+    data = sg_review.page_data(doc, "", demo_sg.INTERNAL, names=sg_review.parse_names(demo_sg.NAMES))
+    assert data["hosts"]["by_ip"]["10.20.2.12"] == "eni-0app2"
+    page = tmp_path / "p.html"
+    sg_review.write_page(data, str(page))
+    html = page.read_text()
+    for needle in ("What we know", "data-xr-split", "destination address", "Copy this rule's command",
+                   "Propose this one in the console", "Already let in", "Already allowed by", "Your interface"):
+        assert needle in html, needle
