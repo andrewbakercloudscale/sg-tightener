@@ -137,6 +137,18 @@ details.xr-fold > summary { margin: 0 0 10px; }
 .att-restore textarea, .xr-restore textarea { width: 100%; box-sizing: border-box; min-height: 92px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; margin-top: 8px; }
 .xr-restore { margin: 0 0 12px; padding: 10px 14px; border-radius: 8px; border-left: 4px solid var(--tone-risk); background: color-mix(in srgb, var(--tone-risk) 10%, var(--surface)); font-size: 13px; }
 .verdict-why { margin-top: 3px; }
+.fit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px 18px; margin: 10px 0; }
+.fit-grid label { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.fit-grid label span.c { display: inline-flex; align-items: center; gap: 6px; }
+.fit-grid label span.c::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--c, var(--muted)); }
+.fit-grid select, .fit select, .fit input[type=text] { font: inherit; font-size: 13px; max-width: 100%; }
+.fit details { margin: 6px 0; }
+.fit summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.fit-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 6px 20px; margin: 12px 0; font-size: 13px; }
+.fit-sum dt { color: var(--ink-2); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.fit-sum dd { margin: 0; font-size: 15px; font-weight: 650; }
+#fitRules code { white-space: nowrap; }
+.fit textarea { width: 100%; min-height: 150px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
 @media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
 @media (max-width: 700px) {
   h1 { font-size: 23px; }
@@ -189,8 +201,25 @@ details.xr-fold > summary { margin: 0 0 10px; }
 
   <section class="section">
     <h2><span class="num">2</span>Over-provisioned addresses</h2>
-    <p class="muted section-lede">For each security group with flow logs on all its interfaces, the addresses its rules let in that were never seen, summed over the groups, by kind. An address seen anywhere in the account in the whole read, let in or refused, is never counted. The rules in force at each time are worked back from today's through CloudTrail's record of rule changes (triangles: select one for the change). Rules open to every address (0.0.0.0/0) are listed below, not counted. The scale is logarithmic: each step down is a tenfold cut.</p>
-    <figure class="card" style="margin:0 0 16px"><div class="chart-box"><canvas id="chOver" role="img" aria-label="Lines of never-seen addresses allowed in over time, by kind of source, with rule changes marked"></canvas></div></figure>
+    <p class="muted section-lede">For each security group with flow logs on all its interfaces, the addresses its rules let in that were never seen, summed over the groups, by kind. An address seen anywhere in the account in the whole read, let in or refused, is never counted. The rules in force at each time are worked back from today's through CloudTrail's record of rule changes (triangles: select one for the change). Rules open to every address (0.0.0.0/0) are listed below, not counted. The scale is logarithmic: each step down is a tenfold cut. The grey bars are the sources refused in each period: a tightening that went too far shows as refusals starting right after a triangle. <strong>After</strong>, at the right, is what the Tighten panel below would leave.</p>
+    <figure class="card" style="margin:0 0 16px"><div class="chart-box"><canvas id="chOver" role="img" aria-label="Lines of never-seen addresses allowed in over time, by kind of source, with rule changes marked, refused sources as bars, and what the Tighten panel would leave"></canvas></div></figure>
+    <div class="card fit" id="fitWrap">
+      <h3 style="margin-top:0">Tighten: how much room to leave, by kind, type and name</h3>
+      <p class="muted small" id="fitLede"></p>
+      <div class="fit-grid" id="fitKinds"></div>
+      <details id="fitTypesWrap"><summary>By source type</summary><p class="muted small">A type here overrides its kind: secure access services (Zscaler and the like) and CDNs usually need their published range, since their addresses move.</p><div class="fit-grid" id="fitTypes"></div></details>
+      <details id="fitNamesWrap"><summary>By name</summary><p class="muted small">A name here overrides its type and kind: an AWS service in one region, one partner, one of your VPCs.</p><div class="fit-grid" id="fitNames"></div></details>
+      <div class="tools">
+        <label>Keep sources last seen <select id="fitRecent"><option value="0">at any time in the read</option><option value="60">in the last 60 days</option><option value="30">in the last 30 days</option><option value="7">in the last 7 days</option></select></label>
+        <label><input type="checkbox" id="fitOpen"> also fit rules open to every address (0.0.0.0/0)</label>
+        <label><input type="checkbox" id="fitUnused"> remove rules nothing used</label>
+        <button type="button" class="btn" id="fitReset">Back to the defaults</button>
+      </div>
+      <dl class="fit-sum" id="fitSum"></dl>
+      <div id="fitWarn"></div>
+      <div class="table-wrap"><table class="data" id="fitRules"></table></div>
+      <div id="fitOut"></div>
+    </div>
     <h3>Rules, and what to change</h3>
     <p class="muted small" id="rulesNote"></p>
     <div class="tools">
@@ -310,6 +339,155 @@ details.xr-fold > summary { margin: 0 0 10px; }
     return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
   }
 
+  // ---- Tighten: fit each rule to the sources that used it, leaving as much room as chosen per kind, type or name
+  const FIT_OPTS = [["exact", "Each address only"], ["28", "The /28 around each (16)"], ["24", "The /24 around each (256)"], ["20", "The /20 around each (4,096)"], ["16", "The /16 around each (65,536)"], ["range", "Its published or named range"], ["keep", "Leave as it is"]];
+  const FIT_DEFAULT = { internal: "24", datacentre: "24", aws: "range", saas: "range", internet: "exact" };
+  const FIT_WHY = { internal: "your VPCs move addresses as instances come and go", datacentre: "data centre ranges are yours, but wide", aws: "AWS services use their published ranges", saas: "providers and partners move within their ranges", internet: "anyone else: only what was seen" };
+  const FIT = DATA.fit || { rules: [], labels: {} };
+  const fitState = () => (state.fit = state.fit || { kind: { ...FIT_DEFAULT }, type: {}, name: {}, recent: 0, open: false, unused: false, res: null });
+  const ip4 = (s) => { const p = String(s).split("."); if (p.length !== 4) return null; let n = 0; for (const x of p) { if (!/^\d{1,3}$/.test(x) || +x > 255) return null; n = n * 256 + +x; } return n; };
+  const intIp = (n) => [16777216, 65536, 256, 1].map((d) => Math.floor(n / d) % 256).join(".");
+  const cidrIv = (c) => { if (!c) return null; const [a, l] = String(c).split("/"); const n = ip4(a); const len = l === undefined ? 32 : +l; if (n == null || !(len >= 0 && len <= 32)) return null; const size = 2 ** (32 - len); const lo = Math.floor(n / size) * size; return [lo, lo + size - 1]; };
+  function mergeIv(list) {
+    const out = [];
+    for (const [a, b] of [...list].sort((p, q) => p[0] - q[0])) { const last = out[out.length - 1]; if (last && a <= last[1] + 1) last[1] = Math.max(last[1], b); else out.push([a, b]); }
+    return out;
+  }
+  function toCidrs(lo, hi) {
+    const out = [];
+    while (lo <= hi) {
+      let size = 1;
+      while (size < 2 ** 32 && lo % (size * 2) === 0 && lo + size * 2 - 1 <= hi) size *= 2;
+      out.push(`${intIp(lo)}/${32 - Math.round(Math.log2(size))}`);
+      lo += size;
+    }
+    return out;
+  }
+  const fitLabel = (src) => FIT.labels[src] || ["internet", "other", "", ""];
+  const fitHow = (f, lb) => f.name[lb[2]] || f.type[lb[1]] || f.kind[lb[0]] || "keep";
+  function fitRule(f, r, cutoff) {
+    if (r.too_many) return { r, same: true, skipped: `${num(r.too_many)} sources: more than this page fits; use sg_tightener.py plan` };
+    if (r.kind === "open" && !f.open) return null;
+    if (!r.srcs.length && !f.unused) return null;
+    const orig = cidrIv(r.source);
+    if (!orig) return null;
+    const blocks = [], kept = [], dropped = [], hows = new Set();
+    for (const [src, last] of r.srcs) {
+      const lb = fitLabel(src), n = ip4(src);
+      if (cutoff && last != null && last < cutoff) { dropped.push(src); continue; }
+      kept.push(src);
+      const how = fitHow(f, lb);
+      hows.add(how);
+      let b = n == null || how === "keep" ? orig : how === "exact" ? [n, n] : how === "range" ? cidrIv(lb[3]) || cidrIv(`${src}/24`) : cidrIv(`${src}/${how}`);
+      b = [Math.max(b[0], orig[0]), Math.min(b[1], orig[1])];
+      if (b[0] > b[1]) b = [n, n];
+      blocks.push(b);
+    }
+    const iv = mergeIv(blocks);
+    const same = iv.length === 1 && iv[0][0] === orig[0] && iv[0][1] === orig[1];
+    const size = iv.reduce((t, [a, b]) => t + b - a + 1, 0);
+    return { r, same, cidrs: iv.flatMap(([a, b]) => toCidrs(a, b)), size, kept, dropped, hows, neverAfter: Math.max(0, size - kept.length) };
+  }
+  function fitCompute() {
+    const f = fitState();
+    const cutoff = f.recent ? DATA.end - f.recent * 86400 : 0;
+    const all = FIT.rules.map((r) => fitRule(f, r, cutoff)).filter(Boolean);
+    const changed = all.filter((x) => !x.same);
+    const delta = Object.fromEntries(CATS.map((c) => [c, 0]));
+    let openFitted = 0;
+    for (const x of changed) {
+      if (x.r.kind === "open") { openFitted++; continue; }
+      if (x.r.kind in delta) delta[x.r.kind] += Math.max(0, x.r.never - x.neverAfter);
+    }
+    const refused = [...new Set(changed.flatMap((x) => x.dropped))];
+    f.res = { all, changed, delta, refused, openFitted, skipped: all.filter((x) => x.skipped) };
+    return f.res;
+  }
+  const fitSelect = (id, value, inherit) => `<select data-fit="${esc(id)}">${inherit ? `<option value=""${value ? "" : " selected"}>${esc(inherit)}</option>` : ""}${FIT_OPTS.map(([k, n]) => `<option value="${k}"${k === value ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>`;
+  function fitControls() {
+    const f = fitState();
+    const kinds = new Map(), types = new Map(), names = new Map();
+    for (const r of FIT.rules) for (const [src] of r.srcs) {
+      const lb = fitLabel(src);
+      kinds.set(lb[0], (kinds.get(lb[0]) || 0) + 1);
+      if (TYPE_SHORT[lb[1]]) types.set(lb[1], (types.get(lb[1]) || 0) + 1);
+      if (lb[2]) { const x = names.get(lb[2]) || { n: 0, cat: lb[0], type: lb[1] }; x.n++; names.set(lb[2], x); }
+    }
+    $("#fitLede").innerHTML = `${plural(FIT.rules.length, "rule")} can be fitted: those whose security group has flow logs on every interface, read for 30 days or more. Each is cut to the sources that used it, with the room chosen for each source's kind, type or name around every address, never wider than the rule is today. Nothing is applied here: propose the change, a second person approves it, then it is applied; if refusals start after it, put the rule back with <strong>Extract rule</strong>.`;
+    $("#fitKinds").innerHTML = CATS.map((c) => `<label><span class="c" style="--c:${COLOR[c]}">${esc(catName(c))}${kinds.get(c) ? ` · ${plural(kinds.get(c), "source")}` : ""}</span>${fitSelect(`kind:${c}`, f.kind[c])}<span class="small muted" style="font-weight:400">${esc(FIT_WHY[c] || "")}</span></label>`).join("");
+    $("#fitTypesWrap").hidden = !types.size;
+    $("#fitTypesWrap").querySelector("summary").textContent = `By source type (${types.size})`;
+    $("#fitTypes").innerHTML = [...types].map(([t, n]) => `<label><span class="c" style="--c:${TYPE_COLOR[t] || "#888"}">${esc(TYPE[t]?.name || TYPE_SHORT[t])} · ${plural(n, "source")}</span>${fitSelect(`type:${t}`, f.type[t] || "", "As its kind")}</label>`).join("");
+    const top = [...names].sort((p, q) => q[1].n - p[1].n).slice(0, 60);
+    $("#fitNamesWrap").hidden = !top.length;
+    $("#fitNamesWrap").querySelector("summary").textContent = `By name (${names.size})`;
+    $("#fitNames").innerHTML = top.map(([nm, x]) => `<label><span class="c" style="--c:${COLOR[x.cat] || "#888"}">${esc(nm)} · ${plural(x.n, "source")}</span>${fitSelect(`name:${nm}`, f.name[nm] || "", "As its type or kind")}</label>`).join("");
+    $("#fitRecent").value = String(f.recent); $("#fitOpen").checked = f.open; $("#fitUnused").checked = f.unused;
+  }
+  function fitReason() {
+    const f = fitState();
+    const opt = Object.fromEntries(FIT_OPTS);
+    const parts = CATS.map((c) => `${catName(c)}: ${opt[f.kind[c]]}`);
+    for (const [t, v] of Object.entries(f.type)) if (v) parts.push(`${TYPE[t]?.name || t}: ${opt[v]}`);
+    for (const [n, v] of Object.entries(f.name)) if (v) parts.push(`${n}: ${opt[v]}`);
+    if (f.recent) parts.push(`sources not seen in ${f.recent} days dropped`);
+    return `sg_review: rules fitted to what was used (${parts.join("; ")})`.replace(/'/g, "");
+  }
+  const permOf = (r, cidrs, desc) => { const p = { IpProtocol: String(r.proto) }; if (String(r.proto) !== "-1") { p.FromPort = r.from; p.ToPort = r.to; } p.IpRanges = cidrs.map((c) => ({ CidrIp: c, ...(desc ? { Description: desc } : {}) })); return p; };
+  function fitPlans(res) {
+    const byRegion = {};
+    for (const x of res.changed) {
+      if (x.skipped) continue;
+      const plan = (byRegion[x.r.region] = byRegion[x.r.region] || { schema: "sg-tightener.plan/v1", generated_by: "sg_review tighten", account: DATA.account, region: x.r.region, reason: fitReason(), groups: {} });
+      const g = (plan.groups[x.r.group] = plan.groups[x.r.group] || { group_id: x.r.group, group_name: x.r.gname, revoke: [], authorise: [] });
+      g.revoke.push(permOf(x.r, [x.r.source], x.r.desc));
+      if (x.cidrs.length) g.authorise.push(permOf(x.r, x.cidrs, (x.r.desc || "fitted by sg_review").slice(0, 200)));
+    }
+    for (const p of Object.values(byRegion)) p.groups = Object.values(p.groups);
+    return byRegion;
+  }
+  function fitDraw() {
+    const res = fitCompute();
+    const rep = state.rep, last = rep.bins.length - 1;
+    const now = CATS.reduce((t, c) => t + (rep.series.over[c]?.[last] || 0), 0);
+    const cut = CATS.reduce((t, c) => t + res.delta[c], 0);
+    $("#fitSum").innerHTML = [
+      ["Rules that change", `${num(res.changed.filter((x) => !x.skipped).length)} in ${num(new Set(res.changed.map((x) => x.r.group)).size)} groups`],
+      ["Never-seen addresses allowed", `${big(now)} → ${big(Math.max(0, now - cut))}`],
+      ["Taken away", cut ? `${big(cut)} (${now ? Math.min(100, (100 * cut) / now).toFixed(cut / now > 0.999 ? 3 : 1) : 0}%)` : "nothing"],
+      ["Would be refused", res.refused.length ? `${plural(res.refused.length, "source")} not seen recently` : "nobody seen in the read"],
+    ].map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("") + (res.openFitted ? `<div><dt>Open to all, fitted</dt><dd>${plural(res.openFitted, "rule")}</dd></div>` : "");
+    const many = res.changed.filter((x) => x.cidrs && x.cidrs.length > 50);
+    $("#fitWarn").innerHTML = [
+      many.length ? `<div class="xr-warn soft">${plural(many.length, "rule")} would need more than 50 ranges (a security group holds 60 rules by default): leave more room for ${esc([...new Set(many.flatMap((x) => [...x.hows]))].map((h) => Object.fromEntries(FIT_OPTS)[h]).join(", "))}, or fit those rules with <code>sg_tightener.py plan</code>.</div>` : "",
+      res.refused.length ? `<div class="xr-warn">${plural(res.refused.length, "source")} that used these rules would be refused: ${res.refused.slice(0, 12).map((s) => `<code>${esc(s)}</code>`).join(", ")}${res.refused.length > 12 ? "…" : ""}. They were last seen before the cut-off chosen; a monthly batch or a DR test looks like this.</div>` : "",
+      res.skipped.length ? `<div class="xr-warn soft">${res.skipped.map((x) => `${esc(x.r.gname)} ${esc(x.r.ports)} ${esc(x.r.source)}: ${esc(x.skipped)}`).join("<br>")}</div>` : "",
+      res.changed.some((x) => x.r.kind === "open") ? `<div class="xr-warn soft">Rules open to every address are fitted too. A public website, API or load balancer must stay open: untick the box, or leave those names as they are.</div>` : "",
+    ].join("");
+    const rows = res.changed.filter((x) => !x.skipped).sort((p, q) => q.r.never - q.neverAfter - (p.r.never - p.neverAfter));
+    $("#fitRules").innerHTML = rows.length ? `<thead><tr><th>Security group</th><th>Ports</th><th>Now</th><th>After</th><th class="num-cell">Never seen now</th><th class="num-cell">After</th><th class="num-cell">Sources kept</th><th class="num-cell">Turned away</th></tr></thead><tbody>${rows.map((x) => `<tr><td>${esc(x.r.gname)}<div class="small muted"><code>${esc(x.r.group)}</code> · ${esc(x.r.region)}</div></td><td>${esc(x.r.ports)}</td><td><code>${esc(x.r.source)}</code>${x.r.kind === "open" ? ` <span class="pill" style="--p:var(--warn-ink)">open to all</span>` : ""}</td><td>${x.cidrs.length ? x.cidrs.slice(0, 6).map((c) => `<code>${esc(c)}</code>`).join(" ") + (x.cidrs.length > 6 ? ` <span class="small muted">and ${num(x.cidrs.length - 6)} more</span>` : "") : `<span class="pill" style="--p:var(--sev-critical)">removed</span>`}</td><td class="num-cell">${big(x.r.never)}</td><td class="num-cell">${big(x.neverAfter)}</td><td class="num-cell">${num(x.kept.length)}</td><td class="num-cell">${x.dropped.length ? `<strong>${num(x.dropped.length)}</strong>` : "0"}</td></tr>`).join("")}</tbody>` : `<tbody><tr><td class="muted">Nothing changes with these settings.</td></tr></tbody>`;
+    const plans = fitPlans(res);
+    const regions = Object.keys(plans);
+    const file = (r) => `tighten-${DATA.account}-${r}.json`;
+    const cmds = regions.map((r) => `# ${r}: propose the change; a second person approves it; then apply it\npython sg_db.py propose --plan ${file(r)} --reason '${fitReason()}'\npython sg_db.py requests\npython sg_db.py approve <id>      # someone else\npython sg_db.py apply --region ${r}\n# Then watch Refused sources: refusals right after the change mean a source was cut off; Extract rule puts it back.`).join("\n\n");
+    $("#fitOut").innerHTML = regions.length ? `<h3>Propose it</h3>${DATA.console ? `<div class="tools"><label style="flex:1;min-width:240px">Reason <input type="text" id="fitWhy" style="width:100%" value="${esc(fitReason())}"></label><button type="button" class="btn primary" id="fitPropose">Propose in the console</button><span class="small muted" id="fitDone"></span></div>` : ""}<p class="small muted">The plan revokes each rule as it is and authorises the fitted ranges. It goes through <code>sg_db.py propose</code>: recorded with the reason, approved by a second person, applied only in enforce mode, and in the audit trail.</p><textarea readonly spellcheck="false" id="fitCli">${esc(cmds)}</textarea><div class="tools">${regions.map((r) => `<button type="button" class="btn${DATA.console ? "" : " primary"}" data-fitplan="${esc(r)}">Download ${esc(file(r))}</button>`).join("")}<button type="button" class="btn" id="fitCopy">Copy the commands</button><span class="small muted" id="fitCopied"></span></div>` : "";
+    overChart();
+  }
+  async function fitPropose(btn) {
+    const res = state.fit.res, plans = fitPlans(res), out = [];
+    btn.disabled = true; $("#fitDone").textContent = "Proposing…";
+    try {
+      for (const [region, plan] of Object.entries(plans)) {
+        const changes = plan.groups.flatMap((g) => [...g.revoke.map((p) => ["remove", p]), ...g.authorise.map((p) => ["add", p])].flatMap(([op, p]) => p.IpRanges.map((x) => ({ group: g.group_id, op, rule: { direction: "in", proto: p.IpProtocol, from: p.FromPort ?? -1, to: p.ToPort ?? -1, source: x.CidrIp, description: x.Description || "" } }))));
+        const r = await fetch("/api/propose", { method: "POST", headers: { "Content-Type": "application/json", "X-SG-Token": DATA.console.token }, body: JSON.stringify({ account: DATA.account, region, reason: $("#fitWhy").value, changes }) });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.statusText);
+        out.push(`${region}: request #${j.id} (${j.status})`);
+      }
+      $("#fitDone").textContent = `${out.join("; ")}. A second person approves it on the console's Requests tab, then Apply.`;
+    } catch (e) { $("#fitDone").textContent = `Not proposed: ${e.message}`; btn.disabled = false; }
+  }
+
   function readPanel() {
     const est = DATA.estimate || { ranges: [] };
     const regions = DATA.regions.join(",");
@@ -366,6 +544,8 @@ details.xr-fold > summary { margin: 0 0 10px; }
     privatelink();
     posture();
     charts();
+    fitControls();
+    fitDraw();
     tables();
     $("#method").innerHTML = `<p><strong>Read, per region, live and read-only:</strong> the security groups, network interfaces, VPCs, network ACLs, VPN routes and flow logs (ec2 Describe calls, and GetManagedPrefixListEntries for prefix lists); 90 days of inbound rule changes (cloudtrail:LookupEvents); and the VPC flow logs in CloudWatch Logs (logs:StartQuery, GetQueryResults, StopQuery). All are in sg-tightener's <code>iam-policy.json</code>.</p>
       <p><strong>Flow logs, a slice at a time:</strong> hourly for the last day, six-hourly for the last week, daily beyond, in UTC. Each slice runs two Logs Insights queries: accepted inbound connections and refused private ones by source, target, interface, protocol and port; and refused internet sources, one row each (scanners would fill the first). A slice that hits the 10,000 row limit is split, down to an hour. Slices are kept on the computer that read them (<code>~/.sg-tightener/review</code>), so a later read reads only the gap. This page was written from them and calls nothing: it can be opened offline.</p>
@@ -481,37 +661,7 @@ details.xr-fold > summary { margin: 0 0 10px; }
           rPick(evt, els.filter((e) => !refusedSets[e.datasetIndex]?.marks));
         }, plugins: { legend: { position: "bottom", labels: { color: ink, boxWidth: 12 } }, tooltip: rby === "kind" ? { mode: "index", callbacks: { title, label: rLabel } } : { ...tip, callbacks: { ...tip.callbacks, label: (c) => (c.dataset.marks ? rLabel(c) : tip.callbacks.label(c)) } } } },
     });
-    const overSets = CATS.filter((c) => sel.has(c)).map((c) => ({ type: "line", label: catName(c), data: rep.series.over[c].map((v) => v || null), borderColor: COLOR[c], backgroundColor: COLOR[c], borderWidth: 2, pointRadius: 0, stepped: true, spanGaps: true }));
-    const total = rep.bins.map((_, i) => sum(rep.series.over, i) || null);
-    overSets.unshift({ type: "line", label: "All shown", data: total, borderColor: css("--ink"), backgroundColor: css("--ink"), borderWidth: 2.5, borderDash: [5, 4], pointRadius: 0, stepped: true, spanGaps: true });
-    const marks = rep.markers.filter((m) => m.bin >= 0 && m.bin < rep.bins.length);
-    if (marks.length) {
-      const byBin = {};
-      for (const m of marks) (byBin[m.bin] = byBin[m.bin] || []).push(m);
-      overSets.push({ type: "line", label: "Rule change", data: rep.bins.map((_, i) => (byBin[i] ? total[i] || 1 : null)), showLine: false, pointStyle: "triangle", pointRadius: 8, pointHoverRadius: 10, borderColor: css("--tone-risk"), backgroundColor: css("--tone-risk"), marks: byBin });
-    }
-    chart("chOver", {
-      type: "line",
-      data: { labels, datasets: overSets },
-      options: {
-        responsive: true, maintainAspectRatio: false, animation: false, scales: scales(true),
-        onClick: (evt, els) => { const el = els.find((e) => overSets[e.datasetIndex].marks); if (el) { state.mark = overSets[el.datasetIndex].marks[el.index]; tables(); $("#rulesNote").scrollIntoView({ behavior: "smooth", block: "nearest" }); } },
-        plugins: {
-          legend: { position: "bottom", labels: { color: ink } },
-          tooltip: {
-            mode: "index", intersect: false,
-            callbacks: {
-              title,
-              label: (c) => {
-                const ds = c.dataset;
-                if (ds.marks) return (ds.marks[c.dataIndex] || []).map((m) => `${m.event.replace("SecurityGroupIngress", "").replace("SecurityGroupRules", " rules")} on ${m.name} by ${m.who || "unknown"}: ${m.unknown ? "rule changed by id" : [...m.added.map((x) => "+" + x), ...m.removed.map((x) => "−" + x)].join(" ")}`);
-                return c.raw == null ? null : `${ds.label}: ${num(c.raw)}`;
-              },
-            },
-          },
-        },
-      },
-    });
+    overChart();
     const aby = state.by.active;
     let activeSets;
     if (aby === "net") activeSets = netSets("active");
@@ -528,6 +678,58 @@ details.xr-fold > summary { margin: 0 0 10px; }
       options: { responsive: true, maintainAspectRatio: false, animation: false, scales: scales(false), onClick: pick("active", activeSets), plugins: { legend: { position: "bottom", labels: { color: ink, boxWidth: 12 } }, tooltip: aby === "recency" || aby === "kind" ? { mode: "index", callbacks: { title } } : tip } },
     });
     portCharts();
+  }
+
+  function overChart() {
+    const rep = state.rep;
+    const labels = rep.bins.map((t) => binLabel(t, rep.step));
+    const sel = state.cats;
+    const grid = css("--grid"), ink = css("--ink-2");
+    const scales = (log) => ({
+      x: { stacked: !log, grid: { display: false }, ticks: { color: ink, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 } },
+      y: { stacked: !log, type: log ? "logarithmic" : "linear", beginAtZero: !log, grid: { color: grid }, ticks: { color: ink, precision: 0, callback: (v) => (log ? (/^1(0)*$/.test(String(v)) ? big(v) : "") : big(v)) } },
+    });
+    const title = (items) => `${binLabel(rep.bins[items[0].dataIndex], rep.step)}${rep.step < 86400 ? " UTC" : ""}`;
+    // The last point, "After", is what the Tighten panel's settings would leave: dashed from now.
+    const res = state.fit?.res, n = rep.bins.length, cut = res ? res.delta : {};
+    const after = (arr, c) => [...arr, Math.max(0, (arr[n - 1] || 0) - (c === null ? CATS.filter((k) => sel.has(k)).reduce((t, k) => t + (cut[k] || 0), 0) : cut[c] || 0)) || null];
+    const dashLast = { borderDash: (ctx) => (ctx.p1DataIndex === n ? [4, 4] : undefined) };
+    const overSets = CATS.filter((c) => sel.has(c)).map((c) => ({ type: "line", yAxisID: "y", label: catName(c), data: after(rep.series.over[c].map((v) => v || null), c), borderColor: COLOR[c], backgroundColor: COLOR[c], borderWidth: 2, pointRadius: (ctx) => (ctx.dataIndex === n ? 4 : 0), stepped: true, spanGaps: true, segment: dashLast }));
+    const total = after(rep.bins.map((_, i) => sum(rep.series.over, i) || null), null);
+    overSets.unshift({ type: "line", yAxisID: "y", label: "All shown", data: total, borderColor: css("--ink"), backgroundColor: css("--ink"), borderWidth: 2.5, borderDash: [5, 4], pointRadius: (ctx) => (ctx.dataIndex === n ? 5 : 0), stepped: true, spanGaps: true });
+    const refusedTotal = rep.bins.map((_, i) => sum(rep.series.refused, i));
+    overSets.push({ type: "bar", yAxisID: "y2", label: "Refused sources (right scale)", data: [...refusedTotal, res ? res.refused.length : 0], backgroundColor: rep.bins.map(() => css("--muted") + "55").concat([css("--sev-critical")]), borderWidth: 0, order: 5 });
+    const marks = rep.markers.filter((m) => m.bin >= 0 && m.bin < rep.bins.length);
+    if (marks.length) {
+      const byBin = {};
+      for (const m of marks) (byBin[m.bin] = byBin[m.bin] || []).push(m);
+      // Pointing down: the change only took entries away (a tightening); up: it added or swapped some.
+      const narrowed = (ms) => ms.every((m) => !m.unknown && !m.added.length && m.removed.length);
+      overSets.push({ type: "line", yAxisID: "y", label: "Rule change (▼ tightened, ▲ widened)", data: rep.bins.map((_, i) => (byBin[i] ? total[i] || 1 : null)), showLine: false, pointStyle: "triangle", pointRotation: rep.bins.map((_, i) => (byBin[i] && narrowed(byBin[i]) ? 180 : 0)), pointRadius: 8, pointHoverRadius: 10, borderColor: rep.bins.map((_, i) => css(byBin[i] && narrowed(byBin[i]) ? "--good" : "--tone-risk")), backgroundColor: rep.bins.map((_, i) => css(byBin[i] && narrowed(byBin[i]) ? "--good" : "--tone-risk")), marks: byBin });
+    }
+    chart("chOver", {
+      type: "line",
+      data: { labels: [...labels, "After"], datasets: overSets },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false, scales: { ...scales(true), y2: { position: "right", beginAtZero: true, grid: { display: false }, ticks: { color: ink, precision: 0 }, title: { display: true, text: "refused", color: ink } } },
+        onClick: (evt, els) => { const el = els.find((e) => overSets[e.datasetIndex].marks); if (el) { state.mark = overSets[el.datasetIndex].marks[el.index]; tables(); $("#rulesNote").scrollIntoView({ behavior: "smooth", block: "nearest" }); } },
+        plugins: {
+          legend: { position: "bottom", labels: { color: ink } },
+          tooltip: {
+            mode: "index", intersect: false,
+            callbacks: {
+              title: (items) => (items[0].dataIndex === n ? "After the Tighten panel's change" : title(items)),
+              label: (c) => {
+                const ds = c.dataset;
+                if (ds.marks) return (ds.marks[c.dataIndex] || []).map((m) => `${m.event.replace("SecurityGroupIngress", "").replace("SecurityGroupRules", " rules")} on ${m.name} by ${m.who || "unknown"}: ${m.unknown ? "rule changed by id" : [...m.added.map((x) => "+" + x), ...m.removed.map((x) => "−" + x)].join(" ")}`);
+                if (c.dataIndex === n && ds.yAxisID === "y2") return `Would be refused: ${num(c.raw)}`;
+                return c.raw == null ? null : `${ds.label}${c.dataIndex === n ? " after" : ""}: ${num(c.raw)}`;
+              },
+            },
+          },
+        },
+      },
+    });
   }
 
   function portCharts() {
@@ -934,6 +1136,23 @@ details.xr-fold > summary { margin: 0 0 10px; }
   $("#range").addEventListener("click", (e) => { const b = e.target.closest("[data-range]"); if (!b || b.disabled) return; state.range = b.dataset.range; render(); });
   for (const kind of ["refused", "active"]) $(`#${kind}By`).addEventListener("click", (e) => { const b = e.target.closest("[data-by]"); if (!b) return; state.by[kind] = b.dataset.by; if (state.bin?.kind === kind) state.bin = null; markRange(); charts(); tables(); });
   $("#ruleStatus").addEventListener("change", () => tables());
+  $("#fitWrap").addEventListener("change", (e) => {
+    const f = fitState(), t = e.target;
+    if (t.dataset.fit) { const [k, ...rest] = t.dataset.fit.split(":"); const key = rest.join(":"); if (t.value) f[k][key] = t.value; else delete f[k][key]; }
+    else if (t.id === "fitRecent") f.recent = +t.value;
+    else if (t.id === "fitOpen") f.open = t.checked;
+    else if (t.id === "fitUnused") f.unused = t.checked;
+    else return;
+    fitDraw();
+  });
+  $("#fitWrap").addEventListener("click", (e) => {
+    const t = e.target.closest("button");
+    if (!t) return;
+    if (t.id === "fitReset") { state.fit = null; fitControls(); fitDraw(); }
+    else if (t.dataset.fitplan) { const plan = fitPlans(state.fit.res)[t.dataset.fitplan]; download(JSON.stringify(plan, null, 2), `tighten-${DATA.account}-${t.dataset.fitplan}.json`, "application/json"); }
+    else if (t.id === "fitCopy") navigator.clipboard?.writeText($("#fitCli").value).then(() => { $("#fitCopied").textContent = "Copied"; }, () => { $("#fitCli").select(); });
+    else if (t.id === "fitPropose") fitPropose(t);
+  });
   $("#btnCsv").addEventListener("click", () => csv());
   $("#btnExtract").addEventListener("click", () => openExtract(null));
   $("#xrClose").addEventListener("click", () => $("#xr").close ? $("#xr").close() : $("#xr").removeAttribute("open"));

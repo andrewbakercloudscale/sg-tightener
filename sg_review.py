@@ -737,6 +737,7 @@ NEW_DAYS = 7  # a source first seen this recently is new...
 NEW_HISTORY_DAYS = 14  # ...when at least this many days of flow logs before it were read without it
 INSIGHTS_PER_GB = 0.005
 TOP = 400  # sources listed per table (the charts count all of them)
+FIT_CAP = 1500  # sources one rule may carry into the page's Tighten panel; more and sg_tightener plan is the tool
 CATS = ("internal", "datacentre", "aws", "saas", "internet")
 CAT_NAME = {"internal": "Internal (your VPCs)", "datacentre": "Data centre and other private",
             "aws": "AWS", "saas": "External: SaaS and partners", "internet": "External: other networks"}  # fmt: skip
@@ -1542,6 +1543,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
     ]  # fmt: skip
 
     rules = _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_first, cut_regions, end)
+    fit = fit_model(rules, lab)
     open_rules = [r for r in rules if r["status"] == "open"]
 
     # ---- verdicts: why each source was refused, and which let-in sources look wrong
@@ -1692,6 +1694,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         },
         "regions": regions,
         "rules": rules,
+        "fit": fit,
         "refused": refused,
         "suggestions": suggestions,
         "active": active,
@@ -2764,6 +2767,9 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
                 row["top"] = [{"src": s, **lab(s), "flows": h[0]}
                               for s, h in sorted(here.items(), key=lambda kv: -kv[1][0])[:8]]  # fmt: skip
                 row["status"], row["note"] = _status(row, rule, entry, logged, g, cut_regions, days)
+                if not entry.startswith("pl-"):  # for the Tighten panel: who used it, and when last
+                    row["keep_src"] = [[s, h[1]] for s, h in here.items()] + [[s, None] for s in sorted(unattr - set(here))]
+                    row["fit_ok"] = logged and g["region"] not in cut_regions and days >= EVIDENCE_DAYS
                 if row["status"] == "tighten":
                     keep = sorted(set(here) | unattr)
                     within = ipaddress.IPv4Network(entry, strict=False) if not entry.startswith("pl-") else None
@@ -2780,6 +2786,35 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
     rank = {"tighten": 0, "unused": 1, "open": 2, "watch": 3, "incomplete": 4, "not logged": 5, "used": 6}
     out.sort(key=lambda r: (rank.get(r["status"], 9), -r["never"]))
     return out
+
+
+FIT_STATUSES = ("tighten", "used", "unused", "open")
+
+
+def fit_model(rules: list[dict], lab) -> dict:
+    """What the page's Tighten panel needs: every IPv4 rule that is safe to fit (its group fully logged, enough
+    days read), the sources that used it with when each was last seen, and each source's kind, type, name and
+    published or named range, so a reader can choose how much room to leave for each kind, or each name, and see
+    at once what the change takes away and whom it would turn away. Takes keep_src and fit_ok out of each row."""
+    labels: dict[str, list] = {}
+    out = []
+    for r in rules:
+        keep, ok = r.pop("keep_src", None), r.pop("fit_ok", False)
+        if keep is None or not ok or r["status"] not in FIT_STATUSES:
+            continue
+        base = {k: r[k] for k in ("region", "group", "gname", "proto", "from", "to", "ports", "source", "desc",
+                                  "allowed", "never", "status")}  # fmt: skip
+        net = r["source"].split("/")[0]
+        base["kind"] = "open" if r["source"] == "0.0.0.0/0" else lab(net)["cat"]
+        if len(keep) > FIT_CAP:
+            out.append({**base, "too_many": len(keep), "srcs": []})
+            continue
+        for src, _last in keep:
+            if src not in labels:
+                lb = lab(src)
+                labels[src] = [lb["cat"], lb.get("group", lb["cat"]), lb.get("name", ""), lb.get("range", "")]
+        out.append({**base, "srcs": sorted(keep, key=lambda x: _ip(x[0]) or 0)})
+    return {"rules": out, "labels": labels, "cap": FIT_CAP}
 
 
 def _subnets(ips) -> set[int]:
@@ -3036,6 +3071,7 @@ def page_data(doc: dict, onprem: str = "", internal: str = "", now: float | None
     days = (end - first) / DAY if first is not None else 0
     keys = [k for k, (span, _) in RANGES.items() if span <= (days + 0.5) * DAY] or ["24h"]
     ranges = {k: build(doc, k, onprem, internal, names) for k in keys}
+    fits = [rep.pop("fit", None) for rep in ranges.values()]  # the rules are read over the whole read: keep one
     regions = [r for r, x in doc["regions"].items() if x.get("query_sets")]
     return {
         "schema": "sg-tightener.review/v1",
@@ -3047,6 +3083,7 @@ def page_data(doc: dict, onprem: str = "", internal: str = "", now: float | None
         "end": end,
         "default": keys[-1],
         "ranges": ranges,
+        "fit": fits[-1] or {"rules": [], "labels": {}, "cap": FIT_CAP},
         "names": len(names or []),
         "source_types": [{"key": k, "name": n, "kind": kind, "note": sg_ipintel.GROUP_NOTE.get(k, "")}
                          for k, (n, kind) in SOURCE_TYPES.items()],

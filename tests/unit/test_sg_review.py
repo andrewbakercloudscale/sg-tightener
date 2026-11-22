@@ -419,3 +419,39 @@ def test_names_cli_writes_an_example_then_checks_it(tmp_path):
     (tmp_path / "broken.yaml").write_text("- name: [unclosed\n")
     with pytest.raises(SystemExit, match="broken.yaml"):
         sg_review.load_names(tmp_path / "broken.yaml")
+
+
+# ----------------------------------------------------------------------------------- tighten panel
+def test_fit_model_gives_each_rule_its_sources_once_for_the_page():
+    doc = demo_sg.build_doc(ACCT, time.time(), 30)
+    data = sg_review.page_data(doc, "", demo_sg.INTERNAL)
+    fit = data["fit"]
+    assert fit["cap"] == sg_review.FIT_CAP and all("fit" not in r for r in data["ranges"].values())
+    rules = {(r["group"], r["from"], r["source"]): r for r in fit["rules"]}
+    wide = rules[("sg-0app0000000000001", 443, "10.0.0.0/8")]
+    assert wide["status"] == "tighten" and wide["allowed"] == 2**24 and len(wide["srcs"]) == 14
+    assert all(src in fit["labels"] for src, _ in wide["srcs"]), "every kept source carries its attribution"
+    assert {r["kind"] for r in fit["rules"] if r["source"] == "0.0.0.0/0"} == {"open"}
+    assert all(not r["srcs"] for r in fit["rules"] if r["status"] == "unused")
+    assert all(not any(k in r for k in ("keep_src", "fit_ok")) for r in fit["rules"])
+    cat, _typ, name, rng = fit["labels"]["10.40.3.10"]
+    assert cat == "internal" and name.startswith("Payments prod") and rng == "10.40.0.0/16"
+
+
+def test_page_carries_the_tighten_panel_and_its_plan_goes_through_propose():
+    import sg_db
+
+    doc = demo_sg.build_doc(ACCT, time.time(), 7)
+    page = sg_review.render_page(sg_review.page_data(doc, "", demo_sg.INTERNAL))
+    for needle in ('id="fitWrap"', 'id="fitKinds"', 'id="fitRecent"', 'id="fitRules"', "sg-tightener.plan/v1",
+                   "/api/propose", "Refused sources"):
+        assert needle in page, needle
+    # The plan the page writes (fitPlans): revoke the rule as it is, authorise the fitted ranges.
+    perm = lambda cidrs: {"IpProtocol": "6", "FromPort": 443, "ToPort": 443,
+                          "IpRanges": [{"CidrIp": c, "Description": "callers"} for c in cidrs]}
+    plan = {"schema": "sg-tightener.plan/v1", "account": ACCT, "region": demo_sg.REGION,
+            "groups": [{"group_id": "sg-0app0000000000001", "group_name": "app",
+                        "revoke": [perm(["10.0.0.0/8"])], "authorise": [perm(["10.20.1.0/24", "10.40.3.0/24"])]}]}
+    got = sg_db.plan_changes(plan, ACCT)
+    assert [(op, r[4]) for _, op, r, _ in got] == [("remove", "10.0.0.0/8"), ("add", "10.20.1.0/24"), ("add", "10.40.3.0/24")]
+    assert {r[:4] for _, _, r, _ in got} == {(sg_db.IN, "tcp", 443, 443)}

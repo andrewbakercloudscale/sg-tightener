@@ -1,5 +1,27 @@
 # Changelog
 
+## 5.1.0 - 2026-11-22
+
+- **Tighten on the timeline.** The Security Group Review's over-provisioned
+  graph has a **Tighten** panel: each rule fitted to the sources that used it,
+  with the room chosen per kind (internal, data centre, AWS, SaaS and partners,
+  other networks), overridden per source type or per name: each address only,
+  the /28, /24, /20 or /16 around each, its published or named range (Lambda,
+  Zscaler, a partner from the names file), or keep the rule. Optional: drop
+  sources not seen in 60, 30 or 7 days; fit rules open to every address; remove
+  rules nothing used.
+- The graph shows the **After** point (dashed) and the refused sources each day
+  on a right-hand scale, with how many the change would turn away. Rule changes
+  are marked ▼ when they only took entries away (a tightening) and ▲ otherwise,
+  so a spike in refusals after a ▼ shows a source was cut off.
+- **Propose from the page.** Opened from the console (**Review and tighten** on
+  the Overview, `/review?account=ID`, served with the console's nonce CSP), it
+  proposes one change request per region; opened as a file, it downloads a plan
+  (`sg-tightener.plan/v1`) for `sg_db.py propose --plan`. Two-person approval
+  and enforce mode apply as for any change.
+- The console's state marks which accounts `sg_review` has read (`reviewed`).
+- README: the Security Group Review graphs come first ("See it first").
+
 ## 5.0.0 - 2026-11-21
 
 Breaking: every account starts in **surveillance** mode. Reports, plans and

@@ -11,6 +11,34 @@ Website: <https://cloudtorepo.com/tightener.html>
 
 ---
 
+## See it first
+
+`python sg_review.py demo` writes this page for a made-up account, with no AWS access. Every graph
+is a timeline: what was refused, how many addresses each rule allows that never connected, and who
+is active.
+
+**Tighten on the timeline.** The over-provisioned graph has a **Tighten** panel under it. Pull the
+room back by kind (internal can keep a /24, the internet only the exact addresses), by source type,
+or by name (Lambda, Zscaler or a partner keep their published range). The graph's last point drops
+to what would be left, and its grey bars show refused sources, with how many the change would turn
+away. Propose it (in the console, or as a plan for `sg_db.py propose --plan`); a second person
+approves; it is applied in enforce mode. ▼ marks a tightening on the timeline: if the refused bars
+spike after one, add the source back with **Extract rule**.
+
+| Over-provisioned, before and after | Tighten by kind, type and name |
+|---|---|
+| [![Over-provisioned addresses with the tightening's After point and refused sources](docs/images/sg-review-tighten-timeline.png)](docs/images/sg-review-tighten-timeline.png) | [![The Tighten panel](docs/images/sg-review-tighten.png)](docs/images/sg-review-tighten.png) |
+
+| Refused sources | Over-provisioned addresses | Active sources |
+|---|---|---|
+| [![Refused sources](docs/images/sg-review-refused-sources.png)](docs/images/sg-review-refused-sources.png) | [![Over-provisioned addresses](docs/images/sg-review-over-provisioned.png)](docs/images/sg-review-over-provisioned.png) | [![Active sources](docs/images/sg-review-active-sources.png)](docs/images/sg-review-active-sources.png) |
+| **By source type** | **By port class** | **Ports** |
+| [![Refused sources by source type](docs/images/sg-review-refused-by-source-type.png)](docs/images/sg-review-refused-by-source-type.png) | [![Refused sources by port class](docs/images/sg-review-refused-by-port-class.png)](docs/images/sg-review-refused-by-port-class.png) | [![Ports](docs/images/sg-review-ports.png)](docs/images/sg-review-ports.png) |
+
+[![Extract rule](docs/images/sg-review-extract-rule.png)](docs/images/sg-review-extract-rule.png)
+
+---
+
 ## The shift: IP addresses are risk, not configuration
 
 ### The old world: security groups written by hand, frozen in Terraform
@@ -193,6 +221,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.1.0** | **Tighten on the timeline**: the Security Group Review's over-provisioned graph gets a **Tighten** panel. Pull each rule back to the sources that used it, with the room chosen by kind (internal, data centre, AWS, SaaS, internet), source type or name (a published or named range for Lambda, Zscaler or a partner); the graph shows the After point and the sources the change would refuse; ▼/▲ mark tightenings and widenings. Propose it from the page in the console (**Review and tighten** on the Overview, `/review?account=ID`) or as a plan for `sg_db.py propose --plan`; two-person approval and enforce mode still apply |
 | **5.0.0** | **Surveillance first**: every account starts in surveillance mode (report and propose, never apply) until `sg_db.py mode enforce --account ID`, which needs a passing **DryRun permission check** (`sg_db.py check`); apply checks again before any change. **Per-asset groups**: `asset-plan`/`asset-propose`/`asset-apply`/`asset-revert` give one interface a group of its own from its own flows, with every asset's group changes in the audit trail (`asset-log`); auto scaling, EKS and ECS assets are refused in favour of the shared group. **IPv6**: sources named (providers, Tor, scanners, internal vs external) and private IPv6 rules tightened. **New addresses**: each source's first sighting, with "new" (never seen before) on the page, in the console, in `watch` alerts |
 | **4.0.0** | **Security group console** (`sg_console.py serve`): one local web page for every account's groups and rules, change requests, the audit trail, and every rejected flow across an OU, with "Propose allowing" from a refused flow. **Two-person approval, on by default**: every change is a request with a reason and ticket that a different person approves before it is applied; `sg_tightener apply` and `sg_compact apply` now propose (`sg_db.py propose --plan`), break-glass still goes through. **Across an OU**: `sg_db.py import`/`reconcile --ou-id`, `sg_review.py watch --ou-id`, and an **All rejected traffic** table on the org page |
 | **3.0.0** | **Security groups live in a local database** (`sg_db.py`): every group and rule in SQLite, every change with who, why and ticket in an append-only, hash-chained audit trail. `reconcile` records changes made outside the tool (console, CLI, Terraform), names who from CloudTrail, and offers to put them back. sg_tightener, sg_compact, sg_extend and the fixes `sg_review` prints all go through it. **Terraform cannot manage security groups with this solution**: [move out once](docs/terraform.md). **Real-time alerts are for rejected traffic**: `watch --loop` every 5 minutes reads up to five minutes ago. The 2.8.0 drift Lambda is removed |
@@ -251,17 +280,14 @@ ports view, and a table of what to tighten, with CSV and approved.json downloads
   list). A names file adds your partners by range or AS number.
 - **Ports:** the busiest refused and let-in ports, each with its service and class (web, remote
   admin, database, Windows and directory, containers and more). Risky classes are marked ⚠.
+- **Tighten:** under the over-provisioned graph, fit each rule to the sources that used it, with
+  the room chosen by kind, source type or name, and see the After point and who would be refused
+  before proposing it ([how](docs/security-group-review.md#tighten-pull-the-room-back-by-kind-type-and-name)).
 - **Extract rule:** on the refused graph, this turns the sources selected into the inbound rules
   that would let them in. It shows everything known about each source, port and asset, then writes
   the AWS CLI commands and a JSON file. Nothing is applied.
 
-| Refused sources | Over-provisioned addresses | Active sources |
-|---|---|---|
-| [![Refused sources](docs/images/sg-review-refused-sources.png)](docs/images/sg-review-refused-sources.png) | [![Over-provisioned addresses](docs/images/sg-review-over-provisioned.png)](docs/images/sg-review-over-provisioned.png) | [![Active sources](docs/images/sg-review-active-sources.png)](docs/images/sg-review-active-sources.png) |
-| **By source type** | **By port class** | **Ports** |
-| [![Refused sources by source type](docs/images/sg-review-refused-by-source-type.png)](docs/images/sg-review-refused-by-source-type.png) | [![Refused sources by port class](docs/images/sg-review-refused-by-port-class.png)](docs/images/sg-review-refused-by-port-class.png) | [![Ports](docs/images/sg-review-ports.png)](docs/images/sg-review-ports.png) |
-
-[![Extract rule](docs/images/sg-review-extract-rule.png)](docs/images/sg-review-extract-rule.png)
+The graphs are [at the top of this page](#see-it-first).
 
 | Parameter | What it changes |
 |---|---|

@@ -340,6 +340,57 @@ is summed over every security group that has flow logs on all its interfaces.
   rule changes. Each triangle is a change; select one to see it.
 - Rules open to `0.0.0.0/0` are listed in the rules table and not counted here.
 - The scale is logarithmic, so each step down is a tenfold cut.
+- ▼ (green) is a change that only took entries away, a tightening; ▲ (orange) added or swapped
+  some. The grey bars, on the right scale, are the sources refused each day: a spike just after a ▼
+  means the tightening cut someone off.
+
+#### Tighten: pull the room back by kind, type and name
+
+![The Tighten panel: room per kind, overrides by source type and name, the rules that change](images/sg-review-tighten.png)
+
+Under the graph, **Tighten** fits each rule to the sources that used it. Only rules whose group has
+flow logs on every interface, read for 30 days or more, are offered. For each source, choose how
+much room to keep around it:
+
+| Room | Keeps |
+|---|---|
+| Each address only | The exact addresses seen (`/32`) |
+| The /28, /24, /20 or /16 around each | That block around each address, merged, never wider than the rule is today |
+| Its published or named range | The range the source was attributed to: an AWS service's published range (Lambda, CloudFront), a SaaS or secure access provider's (Zscaler), your VPC, or a range from `--internal`, `--onprem` or your names file |
+| Keep the rule as it is | Nothing changes for that source's rules |
+
+Choose it per **kind** (defaults: internal and data centre a /24, AWS and SaaS their range, the
+internet each address only), then override it for a **source type** (CDN, secure access, scanner…)
+or a **name** (one partner, one provider). The most specific choice wins: name, then type, then kind.
+
+- **Keep sources last seen**: any time in the read, or the last 60, 30 or 7 days. Sources older than
+  that are dropped, and listed as **would be refused**.
+- **Also fit rules open to every address**: off by default. A public website, API or load balancer
+  must stay open.
+- **Remove rules nothing used**: off by default.
+
+![The After point and the refused sources a change would turn away](images/sg-review-tighten-timeline.png)
+
+The graph's last point is drawn dashed to an **After** point: the never-seen addresses that would be
+left. The last grey bar carries how many sources the change would refuse. The table lists each rule
+that changes, now and after, the never-seen addresses before and after, and the sources kept and
+turned away.
+
+![What a mistake looks like before it is made](images/sg-review-tighten-mistake.png)
+
+**Propose it.** Nothing is applied from the page. Opened from the console (**Review and tighten** on
+the Overview), **Propose in the console** records one change request per region. Opened as a file,
+it downloads `tighten-<account>-<region>.json` (`sg-tightener.plan/v1`: each rule revoked as it is,
+the fitted ranges authorised) with the commands:
+
+```bash
+python sg_db.py propose --plan tighten-123456789012-eu-west-1.json --reason '…'
+python sg_db.py approve <id>      # someone else
+python sg_db.py apply --region eu-west-1   # enforce mode only
+```
+
+After the apply, the change is a ▼ on this graph and the next read shows whether refusals spiked.
+If they did, select the spike on the refused graph and **Extract rule** to put the source back.
 
 ### 3. Active sources
 

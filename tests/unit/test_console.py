@@ -182,3 +182,32 @@ def test_rejected_traffic_tab_has_new_ipv6_and_origin_filters():
     page = pathlib.Path(__file__).resolve().parents[2].joinpath("assets", "sg_console.html").read_text()
     for needle in ('id="fNew"', 'id="fWhere"', "r.new", "r.v6", "r.internal", "r.scan", "first seen"):
         assert needle in page, needle
+
+
+def test_review_page_is_served_with_the_nonce_and_can_propose_its_plan(console):
+    p = console["port"]
+    status, body, _ = _req(p, "GET", f"/review?account={demo.ACCOUNT}")
+    assert status == 404 and "sg_review" in body["error"]
+    assert _req(p, "GET", f"/review?account={demo.ACCOUNT}", cookie=False)[0] == 403
+    doc = demo.build_doc(demo.ACCOUNT, time.time(), 30)  # rules are fitted only from 30 days or more
+    sg_review.save(doc)
+    status, page, headers = _req(p, "GET", f"/review?account={demo.ACCOUNT}")
+    assert status == 200 and 'id="fitWrap"' in page
+    nonce = headers["Content-Security-Policy"].split("'nonce-", 1)[1].split("'", 1)[0]
+    assert page.count(f'<script nonce="{nonce}">') == 2 and "<script>" not in page
+    assert "connect-src 'self'" in page and "connect-src 'none'" not in page
+    data = json.loads(page.split('<script type="application/json" id="data">', 1)[1].split("</script>", 1)[0])
+    assert data["console"] == {"token": "t0ken"} and data["fit"]["rules"]
+    st = sg_db.Store(console["db"])
+    with st:
+        st.import_region(demo.ACCOUNT, REGION, {"sg-0app0000000000001": {"name": "app", "vpc": "vpc-1", "description": "",
+                         "rules": {(sg_db.IN, "tcp", 443, 443, "10.0.0.0/8"): "callers"}}}, "alice")  # fmt: skip
+    st.close()
+    _, state, _ = _req(p, "GET", "/api/state")
+    assert {a["account"]: a["reviewed"] for a in state["accounts"]} == {ACCOUNT: False, demo.ACCOUNT: True}
+    # What the page posts (fitPropose): proto as a number, one change per range.
+    change = lambda op, src: {"group": "sg-0app0000000000001", "op": op, "rule": {
+        "direction": "in", "proto": "6", "from": 443, "to": 443, "source": src, "description": "callers"}}
+    status, got, _ = _req(p, "POST", "/api/propose", {"account": demo.ACCOUNT, "region": REGION, "reason": "fitted",
+                                                       "changes": [change("remove", "10.0.0.0/8"), change("add", "10.20.1.0/24")]})  # fmt: skip
+    assert status == 200 and got["status"] == "pending", got

@@ -99,6 +99,14 @@ class Console:
                 me_account = self.targets().account
             except Exception as exc:  # noqa: BLE001 - the page still shows the database without AWS
                 me, me_account = f"not signed in to AWS ({exc})", ""
+            try:
+                import sg_review
+
+                read = set(sg_review.cached_accounts())
+            except Exception:  # noqa: BLE001 - no sg_review data directory yet
+                read = set()
+            for a in accounts.values():
+                a["reviewed"] = a["account"] in read
             return {"me": me, "me_principal": sg_db.principal(me), "account": me_account,
                     "approvals": st.approvals(), "db": str(st.path),
                     "verify": {"ok": ok, "entries": n, "why": why}, "accounts": list(accounts.values()),
@@ -160,6 +168,19 @@ class Console:
             return st.requests(status)
         finally:
             st.close()
+
+    def review(self, account: str, token: str) -> str:
+        """The sg_review page for an account, from what sg_review read, able to propose its Tighten plan here."""
+        import sg_review
+
+        if account not in sg_review.cached_accounts():
+            raise ConsoleError(404, f"sg_review has not read {account}: run `sg_review.py read` (or `org`) first")
+        doc = sg_review.load(account)
+        if not doc or not doc.get("chunks"):
+            raise ConsoleError(404, f"nothing read for {account}")
+        data = sg_review.page_data(doc, names=sg_review.load_names())
+        data["console"] = {"token": token}
+        return sg_review.render_page(data)
 
     def refused(self, range_key: str = "24h") -> dict:
         """Every refused source across the accounts sg_review has read, worst verdict first."""
@@ -364,11 +385,14 @@ def make_handler(console: Console, token: str, port: int):
         def _json(self, status: int, obj):
             self._send(status, json.dumps(obj, default=str).encode(), "application/json")
 
-        def _page(self):
+        def _page(self, page: str | None = None):
             nonce = secrets.token_urlsafe(16)
-            page = ASSET.read_text(encoding="utf-8").replace("{{NONCE}}", nonce).replace("{{TOKEN}}", token)
+            if page is None:
+                page = ASSET.read_text(encoding="utf-8").replace("{{NONCE}}", nonce).replace("{{TOKEN}}", token)
+            else:  # the sg_review page: its scripts are inline, so each gets the nonce
+                page = page.replace("<script>", f'<script nonce="{nonce}">').replace("connect-src 'none'", "connect-src 'self'", 1)
             csp = (f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; connect-src 'self'; "
-                   "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")  # fmt: skip
+                   "img-src 'self' data: blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")  # fmt: skip
             self._send(200, page.encode(), "text/html; charset=utf-8", {"Content-Security-Policy": csp})
 
         # ---- routes
@@ -387,6 +411,8 @@ def make_handler(console: Console, token: str, port: int):
             try:
                 if url.path == "/":
                     return self._page()
+                if url.path == "/review":
+                    return self._page(console.review(_need(q, "account"), token))
                 if url.path == "/api/state":
                     return self._json(200, console.state())
                 if url.path == "/api/groups":
