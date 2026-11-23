@@ -1415,9 +1415,9 @@ section.nodata .card:not(.empty-state) { display: none; }
     const fa = $("fAcct"), keep = fa.value;
     fa.innerHTML = '<option value="">Every account</option>' + refusedData.accounts.map((a) => `<option value="${esc(a.account)}">${esc(a.name || a.account)}</option>`).join("");
     fa.value = keep;
-    const short = refusedData.accounts.filter((a) => a.covered < 0.98), win = $("fRange").selectedOptions[0].textContent.toLowerCase();
+    const short = refusedData.accounts.filter((a) => a.covered < 0.9).sort((x, y) => x.covered - y.covered), win = $("fRange").selectedOptions[0].textContent.toLowerCase();
     $("fGap").hidden = !short.length;
-    $("fGap").innerHTML = short.length ? `<strong>Not all of the ${esc(win)} has data.</strong> ${short.map((a) => a.covered <= 0 || !a.first ? `${esc(a.name || a.account)}: no flow logs read for it` : `${esc(a.name || a.account)}: only from ${esc(new Date(a.first * 1000).toLocaleDateString("en-GB", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric" }))} (${Math.round(a.covered * 100)}% of the window)`).join("; ")}. Nothing listed there means not read, not quiet: <code>sg_review.py read --days N</code> (or <code>org --days N</code>) reads further back.` : "";
+    $("fGap").innerHTML = short.length ? `<strong>${short.length.toLocaleString()} account${short.length === 1 ? "" : "s"} ha${short.length === 1 ? "s" : "ve"} flow logs for only part of the ${esc(win)}</strong> (lowest ${Math.round(Math.max(0, short[0].covered) * 100)}%): rejected traffic outside that part is not counted. <details><summary>Which accounts</summary>${short.map((a) => a.covered <= 0 || !a.first ? `${esc(a.name || a.account)}: no flow logs read for it` : `${esc(a.name || a.account)}: only from ${esc(new Date(a.first * 1000).toLocaleDateString("en-GB", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric" }))} (${Math.round(a.covered * 100)}% of the window)`).join("; ")}.</details> Nothing listed for them there means not read, not quiet: read further back on the <b>Overview</b>.` : "";
     $("fAccounts").innerHTML = refusedData.accounts.map((a) => `<div class="card stat"><b>${a.refused.toLocaleString()}</b><span>refused sources in ${esc(a.name || a.account)}${a.attention.critical ? ` · <span style="color:var(--bad)">${a.attention.critical} critical</span>` : ""}${a.attention.high ? ` · ${a.attention.high} high` : ""}</span></div>`).join("")
       || noFlowLogs(refusedData.no_flow_logs_read || 0);
     $("tab-refused").classList.toggle("nodata", !refusedData.accounts.length);
@@ -1511,9 +1511,11 @@ section.nodata .card:not(.empty-state) { display: none; }
   const worst = (a) => Math.max(0, ...DIMS.map((d) => d[2](a)));
   const LCOL = ["var(--good)", "var(--warn)", "var(--high)", "var(--bad)"];
   const money = (n) => n >= 1e6 ? `$${(n / 1e6).toFixed(1)}m` : n >= 1e3 ? `$${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1)}k` : `$${Math.round(n)}`;
-  let focusBy = "owner", focusPick = null;
+  let focusBy = "owner", focusPick = null, focusChosen = false;
   function focusItems(A) {
     const spendKnown = A.some((a) => a.spend != null);
+    // One owner bubble says nothing: until someone picks, show accounts when owners are not tagged or not known.
+    if (!focusChosen) focusBy = new Set(A.map((a) => a.owner || "")).size > 1 ? "owner" : "account";
     const imp = (a) => spendKnown ? (a.spend || 0) : (a.assets_total || 0);
     if (focusBy === "account") return {spendKnown, items: A.map((a) => ({key: a.account, label: a.name || a.account, x: imp(a), y: points(a), size: Math.max(1, a.assets_total || 1), lvl: worst(a), accounts: [a]}))};
     const by = new Map();
@@ -1685,7 +1687,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("mHighTime").innerHTML = hi.rows.some((r) => r.high) ? svgStack(hi.ts, hi.rows, ["high"], {high: "#d03b3b"}, {high: "High-risk sources"}, 150) : '<p class="muted">No high-risk source was refused in this window.</p>';
   }
   $("mRange").addEventListener("change", () => act(null, loadMacro));
-  $("mFocusBy").addEventListener("click", (e) => { const b = e.target.closest("[data-fby]"); if (!b || !M) return; focusBy = b.dataset.fby; focusPick = null; drawFocus(M.accounts); });
+  $("mFocusBy").addEventListener("click", (e) => { const b = e.target.closest("[data-fby]"); if (!b || !M) return; focusBy = b.dataset.fby; focusChosen = true; focusPick = null; drawFocus(M.accounts); });
   $("mBy").addEventListener("click", (e) => { const b = e.target.closest("[data-by]"); if (!b || !M) return; mv.by = b.dataset.by; for (const x of $("mBy").children) x.setAttribute("aria-pressed", String(x === b)); drawOwner(M.accounts); });
   $("mScale").addEventListener("click", (e) => { const b = e.target.closest("[data-scale]"); if (!b || !M) return; mv.scale = b.dataset.scale; for (const x of $("mScale").children) x.setAttribute("aria-pressed", String(x === b)); drawOwner(M.accounts); });
   for (const id of ["fQ", "fSev", "fAcct", "fRisky", "fNew", "fWhere"]) $(id).addEventListener("input", drawRefused);

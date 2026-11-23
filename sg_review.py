@@ -4288,8 +4288,14 @@ def _asset_rows(asset_enis, asset_over, enis, groups, snaps, rules, logged_ids) 
 
 def report_row(kind: str, account: str, name: str, range_key: str):
     """One account's row for a console report ("macro" or "refused"), or None if none of its flow logs were read.
-    A top-level function so the console can build many in parallel processes."""
+    A top-level function so the console can build many in parallel processes. "flow" is whether its flow
+    logs were read and over how many days, for every account."""
     doc = load(account)
+    if kind == "flow":
+        import sg_remediate
+
+        _, days = sg_remediate.window(doc, 3650) if doc else ({}, 0.0)
+        return {"status": sg_remediate.flow_status(doc), "days": days}
     if not doc or not any(c["st"] in ("ok", "cut") for c in doc["chunks"]):
         return None
     if kind == "macro":

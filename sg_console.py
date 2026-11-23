@@ -96,6 +96,7 @@ class Console:
         self._lock = threading.Lock()
         self._refused_cache: dict = {}
         self._report_lock = threading.Lock()
+        self._owner_failed, self._owner_why = 0.0, ""
         self._reports_mem: dict | None = None
         self.sso = sso
         self.keys = keys  # sg_keys.Keys: signing in with a profile or keys on this computer instead of SSO
@@ -344,7 +345,9 @@ class Console:
         fresh = time.time() - 86400
         owners = {a: v["owner"] for a, v in got.items() if a in set(accounts) and v.get("at", 0) > fresh}
         missing = [a for a in accounts if a not in owners]
-        pending = bool(missing) and auth is not None and hasattr(auth, "org_client")
+        if missing and time.time() - self._owner_failed < 600:
+            why.append(f"owners not known ({self._owner_why})")
+        pending = bool(missing) and auth is not None and hasattr(auth, "org_client") and time.time() - self._owner_failed > 600
         if pending and not (self._owner_thread and self._owner_thread.is_alive()):
             self._owner_thread = threading.Thread(target=self._look_up_owners, args=(auth, missing), daemon=True)
             self._owner_thread.start()
@@ -355,10 +358,12 @@ class Console:
 
         try:
             org = auth.org_client()
-        except Exception as exc:  # noqa: BLE001 - no management account: every account is "no owner tag"
+        except Exception as exc:  # noqa: BLE001 - not known is not "no owner tag": said on the page, tried again later
             LOG.warning("owners: %s", exc)
-            found = {a: "" for a in accounts}
+            self._owner_failed, self._owner_why = time.time(), str(exc)[:160]
+            return
         else:
+            self._owner_failed, self._owner_why = 0.0, ""
             found = {}
             for a in accounts:
                 try:
@@ -952,28 +957,15 @@ class Console:
 
     def flow_accounts(self) -> list[dict]:
         """Every account in the console with whether its flow logs were read, how many days, or why not."""
-        import sg_review
-
         st = self.store()
         try:
             names = st.account_names()
             accounts = sorted({a for a, _ in st.regions()})
         finally:
             st.close()
-        out = []
-        for a in accounts:
-            try:
-                mtime = sg_review._path(a).stat().st_mtime
-            except (KeyError, OSError):
-                mtime = None
-            got = self._flow_status.get(a)
-            if not got or got[0] != mtime:
-                doc = sg_review.load(a) if mtime else None
-                _, days = sg_remediate.window(doc, 3650) if doc else ({}, 0.0)
-                got = (mtime, {"status": sg_remediate.flow_status(doc), "days": days})
-                self._flow_status[a] = got
-            out.append({"account": a, "name": names.get(a, ""), **got[1]})
-        return out
+        known = self._reports("flow", "all", {})
+        never = {"status": sg_remediate.flow_status(None), "days": 0.0}
+        return [{"account": a, "name": names.get(a, ""), **(known.get(a) or never)} for a in accounts]
 
     def remediation(self, account: str, days: int = sg_remediate.DEFAULT_DAYS) -> dict:
         """The remediation of one account over the last ``days`` days of its flow logs."""

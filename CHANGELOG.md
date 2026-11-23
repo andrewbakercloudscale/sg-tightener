@@ -14,6 +14,10 @@
   row is built in parallel processes, kept on disk until that account's read changes, and an account being read
   right now keeps its last row: before, a page could take over fifteen minutes during an OU read.
 - Remediate's account list says **Loading accounts…** while it loads instead of showing an empty box.
+- **Remediate's account list loads in seconds** across an OU, from the same per-account cache (was over four minutes).
+- Rejected traffic's coverage note lists only the accounts read below 90%, in one line with the list folded away.
+- **Where to focus shows accounts when owners are not known.** A failed owner lookup (not signed in to the
+  management account) no longer marks every account "No owner tag"; it is said on the page and tried again later.
 
 ## 5.19.4 - 2026-11-23
 
