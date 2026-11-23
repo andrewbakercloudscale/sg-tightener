@@ -364,12 +364,21 @@ def egress_query(log_format: str | None, vpc_ranges: list[str]) -> str | None:
 
 def run_query(logs, groups: list[str], query: str, start: int, end: int, wait: float = 900,
               cancelled=lambda: False) -> tuple[list[dict] | None, int, str]:  # fmt: skip
-    """(rows or None, bytes scanned, status) of one Logs Insights query over [start, end)."""
-    qid = with_backoff(
-        lambda: logs.start_query(
-            logGroupNames=groups[:50], startTime=int(start), endTime=int(end) - 1, queryString=query, limit=ROWS
-        )  # fmt: skip
-    )["queryId"]
+    """(rows or None, bytes scanned, status) of one Logs Insights query over [start, end). A slice before the
+    log group existed, or older than its retention, holds nothing: no rows, not an error."""
+    try:
+        qid = with_backoff(
+            lambda: logs.start_query(
+                logGroupNames=groups[:50], startTime=int(start), endTime=int(end) - 1, queryString=query, limit=ROWS
+            )  # fmt: skip
+        )["queryId"]
+    except ClientError as exc:
+        msg = str(exc)
+        if exc.response.get("Error", {}).get("Code") == "MalformedQueryException" and (
+            "creation time" in msg or "retention" in msg
+        ):
+            return [], 0, "Complete"
+        raise
     waited, pause = 0.0, 1.0
     while waited < wait and not cancelled():
         res = with_backoff(lambda: logs.get_query_results(queryId=qid))
