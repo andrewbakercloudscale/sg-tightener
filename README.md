@@ -269,6 +269,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.19.1** | The console reads 30 days of flow logs by default; **Remediate** on each account |
 | **5.19.0** | **Remediate an account**: pick an account and a look back (3 months by default); see the account before and after, where its traffic comes from, and each group's old rule beside its new rule; similar groups merged by default; untick anything sensitive and propose. Over-provisioning opens with a chart over time by source type |
 | **5.18.0** | **Tighten an account at a time**: the Security groups tab shows the plan from the flow logs, each rule now beside its new rule and the addresses and ports taken away, and proposes it as one change request. Pages of 50 rows, restyled controls, regions read at once |
 | **5.17.0** | **Where to focus, by owner and by account**: a risk-points against monthly-spend bubble chart on the Risk overview, with a labelled **Start here** corner and a worst-first list to act on. Owners from the account owner tag |

@@ -128,7 +128,7 @@ The **Remediate** tab is the whole job for one account, for someone who should n
 
 1. **Pick an account and a look back** (1 month, **3 months** by default, 6 months, 1 year). Accounts without flow
    logs are hidden by default; the page says how many have none (turn on VPC flow logs to CloudWatch Logs) and how
-   many have not been read (read 90 days on the Overview). With fewer days read than the look back, it says so and
+   many have not been read (read them on the Overview: How far back is 30 days by default). With fewer days read than the look back, it says so and
    offers to read them.
 2. **Read the summary.** The account **before and after**: security groups, IPv4 addresses let in, ports open, and
    how many rules are narrowed, removed as unused and merged. Rules open to everyone are left for a person to decide

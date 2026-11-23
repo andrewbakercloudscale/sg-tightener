@@ -505,7 +505,7 @@ class Console:
         Nothing is spent until ``read_confirm``."""
         account = _need(body, "account")
         try:
-            days = int(body.get("days") or 1)
+            days = int(body.get("days") or 30)
         except (TypeError, ValueError):
             raise ConsoleError(400, "days is a number")
         import sg_review
@@ -698,7 +698,7 @@ class Console:
         if not accounts:
             raise ConsoleError(400, "choose the accounts to read first")
         busy = {j["account"] for j in self.jobs.values() if j["status"] in ("starting", "running", "confirm", "queued")}
-        jobs = [self.read_start({"account": a, "regions": body.get("regions") or "all", "days": body.get("days") or 1}, start=False)
+        jobs = [self.read_start({"account": a, "regions": body.get("regions") or "all", "days": body.get("days") or 30}, start=False)
                 for a in accounts if a not in busy]  # fmt: skip
         if not jobs:
             raise ConsoleError(409, "every one of these accounts is already being read")

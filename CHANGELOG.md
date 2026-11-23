@@ -1,5 +1,10 @@
 # Changelog
 
+## 5.19.1 - 2026-11-23
+
+- **How far back defaults to 30 days** when reading accounts in the console (it was 1 day).
+- Each account's **Review and tighten** is now **Remediate** (into the Remediate tab), with **Review** beside it.
+
 ## 5.19.0 - 2026-11-23
 
 - **Remediate an account.** A new **Remediate** tab: pick an account and a look back (1 month, **3 months**, 6
