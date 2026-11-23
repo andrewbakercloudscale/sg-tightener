@@ -44,6 +44,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import sg_db
+import sg_remediate
 from sg_tightener import add_profile_arg, friendly_login_errors, use_profile
 
 LOG = logging.getLogger("sg_console")
@@ -86,7 +87,8 @@ class Console:
         self._job_extra: dict[int, dict] = {}
         self._owner_thread: threading.Thread | None = None
         self._spend_failed = 0.0
-        self._verdicts: dict = {}  # account: (mtime of its read, the engine's plan)
+        self._verdicts: dict = {}
+        self._flow_status: dict = {}  # account: (mtime of its read, its flow log status)  # account: (mtime of its read, the engine's plan)
         self.httpd = None
 
     # ------------------------------------------------------------------ plumbing
@@ -285,7 +287,7 @@ class Console:
                 st.close()
         except Exception:  # noqa: BLE001 - the overview still works from the reads alone
             names = {}
-        rows = []
+        rows, unread = [], []
         for account in sg_review.cached_accounts():
             try:
                 mtime = sg_review._path(account).stat().st_mtime
@@ -296,6 +298,7 @@ class Console:
             if got is None:
                 doc = sg_review.load(account)
                 if not doc or not any(c["st"] in ("ok", "cut") for c in doc["chunks"]):
+                    unread.append(account)
                     continue
                 rep = sg_review.build(doc, range_key, names=sg_review.load_names(), assets=True)
                 got = sg_review.macro_row(account, doc.get("name") or names.get(account, ""), rep)
@@ -310,7 +313,7 @@ class Console:
         types = {k: n for k, (n, _) in sg_review.SOURCE_TYPES.items()}
         rag = {"green_max": sg_review.RAG_GREEN_MAX, "amber_max": sg_review.RAG_AMBER_MAX}
         return {"range": range_key, "accounts": rows, "kinds": kinds, "types": types, "rag": rag,
-                "owners_pending": pending, "facts_note": why}  # fmt: skip
+                "owners_pending": pending, "facts_note": why, "no_flow_logs_read": len(unread)}  # fmt: skip
 
     # ------------------------------------------------------------------ who owns each account, and what it spends
     def _owners_path(self) -> Path:
@@ -377,7 +380,7 @@ class Console:
 
         if range_key not in RANGES:
             raise ConsoleError(400, f"range must be one of {', '.join(RANGES)}")
-        rows, accounts = [], []
+        rows, accounts, unread = [], [], []
         for account in sg_review.cached_accounts():
             try:
                 mtime = sg_review._path(account).stat().st_mtime
@@ -388,6 +391,7 @@ class Console:
             if got is None:
                 doc = sg_review.load(account)
                 if not doc or not any(c["st"] in ("ok", "cut") for c in doc["chunks"]):
+                    unread.append(account)
                     continue
                 rep = sg_review.build(doc, range_key)
                 name = doc.get("name", "")
@@ -396,13 +400,15 @@ class Console:
                        "account": {"account": account, "name": name, "refused": rep["summary"]["refused"],
                                    "attention": rep["summary"]["attention"], "end": rep.get("end"),
                                    "first": sg_review._evidence(doc)[0],
-                                   "covered": round(sum(cov) / len(cov), 2)}}  # fmt: skip
+                                   "covered": round(sum(cov) / len(cov), 2), "bins": rep.get("bins") or [],
+                                   "by_type": ((rep.get("series") or {}).get("by_group") or {}).get("refused") or {}}}  # fmt: skip
                 self._refused_cache = {k: v for k, v in self._refused_cache.items() if k[0] != account}
                 self._refused_cache[key] = got
             rows += got["rows"]
             accounts.append(got["account"])
         rows.sort(key=lambda x: (sg_review.SEV_RANK.get(x["sev"], 9), -x["flows"]))
-        return {"range": range_key, "rows": rows, "accounts": accounts}
+        types = {k: n for k, (n, _) in sg_review.SOURCE_TYPES.items()}
+        return {"range": range_key, "rows": rows, "accounts": accounts, "types": types, "no_flow_logs_read": len(unread)}
 
     # ------------------------------------------------------------------ AWS sign-in (SSO)
     def _need_sso(self):
@@ -429,7 +435,8 @@ class Console:
 
     def sso_start(self, body: dict) -> dict:
         sso = self._need_sso()
-        out = self._auth_call(sso.start, str(body.get("start_url") or ""), str(body.get("region") or ""))
+        out = self._auth_call(sso.start, str(body.get("start_url") or ""), str(body.get("region") or ""),
+                              bool(body.get("renew")))
         if self.keys is not None and self.keys.state.get("active"):
             self.keys.state["active"] = False
             self.keys._save()
@@ -801,6 +808,102 @@ class Console:
         self.httpd.shutdown()
 
     # ------------------------------------------------------------------ writes
+
+
+    # ---- remediating an account: the plan, the proposal, the merge
+    def _account_groups(self, account: str) -> tuple[dict, dict]:
+        """Every region's groups (with the inbound and outbound rules AWS holds) and interfaces, for an account."""
+        import sg_assets
+
+        st = self.store()
+        try:
+            groups, assets = {}, {}
+            for _, region in st.regions(account):
+                gs = {}
+                for gid, g in st.groups(account, region).items():
+                    have = st.rules(account, region, gid, "synced")
+                    gs[gid] = {**g, "in": {r: d for r, d in have.items() if r[0] == sg_db.IN},
+                               "out": {r: d for r, d in have.items() if r[0] == sg_db.OUT}}  # fmt: skip
+                groups[region] = gs
+                assets[region] = sg_assets.list_assets(st, account, region)
+            return groups, assets
+        finally:
+            st.close()
+
+    def flow_accounts(self) -> list[dict]:
+        """Every account in the console with whether its flow logs were read, how many days, or why not."""
+        import sg_review
+
+        st = self.store()
+        try:
+            names = st.account_names()
+            accounts = sorted({a for a, _ in st.regions()})
+        finally:
+            st.close()
+        out = []
+        for a in accounts:
+            try:
+                mtime = sg_review._path(a).stat().st_mtime
+            except (KeyError, OSError):
+                mtime = None
+            got = self._flow_status.get(a)
+            if not got or got[0] != mtime:
+                doc = sg_review.load(a) if mtime else None
+                _, days = sg_remediate.window(doc, 3650) if doc else ({}, 0.0)
+                got = (mtime, {"status": sg_remediate.flow_status(doc), "days": days})
+                self._flow_status[a] = got
+            out.append({"account": a, "name": names.get(a, ""), **got[1]})
+        return out
+
+    def remediation(self, account: str, days: int = sg_remediate.DEFAULT_DAYS) -> dict:
+        """The remediation of one account over the last ``days`` days of its flow logs."""
+        import sg_review
+
+        doc = sg_review.load(account)
+        if not doc:
+            return {"status": "unknown", "days": days, "have_days": 0, "groups": [], "merges": [], "totals": {}}
+        groups, assets = self._account_groups(account)
+        out = sg_remediate.plan(doc, int(days), groups, assets)
+        out["account"], out["name"] = account, doc.get("name", "")
+        return out
+
+    def remediate(self, body: dict) -> dict:
+        account = _need(body, "account")
+        try:
+            days = int(body.get("days") or sg_remediate.DEFAULT_DAYS)
+        except (TypeError, ValueError):
+            raise ConsoleError(400, "days is a number")
+        import sg_review
+
+        doc = sg_review.load(account)
+        if not doc:
+            raise ConsoleError(409, f"read {account}'s flow logs first: the plan comes from them")
+        groups, assets = self._account_groups(account)
+        p = sg_remediate.plan(doc, days, groups, assets)
+        st = self.store()
+        try:
+            made = sg_remediate.propose(st, account, p, groups, assets, list(body.get("groups") or []),
+                                        list(body.get("merges") or []), self.actor(), str(body.get("ticket") or ""))  # fmt: skip
+        except (sg_remediate.RemediateError, sg_db.Refused) as exc:
+            raise ConsoleError(400, str(exc))
+        finally:
+            st.close()
+        return {"requests": made}
+
+    def merge_apply(self, body: dict) -> dict:
+        try:
+            rid = int(body.get("id"))
+        except (TypeError, ValueError):
+            raise ConsoleError(400, "id is a request number")
+        st = self.store()
+        try:
+            r = st._request(rid)
+            t, ec2 = self._ec2(r["account"], r["region"])
+            return sg_remediate.apply_merge(st, ec2, r["account"], rid, t.actor)
+        except sg_remediate.RemediateError as exc:
+            raise ConsoleError(409, str(exc))
+        finally:
+            st.close()
 
     # ---- the engine's plan for an account: every inbound rule, old and new
     def verdicts(self, account: str, region: str = "") -> dict:
@@ -1228,6 +1331,10 @@ def make_handler(console: Console, token: str, port: int):
                     return self._page(console.review(_need(q, "account"), token))
                 if url.path == "/api/state":
                     return self._json(200, console.state())
+                if url.path == "/api/remediation":
+                    return self._json(200, console.remediation(_need(q, "account"), int(q.get("days") or sg_remediate.DEFAULT_DAYS)))
+                if url.path == "/api/flow-accounts":
+                    return self._json(200, console.flow_accounts())
                 if url.path == "/api/verdicts":
                     return self._json(200, console.verdicts(_need(q, "account"), str(q.get("region") or "")))
                 if url.path == "/api/groups":
@@ -1279,7 +1386,7 @@ def make_handler(console: Console, token: str, port: int):
                 return self._json(400, {"error": f"bad JSON: {exc}"})
             if not isinstance(body, dict):
                 return self._json(400, {"error": "bad JSON: an object is expected"})
-            route = {"/api/propose": console.propose, "/api/tighten": console.tighten, "/api/decide": console.decide, "/api/apply": console.apply,
+            route = {"/api/propose": console.propose, "/api/tighten": console.tighten, "/api/remediate": console.remediate, "/api/merge-apply": console.merge_apply, "/api/decide": console.decide, "/api/apply": console.apply,
                      "/api/reconcile": console.reconcile, "/api/adopt": console.adopt, "/api/check": console.check,
                      "/api/asset-apply": console.asset_apply, "/api/asset-revert": console.asset_revert,
                      "/api/sso/start": console.sso_start, "/api/sso/choose": console.sso_choose,
@@ -1304,63 +1411,9 @@ def make_handler(console: Console, token: str, port: int):
 
 
 
-ACTIONABLE = ("tighten", "remove", "ports")
-
-
-def _port_ranges(rule: dict, used: list) -> list | None:
-    """The ports a rule needs, as ranges, from the (protocol, port) seen through it: None when it cannot be
-    narrowed (all protocols, one port already, nothing seen, or too many gaps to be worth it)."""
-    import sg_review
-
-    proto, lo, hi = str(rule["proto"]), int(rule["from"]), int(rule["to"])
-    if proto not in ("6", "17") or hi <= lo:
-        return None
-    eph = sg_review.EPHEMERAL
-    ports = sorted({int(p) for pr, p in used if str(pr) == proto and (lo <= int(p) <= hi or int(p) >= eph <= hi)})
-    if not ports:
-        return None
-    out: list = []
-    for p in ports:
-        a, b = (max(lo, sg_review.EPHEMERAL), hi) if p >= sg_review.EPHEMERAL else (p, p)  # replies: one folded range
-        if out and a <= out[-1][1] + 1:
-            out[-1][1] = max(out[-1][1], b)
-        else:
-            out.append([a, b])
-    if len(out) > 8 or sum(b - a + 1 for a, b in out) >= hi - lo + 1:
-        return None
-    return out
-
-
-def _plan_rule(r: dict) -> dict:
-    """One rule of the review's table, as the Security groups tab shows it: old, new and what goes."""
-    span = 1 if str(r["proto"]) in ("-1", "1") else int(r["to"]) - int(r["from"]) + 1
-    status = r.get("status", "")
-    cidrs = list(r.get("suggest") or [])
-    ranges = _port_ranges(r, r.get("ports_used") or []) if status in ("tighten", "used") else None
-    if status == "unused":
-        action, new = "remove", []
-    elif status == "tighten" and cidrs:
-        action = "tighten"
-        new = [{"proto": str(r["proto"]), "from": a, "to": b, "source": c}
-               for c in cidrs for a, b in (ranges or [[int(r["from"]), int(r["to"])]])]  # fmt: skip
-    elif status == "used" and ranges:
-        action = "ports"
-        new = [{"proto": str(r["proto"]), "from": a, "to": b, "source": r["source"]} for a, b in ranges]
-    else:
-        action = "keep" if status == "used" else "open" if status == "open" else "wait"
-        new = None
-    allowed = int(r.get("allowed") or 0)
-    new_addr = 0 if new == [] else int(r.get("suggest_size") or allowed) if action == "tighten" else allowed
-    new_ports = 0 if new == [] else sum(b - a + 1 for a, b in ranges) if ranges else span
-    return {"key": f"{r['region']}|{r['group']}|{r['proto']}|{r['from']}|{r['to']}|{r['source']}",
-            "region": r["region"], "group": r["group"], "gname": r.get("gname", ""), "proto": str(r["proto"]),
-            "from": int(r["from"]), "to": int(r["to"]), "ports": r.get("ports", ""), "source": r["source"],
-            "desc": r.get("desc", ""), "status": status, "note": r.get("note", ""), "action": action, "new": new,
-            "addresses": allowed, "new_addresses": allowed if new is None else new_addr,
-            "cut_addresses": 0 if new is None else max(0, allowed - new_addr),
-            "port_count": span, "new_ports": span if new is None else new_ports,
-            "seen": int(r.get("here") or 0), "last_used": r.get("last_used"), "days": r.get("days"),
-            "top": [t.get("src") for t in (r.get("top") or [])][:5]}  # fmt: skip
+ACTIONABLE = sg_remediate.ACTIONABLE
+_port_ranges = sg_remediate.port_ranges
+_plan_rule = sg_remediate.plan_rule
 
 
 def serve(console: Console, port: int = 8765, token: str | None = None) -> tuple[ThreadingHTTPServer, str]:

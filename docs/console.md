@@ -105,21 +105,54 @@ Old bookmarks ending in `?token=…` still work.
 
 ![Overview, signed in: every account and region in the database](images/sg-console-overview.png)
 
-## The seven tabs
+## The eight tabs
 
 | Tab | What it shows and does |
 |---|---|
 | **Overview** | Every account and region: its **mode** (surveillance or enforce), groups, rules, assets, changes waiting to be applied, **whether this identity can apply there** (with a **Check** button: a DryRun of every write, nothing changes), when AWS was last read. The approvals mode, who you are acting as, and whether the audit trail's hash chain is intact. For an account `sg_review.py` has read, **Review and tighten** opens its Security Group Review (`/review?account=ID`), whose **Tighten** panel proposes the fitted rules here as a change request ([how](security-group-review.md#tighten-pull-the-room-back-by-kind-type-and-name)) |
 | **Risk overview** | Every account `sg_review.py` has read, side by side: headline tiles, a risk heatmap, over-provisioning by owner and over time, internet exposure, high-risk sources let in, the biggest rules to tighten, and blind spots ([below](#risk-overview-every-account)) |
-| **Over-provisioning** | For leaders: over-provisioned addresses by account and per asset, rated red, amber or green, with KPIs, the trend, and **Reduce** into each account's Tighten panel ([below](#over-provisioning-by-account-and-asset)) |
-| **Security groups** | Tighten an account at a time. Pick an account and region: **Tighten this account** shows the plan from its flow logs (rules to narrow, unused rules to remove, addresses taken away) and **Propose the whole plan** sends it as one change request. Each group is one row, worst first, 50 to a page, with **Propose** for that group and **Details** for its rules: the rule now, what the flow logs say, the new rule and what it takes away. **Reconcile with AWS**, **Apply approved changes** (press twice; off in surveillance mode); **Propose a change by hand** and **Propose keeping what AWS holds** below. Then every **asset** (network interface) and its **History** of group changes |
+| **Over-provisioning** | For leaders: over-provisioned addresses by account and per asset, rated red, amber or green, led by a chart of over-provisioning over time by source type, with KPIs and **Remediate** for each account ([below](#over-provisioning-by-account-and-asset)) |
+| **Remediate** | Pick an account and a look back: the account before and after, where its traffic comes from, the groups that change and the merges; untick anything sensitive and propose ([below](#remediate-an-account)) |
+| **Security groups** | Tighten an account at a time. Pick an account and region: **Tighten this account** shows the plan from its flow logs (rules to narrow, unused rules to remove, addresses taken away) and **Propose the whole plan** sends it as one change request. Each group is one row, worst first, 50 to a page, with **Propose** for that group and **Details** for its rules: the rule now, what the flow logs say, the new rule and what it takes away. **Refresh from AWS** (read the groups, rules and interfaces again; changes made outside the tool go in the Audit trail), **Apply approved changes** (press twice; off in surveillance mode); **Propose a change by hand** and **Propose keeping what AWS holds** below. Then every **asset** (network interface) and its **History** of group changes |
 | **Change requests** | Requests waiting for approval, approved, applied, rejected, withdrawn. Approve, or reject with a note, someone else's request; withdraw your own. Apply an approved one. An **asset request** (from `sg_db.py asset-propose`) shows the interface, the group it gets, the rules narrowed and why, and once approved **Create the group and move** the interface |
 | **Audit trail** | Every entry, newest first, searchable (who, why, ticket, group, rule) and filtered by time and origin. Changes made outside the tool are red, with who made them from CloudTrail |
-| **Rejected traffic** | Every source the security groups and network ACLs refused, in every account `sg_review.py` has read, worst verdict first. Each source is marked **internal** or **external**, **IPv6**, **scanning**, and **new** (first seen in the last 7 days, never before in at least 14 days of flow logs), with when it was first seen. Filter by account, severity, risky ports, new addresses only, internal / external / IPv6 / scanning, and text. **Propose allowing** opens the change form with the source, port and a reason filled in |
+| **Rejected traffic** | A line chart of the distinct addresses refused over time, one line per kind of source, then every source the security groups and network ACLs refused, in every account `sg_review.py` has read, worst verdict first. Each source is marked **internal** or **external**, **IPv6**, **scanning**, and **new** (first seen in the last 7 days, never before in at least 14 days of flow logs), with when it was first seen. Filter by account, severity, risky ports, new addresses only, internal / external / IPv6 / scanning, and text. **Propose allowing** opens the change form with the source, port and a reason filled in |
 
 ![Change requests: approve or reject someone else's](images/sg-console-requests.png)
 
 ![Rejected traffic across every account read](images/sg-console-rejected-traffic.png)
+
+## Remediate an account
+
+The **Remediate** tab is the whole job for one account, for someone who should not have to do the maths:
+
+1. **Pick an account and a look back** (1 month, **3 months** by default, 6 months, 1 year). Accounts without flow
+   logs are hidden by default; the page says how many have none (turn on VPC flow logs to CloudWatch Logs) and how
+   many have not been read (read 90 days on the Overview). With fewer days read than the look back, it says so and
+   offers to read them.
+2. **Read the summary.** The account **before and after**: security groups, IPv4 addresses let in, ports open, and
+   how many rules are narrowed, removed as unused and merged. Rules open to everyone are left for a person to decide
+   and not counted. Beside it, **where the traffic comes from**: your VPCs, data centre / on-prem, AWS, SaaS and
+   partners, other internet, as a share of the connections let in.
+3. **Look closer if you want.** The groups that change are behind one click: each with its interfaces, IPv4
+   addresses before and after, its own traffic mix, and **Old and new rules** (the rule now, what the flow logs say,
+   the new rule, what it takes away).
+4. **Merges are proposed by default.** Groups in the same VPC with the same outbound rules that, once tightened,
+   let in nearly the same traffic become one: each member may take on at most 256 more private addresses on the
+   ports it has, or one more port (never a risky one) from sources it already lets in, and never a public address or
+   everyone. The group on the most interfaces is kept; the others' interfaces move onto it and the emptied groups
+   stay, on no interface, to delete later. Interfaces in auto scaling groups, EKS, ECS or managed by AWS are never
+   moved, so their groups are never merged.
+5. **Untick anything sensitive** (a group, or a merge) and **Propose this remediation**. That makes one rule change
+   request per region and one merge request per merge, with the reasons written for you. The approver only approves.
+6. **Apply** the rule changes, then **Move N interfaces onto ...** on each merge (Change requests). Each move is
+   recorded and can be undone from the interface's History.
+7. **If something breaks**, it is refused: it shows on **Rejected traffic**, where **Propose allowing** opens it up
+   again for just that source and port.
+
+![Remediate: the account before and after, and where its traffic comes from](images/sg-console-remediate.png)
+
+![The groups that change, one open on its old and new rules](images/sg-console-remediate-groups.png)
 
 ## Tighten an account: the plan
 
@@ -265,6 +298,12 @@ open its review.
 The same data is at `GET /api/macro?range=1m` (`24h`, `1w`, `1m`, `3m`, `6m`, `1y`).
 
 ## Over-provisioning: by account and asset
+
+It opens with **over-provisioning over time**: the addresses let in that never sent anything, every account added
+up, at the end of each period, by **source type** or by **where it comes from**, with the total now and its change.
+It needs flow logs: accounts read for their groups only are counted and the page says how to read their flow logs.
+
+![Over-provisioning over time, by source type](images/sg-console-over-time.png)
 
 The **Over-provisioning** tab is the leaders' view: how much each account lets in that nobody uses,
 which assets carry it, and whether it is coming down.

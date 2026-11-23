@@ -170,8 +170,9 @@ class Sso:
                 "error": self.error, "chosen": self.chosen(), "portals": known_portals()}
 
     # ---------------------------------------------------------------- sign in
-    def start(self, start_url: str, region: str) -> dict:
-        """Begin the device flow: the code to show and the AWS page to open. A thread waits for approval."""
+    def start(self, start_url: str, region: str, renew: bool = False) -> dict:
+        """Begin the device flow: the code to show and the AWS page to open. A thread waits for approval.
+        ``renew`` starts it even when signed in: the session in use carries on until the new one is approved."""
         start_url, region = start_url.strip(), region.strip()
         if not start_url.startswith("https://"):
             raise SsoError("the start URL is the AWS access portal address, https://….awsapps.com/start")
@@ -184,7 +185,7 @@ class Sso:
                 self._accounts = None
                 self._plain = None
             self.state.pop("signed_out", None)
-            if self.token():  # already signed in (here, or with `aws sso login` for this portal)
+            if not renew and self.token():  # already signed in (here, or with `aws sso login` for this portal)
                 self.pending, self.error = None, ""
                 self._save()
                 return {"signed_in": True}

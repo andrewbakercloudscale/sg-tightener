@@ -1,0 +1,208 @@
+"""sg_remediate: an account's plan from its flow logs, the merges, the requests it proposes and applying a merge."""
+
+from __future__ import annotations
+
+import copy
+import time
+
+import pytest
+
+import sg_assets
+import sg_console
+import sg_db
+import sg_ipintel as ipintel
+import sg_remediate as rem
+import sg_review
+import sg_review_demo as demo
+
+ACCOUNT = "123456789012"
+ACTOR = "arn:aws:sts::123456789012:assumed-role/Admin/alice"
+TWIN = "sg-0appb000000000013"
+
+
+def _store_groups(doc: dict, store: sg_db.Store) -> None:
+    with store:
+        for region, x in doc["regions"].items():
+            groups = {}
+            for gid, g in x["snapshot"]["groups"].items():
+                rules = {}
+                for direction, rs in (("in", g["rules"]), ("out", g.get("egress") or [])):
+                    for r in rs:
+                        p = sg_db._proto(r["proto"])
+                        f, t = (-1, -1) if p == "-1" else (r["from"], r["to"])
+                        for c in list(r.get("cidrs") or []) + list(r.get("cidrs6") or []):
+                            rules[(direction, p, f, t, c)] = ""
+                groups[gid] = {"name": g["name"], "vpc": g["vpc"], "description": "", "rules": rules}
+            store.import_region(ACCOUNT, region, groups, ACTOR)
+            assets = [{"eni": e, "instance": "i-0" + e[-6:], "asg": "", "kind": "interface", "vpc_id": "vpc-0demo",
+                       "ips": v.get("ips") or [], "groups": sorted(v.get("groups") or []), "description": ""}
+                      for e, v in x["snapshot"]["enis"].items()]  # fmt: skip
+            sg_assets.observe_assets(store, ACCOUNT, region, assets, ACTOR)
+
+
+@pytest.fixture
+def world(tmp_path):
+    """The demo account, with a twin of app-servers on one of its interfaces: the two should merge."""
+    old = ipintel.DATA_DIR
+    ipintel.set_data_dir(tmp_path / "data")
+    doc = demo.build_doc(ACCOUNT, time.time(), 90)
+    for x in doc["regions"].values():
+        g = x["snapshot"]["groups"]
+        g[TWIN] = {**copy.deepcopy(g["sg-0app0000000000001"]), "name": "app-servers-blue"}
+        x["snapshot"]["enis"]["eni-0app2"]["groups"] = [TWIN]
+    sg_review.save(doc)
+    st = sg_db.Store(tmp_path / "sg.db")
+    _store_groups(doc, st)
+    st.close()
+
+    class T:
+        actor = ACTOR
+
+        def session(self, a):
+            raise AssertionError("these tests do not reach AWS")
+
+    c = sg_console.Console(str(tmp_path / "sg.db"), targets=T())
+    yield {"console": c, "doc": doc, "db": tmp_path / "sg.db"}
+    ipintel.set_data_dir(old)
+
+
+def test_flow_status_and_window(world):
+    doc = world["doc"]
+    assert rem.flow_status(doc) == "read"
+    assert rem.flow_status({"chunks": []}) in ("not-read", "unknown", "no-flow-logs")
+    _, days = rem.window(doc, 30)
+    assert 29 <= days <= 31
+    _, all_days = rem.window(doc, 365)
+    assert all_days > days
+
+
+def test_the_plan_narrows_every_group_and_counts_before_and_after(world):
+    p = world["console"].remediation(ACCOUNT, 90)
+    assert p["status"] == "read" and p["account"] == ACCOUNT
+    T = p["totals"]
+    assert T["groups"] == len(p["groups"]) and T["new_addresses"] < T["addresses"]
+    assert T["narrowed"] > 0 and T["removed"] > 0
+    assert set(T["mix"]) <= set(sg_review.CATS) and sum(T["mix"].values()) > 0
+    db = next(g for g in p["groups"] if g["name"] == "payments-db")
+    assert db["new_addresses"] < db["addresses"] and "internal" in db["mix"]
+    # rules open to everyone are left for a person, and not counted in the IPv4 totals
+    assert T["open"] >= 1
+
+
+def test_twins_merge_but_never_onto_a_public_source(world):
+    p = world["console"].remediation(ACCOUNT, 90)
+    merges = p["merges"]
+    assert len(merges) == 1
+    m = merges[0]
+    assert {x["name"] for x in m["members"]} == {"app-servers", "app-servers-blue"}
+    assert m["target_name"] == "app-servers"  # the one with the most interfaces
+    for x in m["members"]:
+        assert x["gain_addresses"] <= rem.MERGE_EXTRA_ADDRESSES and not x["gain_ports"]
+        assert all(r["source"] not in rem.OPEN for r in x["extra"])
+
+
+def test_fits_rules():
+    own = {("in", "tcp", 443, 443, "10.0.0.1/32")}
+    assert rem._fits(own, own | {("in", "tcp", 443, 443, "10.0.0.2/32")})  # a private address on a port it has
+    assert not rem._fits(own, own | {("in", "tcp", 443, 443, "52.95.3.5/32")})  # never a public one
+    assert not rem._fits(own, own | {("in", "tcp", 443, 443, "0.0.0.0/0")})
+    assert not rem._fits(own, own | {("in", "tcp", 443, 443, "10.1.0.0/16")})  # too many more addresses
+    assert rem._fits(own, own | {("in", "tcp", 8443, 8443, "10.0.0.1/32")})  # one more port, same source
+    assert not rem._fits(own, own | {("in", "tcp", 3389, 3389, "10.0.0.1/32")})  # never a risky port
+    assert not rem._fits(own, own | {("in", "tcp", 8443, 8443, "10.0.0.1/32"), ("in", "tcp", 9443, 9443, "10.0.0.1/32")})
+
+
+def test_unticking_a_member_drops_its_merge(world):
+    p = world["console"].remediation(ACCOUNT, 90)
+    groups, _ = world["console"]._account_groups(ACCOUNT)
+    keep = {g["id"] for g in p["groups"]} - {TWIN}
+    assert rem.find_merges(p["groups"], groups, keep) == []
+
+
+def test_propose_makes_a_rules_request_and_a_merge_request(world):
+    c = world["console"]
+    p = c.remediation(ACCOUNT, 90)
+    res = c.remediate({"account": ACCOUNT, "days": 90, "groups": [g["id"] for g in p["groups"]],
+                       "merges": [m["id"] for m in p["merges"]]})
+    kinds = sorted(r["kind"] for r in res["requests"])
+    assert kinds == ["merge", "rules"]
+    st = sg_db.Store(world["db"])
+    try:
+        merge = next(r for r in st.requests() if r["kind"] == "merge")
+        assert merge["status"] == "pending" and merge["changes"]["target"] == "sg-0app0000000000001"
+        assert "eni-0app2" in merge["changes"]["enis"]
+        # the rule request gives the target every rule the merged groups need
+        rules = next(r for r in st.requests() if r["kind"] == "rules")
+        added = {sg_db._rule_tuple(x["rule"]) for x in rules["changes"] if x["op"] == "add" and x["group"] == merge["changes"]["target"]}
+        removed = {sg_db._rule_tuple(x["rule"]) for x in rules["changes"] if x["op"] == "remove" and x["group"] == merge["changes"]["target"]}
+        kept = set(st.rules(ACCOUNT, merge["region"], merge["changes"]["target"], "synced")) - removed
+        assert {sg_db._rule_tuple(x) for x in merge["changes"]["need"]} <= added | kept
+    finally:
+        st.close()
+
+
+def test_nothing_chosen_is_refused(world):
+    c = world["console"]
+    with pytest.raises(sg_console.ConsoleError):
+        c.remediate({"account": ACCOUNT, "days": 90, "groups": [], "merges": []})
+
+
+class FakeEC2:
+    def __init__(self):
+        self.calls = []
+
+    def modify_network_interface_attribute(self, **kw):
+        self.calls.append(kw)
+
+
+def _approved_merge(world):
+    c = world["console"]
+    p = c.remediation(ACCOUNT, 90)
+    c.remediate({"account": ACCOUNT, "days": 90, "groups": [g["id"] for g in p["groups"]],
+                 "merges": [m["id"] for m in p["merges"]]})
+    st = sg_db.Store(world["db"])
+    rid = next(r["id"] for r in st.requests() if r["kind"] == "merge")
+    with st:
+        st.db.execute("UPDATE requests SET status = 'approved' WHERE id = ?", (rid,))
+    return st, rid
+
+
+def test_a_merge_waits_for_enforce_and_for_the_rules(world, monkeypatch):
+    st, rid = _approved_merge(world)
+    try:
+        monkeypatch.setattr(sg_db, "ensure_current", lambda *a, **k: [])
+        with pytest.raises(sg_db.Refused):
+            rem.apply_merge(st, FakeEC2(), ACCOUNT, rid, ACTOR)  # surveillance mode
+        with st:
+            st.set_mode(ACCOUNT, sg_db.ENFORCE, ACTOR, "test")
+        with pytest.raises(rem.RemediateError, match="apply the rule changes"):
+            rem.apply_merge(st, FakeEC2(), ACCOUNT, rid, ACTOR)
+    finally:
+        st.close()
+
+
+def test_a_merge_moves_the_interfaces_and_can_be_undone(world, monkeypatch):
+    st, rid = _approved_merge(world)
+    try:
+        with st:
+            st.set_mode(ACCOUNT, sg_db.ENFORCE, ACTOR, "test")
+        m = st._request(rid)["changes"]
+        monkeypatch.setattr(sg_db, "ensure_current", lambda *a, **k: [])
+        monkeypatch.setattr(st, "rules", lambda *a, **k: {sg_db._rule_tuple(x): "" for x in m["need"]})
+        live = [{"eni": e, "instance": "", "asg": "", "kind": "interface", "vpc_id": "vpc-0demo", "ips": [],
+                 "groups": g, "description": ""} for e, g in m["enis"].items()]  # fmt: skip
+        monkeypatch.setattr(sg_assets, "describe_assets", lambda ec2: live)
+        ec2 = FakeEC2()
+        out = rem.apply_merge(st, ec2, ACCOUNT, rid, ACTOR)
+        assert out["moved"] == 1 and not out["skipped"]
+        assert ec2.calls == [{"NetworkInterfaceId": "eni-0app2", "Groups": [m["target"]]}]
+        assert st._request(rid)["status"] == "applied"
+        events = [r[0] for r in st.db.execute("SELECT action FROM audit")]
+        assert "asset-swapped" in events and "groups-merged" in events
+    finally:
+        st.close()
+
+
+def test_flow_accounts_lists_read_accounts(world):
+    rows = world["console"].flow_accounts()
+    assert [r["account"] for r in rows] == [ACCOUNT] and rows[0]["status"] == "read"

@@ -69,7 +69,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 .tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 12px; }
 input, select, textarea { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--control-line); border-radius: 8px; padding: 6px 10px; min-width: 0; }
 textarea { width: 100%; min-height: 60px; }
-a.btn { text-decoration: none; display: inline-block; }
+a.btn { text-decoration: none; }
 .btn { font: inherit; font-weight: 600; border: 1px solid var(--control-line); background: var(--surface); color: var(--ink); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
 .btn:hover { border-color: var(--accent); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
@@ -241,6 +241,46 @@ tr.gdetail > td { background: var(--surface-2); padding: 4px 14px 14px; }
 tr.gdetail table { background: var(--surface); border: 1px solid var(--grid); border-radius: 8px; }
 tbody tr.gdetail:hover > td { background: var(--surface-2); }
 .pager { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 10px 0 0; font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+
+/* ---- remediate ---- */
+.fix-top { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 14px; }
+@media (max-width: 860px) { .fix-top { grid-template-columns: 1fr; } }
+.fix-top .card h3 { margin-top: 0; }
+table.ba th[scope=row] { text-transform: none; letter-spacing: 0; font-size: 13.5px; color: var(--ink); font-weight: 600; }
+table.ba td.num b { font-size: 15px; }
+.mix { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--grid); min-width: 90px; }
+.mix.wide { height: 18px; margin: 10px 0 12px; }
+.mix span { display: block; height: 100%; }
+.mix-key { display: grid; gap: 6px; font-size: 13px; }
+.mix-key span { display: flex; align-items: center; gap: 8px; } .mix-key b { margin-left: auto; font-variant-numeric: tabular-nums; }
+.mix-key i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+label.merge { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--grid); font-size: 13.5px; }
+label.merge input { margin-top: 3px; }
+tr.off > td { opacity: .5; }
+.fix-go { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; box-shadow: 0 -4px 16px rgba(0,0,0,.06); margin-top: 8px; }
+.card-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+.trend-now { font-size: 14px; margin: 4px 0 8px; } .trend-now b { font-size: 22px; margin-right: 6px; }
+
+/* every control alike */
+a.btn:hover { text-decoration: none; }
+input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; vertical-align: middle; cursor: pointer; }
+label:has(> input[type=checkbox]), label:has(> input[type=radio]) { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+label.merge { display: flex; align-items: flex-start; }
+.cellrow { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+td .cellrow .btn + .btn { margin-left: 0; }
+.acct-bar .until { color: var(--ink-2); }
+.acct-bar .until.soon { color: var(--bad); font-weight: 600; }
+
+:root { --kind-dc: #7357c9; --kind-cdn: #0f9d9a; }
+.mtile { position: relative; overflow: hidden; border-left: 0; padding-left: 20px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--c, var(--muted)) 9%, var(--surface)) 0%, var(--surface) 65%); }
+.mtile::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 5px; background: var(--c, var(--muted)); }
+.mtile b { color: color-mix(in srgb, var(--c, var(--ink)) 55%, var(--ink)); font-variant-numeric: tabular-nums; }
+#stats { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+section.nodata .card:not(.empty-state) { display: none; }
+.empty-state { border: 1px dashed var(--control-line); background: color-mix(in srgb, var(--accent) 4%, var(--surface)); }
+.empty-state h3 { margin: 0 0 6px; } .empty-state ol { margin: 8px 0 0; padding-left: 20px; } .empty-state li { margin: 4px 0; }
 </style>
 </head>
 <body>
@@ -251,6 +291,7 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
     <button role="tab" data-tab="macro" aria-selected="false">Risk overview</button>
     <button role="tab" data-tab="over" aria-selected="false">Over-provisioning</button>
+    <button role="tab" data-tab="fix" aria-selected="false">Remediate</button>
     <button role="tab" data-tab="groups" aria-selected="false">Security groups</button>
     <button role="tab" data-tab="requests" aria-selected="false">Change requests<span class="count" id="pendingCount" hidden></span></button>
     <button role="tab" data-tab="audit" aria-selected="false">Audit trail</button>
@@ -262,7 +303,7 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
 
   <section id="tab-overview">
     <h2>Every account in the database</h2>
-    <p class="lede">The database is the source of truth for security groups: every group and rule, as wanted and as AWS last held it. Changes are change requests: one person proposes, a different person approves, then they are applied. Changes made in AWS outside the tool are found by Reconcile. An account in <b>surveillance</b> mode is only reported on: what to change, and change requests, but nothing is applied. In <b>enforce</b> mode approved changes can be applied, once a permission check (DryRun, nothing changes) shows this identity can make them.</p>
+    <p class="lede">The database is the source of truth for security groups: every group and rule, as wanted and as AWS last held it. Changes are change requests: one person proposes, a different person approves, then they are applied. Changes made in AWS outside the tool are found by <b>Refresh from AWS</b>. An account in <b>surveillance</b> mode is only reported on: what to change, and change requests, but nothing is applied. In <b>enforce</b> mode approved changes can be applied, once a permission check (DryRun, nothing changes) shows this identity can make them.</p>
     <div class="card" id="ssoCard" hidden>
       <h3 style="margin-top:0">AWS sign-in</h3>
       <div id="ssoOut">
@@ -296,7 +337,7 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
         <p class="muted small">Your company's sign-in says <b>you cannot access this right now</b> after you changed network or turned on a VPN such as Zscaler? The browser is still using its earlier sign-in and connection. Select <b>Copy sign-in link</b> and paste it into a private (incognito) window, or quit and reopen the browser, then approve the same code.</p>
       </div>
       <div id="ssoIn" hidden>
-        <div class="acct-bar"><span class="pill" style="--p:var(--good)">signed in</span> <span id="ssoWho" class="who-line"></span> <button class="btn quiet" id="ssoOutBtn">Sign out</button></div>
+        <div class="acct-bar"><span class="pill" style="--p:var(--good)">signed in</span> <span id="ssoWho" class="who-line"></span> <button class="btn sm" id="ssoRenew" title="Sign in again on AWS's page, for a fresh session; reads keep going meanwhile">Renew</button><button class="btn quiet" id="ssoOutBtn">Sign out</button></div>
         <div id="ssoPick">
           <div class="form">
             <label id="pRoleWrap">Role in every account<select id="pRole"></select></label>
@@ -348,7 +389,7 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
       <input id="gFilter" type="search" placeholder="Filter groups and rules…" aria-label="Filter groups">
       <label class="small"><input type="checkbox" id="gUnused"> Show groups on no interface <span id="gUnusedN" class="muted"></span></label>
       <span class="spacer"></span>
-      <button class="btn" id="gReconcile">Reconcile with AWS</button>
+      <button class="btn" id="gReconcile" title="Read the groups, rules and interfaces from AWS again; anything changed outside this tool is recorded in the Audit trail">Refresh from AWS</button>
       <button class="btn primary" id="gApply">Apply approved changes</button>
     </div>
     <div class="card plan" id="gPlan"></div>
@@ -425,14 +466,33 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     <div class="card"><h3 style="margin-top:0">Blind spots</h3><div id="mBlind"></div></div>
   </section>
 
+  <section id="tab-fix" hidden>
+    <h2>Remediate an account</h2>
+    <p class="lede">Pick an account. Its flow logs over the look back decide what every security group should let in:
+      narrower sources, fewer ports, unused rules removed, and groups that end up letting in the same traffic merged
+      into one. Untick anything sensitive, then propose. The approver only approves. If something breaks after it is
+      applied, it shows on <b>Rejected traffic</b>, where <b>Propose allowing</b> opens it up again.</p>
+    <div class="tools">
+      <select id="xAcct" aria-label="Account to remediate"></select>
+      <label class="small">Look back <select id="xDays"><option value="30">1 month</option><option value="90" selected>3 months</option><option value="180">6 months</option><option value="365">1 year</option></select></label>
+      <label class="small"><input type="checkbox" id="xHide" checked> Hide accounts without flow logs</label>
+    </div>
+    <div class="flash" id="xNote" hidden></div>
+    <div id="xBody"></div>
+  </section>
+
   <section id="tab-over" hidden>
     <h2>Over-provisioning: every account, every asset</h2>
-    <p class="lede">How many addresses the security groups let reach each asset that were never seen in the flow logs, rated red, amber or green, by account, and whether it is coming down. <b>Reduce</b> opens the account's review, whose <b>Tighten</b> panel proposes the fitted rules for approval.</p>
+    <p class="lede">How many addresses the security groups let reach each asset that were never seen in the flow logs, rated red, amber or green, by account, and whether it is coming down. <b>Remediate</b> works out the new rules for that account and proposes them for approval.</p>
     <div class="tools">
       <select id="oRange" aria-label="Time window"><option value="1w">Last week</option><option value="1m" selected>Last month</option><option value="3m">Last 3 months</option><option value="6m">Last 6 months</option><option value="1y">Last year</option></select>
       <span class="muted small" id="oNote"></span>
     </div>
     <p class="small muted" id="oRagNote"></p>
+    <div class="card" id="oTrendCard"><div class="card-head"><h3 style="margin:0">Over-provisioning over time</h3>
+      <div class="seg" id="oBy" role="group" aria-label="Break down by"><button data-oby="type" aria-pressed="true">By source type</button><button data-oby="cat" aria-pressed="false">By where it comes from</button></div></div>
+      <p class="muted small">Addresses the security groups let in that never sent a thing in the flow logs, every account added up, at the end of each period. Falling is the goal; a step up is a rule widened or a new group.</p>
+      <div id="oTrend"></div></div>
     <div class="grid mtiles" id="oTiles"></div>
     <div class="card"><h3 style="margin-top:0">Assets by rating over time, every account</h3><p class="muted small">Each bar counts the assets in each rating at the end of that period. Red shrinking and green growing is the goal; a red step up is a rule widened or a new asset.</p><div id="oRagTime"></div></div>
     <div class="card"><h3 style="margin-top:0">By account</h3><p class="muted small">Worst first. An account is red if any asset is red. <b>Right-sized</b> is the share of its assets rated green; the line marks the target.</p><div id="oAccounts"></div></div>
@@ -457,6 +517,9 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     </div>
     <p id="fGap" class="small" hidden style="margin:8px 0;padding:8px 12px;border-left:4px solid var(--muted);border-radius:8px;background:color-mix(in srgb, var(--muted) 12%, transparent)"></p>
     <div class="grid" id="fAccounts"></div>
+    <div class="card" id="fChartCard"><div class="card-head"><h3 style="margin:0">Rejected addresses over time</h3><span class="muted small" id="fChartNote"></span></div>
+      <p class="muted small">Distinct source addresses refused in each period, one line per kind of source. Follows the account and time filters above.</p>
+      <div id="fChart"></div></div>
     <div class="card scroll"><table><thead><tr><th>Severity</th><th>Account</th><th>Source</th><th>Refused on</th><th>Flows</th><th>Last seen</th><th>Verdict</th><th></th></tr></thead><tbody id="refusedRows"></tbody></table></div>
   </section>
 </main>
@@ -474,7 +537,21 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
   const STATUS = {pending: "var(--warn)", approved: "var(--accent)", applied: "var(--good)", rejected: "var(--bad)", cancelled: "var(--muted)"};
   const PROTO = {"6": "tcp", "17": "udp", "1": "icmp"};
   const who = (a) => esc(String(a || "").split(" (")[0].replace(/^arn:aws:(sts|iam)::\d+:/, ""));
-  const when = (t) => t ? (typeof t === "number" ? new Date(t * 1000).toISOString() : t).slice(0, 16).replace("T", " ") : "";
+  const two = (n) => String(n).padStart(2, "0");
+  const localDay = (d) => `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+  // Every time is shown in this computer's own time zone. Times without a zone are UTC (what the tools write).
+  function when(t) {
+    if (!t) return "";
+    const d = typeof t === "number" ? new Date(t * 1000) : new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(t) || !/T|\d:\d/.test(t) ? t : t.replace(" ", "T") + "Z");
+    if (isNaN(d)) return String(t).slice(0, 16).replace("T", " ");
+    return `${localDay(d)} ${two(d.getHours())}:${two(d.getMinutes())}`;
+  }
+  function inHours(t) {
+    const ms = new Date(t).getTime() - Date.now();
+    if (!(ms > 0)) return "expired";
+    const m = Math.round(ms / 60000);
+    return m < 60 ? `${m} min left` : `${Math.floor(m / 60)} h ${two(m % 60)} min left`;
+  }
   let S = null, groupsCache = [], refusedData = null;
 
   const loading = (t) => `<span class="spin" aria-hidden="true"></span>${esc(t)}`;
@@ -535,7 +612,7 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
   function show(tab) {
     for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
     for (const s of document.querySelectorAll("main > section")) s.hidden = s.id !== "tab-" + tab;
-    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, macro: loadMacro, over: loadOver, overview: loadState})[tab]?.())
+    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, macro: loadMacro, over: loadOver, fix: loadFix, overview: loadState})[tab]?.())
       .catch((e) => flash(e.message, true));
   }
 
@@ -547,17 +624,18 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     $("pendingCount").hidden = !S.pending_requests; $("pendingCount").textContent = S.pending_requests;
     const regions = S.accounts.flatMap((a) => a.regions.map((r) => ({...r, account: a.account, name: a.name, mode: a.mode, reviewed: a.reviewed})));
     const sum = (k) => regions.reduce((n, r) => n + r[k], 0);
+    const nf = (n) => typeof n === "number" ? n.toLocaleString() : n;
     $("stats").innerHTML = [
-      [S.accounts.length, "accounts"], [sum("groups"), "security groups in use"], [sum("rules"), "rules"],
-      [sum("pending"), "changes to apply"], [S.pending_requests, "requests waiting for approval"],
-      [S.verify.ok ? `${S.verify.entries.toLocaleString()} ✓` : "BROKEN", S.verify.ok ? "audit entries, chain intact" : S.verify.why],
-    ].map(([n, l]) => `<div class="card stat"><b>${esc(n)}</b><span>${esc(l)}</span></div>`).join("");
+      [S.accounts.length, "accounts", "--accent"], [sum("groups"), "security groups in use", "--kind-dc"], [sum("rules"), "rules", "--kind-cdn"],
+      [sum("pending"), "changes to apply", sum("pending") ? "--warn" : "--good"], [S.pending_requests, "requests waiting for approval", S.pending_requests ? "--warn" : "--good"],
+      [S.verify.ok ? `${S.verify.entries.toLocaleString()} ✓` : "BROKEN", S.verify.ok ? "audit entries, chain intact" : S.verify.why, S.verify.ok ? "--good" : "--bad"],
+    ].map(([n, l, c]) => `<div class="card stat mtile" style="--c:var(${c})"><b>${esc(nf(n))}</b><span>${esc(l)}</span></div>`).join("");
     const rp = page("regions", regions.length, loadState);
     $("regions").innerHTML = regions.map((r, i) => `<tr><td>${esc(r.name || r.account)}<div class="muted small"><code>${esc(r.account)}</code></div></td>
       <td>${modePill(r.mode)}</td>
       <td>${esc(r.region)}</td><td>${r.groups}</td><td>${r.rules}</td><td>${r.assets}</td><td>${r.pending ? `<span class="pill" style="--p:var(--warn)">${r.pending}</span>` : "0"}</td>
-      <td class="small">${permCell(r.permissions)} <button class="btn" data-check="${i}">Check</button></td>
-      <td class="small">${esc(when(r.synced_at))}</td><td><button class="btn" data-open="${i}">Open</button>${r.reviewed ? ` <a class="btn" href="/review?account=${encodeURIComponent(r.account)}" target="_blank" rel="noopener">Review and tighten</a>` : ""}</td></tr>`).slice(rp.a, rp.b).join("")
+      <td class="small"><span class="cellrow">${permCell(r.permissions)} <button class="btn sm" data-check="${i}">Check</button></span></td>
+      <td class="small">${esc(when(r.synced_at))}</td><td><span class="cellrow"><button class="btn sm" data-open="${i}">Open</button>${r.reviewed ? `<button class="btn sm primary" data-fix="${esc(r.account)}">Remediate</button><a class="btn sm quiet" href="/review?account=${encodeURIComponent(r.account)}" target="_blank" rel="noopener" title="The account's Security Group Review, in a new tab">Review</a>` : ""}</span></td></tr>`).slice(rp.a, rp.b).join("")
       || `<tr><td colspan="10" class="muted">${S.sso ? "Nothing yet: sign in with AWS SSO above, choose your accounts and select Read." : "Nothing yet: run <code>sg_db.py import --regions … [--ou-id …]</code>."}</td></tr>`;
     pagerAfter($("regions"), rp.bar);
     for (const b of document.querySelectorAll("[data-check]")) b.addEventListener("click", () => act(b, async () => {
@@ -602,7 +680,7 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     const keys = isKeys(), K = SSO.keys;
     const signedIn = keys ? K.signed_in : SSO.signed_in;
     $("ssoOut").hidden = signedIn || (!keys && !!SSO.pending);
-    $("ssoWait").hidden = keys || !SSO.pending || SSO.signed_in;
+    $("ssoWait").hidden = keys || !SSO.pending;
     $("ssoIn").hidden = !signedIn;
     if (!signedIn && !SSO.pending) {
       if (!method) setMethod(keys ? "keys" : "sso");
@@ -626,7 +704,9 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
       try { const s = await api("/api/sso", undefined, true); if (!s.pending) { clearInterval(ssoTimer); ssoTimer = null; ssoAccounts = null; await loadState(); } } catch (e) { /* keep waiting */ }
     }, 2000);
     if (signedIn) {
-      $("ssoWho").textContent = keys ? `profile ${K.profile} · account ${K.account}` : `${SSO.start_url}${SSO.expires ? ` · until ${when(SSO.expires)} UTC` : ""}${SSO.from === "aws cli" ? " · from aws sso login" : ""}`;
+      const left = SSO.expires ? inHours(SSO.expires) : "", soon = SSO.expires && new Date(SSO.expires).getTime() - Date.now() < 3600e3;
+      $("ssoWho").innerHTML = keys ? esc(`profile ${K.profile} · account ${K.account}`) : `${esc(SSO.start_url)}${SSO.expires ? ` · <span class="until${soon ? " soon" : ""}">until ${esc(when(SSO.expires))} (${esc(left)})</span>` : ""}${SSO.from === "aws cli" ? " · from aws sso login" : ""}`;
+      $("ssoRenew").hidden = keys;
       const picking = !SSO.chosen.length || $("ssoPick").dataset.open === "1";
       $("ssoPick").hidden = !picking; $("ssoChosen").hidden = picking;
       if (picking) await loadPicker(); else drawChosen();
@@ -830,6 +910,14 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     catch (e) { flash(`Copy this link into a private (incognito) window: ${url}`); }
   }));
   $("ssoCancel").addEventListener("click", () => act($("ssoCancel"), async () => { await api("/api/sso/signout", {}); clearInterval(ssoTimer); ssoTimer = null; await loadState(); }));
+  $("ssoRenew").addEventListener("click", () => act($("ssoRenew"), async () => {
+    const tab = window.open("about:blank", "_blank");  // opened in the click, so the browser allows it
+    try {
+      const r = await api("/api/sso/start", {start_url: SSO.start_url, region: SSO.region, renew: true});
+      if (r.signed_in) { if (tab) tab.close(); } else if (tab) { tab.opener = null; tab.location.href = r.url; }
+    } catch (e) { if (tab) tab.close(); throw e; }
+    await loadState();
+  }));
   $("ssoOutBtn").addEventListener("click", () => act($("ssoOutBtn"), async () => { await api("/api/sso/signout", {}); ssoAccounts = null; roleOpts = null; ouTree = null; picked.clear(); method = null; await loadState(); }));
   $("ssoFilter").addEventListener("input", ssoFilter);
   $("chosenFilter").addEventListener("input", () => drawChosen());
@@ -908,7 +996,7 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     keep: ["Keep: in use across the range", "var(--good)"], open: ["Open to everyone: decide", "var(--high)"], wait: ["Not enough evidence yet", "var(--muted)"]};
   const actPill = (a) => `<span class="pill" style="--p:${ACT[a][1]}">${ACT[a][0]}</span>`;
   const isAct = (r) => ["tighten", "ports", "remove"].includes(r.action);
-  function cutPct(a, b) { if (!a) return ""; const p = 100 * (a - b) / a; return p >= 99.95 && b ? "−99.9%+" : `−${p >= 10 ? Math.round(p) : p.toFixed(1)}%`; }
+  function cutPct(a, b) { if (!a) return ""; if (b > a) return `+${Math.round(100 * (b - a) / a)}%`; const p = 100 * (a - b) / a; return p >= 99.95 && b ? "−99.9%+" : `−${p >= 10 ? Math.round(p) : p.toFixed(1)}%`; }
   function newRule(r) {
     if (!r.new) return '<span class="muted">unchanged</span>';
     if (!r.new.length) return '<span class="cut">removed</span>';
@@ -1026,7 +1114,7 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
       <td class="small">${a.groups.map((g, j) => `<code>${esc(g)}</code> ${esc(a.group_names[j])}`).join("<br>")}</td>
       <td class="small">${a.alone ? `<span class="muted" title="${esc(a.alone)}">no: ${esc(a.alone.split(":")[0])}</span>` : '<span class="pill" style="--p:var(--good)">possible</span>'}</td>
       <td><button class="btn" data-hist="${i}">History</button></td></tr>
-      <tr hidden id="hist-${i}"><td colspan="6"></td></tr>`).slice(ap.a, ap.b).join("") || '<tr><td colspan="6" class="muted">No assets recorded: Reconcile with AWS reads them.</td></tr>';
+      <tr hidden id="hist-${i}"><td colspan="6"></td></tr>`).slice(ap.a, ap.b).join("") || '<tr><td colspan="6" class="muted">No assets recorded: Refresh from AWS reads them.</td></tr>';
     pagerAfter($("assetRows"), ap.bar);
     for (const b of document.querySelectorAll("[data-hist]")) b.addEventListener("click", () => act(b, async () => {
       const a = rows[+b.dataset.hist], row = $(`hist-${b.dataset.hist}`);
@@ -1096,6 +1184,131 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     return false;
   }
 
+
+  // ---- remediate an account
+  const CATC = {internal: "var(--accent)", datacentre: "#8b6fd6", aws: "var(--warn)", saas: "var(--good)", internet: "var(--bad)"};
+  const CATN = {internal: "Internal (your VPCs)", datacentre: "Data centre / on-prem", aws: "AWS", saas: "SaaS and partners", internet: "Other internet"};
+  let fixAccts = null, fixPlan = null, fixOff = new Set(), fixMergeOff = new Set(), fixOpen = new Set();
+  function mixBar(mix, wide) {
+    const tot = Object.values(mix || {}).reduce((a, b) => a + b, 0);
+    if (!tot) return '<span class="muted small">no traffic seen</span>';
+    const parts = Object.keys(CATN).filter((k) => mix[k]).map((k) => [k, mix[k] / tot]);
+    return `<div class="mix${wide ? " wide" : ""}" role="img" aria-label="${esc(parts.map(([k, f]) => `${CATN[k]} ${Math.round(f * 100)}%`).join(", "))}">${parts.map(([k, f]) => `<span style="width:${(f * 100).toFixed(2)}%;background:${CATC[k]}" title="${esc(CATN[k])}: ${Math.round(f * 100)}%"></span>`).join("")}</div>`
+      + (wide ? `<div class="mix-key">${parts.map(([k, f]) => `<span><i style="background:${CATC[k]}"></i>${esc(CATN[k])} <b>${f < 0.01 ? "<1" : Math.round(f * 100)}%</b></span>`).join("")}</div>` : "");
+  }
+  const topCat = (mix) => { const e = Object.entries(mix || {}).sort((a, b) => b[1] - a[1])[0]; const t = Object.values(mix || {}).reduce((a, b) => a + b, 0); return e ? `${CATN[e[0]]} ${Math.round(100 * e[1] / t)}%` : ""; };
+  async function loadFix() {
+    fixAccts = await api("/api/flow-accounts");
+    drawFixAccounts();
+    if ($("xAcct").value) await loadFixPlan();
+  }
+  function drawFixAccounts() {
+    const hide = $("xHide").checked, cur = $("xAcct").value || $("xAcct").dataset.want || "";
+    const ok = fixAccts.filter((a) => a.status === "read"), noLogs = fixAccts.filter((a) => a.status === "no-flow-logs"), notRead = fixAccts.filter((a) => a.status !== "read" && a.status !== "no-flow-logs");
+    const shown = hide ? ok : fixAccts;
+    const label = (a) => `${a.name || a.account} (${a.account}) · ${a.status === "read" ? `${Math.round(a.days)} days of flow logs` : a.status === "no-flow-logs" ? "no flow logs" : "flow logs not read"}`;
+    $("xAcct").innerHTML = shown.map((a) => `<option value="${esc(a.account)}"${a.account === cur ? " selected" : ""}>${esc(label(a))}</option>`).join("") || '<option value="">No account with flow logs read</option>';
+    const msg = [];
+    if (noLogs.length) msg.push(`<b>${noLogs.length} account${noLogs.length === 1 ? " has" : "s have"} no VPC flow logs</b> in CloudWatch Logs${hide ? " (hidden)" : ""}: turn them on for every VPC, to CloudWatch Logs, with a format that has the interface, source, destination, port and action (the default format does), then read the account.`);
+    if (notRead.length) msg.push(`<b>${notRead.length} account${notRead.length === 1 ? "'s" : "s'"} flow logs not read yet</b>${hide ? " (hidden)" : ""}: on the Overview, Read all (or Read one), with How far back set to 90 days.`);
+    $("xNote").hidden = !msg.length; $("xNote").innerHTML = msg.join("<br>");
+  }
+  async function loadFixPlan() {
+    const a = $("xAcct").value;
+    if (!a) { $("xBody").innerHTML = ""; return; }
+    $("xBody").innerHTML = `<div class="card"><p>${loading("Working out what every group should let in…")}</p></div>`;
+    fixPlan = await api(`/api/remediation?account=${encodeURIComponent(a)}&days=${$("xDays").value}`);
+    fixOff = new Set(); fixMergeOff = new Set(); fixOpen = new Set();
+    drawFix();
+  }
+  function fixChosen() {
+    const groups = fixPlan.groups.filter((g) => g.changes && !fixOff.has(g.id));
+    const merges = fixPlan.merges.filter((m) => !fixMergeOff.has(m.id) && m.members.every((x) => !fixOff.has(x.id)));
+    return {groups, merges};
+  }
+  function drawFix() {
+    const P = fixPlan, T = P.totals || {};
+    if (P.status !== "read") {
+      $("xBody").innerHTML = `<div class="card"><h3>Nothing to work from</h3><p class="muted">${P.status === "no-flow-logs" ? "This account sends no VPC flow logs to CloudWatch Logs: turn them on, wait a few weeks, then read it." : "This account's flow logs have not been read: read 90 days of them on the Overview first."}</p></div>`;
+      return;
+    }
+    const {groups: chosen, merges} = fixChosen();
+    const cg = new Set(chosen.map((g) => g.id));
+    const after = (g) => cg.has(g.id) ? g.new_addresses : g.addresses;
+    const aBefore = P.groups.reduce((n, g) => n + g.addresses, 0), aAfter = P.groups.reduce((n, g) => n + after(g), 0);
+    const pBefore = P.groups.reduce((n, g) => n + g.ports, 0), pAfter = P.groups.reduce((n, g) => n + (cg.has(g.id) ? g.new_ports : g.ports), 0);
+    const gAfter = T.groups - merges.reduce((n, m) => n + m.members.length - 1, 0);
+    const nChanges = chosen.reduce((n, g) => n + g.changes, 0);
+    const short = P.have_days + 1 < P.days;
+    const row = (label, b, a, fmt, good) => `<tr><th scope="row">${label}</th><td class="num">${fmt(b)}</td><td class="num"><b>${fmt(a)}</b></td><td class="num">${b !== a ? `<span class="${good ? "cut" : "muted"}">${cutPct(b, a) || ""}</span>` : '<span class="muted">same</span>'}</td></tr>`;
+    $("xBody").innerHTML = `
+      ${short ? `<div class="flash">Only <b>${Math.round(P.have_days)} days</b> of flow logs read in this ${Math.round(P.days)}-day look back: rules with under 30 days of evidence are left as they are. <button class="btn sm" id="xRead">Read ${Math.round(P.days)} days for this account</button></div>` : ""}
+      <div class="fix-top">
+        <div class="card"><h3>Before and after</h3>
+          <p class="muted small">${esc(P.name || P.account)}, ${Math.round(P.have_days)} days of flow logs. Every source seen is kept, with headroom.</p>
+          <table class="ba"><thead><tr><th></th><th class="num">Before</th><th class="num">After</th><th class="num">Change</th></tr></thead><tbody>
+            ${row("Security groups", T.groups, gAfter, (n) => n.toLocaleString(), true)}
+            ${row("IPv4 addresses let in", aBefore, aAfter, fmtN, true)}
+            ${row("Ports open", pBefore, pAfter, fmtN, true)}
+            <tr><th scope="row">Interfaces protected</th><td class="num">${T.interfaces}</td><td class="num"><b>${T.interfaces}</b></td><td class="num"><span class="muted">same</span></td></tr>
+          </tbody></table>
+          <p class="small muted">${T.narrowed} rule(s) narrowed, ${T.removed} removed as unused, ${P.merges.length} merge(s).${T.open ? ` <b>${T.open} open to everyone</b>: left for you to decide (not counted above).` : ""}${T.wait ? ` ${T.wait} with too little evidence: left as they are.` : ""}</p></div>
+        <div class="card"><h3>Where the traffic comes from</h3><p class="muted small">Connections let in over the look back, by source.</p>${mixBar(T.mix, true)}</div>
+      </div>
+      ${P.merges.length ? `<div class="card"><h3>Groups to merge</h3><p class="muted small">Once tightened, these let in nearly the same traffic: each takes on at most a few more private addresses (256 in all), or one more port from sources it already lets in. Never a public address, a risky port or everyone. Their interfaces move onto one group; the emptied groups stay, on no interface, to delete later.</p>
+        ${P.merges.map((m) => `<label class="merge"><input type="checkbox" data-xmerge="${esc(m.id)}"${fixMergeOff.has(m.id) || m.members.some((x) => fixOff.has(x.id)) ? "" : " checked"}${m.members.some((x) => fixOff.has(x.id)) ? " disabled" : ""}>
+          <span>Merge ${m.members.map((x) => `<b>${esc(x.name)}</b>${x.extra.length ? ` <span class="muted small">(gains ${[...x.gain_ports.map((r) => esc(portTxt(r.proto, r.from, r.to))), x.gain_addresses ? `${x.gain_addresses.toLocaleString()} private address${x.gain_addresses === 1 ? "" : "es"}` : "", x.gain_v6 ? `${x.gain_v6} IPv6 /64${x.gain_v6 === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ")})</span>` : ""}`).join(" + ")} into <b>${esc(m.target_name)}</b> <span class="muted small">${esc(m.region)} · ${m.enis} interface(s) · ${m.rules} rule(s) after</span></span></label>`).join("")}</div>` : ""}
+      <div class="card"><details id="xGroups"${fixOpen.has("*") ? " open" : ""}><summary>The ${P.groups.filter((g) => g.changes).length} groups this changes, of ${P.groups.length} (untick any that are sensitive)</summary>
+        <div class="scroll"><table class="grp"><thead><tr><th><input type="checkbox" id="xAll" aria-label="Every group"${P.groups.every((g) => !g.changes || !fixOff.has(g.id)) ? " checked" : ""}></th><th>Group</th><th class="num">Interfaces</th><th class="num">IPv4 before</th><th class="num">After</th><th class="num">Change</th><th>Traffic from</th><th class="act"></th></tr></thead><tbody id="xRows"></tbody></table></div></details></div>
+      <div class="fix-go"><div><b>${chosen.length}</b> group(s), <b>${nChanges}</b> rule change(s)${merges.length ? `, <b>${merges.length}</b> merge(s)` : ""} · IPv4 let in ${fmtN(aBefore)} → <b>${fmtN(aAfter)}</b> <span class="cut">${cutPct(aBefore, aAfter)}</span></div>
+        <button class="btn primary" id="xGo"${chosen.length || merges.length ? "" : " disabled"}>Propose this remediation</button></div>`;
+    const rows = P.groups.filter((g) => g.changes || fixOpen.has("all"));
+    const pg = page("fix", rows.length, drawFixRows);
+    drawFixRows();
+    if (short) $("xRead").addEventListener("click", (e) => act(e.target, async () => {
+      await api("/api/read", {account: P.account, regions: "all", days: P.days});
+      flash(`Pricing a ${P.days}-day read of ${P.account}: confirm the cost on the Overview, under Each account.`);
+    }));
+    $("xGroups").addEventListener("toggle", () => { $("xGroups").open ? fixOpen.add("*") : fixOpen.delete("*"); });
+    $("xAll").addEventListener("change", () => { for (const g of P.groups) $("xAll").checked ? fixOff.delete(g.id) : fixOff.add(g.id); drawFix(); });
+    for (const b of document.querySelectorAll("[data-xmerge]")) b.addEventListener("change", () => { b.checked ? fixMergeOff.delete(b.dataset.xmerge) : fixMergeOff.add(b.dataset.xmerge); drawFix(); });
+    $("xGo").addEventListener("click", (e) => act(e.target, async () => {
+      const c = fixChosen();
+      const res = await api("/api/remediate", {account: P.account, days: P.days, groups: c.groups.map((g) => g.id), merges: c.merges.map((m) => m.id)});
+      flash(`Proposed ${res.requests.map((r) => `#${r.id} (${r.kind === "merge" ? `merge, ${r.enis} interface(s)` : `${r.changes} rule change(s) in ${r.region}`})`).join(", ")}. A second person approves them under Change requests; apply the rule changes, then the merges.`);
+      await loadState();
+    }));
+    void pg;
+  }
+  function drawFixRows() {
+    const P = fixPlan, rows = P.groups.filter((g) => g.changes);
+    const pg = page("fix", rows.length, drawFixRows);
+    const merged = {};
+    for (const m of P.merges) for (const x of m.members) if (x.id !== m.target) merged[x.id] = m.target_name;
+    $("xRows").innerHTML = rows.slice(pg.a, pg.b).map((g) => {
+      const on = !fixOff.has(g.id), open = fixOpen.has(g.id);
+      return `<tr class="grow${open ? " is-open" : ""}${on ? "" : " off"}"><td><input type="checkbox" data-xg="${esc(g.id)}"${on ? " checked" : ""} aria-label="Remediate ${esc(g.name)}"></td>
+        <td><b>${esc(g.name)}</b> <code class="muted small">${esc(g.id)}</code><div class="muted small">${esc(g.region)} · ${g.changes} rule change(s)${merged[g.id] ? ` · merges into <b>${esc(merged[g.id])}</b>` : ""}${g.open ? ` · ${g.open} open to everyone (yours to decide)` : ""}</div></td>
+        <td class="num">${g.enis}</td><td class="num">${fmtN(g.addresses)}</td><td class="num"><b>${fmtN(g.new_addresses)}</b></td><td class="num"><span class="cut">${cutPct(g.addresses, g.new_addresses)}</span></td>
+        <td>${mixBar(g.mix)}<div class="muted small">${esc(topCat(g.mix))}</div></td>
+        <td class="act"><button class="btn sm" data-xd="${esc(g.id)}">${open ? "Hide" : "Old and new rules"}</button></td></tr>
+        ${open ? `<tr class="gdetail"><td colspan="8"><table class="plan-t"><thead><tr><th>Rule now</th><th>The flow logs say</th><th>New rule</th><th>Taken away</th><th>Traffic from</th></tr></thead><tbody>${g.rules.map((r) => `<tr><td><code>${esc(portTxt(r.proto, r.from, r.to))}</code> from <code>${esc(r.source)}</code>${r.desc ? `<div class="muted small">${esc(r.desc)}</div>` : ""}</td>
+          <td>${actPill(r.action)}<div class="muted small">${esc(r.note || "")}${r.seen ? ` · ${r.seen.toLocaleString()} source(s) seen` : ""}</div></td><td>${newRule(r)}</td><td class="small">${cutCell(r)}</td><td>${mixBar(r.mix)}</td></tr>`).join("")}</tbody></table></td></tr>` : ""}`;
+    }).join("") || '<tr><td colspan="8" class="muted">Nothing to change: the flow logs support every rule as it is.</td></tr>';
+    pagerAfter($("xRows"), pg.bar);
+    for (const b of $("xRows").querySelectorAll("[data-xg]")) b.addEventListener("change", () => { b.checked ? fixOff.delete(b.dataset.xg) : fixOff.add(b.dataset.xg); drawFix(); });
+    for (const b of $("xRows").querySelectorAll("[data-xd]")) b.addEventListener("click", () => { const id = b.dataset.xd; fixOpen.has(id) ? fixOpen.delete(id) : fixOpen.add(id); drawFixRows(); });
+  }
+  $("xAcct").addEventListener("change", () => loadFixPlan().catch((e) => flash(e.message, true)));
+  $("xDays").addEventListener("change", () => loadFixPlan().catch((e) => flash(e.message, true)));
+  $("xHide").addEventListener("change", () => { drawFixAccounts(); loadFixPlan().catch((e) => flash(e.message, true)); });
+  document.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-fix]");
+    if (!b) return;
+    $("xAcct").dataset.want = b.dataset.fix; $("xAcct").value = "";
+    $("xHide").checked = false;
+    show("fix");
+  });
   // ---- requests
   async function loadRequests() {
     if (!S) await loadState();
@@ -1103,7 +1316,9 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     $("requestList").innerHTML = rows.map((r) => {
       const mine = r.proposer.split(" (")[0] === S.me_principal;
       const ruleLine = (c) => `<code>${esc(c.direction === "in" ? "in" : "out")} ${esc(c.proto === "-1" ? "all" : `${c.proto} ${c.from === c.to ? c.from : c.from + "-" + c.to}`)} ${esc(c.source)}</code>`;
-      const changes = r.kind === "asset"
+      const changes = r.kind === "merge"
+        ? `<li>Merge ${r.changes.members.map((g) => `<code>${esc((r.changes.names || {})[g] || g)}</code>`).join(", ")} into <code>${esc(r.changes.target_name)}</code> (<code>${esc(r.changes.target)}</code>): ${Object.keys(r.changes.enis).length} interface(s) move onto it, which by then lets in the ${r.changes.need.length} rule(s) they need. The emptied groups stay, on no interface.</li>`
+        : r.kind === "asset"
         ? `<li>A group of its own, <code>${esc(r.changes.group_name)}</code>, for <code>${esc(r.changes.eni)}</code>${r.changes.instance ? ` (<code>${esc(r.changes.instance)}</code>)` : ""} in place of ${r.changes.from_groups.map((g) => `<code>${esc(g)}</code>`).join(", ")}, from ${r.changes.evidence.flows} flow(s) of ${r.changes.evidence.sources} source(s)</li>
            ${r.changes.narrowed.removed.map((c) => `<li><span class="pill" style="--p:var(--bad)">narrowed</span> ${ruleLine(c)}</li>`).join("")}
            ${r.changes.narrowed.added.map((c) => `<li><span class="pill" style="--p:var(--good)">to</span> ${ruleLine(c)}</li>`).join("")}
@@ -1112,6 +1327,7 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
       const buttons = r.status === "pending" ? (mine
         ? `<button class="btn" data-dec="cancel|${r.id}">Withdraw</button><span class="muted small">A different person must approve it.</span>`
         : `<input placeholder="Note (required to reject)" data-note="${r.id}"><button class="btn primary" data-dec="approve|${r.id}">Approve</button><button class="btn danger" data-dec="reject|${r.id}">Reject</button>`)
+        : r.status === "approved" && r.kind === "merge" ? `<button class="btn primary" data-applymerge="${r.id}">Move ${Object.keys(r.changes.enis).length} interface(s) onto ${esc(r.changes.target_name)}</button><span class="muted small">Apply the rule changes for ${esc(r.region)} first.</span>`
         : r.status === "approved" && r.kind === "asset" ? `<button class="btn primary" data-applyasset="${r.id}">Create the group and move ${esc(r.changes.eni)}</button>`
         : r.status === "approved" ? `<button class="btn primary" data-applyreq="${esc(r.account)}|${esc(r.region)}">Apply in ${esc(r.region)}</button>` : "";
       return `<div class="card"><div class="tools" style="margin:0 0 6px"><b>#${r.id}</b><span class="pill" style="--p:${STATUS[r.status]}">${esc(r.status)}</span>
@@ -1125,6 +1341,12 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
       const note = document.querySelector(`[data-note="${id}"]`)?.value || "";
       const res = await api("/api/decide", {id: +id, action, note});
       flash(`Change request #${res.id}: ${res.status}.${res.status === "approved" ? " Apply it to make it in AWS." : ""}`);
+      await loadState(); await loadRequests();
+    }));
+    for (const b of document.querySelectorAll("[data-applymerge]")) b.addEventListener("click", () => act(b, async () => {
+      if (!confirmInline(b)) return;
+      const res = await api("/api/merge-apply", {id: +b.dataset.applymerge});
+      flash(`Merged: ${res.moved} interface(s) now carry ${res.target}.${res.skipped.length ? ` Not moved: ${res.skipped.join("; ")}` : ""} Undo any one from its History.`, !!res.skipped.length);
       await loadState(); await loadRequests();
     }));
     for (const b of document.querySelectorAll("[data-applyasset]")) b.addEventListener("click", () => act(b, async () => {
@@ -1185,8 +1407,36 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     $("fGap").hidden = !short.length;
     $("fGap").innerHTML = short.length ? `<strong>Not all of the ${esc(win)} has data.</strong> ${short.map((a) => a.covered <= 0 || !a.first ? `${esc(a.name || a.account)}: no flow logs read for it` : `${esc(a.name || a.account)}: only from ${esc(new Date(a.first * 1000).toLocaleDateString("en-GB", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric" }))} (${Math.round(a.covered * 100)}% of the window)`).join("; ")}. Nothing listed there means not read, not quiet: <code>sg_review.py read --days N</code> (or <code>org --days N</code>) reads further back.` : "";
     $("fAccounts").innerHTML = refusedData.accounts.map((a) => `<div class="card stat"><b>${a.refused.toLocaleString()}</b><span>refused sources in ${esc(a.name || a.account)}${a.attention.critical ? ` · <span style="color:var(--bad)">${a.attention.critical} critical</span>` : ""}${a.attention.high ? ` · ${a.attention.high} high` : ""}</span></div>`).join("")
-      || '<p class="muted">Nothing read yet: <code>sg_review.py org --regions … --ou-id …</code> reads every account in an OU.</p>';
+      || noFlowLogs(refusedData.no_flow_logs_read || 0);
+    $("tab-refused").classList.toggle("nodata", !refusedData.accounts.length);
     drawRefused();
+  }
+  function drawRefusedChart(acct) {
+    const A = refusedData.accounts.filter((a) => (!acct || a.account === acct) && (a.bins || []).length);
+    const NAMES = refusedData.types || {};
+    const keys = Object.keys(NAMES).filter((k) => A.some((a) => (a.by_type[k] || []).some(Boolean)));
+    const o = aligned(A, (a, i) => Object.fromEntries(keys.map((k) => [k, (a.by_type[k] || [])[i] || 0])));
+    $("fChartNote").textContent = acct ? (A[0]?.name || acct) : `${A.length} account${A.length === 1 ? "" : "s"}`;
+    $("fChart").innerHTML = keys.length ? svgLines(o.ts, o.rows, keys, TCOL, NAMES) : '<p class="muted">Nothing refused in this window.</p>';
+  }
+  // A line per key over time, with its total now in the legend and a dot on its last point.
+  function svgLines(ts, rows, keys, COL, NAMES, h = 240) {
+    if (!ts.length) return '<p class="muted">No data in this window.</p>';
+    const W = 1000, P = {l: 56, r: 14, t: 12, b: 26}, iw = W - P.l - P.r, ih = h - P.t - P.b;
+    const max = Math.max(1, ...rows.flatMap((r) => keys.map((k) => r[k] || 0)));
+    const x = (i) => P.l + (ts.length === 1 ? iw / 2 : (i / (ts.length - 1)) * iw), y = (v) => P.t + ih - (v / max) * ih;
+    const d = (t) => localDay(new Date(t * 1000));
+    const grid = [0.25, 0.5, 0.75, 1].map((f) => `<line x1="${P.l}" x2="${W - P.r}" y1="${y(max * f).toFixed(1)}" y2="${y(max * f).toFixed(1)}" style="stroke:var(--grid)" stroke-dasharray="3 4"/>`).join("");
+    const axis = `<line x1="${P.l}" y1="${P.t + ih}" x2="${W - P.r}" y2="${P.t + ih}" style="stroke:var(--grid)"/><text x="${P.l - 6}" y="${P.t + 10}" text-anchor="end">${big(max)}</text><text x="${P.l - 6}" y="${P.t + ih}" text-anchor="end">0</text><text x="${P.l}" y="${h - 6}">${d(ts[0])}</text><text x="${W - P.r}" y="${h - 6}" text-anchor="end">${d(ts[ts.length - 1])}</text>`;
+    const order = [...keys].sort((p, q) => Math.max(...rows.map((r) => r[q] || 0)) - Math.max(...rows.map((r) => r[p] || 0)));
+    const lines = order.map((k) => {
+      const pts = rows.map((r, i) => `${x(i).toFixed(1)},${y(r[k] || 0).toFixed(1)}`).join(" ");
+      const last = rows.length - 1;
+      return `<g><title>${esc(NAMES[k] || k)}</title><polyline points="${pts}" fill="none" style="stroke:${COL[k] || "#8f8d86"}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${x(last).toFixed(1)}" cy="${y(rows[last][k] || 0).toFixed(1)}" r="3.5" style="fill:${COL[k] || "#8f8d86"}"/></g>`;
+    }).join("");
+    const peak = (k) => Math.max(...rows.map((r) => r[k] || 0));
+    const legend = `<div class="legend">${order.map((k) => `<span><i style="background:${COL[k] || "#8f8d86"}"></i>${esc(NAMES[k] || k)} <b>${big(rows[rows.length - 1][k] || 0)}</b> <span class="muted">now, peak ${big(peak(k))}</span></span>`).join("")}</div>`;
+    return `${legend}<svg class="tl" viewBox="0 0 ${W} ${h}" role="img" aria-label="Rejected addresses over time, by kind of source">${grid}${axis}${lines}</svg>`;
   }
   function drawRefused() {
     if (!refusedData) return;
@@ -1195,6 +1445,7 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     const shown = refusedData.rows.filter((r) => (!sev || r.sev === sev) && (!acct || r.account === acct) && (!risky || r.risky) && (!nw || r.new) && whereOk(r) && (!q ||
       [r.account, r.account_name, r.src, r.name, r.type, r.port, r.port_class, r.verdict, r.reason, r.kind, r.region, r.eni, r.dst].join(" ").toLowerCase().includes(q)));
     $("fN").textContent = `${shown.length.toLocaleString()} of ${refusedData.rows.length.toLocaleString()}`;
+    drawRefusedChart(acct);
     const fp = page("refused", shown.length, drawRefused);
     $("refusedRows").innerHTML = shown.slice(fp.a, fp.b).map((r, i) => `<tr><td><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span></td>
       <td>${esc(r.account_name || r.account)}<div class="muted small"><code style="white-space:nowrap">${esc(r.account)}</code></div></td>
@@ -1319,14 +1570,22 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     M = await api(`/api/macro?range=${encodeURIComponent($("mRange").value)}`);
     drawMacro();
   }
+  function noFlowLogs(n) {
+    return `<div class="card empty-state"><h3>Nothing to show yet: no flow logs have been read</h3>
+      <p>${n ? `${n.toLocaleString()} account${n === 1 ? " has" : "s have"} been read for ${n === 1 ? "its" : "their"} security groups, but these pages need the flow logs: over-provisioning is what the rules let in minus what was actually seen.` : "No account has been read yet."}</p>
+      <ol><li>On the <b>Overview</b>, set <b>How far back</b> to <b>90 days</b>.</li><li><b>Read all</b> (or Read one), then <b>confirm the flow-log read</b> once its cost is shown.</li>
+      <li>Accounts with no VPC flow logs in CloudWatch Logs need them turned on first; <b>Remediate</b> lists them.</li></ol></div>`;
+  }
   function drawMacro() {
     const A = [...M.accounts].sort((a, b) => score(b) - score(a) || b.over_now - a.over_now);
     $("mNote").textContent = A.length ? `${A.length} account${A.length === 1 ? "" : "s"} read` : "";
     if (!A.length) {
       for (const id of ["mFocus", "mFocusList", "mTiles", "mHeat", "mOwner", "mOverTime", "mHighTime", "mExposure", "mLetIn", "mTop", "mBlind"]) $(id).innerHTML = "";
-      $("mTiles").innerHTML = '<div class="card">No account has been read yet. Read one on the Overview (or run <code>sg_review.py read</code>, or <code>sg_review.py org</code> for a whole OU).</div>';
+      $("mTiles").innerHTML = noFlowLogs(M.no_flow_logs_read || 0);
+      $("tab-macro").classList.add("nodata");
       return;
     }
+    $("tab-macro").classList.remove("nodata");
     const tile = (c, n, label) => `<div class="card stat mtile" style="--c:var(${c})"><b>${n}</b><span>${label}</span></div>`;
     const att = sum(A, (a) => a.attention.critical), hiIn = sum(A, (a) => a.high_active), openR = sum(A, (a) => a.open_risky), egress = sum(A, (a) => a.egress_bad);
     $("mTiles").innerHTML = [
@@ -1401,7 +1660,7 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     const max = Math.max(1, ...tot), bw = iw / ts.length;
     let out = "";
     rows.forEach((r, i) => { let y = P.t + ih; for (const k of keys) { const v = r[k] || 0; if (!v) continue; const hh = (v / max) * ih; y -= hh; out += `<rect x="${(P.l + i * bw).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${hh.toFixed(1)}" fill="${COL[k] || "#8f8d86"}"><title>${esc(new Date(ts[i] * 1000).toISOString().slice(0, 10))} ${esc(NAMES[k] || k)}: ${big(v)}</title></rect>`; } });
-    const d = (t) => new Date(t * 1000).toISOString().slice(0, 10);
+    const d = (t) => localDay(new Date(t * 1000));
     const axis = `<line x1="${P.l}" y1="${P.t + ih}" x2="${W - P.r}" y2="${P.t + ih}" style="stroke:var(--grid)"/><text x="${P.l - 6}" y="${P.t + 10}" text-anchor="end">${big(max)}</text><text x="${P.l - 6}" y="${P.t + ih}" text-anchor="end">0</text><text x="${P.l}" y="${h - 6}">${d(ts[0])}</text><text x="${W - P.r}" y="${h - 6}" text-anchor="end">${d(ts[ts.length - 1])}</text>`;
     const legend = keys.length > 1 ? `<div class="legend">${keys.map((k) => `<span><i style="background:${COL[k] || "#8f8d86"}"></i>${esc(NAMES[k] || k)}</span>`).join("")}</div>` : "";
     return `${legend}<svg class="tl" viewBox="0 0 ${W} ${h}" role="img" aria-label="Stacked bars over time">${axis}${out}</svg>`;
@@ -1420,7 +1679,22 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
   for (const id of ["fQ", "fSev", "fAcct", "fRisky", "fNew", "fWhere"]) $(id).addEventListener("input", drawRefused);
 
   // ---- Over-provisioning: RAG per asset, per account, and the trend
-  let O = null;
+  let O = null, oBy = "type";
+  function drawOverTrend(A) {
+    const cat = oBy === "cat", NAMES = cat ? O.kinds : O.types, COL = cat ? KCOL : TCOL;
+    const pick = (a) => (cat ? a.over_series : a.over_type_series) || {};
+    const keys = Object.keys(NAMES).filter((k) => A.some((a) => (pick(a)[k] || []).some(Boolean)));
+    const o = aligned(A, (a, i) => Object.fromEntries(keys.map((k) => [k, (pick(a)[k] || [])[i] || 0])));
+    const tot = (r) => sum(keys, (k) => r[k] || 0);
+    const first = o.rows.length ? tot(o.rows[0]) : 0, last = o.rows.length ? tot(o.rows[o.rows.length - 1]) : 0;
+    const now = o.rows.length ? o.rows[o.rows.length - 1] : {};
+    const T = tot(now);
+    const split = keys.filter((k) => now[k]).sort((p, q) => now[q] - now[p]).map((k) => `<span><i style="background:${COL[k] || "#8f8d86"}"></i>${esc(NAMES[k])} <b>${big(now[k])}</b> <span class="muted">${Math.round((100 * now[k]) / T)}%</span></span>`).join("");
+    $("oTrend").innerHTML = keys.length
+      ? `<div class="trend-now"><b>${big(last)}</b> never-seen addresses let in now ${delta(last, first)}</div>${svgStack(o.ts, o.rows, keys, COL, NAMES, 220)}${T ? `<div class="legend" style="margin-top:8px"><span class="muted small">Now:</span>${split}</div>` : ""}`
+      : '<p class="muted">Nothing over-provisioned in this window: every rule fits what the flow logs saw.</p>';
+  }
+  $("oBy").addEventListener("click", (e) => { const b = e.target.closest("[data-oby]"); if (!b || !O) return; oBy = b.dataset.oby; for (const x of $("oBy").children) x.setAttribute("aria-pressed", String(x === b)); if (O.accounts.length) drawOverTrend(O.accounts); });
   const TARGET = 0.9;  // share of assets rated green
   const RAGC = {red: "#c62828", amber: "#e8a317", green: "#2e7d32"}, RAGN = {red: "Red", amber: "Amber", green: "Green"};
   const ragPill = (r) => `<span class="rag ${r}">${RAGN[r]}</span>`;
@@ -1454,9 +1728,12 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
     $("oRagNote").innerHTML = `${ragPill("green")} up to ${big(O.rag.green_max)} never-seen addresses can reach the asset (a /24) · ${ragPill("amber")} up to ${big(O.rag.amber_max)} (a /16) · ${ragPill("red")} more, or open to the internet on a remote admin, database, Windows or container port. IPv4; rules open to the whole internet on other ports are listed but not counted.`;
     if (!A.length) {
       for (const id of ["oTiles", "oRagTime", "oAccounts", "oWins", "oAssets"]) $(id).innerHTML = "";
-      $("oTiles").innerHTML = '<div class="card">No account has been read yet. Read one on the Overview (or run <code>sg_review.py read</code>, or <code>sg_review.py org</code> for a whole OU).</div>';
+      $("oTiles").innerHTML = noFlowLogs(O.no_flow_logs_read || 0);
+      $("tab-over").classList.add("nodata");
       return;
     }
+    $("tab-over").classList.remove("nodata");
+    drawOverTrend(A);
     const tot = (k) => sum(A, (a) => a.asset_rag[k]), tot0 = (k) => sum(A, (a) => a.asset_rag_start[k]);
     const assets = sum(A, (a) => a.assets_total), green = tot("green"), red = tot("red"), amber = tot("amber");
     const over = sum(A, (a) => a.over_now), over0 = sum(A, (a) => a.over_start);
@@ -1485,7 +1762,7 @@ tbody tr.gdetail:hover > td { background: var(--surface-2); }
         <td style="min-width:90px"><b>${g}%</b><div class="bar-track target" style="--t:${TARGET * 100}%"><div class="bar-fill" style="width:${g}%;background:${g >= TARGET * 100 ? RAGC.green : RAGC.amber}"></div></div></td>
         <td class="num"><b>${big(a.over_now)}</b></td><td>${delta(a.over_now, a.over_start)}</td><td>${spark(a.over_total_series)}</td>
         <td class="num">${big(a.asset_over_avg)}</td><td>${w ? `${esc(w.name || w.eni)} <span class="muted">${big(w.over)}</span>` : ""}</td>
-        <td><a class="btn" href="/review?account=${encodeURIComponent(a.account)}" target="_blank" rel="noopener">Reduce</a></td></tr>`;
+        <td><button class="btn sm primary" data-fix="${esc(a.account)}">Remediate</button></td></tr>`;
     }).join("")}</tbody></table>`;
     const wins = A.flatMap((a) => a.top_rules.map((x) => ({...x, a}))).sort((p, q) => q.never * Math.max(1, q.enis) - p.never * Math.max(1, p.enis)).slice(0, 12);
     $("oWins").innerHTML = wins.length ? `<table class="small"><thead><tr><th>Account</th><th>Group</th><th>Port</th><th>Allows</th><th class="num">Never seen</th><th class="num">Assets reached</th><th></th></tr></thead><tbody>${wins.map((x) => `<tr><td style="white-space:nowrap">${acctLink(x.a)}</td><td>${esc(x.group)} <span class="muted">${esc(x.region)}</span></td><td>${esc(x.ports)}</td><td><code>${esc(x.source)}</code></td><td class="num"><b>${big(x.never)}</b></td><td class="num">${x.enis}</td><td>${x.status === "unused" ? '<span class="pill" style="--p:var(--warn)">remove: nothing used it</span>' : '<span class="pill" style="--p:var(--high)">tighten</span>'}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">Nothing to tighten.</p>';

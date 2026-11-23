@@ -3080,6 +3080,15 @@ def _suggest(rej: dict, enis: dict, groups: dict, snaps: dict, lab) -> list[dict
     return out
 
 
+def _mix(here: dict, lab) -> dict:
+    """Connections through a rule by where they came from (internal, data centre, AWS, SaaS, internet)."""
+    out: dict = {}
+    for src, h in here.items():
+        cat = lab(src)["cat"]
+        out[cat] = out.get(cat, 0) + h[0]
+    return out
+
+
 def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_first, cut_regions, end) -> list[dict]:
     by_eni: dict[str, list] = {}
     deleted: list = []
@@ -3142,6 +3151,7 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
                        "pc": rule_port_class(rule)}  # fmt: skip
                 row["top"] = [{"src": s, **lab(s), "flows": h[0]}
                               for s, h in sorted(here.items(), key=lambda kv: -kv[1][0])[:8]]  # fmt: skip
+                row["mix"] = _mix(here, lab)
                 row["ports_used"] = sorted(dports)[:200]  # (protocol, port) seen through the rule: narrows a port range
                 row["status"], row["note"] = _status(row, rule, entry, logged, g, cut_regions, days)
                 if not entry.startswith("pl-"):  # for the Tighten panel: who used it, and when last
@@ -3282,6 +3292,7 @@ def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regi
            "last_used": max((h[1] for h in here.values()), default=None), "since": since, "days": round(days, 1),
            "suggest": [], "suggest_size": None, "note": "", "pc": rule_port_class(rule)}  # fmt: skip
     row["top"] = [{"src": s, **lab(s), "flows": h[0]} for s, h in sorted(here.items(), key=lambda kv: -kv[1][0])[:8]]
+    row["mix"] = _mix(here, lab)
     private = net.subnet_of(sg_tightener.ULA) or any(_net6(o) and net.subnet_of(_net6(o)) for o in own6)
     if entry.endswith("::/0") and net.prefixlen == 0:
         row["status"], row["note"] = "open", "Open to every IPv6 address: the users are listed; a narrower range may do"
@@ -4303,6 +4314,7 @@ def macro_row(account: str, name: str, rep: dict, mode: str = "") -> dict:
         "over_now": s.get("over_now", 0), "over_by_cat": s.get("over_by_cat", {}),
         "over_by_type": {k: (v[-1] if v else 0) for k, v in (se.get("over_by_group") or {}).items()},
         "over_series": {k: list(v) for k, v in (se.get("over") or {}).items()},
+        "over_type_series": {k: list(v) for k, v in (se.get("over_by_group") or {}).items()},
         "refused_series": {k: list(v) for k, v in (se.get("refused") or {}).items()},
         "high_series": hi_series,
         "rules": len(rules), "tighten": s.get("tighten", 0), "unused": s.get("unused", 0),

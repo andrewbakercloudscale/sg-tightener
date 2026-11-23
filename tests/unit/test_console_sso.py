@@ -167,6 +167,17 @@ def test_a_token_from_aws_sso_login_for_the_same_portal_signs_in_and_sign_out_st
     assert not sso.token() and sso.fakes[1].logged_out
 
 
+def test_renew_asks_aws_again_while_the_current_sign_in_carries_on(sso, tmp_path):
+    (tmp_path / "cli").mkdir()
+    (tmp_path / "cli" / "x.json").write_text(json.dumps({
+        "startUrl": "https://acme.awsapps.com/start", "accessToken": "tok-1",
+        "expiresAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600))}))
+    assert sso.start("https://acme.awsapps.com/start", "eu-west-1") == {"signed_in": True}
+    out = sso.start("https://acme.awsapps.com/start", "eu-west-1", renew=True)
+    assert out["signed_in"] is False and out["code"]
+    assert sso.status()["signed_in"]  # still signed in while (and after) AWS approves the new one
+
+
 def test_the_portal_and_region_are_read_from_the_aws_config(tmp_path):
     cfg = tmp_path / "config"
     cfg.write_text("[sso-session acme]\nsso_start_url = https://acme.awsapps.com/start\nsso_region = eu-west-1\n\n"

@@ -1,5 +1,36 @@
 # Changelog
 
+## 5.19.0 - 2026-11-23
+
+- **Remediate an account.** A new **Remediate** tab: pick an account and a look back (1 month, **3 months**, 6
+  months, 1 year) and the flow logs decide what every security group should let in. It leads with the account
+  **before and after** (security groups, IPv4 addresses let in, ports open) and **where the traffic comes from**
+  (your VPCs, data centre / on-prem, AWS, SaaS and partners, other internet) as a percentage. The groups that change
+  are one click away, each with its old and new addresses, its traffic mix, and its old rule beside its new rule.
+  Untick anything sensitive and **Propose this remediation**: one rule request per region, one merge request per
+  merge. The approver only approves. If something is refused after it is applied, **Rejected traffic** has
+  **Propose allowing** to open it again.
+- **Groups are merged by default.** Groups in the same VPC that, once tightened, let in nearly the same traffic (at
+  most 256 more private addresses, or one more non-risky port from sources they already allow; never a public
+  address or everyone) become one: the target gains the rules, the members' interfaces move onto it, the emptied
+  groups stay on no interface. Each merge can be unticked; unticking a member drops its merge. Auto scaling, EKS, ECS
+  and AWS-managed interfaces are never moved. Each move is undone from the interface's History.
+- **Accounts without flow logs are hidden** on Remediate by default, with how many have none (turn them on, to
+  CloudWatch Logs) and how many are not read yet (read 90 days).
+- **Over-provisioning opens with a chart over time**, by source type or by where it comes from, with the total now and
+  its change. When accounts have been read for their groups but no flow logs, it says so and what to do.
+- Over-provisioning's **Reduce** is now **Remediate**, into the new tab. **Reconcile with AWS** is renamed **Refresh
+  from AWS**, with a tooltip saying what it does.
+- **Rejected traffic opens with a line chart**: distinct addresses refused over time, one line per kind of source,
+  following the account and time filters.
+- **Every time is in your own time zone**, not UTC. The sign-in shows how long is left, in red under an hour, and
+  **Renew** signs in again on AWS's page without signing out (reads carry on).
+- **Controls restyled throughout**: link buttons centred like the rest, checkboxes in the accent colour, row actions
+  together; the Overview tiles in colour (amber when something waits, red if the audit chain is broken). Risk
+  overview, Over-provisioning and Rejected traffic say plainly when no flow logs have been read and what to do.
+- The Overview's **Review and tighten** is now **Remediate** (into the new tab), with **Review** beside it.
+- New `sg_remediate.py`; `/api/flow-accounts`, `/api/remediation`, `/api/remediate`, `/api/merge-apply`.
+
 ## 5.18.0 - 2026-11-23
 
 - **Tighten an account, not a rule at a time.** The Security groups tab opens with **Tighten this account**: from the

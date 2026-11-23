@@ -621,7 +621,7 @@ class Store:
                 "decided_at", "note", "applied_at")  # fmt: skip
         out = [{**dict(zip(cols, r)), "changes": json.loads(r[7])} for r in self.db.execute(q + " ORDER BY id DESC", args)]
         for r in out:  # an asset request (sg_assets) holds one plan, not a list of rule changes
-            r["kind"] = "asset" if isinstance(r["changes"], dict) else "rules"
+            r["kind"] = (r["changes"].get("kind") or "asset") if isinstance(r["changes"], dict) else "rules"
         return out
 
     def _request(self, rid: int) -> dict:
@@ -655,7 +655,7 @@ class Store:
                    {"request": rid, "proposer": r["proposer"], **({"eni": r["changes"]["eni"]} if r["kind"] == "asset" else {})},
                    note or "approved", r["ticket"])  # fmt: skip
         out = {"added": [], "removed": []}
-        if r["kind"] == "asset":  # carried out by sg_db.py asset-apply, not through desired
+        if r["kind"] != "rules":  # an asset or a merge: carried out on its own, not through desired
             return out
         by_group: dict[str, list] = {}
         for c in r["changes"]:
@@ -683,7 +683,7 @@ class Store:
         """Mark approved requests whose every change AWS now holds as applied."""
         done = []
         for r in self.requests("approved", account, region):
-            if r["kind"] == "asset":
+            if r["kind"] != "rules":
                 continue
             ok = True
             for c in r["changes"]:
@@ -727,8 +727,8 @@ def _groups_of(changes) -> str:
 
 
 def _groups_of_json(changes) -> str:
-    if isinstance(changes, dict):  # an asset request
-        return ",".join(changes.get("from_groups", []))
+    if isinstance(changes, dict):  # an asset request, or a merge of groups
+        return ",".join(changes.get("from_groups") or changes.get("members") or [])
     return ",".join(sorted({c["group"] for c in changes}))
 
 
