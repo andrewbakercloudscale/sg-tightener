@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.14.0 - 2026-11-23
+
+- **No token to open the console.** It opens at `http://127.0.0.1:8765/`; AWS SSO (or the profile it
+  runs as) is the sign-in. Old bookmarks ending in `?token=…` still work. Other web pages still cannot
+  use it: every change needs a key only the console's own page holds (in a header, with a JSON body),
+  `/api/` requests the browser marks as cross-site or with a foreign `Origin` are refused, and the
+  `Host` check against DNS rebinding stays.
+- **Loading animations.** A bar along the top while anything loads, and a spinner on every "Loading…"
+  and "Reading…" message and on account reads in progress.
+- **SSO account list with many accounts.** Listing roles no longer fails with
+  `TooManyRequestsException`: adaptive retries, fewer parallel calls, a gentler second pass, roles
+  remembered from before, and **Try again** for any account AWS still turns away.
+
 ## 5.13.0 - 2026-11-23
 
 - Console **Over-provisioning** tab for leaders: over-provisioned addresses by account and by asset,
