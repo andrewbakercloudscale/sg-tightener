@@ -52,6 +52,7 @@ ASSET = Path(__file__).resolve().parent / "assets" / "sg_console.html"
 MAX_BODY = 1 << 20
 RANGES = ("24h", "1w", "1m", "3m", "6m", "1y")
 MIN_SPEND = 100.0  # US$ in the last 30 days: reading an OU skips accounts spending less (0 reads every one)
+FIRST_PASS = 86400  # an OU read does the last day of every account first, then goes further back
 BATCH_WORKERS = 24  # accounts read at once when reading an OU: each runs its own Logs Insights queries (its own quota)
 JOBS_SHOWN = 1000
 LABEL = "com.sg-tightener.console"
@@ -638,14 +639,18 @@ class Console:
         threading.Thread(target=self._run, args=(job, extra), daemon=True).start()
         return dict(job)
 
-    def _run(self, job: dict, x: dict) -> None:
+    def _run(self, job: dict, x: dict, first: tuple[int, int] = (0, 0)) -> None:
+        """Read the job's slices. ``first`` is (slices, bytes) a first pass already read, so progress adds up."""
         import sg_review
 
+        d0, b0 = first
+
         def progress(done, total, nbytes):
-            job.update(done=done, total=total, bytes=nbytes)
+            job.update(done=d0 + done, total=d0 + total, bytes=b0 + nbytes)
 
         try:
             state = sg_review.run_read(x["sess"], x["doc"], x["tasks"], job["days"], x["now"], x["stop"].is_set, progress)
+            state = {"done": d0 + state["done"], "bytes": b0 + state["bytes"]}
             job.update(done=state["done"], bytes=state["bytes"])
             job["status"] = "stopped" if x["stop"].is_set() else "done"
             self._say(job, f"read {state['done']} of {len(x['tasks'])} slices, {state['bytes'] / 1e9:.2f} GB scanned, "
@@ -764,13 +769,48 @@ class Console:
         b["status"], b["run_started"] = "running", time.time()
         b["run_done0"] = sum(j.get("done") or 0 for j in jobs)
 
-        def run(j):
+        import sg_review
+
+        first: dict[int, tuple[int, int]] = {}
+
+        def recent(j):
+            """First pass: the last day of every account, so every report fills in early."""
+            x = self._job_extra.get(j["id"])
+            if not x:
+                return
+            now, tasks = x["now"], x["tasks"]
+            new = [t for t in tasks if t[1] >= now - FIRST_PASS]
+            x["tasks"] = [t for t in tasks if t[1] < now - FIRST_PASS]
+            if not new:
+                return
             j["status"] = "running"
-            self._run(j, self._job_extra[j["id"]])
+            try:
+                got = sg_review.run_read(x["sess"], x["doc"], new, j["days"], now, x["stop"].is_set,
+                                         lambda d, t, n: j.update(done=d, total=len(tasks), bytes=n))  # fmt: skip
+                first[j["id"]] = (got["done"], got["bytes"])
+            except Exception:  # the second pass reads it again and reports the failure
+                LOG.exception("first pass of %s failed", j["account"])
+                x["tasks"] = tasks
+            j["status"] = "queued"
+
+        def run(j):
+            x = self._job_extra.get(j["id"])
+            if not x:
+                return
+            if not x["tasks"] and j["id"] in first:  # the first pass read it all
+                d, n = first[j["id"]]
+                j.update(done=d, total=d, bytes=n, status="stopped" if x["stop"].is_set() else "done")
+                self._say(j, f"read {d} slices, {n / 1e9:.2f} GB scanned, about US${n / 1e9 * sg_review.INSIGHTS_PER_GB:.2f}")
+                self._job_extra.pop(j["id"], None)
+                self._refused_cache.clear()
+                return
+            j["status"] = "running"
+            self._run(j, self._job_extra[j["id"]], first.get(j["id"], (0, 0)))
 
         def go():
             awake = _keep_awake()
             try:
+                self._pool(b, recent, jobs)
                 self._pool(b, run, jobs)
             finally:
                 if awake:

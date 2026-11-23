@@ -562,3 +562,39 @@ def test_the_batch_eta_comes_from_the_pace_so_far():
                "run_started": time.time() - 60, "run_done0": 0}
     b = c.batch_status()
     assert 55 <= b["eta"] <= 65, b  # 15 slices in a minute, 15 left
+
+
+def test_reading_an_ou_reads_the_last_day_of_every_account_first(tmp_path, monkeypatch):
+    old = ipintel.DATA_DIR
+    ipintel.set_data_dir(tmp_path / "data")
+    try:
+        monkeypatch.setattr(sg_db, "ensure_current", lambda *a, **k: [])
+        accts = ["111111111111", "222222222222"]
+
+        def plan(sess, doc, regions, days, now, say=None):
+            doc["regions"]["eu-west-1"] = {"query_sets": [["lg"]]}
+            return [("eu-west-1", now - 3600, now, [["lg"]], []), ("eu-west-1", now - 9 * 86400, now - 8 * 86400, [["lg"]], [])]
+
+        monkeypatch.setattr(sg_review, "plan_read", plan)
+        monkeypatch.setattr(sg_review, "estimate", lambda doc, a, r, now=None: {"rate": 1e6})
+        ran = []
+        monkeypatch.setattr(sg_review, "run_read", lambda sess, doc, tasks, days, now, cancelled, progress=None:
+                            ran.append((doc["account"], [t[1] >= now - 86400 for t in tasks])) or {"done": len(tasks), "bytes": 1e9})
+        c = sg_console.Console(str(tmp_path / "sg.db"), targets=FakeTargets(), sso=Chosen(accts))
+
+        def wait(status):
+            for _ in range(500):
+                if c.batch_status()["status"] != status:
+                    return c.batch_status()
+                time.sleep(0.01)
+            raise AssertionError(c.batch_status())
+
+        c.read_all({"regions": "eu-west-1", "days": 30})
+        wait("pricing")
+        c.read_all_confirm({})
+        b = wait("running")
+        assert [r[1] for r in ran[:2]] == [[True], [True]], "every account's last day comes first"
+        assert sorted(ran[2:]) == [(a, [False]) for a in accts]
+        assert b["status"] == "done" and b["done"] == 4 and b["bytes"] == 4e9
+    finally:
+        ipintel.set_data_dir(old)
