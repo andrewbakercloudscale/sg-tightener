@@ -104,6 +104,36 @@ def test_sign_in_shows_a_code_then_lists_accounts_with_read_only_roles_first(sso
     assert oct((sso.cache.stat().st_mode) & 0o777) == "0o600"
 
 
+def test_a_throttled_role_listing_keeps_the_list_and_retries_gently(sso):
+    _signed_in(sso)
+    svc, busy = sso.fakes[1], {"n": 0}
+    real = svc.get_paginator
+
+    def throttled(name):
+        if name != "list_account_roles":
+            return real(name)
+
+        def pages(kw):
+            if kw["accountId"] == OTHER and busy["n"] < busy.get("limit", 1):
+                busy["n"] += 1
+                raise RuntimeError("An error occurred (TooManyRequestsException) when calling the ListAccountRoles operation")
+            return real(name).paginate(**kw)
+        return Pager(pages)
+
+    svc.get_paginator = throttled
+    accts = {a["account"]: a for a in sso.accounts(fresh=True)}
+    assert accts[OTHER]["roles"] and "busy" not in accts[OTHER], "the second, gentler pass got it"
+    busy.update(n=0, limit=99)
+    accts = {a["account"]: a for a in sso.accounts(fresh=True)}
+    assert accts[OTHER]["roles"][0] == "ReadOnlyAccess", "roles found before are used while AWS is busy"
+    sso.state["roles"] = {}
+    busy.update(n=0)
+    accts = {a["account"]: a for a in sso.accounts(fresh=True)}
+    assert accts[OTHER]["busy"] and accts[OTHER]["roles"] == [] and accts[ACCOUNT]["roles"]
+    svc.get_paginator = real
+    assert "busy" not in {a["account"]: a for a in sso.accounts()}[OTHER], "a busy list is not kept"
+
+
 def test_choosing_accounts_gives_a_session_per_account_with_the_chosen_role(sso):
     _signed_in(sso)
     with pytest.raises(sg_sso.SsoError):

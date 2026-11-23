@@ -24,6 +24,8 @@ from pathlib import Path
 
 LOG = logging.getLogger("sg_sso")
 CLIENT_NAME = "sg-tightener-console"
+ROLE_WORKERS = 3  # Identity Center throttles ListAccountRoles hard; more threads only means more 429s
+ROLE_RETRY_PAUSE = 1.0
 GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 EARLY = 300  # treat a token or credentials as expired this many seconds before they are
 READ_ONLY_HINTS = ("readonly", "read-only", "read_only", "viewonly", "view-only", "securityaudit", "audit", "security")
@@ -103,7 +105,7 @@ class Sso:
 
     def _save(self) -> None:
         self.cache.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.cache.with_suffix(".tmp")
+        tmp = self.cache.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")  # saves can overlap
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump(self.state, f, indent=1)
@@ -115,7 +117,9 @@ class Sso:
         from botocore import UNSIGNED
         from botocore.config import Config
 
-        return boto3.client(service, region_name=region, config=Config(signature_version=UNSIGNED))
+        # adaptive retries back off when Identity Center throttles (it allows only a few calls a second)
+        return boto3.client(service, region_name=region, config=Config(signature_version=UNSIGNED,
+                                                                       retries={"mode": "adaptive", "max_attempts": 10}))
 
     # ---------------------------------------------------------------- status
     @property
@@ -262,18 +266,42 @@ class Sso:
         for page in sso.get_paginator("list_accounts").paginate(accessToken=tok):
             found += page.get("accountList", [])
 
+        known = dict(self.state.get("roles") or {})  # roles found before: used when AWS is too busy to say
+
         def roles(a):
-            names = []
-            for page in sso.get_paginator("list_account_roles").paginate(accessToken=tok, accountId=a["accountId"]):
-                names += [r["roleName"] for r in page.get("roleList", [])]
-            return sorted(names, key=role_rank)
+            try:
+                names = []
+                for page in sso.get_paginator("list_account_roles").paginate(accessToken=tok, accountId=a["accountId"]):
+                    names += [r["roleName"] for r in page.get("roleList", [])]
+                return sorted(names, key=role_rank)
+            except Exception as exc:  # throttled even after retries: keep the rest of the list
+                if "TooManyRequests" not in str(exc) and "Throttl" not in str(exc):
+                    raise
+                LOG.warning("SSO roles for %s: %s", a["accountId"], exc)
+                return None
 
         from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=ROLE_WORKERS) as pool:
             all_roles = list(pool.map(roles, found))
-        self._accounts = sorted(({"account": a["accountId"], "name": a.get("accountName", ""), "email": a.get("emailAddress", ""),
-                                  "roles": r} for a, r in zip(found, all_roles)), key=lambda x: (x["name"].lower(), x["account"]))  # fmt: skip
+        for i, a in enumerate(found):  # a second, gentler pass for the accounts AWS turned away
+            if all_roles[i] is None:
+                time.sleep(ROLE_RETRY_PAUSE)
+                all_roles[i] = roles(a)
+        out = []
+        for a, r in zip(found, all_roles):
+            row = {"account": a["accountId"], "name": a.get("accountName", ""), "email": a.get("emailAddress", ""),
+                   "roles": r if r is not None else list(known.get(a["accountId"], []))}  # fmt: skip
+            if r is None and not row["roles"]:
+                row["busy"] = True
+            out.append(row)
+        self.state["roles"] = {x["account"]: x["roles"] for x in out if x["roles"]}
+        self._save()
+        self._accounts = sorted(out, key=lambda x: (x["name"].lower(), x["account"]))
+        if any(x.get("busy") for x in out):
+            accounts = self._accounts
+            self._accounts = None  # ask again next time rather than keep the gaps
+            return accounts
         return self._accounts
 
     def chosen(self) -> list[dict]:
