@@ -10,6 +10,9 @@
 - **The Mac stays awake while an OU is read**: sleep dropped every query and let the SSO session run out.
 - **An account whose flow-log group is younger than the look back is read, not failed.** A slice before the log
   group existed, or past its retention, now counts as empty instead of stopping that account's read.
+- **Risk overview, Over-provisioning and Rejected traffic load in seconds across a whole OU.** Each account's
+  row is built in parallel processes, kept on disk until that account's read changes, and an account being read
+  right now keeps its last row: before, a page could take over fifteen minutes during an OU read.
 - Remediate's account list says **Loading accounts…** while it loads instead of showing an empty box.
 
 ## 5.19.4 - 2026-11-23

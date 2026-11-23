@@ -52,6 +52,9 @@ ASSET = Path(__file__).resolve().parent / "assets" / "sg_console.html"
 MAX_BODY = 1 << 20
 RANGES = ("24h", "1w", "1m", "3m", "6m", "1y")
 MIN_SPEND = 100.0  # US$ in the last 30 days: reading an OU skips accounts spending less (0 reads every one)
+SETTLING = 600  # a read written to in the last ten minutes keeps its last report row (built in this window)
+REPORT_PROCS = max(1, min(8, (os.cpu_count() or 2) - 1))  # processes building report rows at once
+REPORT_CACHE_VERSION = 1
 FIRST_PASS = 86400  # an OU read does the last day of every account first, then goes further back
 BATCH_WORKERS = 24  # accounts read at once when reading an OU: each runs its own Logs Insights queries (its own quota)
 JOBS_SHOWN = 1000
@@ -92,6 +95,8 @@ class Console:
         self._fixed = targets is not None  # tests hand in their own
         self._lock = threading.Lock()
         self._refused_cache: dict = {}
+        self._report_lock = threading.Lock()
+        self._reports_mem: dict | None = None
         self.sso = sso
         self.keys = keys  # sg_keys.Keys: signing in with a profile or keys on this computer instead of SSO
         self.batch: dict | None = None  # reading many accounts at once (an OU)
@@ -301,22 +306,10 @@ class Console:
         except Exception:  # noqa: BLE001 - the overview still works from the reads alone
             names = {}
         rows, unread = [], []
-        for account in sg_review.cached_accounts():
-            try:
-                mtime = sg_review._path(account).stat().st_mtime
-            except OSError:
-                continue
-            key = ("macro", account, mtime, range_key)
-            got = self._refused_cache.get(key)
+        for account, got in self._reports("macro", range_key, names).items():
             if got is None:
-                doc = sg_review.load(account)
-                if not doc or not any(c["st"] in ("ok", "cut") for c in doc["chunks"]):
-                    unread.append(account)
-                    continue
-                rep = sg_review.build(doc, range_key, names=sg_review.load_names(), assets=True)
-                got = sg_review.macro_row(account, doc.get("name") or names.get(account, ""), rep)
-                self._refused_cache = {k: v for k, v in self._refused_cache.items() if not (k[0] == "macro" and k[1] == account)}
-                self._refused_cache[key] = got
+                unread.append(account)
+                continue
             rows.append({**got, "mode": modes.get(account, "surveillance")})
         spend, owners, pending, why = self._facts([r["account"] for r in rows])
         for r in rows:
@@ -387,6 +380,79 @@ class Console:
             tmp.write_text(json.dumps(got))
             tmp.replace(path)
 
+    def _reports(self, kind: str, range_key: str, names: dict) -> dict:
+        """{account: row or None (no flow logs read)} for every account sg_review has read. Each row is kept
+        (in memory and on disk) until that account's read changes; one being written right now keeps its
+        last row until it settles, so a long OU read does not rebuild every report on every page load.
+        What is missing is built in parallel processes: the build is CPU work, one account at a time."""
+        import sg_review
+
+        now, todo, out = time.time(), [], {}
+        with self._report_lock:
+            cache = self._report_cache()
+            for account in sg_review.cached_accounts():
+                try:
+                    mtime = sg_review._path(account).stat().st_mtime
+                except OSError:
+                    continue
+                hit = cache.get(f"{kind}|{range_key}|{account}")
+                if hit and (hit["mtime"] == mtime or (now - mtime < SETTLING and now - hit["at"] < SETTLING)):
+                    out[account] = hit["row"]
+                else:
+                    out[account] = None
+                    todo.append((account, mtime))
+        if todo:
+            got = self._build_reports(kind, range_key, [(a, names.get(a, "")) for a, _ in todo])
+            with self._report_lock:
+                cache = self._report_cache()
+                for (account, mtime), row in zip(todo, got):
+                    out[account] = row
+                    cache[f"{kind}|{range_key}|{account}"] = {"mtime": mtime, "at": now, "row": row}
+                self._save_report_cache()
+        return out
+
+    def _build_reports(self, kind: str, range_key: str, items: list[tuple[str, str]]) -> list:
+        import sg_review
+
+        if len(items) < 8 or REPORT_PROCS < 2:
+            return [sg_review.report_row(kind, a, n, range_key) for a, n in items]
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+
+        try:
+            with ProcessPoolExecutor(max_workers=min(REPORT_PROCS, len(items)),
+                                     mp_context=multiprocessing.get_context("spawn")) as pool:  # fmt: skip
+                return list(pool.map(sg_review.report_row, [kind] * len(items), [a for a, _ in items],
+                                     [n for _, n in items], [range_key] * len(items)))  # fmt: skip
+        except Exception:  # processes not available here: build them one by one
+            LOG.exception("building reports in parallel failed; building them one by one")
+            return [sg_review.report_row(kind, a, n, range_key) for a, n in items]
+
+    def _report_cache(self) -> dict:
+        if self._reports_mem is None:
+            try:
+                self._reports_mem = json.loads(self._report_cache_path().read_text())
+            except (OSError, ValueError):
+                self._reports_mem = {}
+            if self._reports_mem.get("_v") != REPORT_CACHE_VERSION:
+                self._reports_mem = {"_v": REPORT_CACHE_VERSION}
+        return self._reports_mem
+
+    def _save_report_cache(self) -> None:
+        path = self._report_cache_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps(self._reports_mem))
+            tmp.replace(path)
+        except OSError as exc:
+            LOG.warning("report cache not saved: %s", exc)
+
+    def _report_cache_path(self) -> Path:
+        import sg_review
+
+        return sg_review._dir().parent / "report-cache.json"
+
     def refused(self, range_key: str = "24h") -> dict:
         """Every refused source across the accounts sg_review has read, worst verdict first."""
         import sg_review
@@ -394,29 +460,10 @@ class Console:
         if range_key not in RANGES:
             raise ConsoleError(400, f"range must be one of {', '.join(RANGES)}")
         rows, accounts, unread = [], [], []
-        for account in sg_review.cached_accounts():
-            try:
-                mtime = sg_review._path(account).stat().st_mtime
-            except OSError:
-                continue
-            key = (account, mtime, range_key)
-            got = self._refused_cache.get(key)
+        for account, got in self._reports("refused", range_key, {}).items():
             if got is None:
-                doc = sg_review.load(account)
-                if not doc or not any(c["st"] in ("ok", "cut") for c in doc["chunks"]):
-                    unread.append(account)
-                    continue
-                rep = sg_review.build(doc, range_key)
-                name = doc.get("name", "")
-                cov = rep.get("covered") or [1.0]
-                got = {"rows": sg_review.refused_rows(account, name, rep, limit=1000),
-                       "account": {"account": account, "name": name, "refused": rep["summary"]["refused"],
-                                   "attention": rep["summary"]["attention"], "end": rep.get("end"),
-                                   "first": sg_review._evidence(doc)[0],
-                                   "covered": round(sum(cov) / len(cov), 2), "bins": rep.get("bins") or [],
-                                   "by_type": ((rep.get("series") or {}).get("by_group") or {}).get("refused") or {}}}  # fmt: skip
-                self._refused_cache = {k: v for k, v in self._refused_cache.items() if k[0] != account}
-                self._refused_cache[key] = got
+                unread.append(account)
+                continue
             rows += got["rows"]
             accounts.append(got["account"])
         rows.sort(key=lambda x: (sg_review.SEV_RANK.get(x["sev"], 9), -x["flows"]))

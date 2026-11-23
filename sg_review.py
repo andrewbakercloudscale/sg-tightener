@@ -4286,6 +4286,26 @@ def _asset_rows(asset_enis, asset_over, enis, groups, snaps, rules, logged_ids) 
     return out
 
 
+def report_row(kind: str, account: str, name: str, range_key: str):
+    """One account's row for a console report ("macro" or "refused"), or None if none of its flow logs were read.
+    A top-level function so the console can build many in parallel processes."""
+    doc = load(account)
+    if not doc or not any(c["st"] in ("ok", "cut") for c in doc["chunks"]):
+        return None
+    if kind == "macro":
+        rep = build(doc, range_key, names=load_names(), assets=True)
+        return macro_row(account, doc.get("name") or name, rep)
+    rep = build(doc, range_key)
+    name = doc.get("name", "")
+    cov = rep.get("covered") or [1.0]
+    return {"rows": refused_rows(account, name, rep, limit=1000),
+            "account": {"account": account, "name": name, "refused": rep["summary"]["refused"],
+                        "attention": rep["summary"]["attention"], "end": rep.get("end"),
+                        "first": _evidence(doc)[0],
+                        "covered": round(sum(cov) / len(cov), 2), "bins": rep.get("bins") or [],
+                        "by_type": ((rep.get("series") or {}).get("by_group") or {}).get("refused") or {}}}  # fmt: skip
+
+
 def macro_row(account: str, name: str, rep: dict, mode: str = "") -> dict:
     """One account's numbers for the all-accounts risk overview: over-provisioning by owner, exposure, probing."""
     s = rep.get("summary") or {}
