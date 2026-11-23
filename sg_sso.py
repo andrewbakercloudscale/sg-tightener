@@ -369,6 +369,8 @@ class Sso:
         if mgmt not in mine:
             raise SsoError(f"your sign-in has no access to the management account {mgmt}, which holds the OUs: "
                            "choose accounts by name instead")  # fmt: skip
+        with self._lock:
+            self.state["mgmt"] = mgmt
         try:
             import sg_review
 
@@ -381,6 +383,28 @@ class Sso:
             self.state["org"] = {"tree": tree, "role": role, "at": _now()}
             self._save()
         return tree
+
+    def org_spend(self) -> dict[str, float]:
+        """Each account's spend over the last 30 days, read once from the management account with the role
+        chosen for every account. Kept for a day. Raises when the management account or its costs are out of reach."""
+        role = next((c["role"] for c in self.chosen()), "")
+        got = self.state.get("spend") or {}
+        if got.get("role") == role and got.get("at", 0) > _now() - 86400 and got.get("map") is not None:
+            return got["map"]
+        mgmt = self.state.get("mgmt")
+        if not mgmt:
+            probe = next((c["account"] for c in self.chosen()), "")
+            if not probe:
+                raise SsoError("choose accounts first")
+            org = self.role_session(probe, role).client("organizations", region_name="us-east-1")
+            mgmt = org.describe_organization()["Organization"]["MasterAccountId"]
+        import sg_review
+
+        spend = sg_review.account_spend(self.role_session(mgmt, role).client("ce", region_name="us-east-1"))
+        with self._lock:
+            self.state.update(mgmt=mgmt, spend={"role": role, "at": _now(), "map": spend})
+            self._save()
+        return spend
 
     def chosen(self) -> list[dict]:
         return list(self.state.get("chosen") or [])

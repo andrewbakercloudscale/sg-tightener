@@ -4091,6 +4091,30 @@ def org_accounts(sess, ou_id: str | None) -> list[dict]:
     return sorted((a for a in out if a.get("Status") == "ACTIVE"), key=lambda a: a.get("Name", ""))
 
 
+SPEND_DAYS = 30  # "spend a month" is the last 30 days, so a new account is not judged on a part month
+
+
+def account_spend(ce, days: int = SPEND_DAYS) -> dict[str, float]:
+    """US$ spent by each account Cost Explorer can see over the last ``days`` (credits and refunds left out).
+    From the management account this is every account in the organisation; from any other only its own.
+    Cost Explorer charges US$0.01 a page."""
+    end = datetime.now(timezone.utc).date()
+    kw: dict = {"TimePeriod": {"Start": (end - timedelta(days=days)).isoformat(), "End": end.isoformat()},
+                "Granularity": "MONTHLY", "Metrics": ["UnblendedCost"],
+                "GroupBy": [{"Type": "DIMENSION", "Key": "LINKED_ACCOUNT"}],
+                "Filter": {"Not": {"Dimensions": {"Key": "RECORD_TYPE", "Values": ["Credit", "Refund"]}}}}  # fmt: skip
+    out: dict[str, float] = {}
+    while True:
+        r = ce.get_cost_and_usage(**kw)
+        for period in r.get("ResultsByTime") or []:
+            for g in period.get("Groups") or []:
+                a = g["Keys"][0]
+                out[a] = out.get(a, 0.0) + float(g["Metrics"]["UnblendedCost"]["Amount"])
+        if not r.get("NextPageToken"):
+            return {a: round(v, 2) for a, v in out.items()}
+        kw["NextPageToken"] = r["NextPageToken"]
+
+
 def org_tree(org) -> dict:
     """The organisation as a tree from an Organizations client: each OU with its own active accounts and
     the OUs under it, and the root at the top. The console's OU picker draws it."""

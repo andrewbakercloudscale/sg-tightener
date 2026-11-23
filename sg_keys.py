@@ -193,6 +193,16 @@ class Keys:
             self._save()
         return tree
 
+    def org_spend(self) -> dict[str, float]:
+        """Each account's spend over the last 30 days, when this profile is the management account (only it sees
+        every account's costs). Raises otherwise: each account is then asked for its own."""
+        org = self._org().describe_organization()["Organization"]
+        if org["MasterAccountId"] != self.state.get("account"):
+            raise KeysError("this profile is not the management account, which alone sees every account's costs")
+        import sg_review
+
+        return sg_review.account_spend(self.base().client("ce", region_name="us-east-1"))
+
     def chosen(self) -> list[dict]:
         return [] if self.state.get("signed_out") else list(self.state.get("chosen") or [])
 

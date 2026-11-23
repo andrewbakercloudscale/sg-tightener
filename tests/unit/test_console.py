@@ -257,3 +257,48 @@ def test_review_page_is_served_with_the_nonce_and_can_propose_its_plan(console):
     status, got, _ = _req(p, "POST", "/api/propose", {"account": demo.ACCOUNT, "region": REGION, "reason": "fitted",
                                                        "changes": [change("remove", "10.0.0.0/8"), change("add", "10.20.1.0/24")]})  # fmt: skip
     assert status == 200 and got["status"] == "pending", got
+
+
+def test_groups_on_no_interface_are_left_out_of_the_counts_and_flagged(console):
+    import sg_assets
+
+    r2 = "eu-west-2"
+    st = sg_db.Store(console["db"])
+    with st:
+        st.import_region(ACCOUNT, r2, {"sg-0ccc000000000003": {"name": "app", "vpc": "vpc-2", "description": "", "rules": {
+            (sg_db.IN, "tcp", 443, 443, "10.0.0.0/16"): ""}}, "sg-0bbb000000000002": {"name": "old", "vpc": "vpc-2",
+            "description": "", "rules": {(sg_db.IN, "tcp", 22, 22, "0.0.0.0/0"): ""}}},
+            "arn:aws:sts::111122223333:assumed-role/Admin/alice")  # fmt: skip
+    st.close()
+    p = console["port"]
+
+    def region():
+        _, state, _ = _req(p, "GET", "/api/state")
+        return next(r for r in state["accounts"][0]["regions"] if r["region"] == r2)
+
+    assert region()["groups"] == 2, "interfaces never read: every group counts"
+    st = sg_db.Store(console["db"])
+    with st:
+        sg_assets.observe_assets(st, ACCOUNT, r2, [{"eni": "eni-1", "instance": "i-1", "asg": "", "kind": "instance",
+                                                    "vpc_id": "vpc-2", "ips": ["10.0.0.5"], "groups": ["sg-0ccc000000000003"],
+                                                    "description": ""}], "alice")  # fmt: skip
+    st.close()
+    r = region()
+    assert r["groups"] == 1 and r["rules"] == 1 and r["unused"] == 1
+    groups = {g["name"]: g["enis"] for g in _req(p, "GET", f"/api/groups?account={ACCOUNT}&region={r2}")[1]}
+    assert groups == {"app": 1, "old": 0}
+
+
+def test_spend_is_read_for_every_account_with_credits_left_out():
+    calls = []
+
+    class Ce:
+        def get_cost_and_usage(self, **kw):
+            calls.append(kw)
+            page = [{"Groups": [{"Keys": ["111111111111"], "Metrics": {"UnblendedCost": {"Amount": "60.5"}}}]}]
+            if "NextPageToken" not in kw:
+                return {"ResultsByTime": page, "NextPageToken": "n"}
+            return {"ResultsByTime": page + [{"Groups": [{"Keys": ["222222222222"], "Metrics": {"UnblendedCost": {"Amount": "5"}}}]}]}
+
+    assert sg_review.account_spend(Ce()) == {"111111111111": 121.0, "222222222222": 5.0}
+    assert calls[0]["Filter"]["Not"]["Dimensions"]["Values"] == ["Credit", "Refund"] and len(calls) == 2

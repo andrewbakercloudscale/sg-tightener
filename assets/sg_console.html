@@ -244,6 +244,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     <div class="tools">
       <select id="gWhere" aria-label="Account and region"></select>
       <input id="gFilter" type="search" placeholder="Filter groups and rules…" aria-label="Filter groups">
+      <label class="small"><input type="checkbox" id="gUnused"> Show groups on no interface <span id="gUnusedN" class="muted"></span></label>
       <button class="btn" id="gReconcile">Reconcile with AWS</button>
       <button class="btn primary" id="gApply">Apply approved changes</button>
       <button class="btn" id="gAdopt">Propose keeping what AWS holds</button>
@@ -410,7 +411,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     const regions = S.accounts.flatMap((a) => a.regions.map((r) => ({...r, account: a.account, name: a.name, mode: a.mode, reviewed: a.reviewed})));
     const sum = (k) => regions.reduce((n, r) => n + r[k], 0);
     $("stats").innerHTML = [
-      [S.accounts.length, "accounts"], [sum("groups"), "security groups"], [sum("rules"), "rules"],
+      [S.accounts.length, "accounts"], [sum("groups"), "security groups in use"], [sum("rules"), "rules"],
       [sum("pending"), "changes to apply"], [S.pending_requests, "requests waiting for approval"],
       [S.verify.ok ? `${S.verify.entries.toLocaleString()} ✓` : "BROKEN", S.verify.ok ? "audit entries, chain intact" : S.verify.why],
     ].map(([n, l]) => `<div class="card stat"><b>${esc(n)}</b><span>${esc(l)}</span></div>`).join("");
@@ -567,6 +568,12 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
   const jobFor = (acct) => (S.jobs || []).find((j) => j.account === acct);
   const usd = (c) => c == null ? "cost not known yet" : `about US$${Number(c).toFixed(2)}`;
   const LIVE = ["starting", "running", "queued"];
+  let minSpend = 100;
+  function eta(b) {
+    if (b.eta == null) return " · working out how long";
+    const m = Math.round(b.eta / 60);
+    return ` · ${b.eta < 60 ? "under a minute" : m < 60 ? `about ${m} min` : `about ${Math.floor(m / 60)} h ${m % 60} min`} left`;
+  }
   function jobCell(j) {
     if (!j) return '<span class="muted">not read yet</span>';
     const last = esc(j.lines[j.lines.length - 1] || "");
@@ -574,7 +581,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     if (j.status === "queued") return `<span class="pill" style="--p:var(--accent)"><span class="spin" aria-hidden="true"></span>waiting its turn</span>`;
     if (j.status === "confirm") return j.batch ? `<b>Ready:</b> ${esc(j.hours)} hours, ${esc(usd(j.cost))} (in the total above)` : `<b>Ready to read flow logs:</b> ${esc(j.hours)} hours in ${esc((j.logs_in || []).join(", "))}, ${esc(usd(j.cost))}.<div class="tools" style="margin:6px 0 0"><button class="btn primary" data-go="${j.id}">Read flow logs (${esc(usd(j.cost))})</button><button class="btn" data-stop="${j.id}">Not now</button></div>`;
     if (j.status === "running") { const pct = j.total ? Math.round(100 * j.done / j.total) : 0; return `<span class="pill" style="--p:var(--accent)"><span class="spin" aria-hidden="true"></span>reading flow logs</span> ${j.done} of ${j.total} · ${(j.bytes / 1e9).toFixed(2)} GB<div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><button class="btn" data-stop="${j.id}">Stop</button>`; }
-    const p = {done: "var(--good)", failed: "var(--bad)", stopped: "var(--warn)", cancelled: "var(--muted)"}[j.status] || "var(--muted)";
+    const p = {done: "var(--good)", failed: "var(--bad)", stopped: "var(--warn)", cancelled: "var(--muted)", skipped: "var(--muted)"}[j.status] || "var(--muted)";
     return `<span class="pill" style="--p:${p}">${esc(j.status)}</span> <span class="muted small">${esc(when(j.started))}</span><details class="small"><summary>Details</summary><ul class="steps">${j.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`;
   }
   function drawBatch() {
@@ -583,26 +590,29 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     const go = (label) => `<button class="btn primary" id="bGo">${esc(label)}</button>`;
     let h;
     if (!b || ["done", "stopped"].includes(b.status)) {
-      h = `${b ? `<p><span class="pill" style="--p:${b.status === "done" ? "var(--good)" : "var(--warn)"}">${b.status === "done" ? "read" : "stopped"}</span> ${b.accounts} account(s) · ${k("done")} done${k("failed") ? `, <b style="color:var(--bad)">${k("failed")} failed</b> <button class="btn" data-failed>Show them</button>` : ""}${k("cancelled") ? `, ${k("cancelled")} not read` : ""} · ${(b.bytes / 1e9).toFixed(2)} GB scanned</p><div class="tools"><button class="btn primary" data-show="macro">Risk overview</button><button class="btn primary" data-show="over">Over-provisioning</button></div>` : ""}
-        <div class="tools">${go(`Read all ${n} account${n === 1 ? "" : "s"}`)}<span class="muted small">Security groups first, then one price for every account's flow logs before anything is spent. ${4} accounts are read at a time.</span></div>`;
+      h = `${b ? `<p><span class="pill" style="--p:${b.status === "done" ? "var(--good)" : "var(--warn)"}">${b.status === "done" ? "read" : "stopped"}</span> ${b.accounts} account(s) · ${k("done")} done${k("failed") ? `, <b style="color:var(--bad)">${k("failed")} failed</b> <button class="btn" data-failed>Show them</button>` : ""}${k("skipped") ? `, ${k("skipped")} skipped (spent under US$${b.min_spend} a month)` : ""}${k("cancelled") ? `, ${k("cancelled")} not read` : ""} · ${(b.bytes / 1e9).toFixed(2)} GB scanned</p><div class="tools"><button class="btn primary" data-show="macro">Risk overview</button><button class="btn primary" data-show="over">Over-provisioning</button></div>` : ""}
+        <div class="tools">${go(`Read all ${n} account${n === 1 ? "" : "s"}`)}<label class="small">Only accounts spending over US$<input id="bMin" type="number" min="0" step="50" value="${minSpend}" style="width:6em" aria-label="Minimum spend a month in US dollars"> a month</label></div>
+        <p class="muted small">Accounts that spent less in the last 30 days are skipped (0 reads every one); their spend comes from Cost Explorer in the management account. Then security groups, then one price for every account's flow logs before anything is spent. 4 accounts are read at a time.</p>`;
     } else if (b.status === "pricing") {
       const left = k("starting");
-      h = `<p>${loading(`Reading security groups and pricing flow logs: ${b.accounts - left} of ${b.accounts} accounts`)}</p><div class="bar-track"><div class="bar-fill" style="width:${Math.round(100 * (b.accounts - left) / b.accounts)}%"></div></div><div class="tools"><button class="btn" id="bStop">Stop</button></div>`;
+      h = `<p>${loading(`Checking spend, reading security groups and pricing flow logs: ${b.accounts - left} of ${b.accounts} accounts${k("skipped") ? `, ${k("skipped")} skipped (under US$${b.min_spend} a month)` : ""}${eta(b)}`)}</p><div class="bar-track"><div class="bar-fill" style="width:${Math.round(100 * (b.accounts - left) / b.accounts)}%"></div></div><div class="tools"><button class="btn" id="bStop">Stop</button></div>`;
     } else if (b.status === "confirm") {
       h = `<p><b>Ready to read flow logs in ${b.to_read} of ${b.accounts} accounts: ${esc(usd(b.cost))}</b>${b.cost_unknown ? ` plus ${b.cost_unknown} account(s) whose cost is not known until a first 1-day read` : ""}.
+        ${k("skipped") ? `${k("skipped")} skipped: spent under US$${b.min_spend} in the last 30 days.` : ""}
         ${k("done") ? `${k("done")} had nothing to read (already read, or no VPC flow logs).` : ""} ${k("failed") ? `<b style="color:var(--bad)">${k("failed")} could not be read</b> <button class="btn" data-failed>Show them</button>` : ""}</p>
         <div class="tools">${go(`Read flow logs for ${b.to_read} accounts (${usd(b.cost)})`)}<button class="btn" id="bStop">Not now</button></div>`;
     } else {
       const pct = b.slices ? Math.round(100 * b.done / b.slices) : 0;
-      h = `<p>${loading(`Reading flow logs: ${b.read} of ${b.to_read} accounts done, ${k("running")} reading now · ${(b.bytes / 1e9).toFixed(2)} GB`)}</p><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><div class="tools"><button class="btn" id="bStop">Stop</button></div>`;
+      h = `<p>${loading(`Reading flow logs: ${b.read} of ${b.to_read} accounts done, ${k("running")} reading now · ${(b.bytes / 1e9).toFixed(2)} GB${eta(b)}`)}</p><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><div class="tools"><button class="btn" id="bStop">Stop</button></div>`;
     }
     $("batch").innerHTML = h;
     $("bGo")?.addEventListener("click", () => act($("bGo"), async () => {
       if (b && b.status === "confirm") await api("/api/read/all/confirm", {});
-      else await api("/api/read/all", {regions: $("rdRegions").value, days: +$("rdDays").value});
+      else await api("/api/read/all", {regions: $("rdRegions").value, days: +$("rdDays").value, min_spend: minSpend});
       await pollJobs();
     }));
     $("bStop")?.addEventListener("click", () => act($("bStop"), async () => { await api("/api/read/all/stop", {}); await pollJobs(); }));
+    $("bMin")?.addEventListener("input", () => { const v = +$("bMin").value; if (v >= 0) minSpend = v; });
     for (const x of $("batch").querySelectorAll("[data-show]")) x.addEventListener("click", () => show(x.dataset.show));
     $("batch").querySelector("[data-failed]")?.addEventListener("click", () => { onlyFailed = !onlyFailed; $("chosenBox").open = true; $("chosenBox").dataset.touched = "1"; drawChosen(); });
   }
@@ -718,14 +728,16 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
   }
   function drawGroups() {
     const q = $("gFilter").value.toLowerCase().trim();
-    const shown = groupsCache.filter((g) => !q || JSON.stringify(g).toLowerCase().includes(q));
+    const unused = groupsCache.filter((g) => g.enis === 0).length;
+    $("gUnusedN").textContent = unused ? `(${unused})` : "";
+    const shown = groupsCache.filter((g) => (g.enis !== 0 || $("gUnused").checked) && (!q || JSON.stringify(g).toLowerCase().includes(q)));
     $("groupList").innerHTML = shown.map((g) => {
       const rows = g.rules.map((r, i) => `<tr class="rule-${r.state}"><td>${r.state === "want" ? '<span class="pill" style="--p:var(--good)">to add</span>' : r.state === "have" ? '<span class="pill" style="--p:var(--bad)">to remove</span>' : ""}</td>
         <td>${esc(r.direction === "in" ? "in" : "out")}</td><td><code>${esc(r.proto === "-1" ? "all" : r.proto)} ${r.proto === "-1" ? "" : esc(r.from === r.to ? r.from : `${r.from}-${r.to}`)}</code></td>
         <td><code>${esc(r.source)}</code></td><td class="muted small">${esc(r.description)}</td>
         <td>${r.state !== "have" ? `<button class="btn danger" data-rm="${esc(g.id)}|${i}">Propose removing</button>` : ""}</td></tr>`).join("");
       return `<div class="card"><h3 style="margin-top:0">${esc(g.name)} <code class="muted small">${esc(g.id)}</code></h3>
-        <div class="muted small">${esc(g.vpc)} · ${esc(g.description)}</div>
+        <div class="muted small">${esc(g.vpc)} · ${esc(g.description)}${g.enis == null ? "" : g.enis ? ` · on ${g.enis} interface${g.enis === 1 ? "" : "s"}` : ' · <b>on no interface</b>: protects nothing'}</div>
         <div class="scroll"><table><thead><tr><th></th><th>Dir</th><th>Ports</th><th>Source / destination</th><th>Description</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No rules.</td></tr>'}</tbody></table></div>
         <div class="tools"><button class="btn" data-add="${esc(g.id)}">Propose a rule here</button></div></div>`;
     }).join("") || '<p class="muted">No group matches.</p>';
@@ -771,6 +783,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
   }
   $("gWhere").addEventListener("change", loadGroups);
   $("gFilter").addEventListener("input", drawGroups);
+  $("gUnused").addEventListener("change", drawGroups);
   $("pSend").addEventListener("click", (e) => act(e.target, async () => {
     const w = where(), proto = $("pProto").value, port = $("pPort").value.trim();
     let from = -1, to = -1;

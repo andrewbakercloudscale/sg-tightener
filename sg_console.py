@@ -50,6 +50,7 @@ LOG = logging.getLogger("sg_console")
 ASSET = Path(__file__).resolve().parent / "assets" / "sg_console.html"
 MAX_BODY = 1 << 20
 RANGES = ("24h", "1w", "1m", "3m", "6m", "1y")
+MIN_SPEND = 100.0  # US$ in the last 30 days: reading an OU skips accounts spending less (0 reads every one)
 BATCH_WORKERS = 4  # accounts read at once when reading an OU: each runs its own Logs Insights queries
 JOBS_SHOWN = 1000
 LABEL = "com.sg-tightener.console"
@@ -138,13 +139,16 @@ class Console:
                 a = accounts.setdefault(account, {"account": account, "name": names.get(account, ""), "regions": [],
                                                   "mode": st.mode(account)})  # fmt: skip
                 p = perms.get((account, region))
-                groups = st.groups(account, region)
+                every = st.groups(account, region)
+                used = self._in_use(st, account, region)
+                groups = every if used is None else {g: x for g, x in every.items() if g in used}
                 rules = sum(len(st.rules(account, region, g, "desired")) for g in groups)
                 synced = st.db.execute("SELECT synced_at FROM regions WHERE account = ? AND region = ?",
                                        (account, region)).fetchone()[0]  # fmt: skip
                 n_assets = st.db.execute("SELECT COUNT(*) FROM assets WHERE account = ? AND region = ?",
                                          (account, region)).fetchone()[0]  # fmt: skip
                 a["regions"].append({"region": region, "groups": len(groups), "rules": rules, "assets": n_assets,
+                                     "unused": len(every) - len(groups),
                                      "pending": len(st.pending(account, region)), "synced_at": synced,
                                      "permissions": None if p is None else {
                                          "ok": p["ok"], "at": p["checked_at"], "by": sg_db.principal(p["actor"]),
@@ -177,9 +181,26 @@ class Console:
         finally:
             st.close()
 
+    @staticmethod
+    def _in_use(st, account: str, region: str) -> dict[str, int] | None:
+        """Each group's number of network interfaces; None when the region's interfaces were never read."""
+        import sg_assets
+
+        assets = sg_assets.list_assets(st, account, region)
+        if not assets:
+            return None
+        n: dict[str, int] = {}
+        for a in assets:
+            for g in a["groups"]:
+                n[g] = n.get(g, 0) + 1
+        return n
+
     def groups(self, account: str, region: str) -> list[dict]:
+        """Every group with its rules and its number of interfaces (``enis`` None when not known): a group on
+        no interface protects nothing, and the page leaves it out unless asked."""
         st = self.store()
         try:
+            used = self._in_use(st, account, region)
             out = []
             for gid, g in st.groups(account, region).items():
                 want, have = st.rules(account, region, gid, "desired"), st.rules(account, region, gid, "synced")
@@ -188,7 +209,7 @@ class Console:
                     state = "both" if r in want and r in have else "want" if r in want else "have"
                     rules.append({**sg_db._rule_json(r, want.get(r) or have.get(r, "")), "state": state,
                                   "text": sg_db.rule_text(r)})  # fmt: skip
-                out.append({"id": gid, **g, "rules": rules})
+                out.append({"id": gid, **g, "rules": rules, "enis": None if used is None else used.get(gid, 0)})
             return out
         finally:
             st.close()
@@ -430,6 +451,27 @@ class Console:
             threading.Thread(target=self._prepare, args=(job,), daemon=True).start()
         return job if not start else dict(job)
 
+    def _too_small(self, job: dict, sess) -> bool:
+        """True (and the job skipped) when the account spent less than the batch's minimum in the last 30 days.
+        An account whose spend cannot be read is read anyway."""
+        import sg_review
+
+        spend = job.get("spend")
+        if spend is None:
+            try:
+                spend = sg_review.account_spend(sess.client("ce", region_name="us-east-1")).get(job["account"], 0.0)
+                job["spend"] = spend
+            except Exception as exc:  # noqa: BLE001 - no Cost Explorer rights in this account: read it anyway
+                self._say(job, f"spend not known ({sg_review.describe_error(exc)[:120]}): read anyway")
+                return False
+        if spend >= job["min_spend"]:
+            self._say(job, f"spent US${spend:,.2f} in the last {sg_review.SPEND_DAYS} days")
+            return False
+        job["status"] = "skipped"
+        self._say(job, f"skipped: spent US${spend:,.2f} in the last {sg_review.SPEND_DAYS} days, under "
+                       f"US${job['min_spend']:,.0f}")  # fmt: skip
+        return True
+
     def _say(self, job: dict, line: str) -> None:
         job["lines"] = (job["lines"] + [line])[-60:]
 
@@ -440,6 +482,8 @@ class Console:
         try:
             t = self.targets(fresh=True)
             sess = t.session(job["account"])
+            if job.get("min_spend") and self._too_small(job, sess):
+                return
             regions = job["regions"]
             if regions == ["all"]:
                 ec2 = sess.client("ec2", region_name=sess.region_name or "us-east-1")
@@ -457,7 +501,10 @@ class Console:
                         changes = sg_db.ensure_current(st, ec2, job["account"], region, t.actor, assets=True)
                         n = len(st.groups(job["account"], region))
                         n_assets = len(sg_assets.list_assets(st, job["account"], region))
-                        self._say(job, f"{region}: {n} security group(s), {n_assets} interface(s)"
+                        used = len(self._in_use(st, job["account"], region) or {})
+                        self._say(job, f"{region}: {used} security group(s) in use"
+                                       + (f" ({n - used} on no interface, left out)" if n > used else "")
+                                       + f", {n_assets} interface(s)"
                                        + (f", {len(changes)} changed outside the tool" if changes else ""))  # fmt: skip
                     except Exception as exc:  # noqa: BLE001 - one region out of reach must not stop the others
                         self._say(job, f"{region}: not read ({sg_review.describe_error(exc)[:200]})")
@@ -540,11 +587,23 @@ class Console:
             count[j["status"]] = count.get(j["status"], 0) + 1
         ready = [j for j in jobs if j["status"] in ("confirm", "queued", "running", "done", "stopped") and j.get("total")]
         costs = [j["cost"] for j in ready if j.get("cost") is not None]
+        slices, done = sum(j.get("total") or 0 for j in ready), sum(j.get("done") or 0 for j in ready)
+        now, eta = time.time(), None
+        if b["status"] == "pricing":
+            finished = len(jobs) - count.get("starting", 0)
+            if finished:
+                eta = (now - b["started"]) / finished * count.get("starting", 0)
+        elif b["status"] == "running" and b.get("run_started"):
+            gained = done - b.get("run_done0", 0)
+            if gained > 0:
+                eta = (now - b["run_started"]) / gained * (slices - done)
         return {"id": b["id"], "status": b["status"], "accounts": len(jobs), "count": count, "days": b["days"],
+                "min_spend": b.get("min_spend", 0), "spend_from": b.get("spend_from", ""),
+                "eta": None if eta is None else round(eta), "elapsed": round(now - b.get("run_started", b["started"])),
                 "regions": b["regions"], "started": b["started"], "cost": round(sum(costs), 2),
                 "cost_unknown": len(ready) - len(costs), "to_read": len(ready),
                 "read": sum(1 for j in ready if j["status"] == "done"),
-                "slices": sum(j.get("total") or 0 for j in ready), "done": sum(j.get("done") or 0 for j in ready),
+                "slices": slices, "done": done,
                 "bytes": sum(j.get("bytes") or 0 for j in jobs)}  # fmt: skip
 
     def read_all(self, body: dict) -> dict:
@@ -562,10 +621,15 @@ class Console:
                 for a in accounts if a not in busy]  # fmt: skip
         if not jobs:
             raise ConsoleError(409, "every one of these accounts is already being read")
+        try:
+            min_spend = max(0.0, float(body.get("min_spend") if body.get("min_spend") is not None else MIN_SPEND))
+        except (TypeError, ValueError):
+            raise ConsoleError(400, "min_spend is a number of US dollars a month")
         b = {"id": (self.batch["id"] if self.batch else 0) + 1, "status": "pricing", "jobs": [j["id"] for j in jobs],
-             "days": jobs[0]["days"], "regions": jobs[0]["regions"], "started": time.time(), "stop": threading.Event()}  # fmt: skip
+             "days": jobs[0]["days"], "regions": jobs[0]["regions"], "started": time.time(), "stop": threading.Event(),
+             "min_spend": min_spend, "spend_from": ""}  # fmt: skip
         for j in jobs:
-            j["batch"] = b["id"]
+            j["batch"], j["min_spend"] = b["id"], min_spend
         self.batch = b
         threading.Thread(target=self._batch_price, args=(b, jobs), daemon=True).start()
         return self.batch_status()
@@ -581,6 +645,15 @@ class Console:
             list(pool.map(one, items))
 
     def _batch_price(self, b: dict, jobs: list[dict]) -> None:
+        if b["min_spend"]:
+            try:  # one Cost Explorer read for the whole organisation, when the management account is in reach
+                spend = self.auth().org_spend()
+                b["spend_from"] = "organisation"
+                for j in jobs:
+                    j["spend"] = spend.get(j["account"], 0.0)  # an account with no cost at all is not listed
+            except Exception as exc:  # noqa: BLE001 - each account is asked for its own instead
+                LOG.warning("spend for the organisation: %s", exc)
+                b["spend_from"] = "each account"
         self._pool(b, self._prepare, jobs)
         for j in jobs:
             if j["status"] == "starting":  # stopped before its turn
@@ -595,7 +668,8 @@ class Console:
         jobs = [self.jobs[i] for i in b["jobs"] if self.jobs[i]["status"] == "confirm" and self._job_extra.get(i)]
         for j in jobs:
             j["status"] = "queued"
-        b["status"] = "running"
+        b["status"], b["run_started"] = "running", time.time()
+        b["run_done0"] = sum(j.get("done") or 0 for j in jobs)
 
         def run(j):
             j["status"] = "running"

@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.16.0 - 2026-11-23
+
+- **Reading an OU reads only accounts that spend.** By default only accounts that spent over US$100 in
+  the last 30 days are read; change it next to **Read all** (0 reads every one). Spend comes from one
+  Cost Explorer call in the management account (credits and refunds left out, kept a day); without it
+  each account is asked for its own, and one whose spend cannot be read is read anyway. Skipped accounts
+  are counted and each says what it spent.
+- **Time left.** Pricing and reading an OU show the time left, worked out from the pace so far.
+- **Groups on no interface are left out.** The Overview counts only security groups in use (and says how
+  many were left out), a read says so per region, and the Security groups tab hides them unless asked.
+  The review and over-provisioning already ignored them.
+
 ## 5.15.0 - 2026-11-23
 
 - **Read a whole OU from the console.** Choose accounts **By OU**: tick an OU (PROD, say) and every

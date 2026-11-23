@@ -489,3 +489,65 @@ def test_reading_an_ou_prices_every_account_then_reads_them_all_on_one_confirm(t
         assert b["status"] in ("stopped", "confirm")  # stopped, unless every account was priced first
     finally:
         ipintel.set_data_dir(old)
+
+
+def test_reading_an_ou_skips_accounts_spending_under_the_minimum_and_says_how_long_is_left(tmp_path, monkeypatch):
+    old = ipintel.DATA_DIR
+    ipintel.set_data_dir(tmp_path / "data")
+    try:
+        monkeypatch.setattr(sg_db, "ensure_current", lambda *a, **k: [])
+        accts = [f"{i}" * 12 for i in range(1, 5)]
+
+        def plan(sess, doc, regions, days, now, say=None):
+            for r in regions:
+                doc["regions"][r] = {"query_sets": [["lg"]]}
+            return [("eu-west-1", now - 3600, now, [["lg"]], [])] * 2
+
+        monkeypatch.setattr(sg_review, "plan_read", plan)
+        monkeypatch.setattr(sg_review, "estimate", lambda doc, a, r, now=None: {"rate": 1e6})
+        monkeypatch.setattr(sg_review, "run_read", lambda sess, doc, tasks, days, now, cancelled, progress=None:
+                            {"done": len(tasks), "bytes": 1e9})
+
+        class Org(Chosen):
+            def org_spend(self):  # the fourth account is not in Cost Explorer at all: nothing spent
+                return {accts[0]: 250.0, accts[1]: 99.99, accts[2]: 100.0}
+
+        c = sg_console.Console(str(tmp_path / "sg.db"), targets=FakeTargets(), sso=Org(accts))
+
+        def wait(status):
+            for _ in range(500):
+                if c.batch_status()["status"] != status:
+                    return c.batch_status()
+                time.sleep(0.01)
+            raise AssertionError(c.batch_status())
+
+        c.read_all({"regions": "eu-west-1"})
+        b = wait("pricing")
+        assert b["status"] == "confirm" and b["count"]["skipped"] == 2 and b["to_read"] == 2, b
+        assert b["min_spend"] == 100 and b["spend_from"] == "organisation"
+        skipped = [j for j in c.job_list() if j["status"] == "skipped"]
+        assert {j["account"] for j in skipped} == {accts[1], accts[3]} and "under US$100" in skipped[0]["lines"][-1]
+        c.read_all_confirm({})
+        assert wait("running")["status"] == "done"
+        # 0 reads every account; without the management account each account is asked (here it cannot say: read)
+        c2 = sg_console.Console(str(tmp_path / "sg2.db"), targets=FakeTargets(), sso=Chosen(accts))
+        c2.read_all({"regions": "eu-west-1", "min_spend": 0})
+        for _ in range(500):
+            if c2.batch_status()["status"] != "pricing":
+                break
+            time.sleep(0.01)
+        assert c2.batch_status()["to_read"] == 4 and "skipped" not in c2.batch_status()["count"]
+        with pytest.raises(sg_console.ConsoleError):
+            c2.read_all({"min_spend": "lots"})
+    finally:
+        ipintel.set_data_dir(old)
+
+
+def test_the_batch_eta_comes_from_the_pace_so_far():
+    c = sg_console.Console.__new__(sg_console.Console)
+    c.jobs = {i: {"id": i, "account": str(i), "status": s, "total": 10, "done": d, "bytes": 0, "cost": 1.0}
+              for i, (s, d) in enumerate([("done", 10), ("running", 5), ("queued", 0)], 1)}
+    c.batch = {"id": 1, "status": "running", "jobs": [1, 2, 3], "days": 1, "regions": ["all"], "started": 0,
+               "run_started": time.time() - 60, "run_done0": 0}
+    b = c.batch_status()
+    assert 55 <= b["eta"] <= 65, b  # 15 slices in a minute, 15 left

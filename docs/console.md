@@ -52,7 +52,19 @@ No AWS CLI or command line is needed after the console is running.
    logs for N accounts (about US$…)** spends it (CloudWatch Logs Insights, about US$0.005 a GB
    scanned), **Not now** does not. Accounts with nothing to read, or that could not be read (no access
    with the role, for example), are counted; **Show them** lists those that failed. A bar shows the
-   progress; **Stop** stops it. **Each account** has the same, one account at a time.
+   progress, with the time left worked out from the pace so far; **Stop** stops it. **Each account** has
+   the same, one account at a time.
+
+   **Only accounts that spend.** By default only accounts that spent over **US$100 in the last 30 days**
+   are read (change it next to **Read all**; 0 reads every one). The spend comes from Cost Explorer in the
+   management account with your role (one call, about US$0.01, kept a day); without it each account is
+   asked for its own, and an account whose spend cannot be read is read anyway. Skipped accounts are
+   counted and say what they spent.
+
+   **Groups on no interface are left out.** A security group attached to no network interface protects
+   nothing: it is not counted on the Overview (each region says how many were left out), the review and
+   over-provisioning ignore it, and the Security groups tab hides it unless **Show groups on no interface**
+   is ticked.
 
    ![One price for every account in the OU before anything is spent](images/sg-console-read-ou.png)
 4. **Look across them, then dive in.** **Risk overview** and **Over-provisioning** compare every account
