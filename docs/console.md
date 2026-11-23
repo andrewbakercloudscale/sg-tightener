@@ -46,7 +46,8 @@ No AWS CLI or command line is needed after the console is running.
    **Use these N accounts**.
 
    ![One role for every account, and the PROD OU ticked: 160 accounts](images/sg-console-sso-accounts.png)
-3. **Read them all.** Pick the regions (`all` reads every enabled region) and how far back (start with
+3. **Read them all.** The role is shown once at the top, **Role in every account**: pick another and
+   **Use this role in all accounts** switches every chosen account. Pick the regions (`all` reads every enabled region) and how far back (start with
    1 day), then **Read all N accounts**. Every account's security groups and network interfaces go into
    the console (free, 4 accounts at a time), and its flow logs are priced. Then one total: **Read flow
    logs for N accounts (about US$…)** spends it (CloudWatch Logs Insights, about US$0.005 a GB

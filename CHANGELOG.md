@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.16.1 - 2026-11-23
+
+- **One role, changed in one place.** Read your accounts shows **Role in every account** at the top:
+  pick another role and **Use this role in all accounts** switches every chosen account at once. The
+  per-account Role column is gone.
+
 ## 5.16.0 - 2026-11-23
 
 - **Reading an OU reads only accounts that spend.** By default only accounts that spent over US$100 in

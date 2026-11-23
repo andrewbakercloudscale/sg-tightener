@@ -269,6 +269,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.16.1** | **Role in every account** at the top of Read your accounts: change it once for every chosen account; no per-account role column |
 | **5.16.0** | **Reading an OU reads only accounts that spend** (over US$100 in the last 30 days by default, from Cost Explorer in the management account; 0 reads every one), shows the **time left**, and **leaves out security groups on no interface** |
 | **5.15.0** | **Read a whole OU from the console.** Sign in with the access portal or keys on this computer, choose **one role for every account**, tick an OU (PROD, say) to choose every account in it, then **Read all N accounts**: security groups first, one price for every account's flow logs, one click to read them all (4 at a time, with Stop). Then the Risk overview and Over-provisioning compare them, and Review and tighten dives into one |
 | **5.14.0** | **No token to open the console, loading animations, SSO with many accounts.** The console opens at `http://127.0.0.1:8765/` with AWS SSO as the sign-in (other web pages still cannot use it: a page-held key on every change, cross-site and foreign-origin requests refused, Host check). A loading bar and spinners show whenever something loads. Listing accounts no longer fails with `TooManyRequestsException` on large organisations |
