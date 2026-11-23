@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.18.0 - 2026-11-23
+
+- **Tighten an account, not a rule at a time.** The Security groups tab opens with **Tighten this account**: from the
+  account's flow logs, every inbound rule's verdict (narrow the sources, narrow the ports, remove as unused, keep,
+  decide, or not enough evidence), the **rule now** beside the **new rule**, and what it takes away in addresses and
+  ports. **Propose the whole plan** sends it as one change request (old rule removed, new ones added, the reason
+  written for you); **Propose** on a group or a rule sends just that. New `/api/verdicts` and `/api/tighten`.
+- Groups are one row each, worst first, with **Details** to open their rules.
+- **Pages of 50 rows** for every long table: accounts, groups, assets, audit trail, rejected traffic, risk by account.
+- **Every control restyled**: one height, custom select arrow, focus rings, small buttons in tables, a clearer Stop.
+- **Faster reads**: an account's regions are read at once (8 at a time) and 8 accounts at a time, up from 4 and one.
+
 ## 5.17.0 - 2026-11-23
 
 - **Where to focus, by owner and by account.** The Risk overview opens with a bubble chart: up = risk

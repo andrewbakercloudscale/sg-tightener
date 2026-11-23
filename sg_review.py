@@ -777,6 +777,7 @@ RANGES = {
 LAG = 900  # flow logs reach CloudWatch up to ~10 minutes late: the newest quarter hour is left for the next read
 TAIL_LAG = 300  # watch also reads from the last full hour up to five minutes ago ("tail" slices), to alert in minutes
 WORKERS = 4
+REGION_WORKERS = 8  # regions read at once in one account: each region has its own API limits
 EVIDENCE_DAYS = 30  # fewer days of flow logs than this and no rule is called unused or ready to tighten
 NEW_DAYS = 7  # a source first seen this recently is new...
 NEW_HISTORY_DAYS = 14  # ...when at least this many days of flow logs before it were read without it
@@ -3118,11 +3119,13 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
                     return n is not None and any(a <= n <= b for a, b in ivs)
 
                 here: dict[str, list] = {}
+                dports: set = set()
                 for src, _dst, _eni, proto, dport, flows, c in rows:
                     if port_matches(rule, proto, dport) and inside(src):
                         h = here.setdefault(src, [0, 0])
                         h[0] += flows
                         h[1] = max(h[1], c["e"])
+                        dports.add((str(proto), int(dport)))
                 unattr = {src for src, dst, _e, proto, dport, _f, _c in deleted
                           if port_matches(rule, proto, dport) and inside(src)
                           and (n := _ip(dst)) is not None and any(a <= n <= b for a, b in vpc_iv)}  # fmt: skip
@@ -3139,6 +3142,7 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
                        "pc": rule_port_class(rule)}  # fmt: skip
                 row["top"] = [{"src": s, **lab(s), "flows": h[0]}
                               for s, h in sorted(here.items(), key=lambda kv: -kv[1][0])[:8]]  # fmt: skip
+                row["ports_used"] = sorted(dports)[:200]  # (protocol, port) seen through the rule: narrows a port range
                 row["status"], row["note"] = _status(row, rule, entry, logged, g, cut_regions, days)
                 if not entry.startswith("pl-"):  # for the Tighten panel: who used it, and when last
                     row["keep_src"] = [[s, h[1]] for s, h in here.items()] + [[s, None] for s in sorted(unattr - set(here))]
@@ -3378,25 +3382,61 @@ def _addr_key(s: str) -> tuple:
 
 
 # ------------------------------------------------------------------------------------------- reading
+class SafeSession:
+    """A boto3 session whose ``client()`` may be called from many threads at once (boto3's own is not safe
+    for that); everything else is the session's own."""
+
+    def __init__(self, sess):
+        self._sess = sess._sess if isinstance(sess, SafeSession) else sess
+        self._lock = threading.Lock()
+
+    def client(self, *a, **kw):
+        with self._lock:
+            return self._sess.client(*a, **kw)
+
+    def __getattr__(self, name):
+        return getattr(self._sess, name)
+
+
+def each_region(fn, regions: Sequence[str], workers: int = REGION_WORKERS) -> list:
+    """``fn(region)`` for every region, up to ``workers`` at once (each region has its own API limits);
+    the results in the regions' order."""
+    regions = list(regions)
+    if len(regions) <= 1 or workers <= 1:
+        return [fn(r) for r in regions]
+    with ThreadPoolExecutor(max_workers=min(workers, len(regions))) as pool:
+        return list(pool.map(fn, regions))
+
+
 def plan_read(sess, doc: dict, regions: Sequence[str], days: int, now: float, say=LOG.info) -> list[tuple]:
-    """Take each region's snapshot and rule history into ``doc`` and return the slices still to read."""
+    """Take each region's snapshot and rule history into ``doc`` (the regions at once) and return the
+    slices still to read."""
+    safe = SafeSession(sess)
+
+    def fetch(region):
+        say(f"reading security groups, interfaces and flow logs in {region}")
+        try:
+            snap = snapshot(safe, region)
+        except (ClientError, BotoCoreError) as exc:  # one region out of reach must not stop the others
+            return None, describe_error(exc)[:300]
+        try:
+            hist = rule_history(safe, region, utcnow())
+        except (ClientError, BotoCoreError) as exc:  # the report says history is unknown
+            hist = {"events": [], "whole_since": now, "read": False, "error": describe_error(exc)[:300]}
+            LOG.warning("%s: rule changes not read from CloudTrail: %s", region, hist["error"])
+        return snap, hist
+
+    got = dict(zip(regions, each_region(fetch, regions)))
     tasks = []
     for region in regions:
-        say(f"reading security groups, interfaces and flow logs in {region}")
         entry = doc["regions"].setdefault(region, {})
-        try:
-            entry["snapshot"] = snapshot(sess, region)
-            entry["taken"] = now
-            entry.pop("error", None)
-        except (ClientError, BotoCoreError) as exc:  # one region out of reach must not stop the others
-            entry["error"] = describe_error(exc)[:300]
+        snap, hist = got[region]
+        if snap is None:
+            entry["error"] = hist
             LOG.warning("%s not read: %s", region, entry["error"])
             continue
-        try:
-            entry["history"] = rule_history(sess, region, utcnow())
-        except (ClientError, BotoCoreError) as exc:  # the report says history is unknown
-            entry["history"] = {"events": [], "whole_since": now, "read": False, "error": describe_error(exc)[:300]}
-            LOG.warning("%s: rule changes not read from CloudTrail: %s", region, entry["history"]["error"])
+        entry["snapshot"], entry["taken"], entry["history"] = snap, now, hist
+        entry.pop("error", None)
         qsets = query_sets(entry["snapshot"])
         entry["query_sets"] = qsets
         if not qsets:

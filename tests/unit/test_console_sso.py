@@ -226,7 +226,7 @@ def test_read_from_the_page_imports_groups_prices_the_flow_logs_then_reads_on_co
             time.sleep(0.01)
         j = c.jobs[job["id"]]
         assert j["status"] == "confirm" and j["logs_in"] == ["eu-west-1"] and j["cost"] == 0.05, j
-        assert imported == ["eu-west-1", "us-east-1"]
+        assert sorted(imported) == ["eu-west-1", "us-east-1"]  # the regions are read at once
         with pytest.raises(sg_console.ConsoleError):
             c.read_start({"account": ACCOUNT})  # one read of an account at a time
         c.read_confirm({"id": job["id"]})

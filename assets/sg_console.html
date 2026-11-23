@@ -150,6 +150,97 @@ svg.tl { width: 100%; height: auto; display: block; }
 svg.tl text { fill: var(--ink-2); font-size: 11px; }
 .steps { margin: 6px 0 0; padding-left: 20px; } .steps li { margin: 3px 0; }
 @media (max-width: 640px) { th, td { padding: 6px; } .bar h1 { font-size: 15px; } }
+
+/* ---- controls: one height, one radius, one focus ring, everywhere ---- */
+:root { --control-h: 34px; --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+  --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%237a7873' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+input:not([type=checkbox]):not([type=radio]), select, .btn { box-sizing: border-box; height: var(--control-h); line-height: 1.2; font-size: 13.5px; }
+input:not([type=checkbox]):not([type=radio]), select, textarea { border-radius: 8px; border: 1px solid var(--control-line); background-color: var(--surface);
+  color: var(--ink); padding: 0 11px; transition: border-color .12s, box-shadow .12s; vertical-align: middle; }
+textarea { height: auto; padding: 8px 11px; }
+input::placeholder, textarea::placeholder { color: var(--muted); }
+input:not([type=checkbox]):not([type=radio]):hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--control-line)); }
+input:focus-visible, select:focus-visible, textarea:focus-visible, .btn:focus-visible, .seg button:focus-visible, .chips button:focus-visible,
+  .opt:focus-visible, nav button:focus-visible, summary:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+select { appearance: none; -webkit-appearance: none; padding-right: 32px; background-image: var(--chev); background-repeat: no-repeat;
+  background-position: right 11px center; background-size: 11px 7px; cursor: pointer; min-width: 8em; }
+input[type=search] { -webkit-appearance: none; appearance: none; }
+input[type=number] { font-variant-numeric: tabular-nums; }
+input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; vertical-align: middle; cursor: pointer; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 14px; border-radius: 8px; white-space: nowrap;
+  border: 1px solid var(--control-line); background: var(--surface); color: var(--ink); font-weight: 600; vertical-align: middle;
+  transition: background .12s, border-color .12s, box-shadow .12s; }
+.btn:hover { background: var(--surface-2); border-color: color-mix(in srgb, var(--ink) 25%, var(--control-line)); }
+.btn:active { transform: translateY(1px); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--control-line)); }
+.btn.danger:hover { background: color-mix(in srgb, var(--bad) 9%, var(--surface)); border-color: var(--bad); }
+.btn.quiet { border-color: transparent; background: transparent; color: var(--ink-2); }
+.btn.quiet:hover { background: var(--surface-2); color: var(--ink); }
+.btn[disabled], .btn[disabled]:hover { opacity: .5; cursor: not-allowed; transform: none; background: var(--surface); }
+.btn.primary[disabled] { background: var(--accent); }
+td .btn, .chips .btn { height: 30px; padding: 0 10px; font-size: 12.5px; }
+.tools { gap: 10px 14px; }
+.tools > label, label.field { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.tools > label.switch { font-size: 14px; color: var(--ink); }
+.seg { border-color: var(--control-line); background: var(--surface); padding: 2px; gap: 2px; border-radius: 9px; }
+.seg button { border-radius: 7px; height: 28px; padding: 0 12px; color: var(--ink-2); font-weight: 600; font-size: 12.5px; }
+.seg button:hover { color: var(--ink); background: var(--surface-2); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.chips button { height: 28px; }
+.chips button:hover { border-color: color-mix(in srgb, var(--ink) 25%, var(--control-line)); color: var(--ink); }
+details > summary { list-style: none; display: inline-flex; align-items: center; gap: 8px; border-radius: 6px; padding: 2px 4px; margin-left: -4px; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: ""; width: 7px; height: 7px; border-right: 2px solid var(--ink-2); border-bottom: 2px solid var(--ink-2);
+  transform: rotate(-45deg); transition: transform .15s; flex: none; margin-right: 2px; }
+details[open] > summary::before { transform: rotate(45deg) translate(-2px, -2px); }
+details > summary:hover { color: var(--accent); }
+.ou summary { display: flex; margin-left: 0; }
+.batch { border: 1px solid var(--grid); border-radius: var(--radius); padding: 12px 14px; background: var(--surface-2); margin: 10px 0; }
+.batch:empty { display: none; }
+.batch p { margin: 0 0 4px; }
+.batch .tools { margin: 8px 0 0; }
+.acct-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; }
+.acct-bar .who-line { font-size: 12.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+@media (max-width: 600px) { .tools > label { flex-wrap: wrap; } .tools > label select, .tools > label input:not([type=checkbox]) { flex: 1 1 140px; } }
+
+/* ---- tables and small buttons ---- */
+.btn.sm, td .btn { height: 28px; padding: 0 10px; font-size: 12.5px; border-radius: 7px; }
+td { vertical-align: middle; }
+th { font-size: 11.5px; letter-spacing: .05em; padding-top: 6px; padding-bottom: 6px; }
+tbody tr:hover > td { background: color-mix(in srgb, var(--ink) 3%, transparent); }
+tbody tr:last-child > td { border-bottom: 0; }
+td.act, th.act, td:has(> .btn:only-child):last-child { text-align: right; white-space: nowrap; width: 1%; }
+td .btn + .btn { margin-left: 6px; }
+.faint { color: var(--muted); }
+.dir { display: inline-block; min-width: 34px; text-align: center; font-size: 11.5px; font-weight: 700; padding: 1px 7px; border-radius: 6px;
+  background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--grid); }
+.dir-out { background: transparent; }
+table.rules td, table.rules th { padding-left: 12px; padding-right: 12px; }
+table.rules td:first-child, table.rules th:first-child { padding-left: 0; }
+table.rules td.act, table.rules th.act { padding-right: 0; }
+.group-card { padding-bottom: 8px; }
+.group-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-start; justify-content: space-between; margin-bottom: 10px; }
+.group-head h3 { margin: 0 0 2px; }
+.card h3:first-child { margin-top: 0; }
+
+/* ---- the plan, groups and pages ---- */
+.spacer { flex: 1 1 auto; }
+.plan-head { display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: flex-start; justify-content: space-between; }
+.plan-head h3 { margin: 0 0 4px; }
+.plan-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 12px 0; }
+.plan-tiles div { border: 1px solid var(--grid); border-radius: 8px; padding: 10px 12px; background: var(--surface-2); }
+.plan-tiles b { display: block; font-size: 20px; } .plan-tiles span { font-size: 12.5px; color: var(--ink-2); }
+.plan-list { margin-top: 4px; } .plan-list .scroll { margin-top: 8px; }
+table.plan-t td:nth-child(3) code { overflow-wrap: anywhere; }
+.cut { color: var(--good); font-weight: 650; white-space: nowrap; }
+table.grp td.num, table.grp th.num, td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.grow.is-open > td { border-bottom-color: transparent; background: var(--surface-2); }
+tr.gdetail > td { background: var(--surface-2); padding: 4px 14px 14px; }
+tr.gdetail table { background: var(--surface); border: 1px solid var(--grid); border-radius: 8px; }
+tbody tr.gdetail:hover > td { background: var(--surface-2); }
+.pager { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 10px 0 0; font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -205,7 +296,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
         <p class="muted small">Your company's sign-in says <b>you cannot access this right now</b> after you changed network or turned on a VPN such as Zscaler? The browser is still using its earlier sign-in and connection. Select <b>Copy sign-in link</b> and paste it into a private (incognito) window, or quit and reopen the browser, then approve the same code.</p>
       </div>
       <div id="ssoIn" hidden>
-        <p><span class="pill" style="--p:var(--good)">signed in</span> <span id="ssoWho" class="small"></span> <button class="btn" id="ssoOutBtn">Sign out</button></p>
+        <div class="acct-bar"><span class="pill" style="--p:var(--good)">signed in</span> <span id="ssoWho" class="who-line"></span> <button class="btn quiet" id="ssoOutBtn">Sign out</button></div>
         <div id="ssoPick">
           <div class="form">
             <label id="pRoleWrap">Role in every account<select id="pRole"></select></label>
@@ -228,8 +319,8 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
           <h3>Read your accounts</h3>
           <div class="tools"><label class="small">Role in every account <select id="cRole" aria-label="Role in every account"></select><input id="cRoleKeys" list="pRolesKeys" size="30" aria-label="Role to assume in every account" hidden></label>
             <button class="btn primary" id="cRoleUse" hidden>Use this role in all accounts</button><span class="muted small" id="cRoleNote"></span></div>
-          <p class="muted small">Reading an account puts its security groups into the console and reads its VPC flow logs (who connected, and who was refused). The cost of reading flow logs is shown before anything is spent; start with 1 day. Then the <b>Risk overview</b> and <b>Over-provisioning</b> tabs compare them all, and <b>Review and tighten</b> opens one. <button class="btn" id="ssoChange">Change accounts</button></p>
-          <div class="tools"><label class="small">Regions <input id="rdRegions" value="all" size="22" aria-label="Regions" title="all, or a list such as eu-west-1,us-east-1"></label>
+          <p class="muted small">Reading an account puts its security groups into the console and reads its VPC flow logs (who connected, and who was refused). The cost of reading flow logs is shown before anything is spent; start with 1 day. Then the <b>Risk overview</b> and <b>Over-provisioning</b> tabs compare them all, and <b>Review and tighten</b> opens one.</p>
+          <div class="tools"><button class="btn" id="ssoChange">Change accounts</button><label class="small">Regions <input id="rdRegions" value="all" size="22" aria-label="Regions" title="all, or a list such as eu-west-1,us-east-1"></label>
             <label class="small">How far back <select id="rdDays"><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="365">1 year</option></select></label></div>
           <div class="batch" id="batch"></div>
           <details id="chosenBox"><summary id="chosenSum">Each account</summary>
@@ -249,17 +340,22 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
 
   <section id="tab-groups" hidden>
     <h2>Security groups</h2>
-    <p class="lede">Rules marked <span class="pill" style="--p:var(--good)">to add</span> are approved but not in AWS yet; <span class="pill" style="--p:var(--bad)">to remove</span> are in AWS but not wanted (approved for removal, or added outside the tool). Apply makes AWS match.</p>
+    <p class="lede">Tighten an account at a time. The flow logs say what each inbound rule should become: narrower
+      sources, fewer ports, or removed when nothing used it. One change request carries the whole plan, and a
+      second person approves it. Open a group only to look closer.</p>
     <div class="tools">
       <select id="gWhere" aria-label="Account and region"></select>
       <input id="gFilter" type="search" placeholder="Filter groups and rules…" aria-label="Filter groups">
       <label class="small"><input type="checkbox" id="gUnused"> Show groups on no interface <span id="gUnusedN" class="muted"></span></label>
+      <span class="spacer"></span>
       <button class="btn" id="gReconcile">Reconcile with AWS</button>
       <button class="btn primary" id="gApply">Apply approved changes</button>
-      <button class="btn" id="gAdopt">Propose keeping what AWS holds</button>
     </div>
+    <div class="card plan" id="gPlan"></div>
+    <div class="flash" id="modeNote" hidden></div>
+    <div class="card"><div class="scroll"><table class="grp"><thead><tr><th>Group</th><th class="num">Interfaces</th><th class="num">Rules</th><th>What the flow logs say</th><th class="num">Addresses taken away</th><th class="act"></th></tr></thead><tbody id="groupList"></tbody></table></div></div>
     <div class="card" id="proposeCard">
-      <details id="proposeBox"><summary>Propose a change</summary>
+      <details id="proposeBox"><summary>Propose a change by hand</summary>
         <div class="form" style="margin-top:10px">
           <label>Group<select id="pGroup"></select></label>
           <label>Change<select id="pOp"><option value="add">Add rule</option><option value="remove">Remove rule</option></select></label>
@@ -272,10 +368,10 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
           <label>Ticket<input id="pTicket" placeholder="CHG-1234"></label>
           <div><button class="btn primary" id="pSend">Propose</button></div>
         </div>
+        <div class="tools" style="margin-top:12px"><button class="btn" id="gAdopt">Propose keeping what AWS holds</button><span class="muted small">Records the rules as they are in AWS as the wanted state, after review.</span></div>
       </details>
     </div>
     <div class="flash" id="modeNote" hidden></div>
-    <div id="groupList"></div>
     <h3>Assets (network interfaces) and their groups</h3>
     <p class="lede">Every interface, what it is attached to and the groups it carries; every change to them is in the audit trail. To tighten one asset on its own, <code>sg_db.py asset-plan --eni … --approved approved.json</code> gives it a group of its own from its own flows; propose it with <code>sg_db.py asset-propose</code>, and it is approved and applied here. Auto scaling, EKS, ECS and AWS-managed interfaces inherit their groups: tighten the groups instead.</p>
     <div class="card scroll"><table><thead><tr><th>Interface</th><th>Attached to</th><th>Addresses</th><th>Groups</th><th>Own group?</th><th></th></tr></thead><tbody id="assetRows"></tbody></table></div>
@@ -388,6 +484,32 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     if (inflight > 0 && !busyT && $("busy").hidden) busyT = setTimeout(() => { busyT = null; if (inflight > 0) $("busy").hidden = false; }, 300);
     if (inflight <= 0) { inflight = 0; clearTimeout(busyT); busyT = null; $("busy").hidden = true; }
   }
+  // ---- pages of 50 rows
+  const PAGE = 50, pageAt = {}, pageN = {}, redraw = {};
+  function page(key, n, again) {
+    redraw[key] = again;
+    if (pageN[key] !== n) { pageN[key] = n; pageAt[key] = 0; }
+    const last = Math.max(0, Math.ceil(n / PAGE) - 1), p = Math.max(0, Math.min(pageAt[key] || 0, last));
+    pageAt[key] = p;
+    const a = p * PAGE, b = Math.min(n, a + PAGE);
+    const bar = n > PAGE ? `<div class="pager" data-pager="${key}"><button class="btn sm" data-pg="-1"${p ? "" : " disabled"}>‹ Previous</button><span>${(a + 1).toLocaleString()}–${b.toLocaleString()} of ${n.toLocaleString()}</span><button class="btn sm" data-pg="1"${p < last ? "" : " disabled"}>Next ›</button></div>` : "";
+    return {a, b, bar};
+  }
+  function pagerAfter(el, bar) {
+    const host = el.closest(".scroll") || el.closest("table") || el;
+    let slot = host.nextElementSibling;
+    if (!slot || !slot.classList.contains("pager-slot")) { slot = document.createElement("div"); slot.className = "pager-slot"; host.after(slot); }
+    slot.innerHTML = bar;
+  }
+  document.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-pg]");
+    if (!b || b.disabled) return;
+    const key = b.closest("[data-pager]").dataset.pager, slot = b.closest(".pager-slot");
+    pageAt[key] = (pageAt[key] || 0) + Number(b.dataset.pg);
+    if (redraw[key]) redraw[key]();
+    const top = slot && slot.previousElementSibling;
+    if (top && top.getBoundingClientRect().top < 0) top.scrollIntoView({block: "start"});
+  });
   async function api(path, body, quiet) {
     const opts = body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json", "X-SG-Token": TOKEN}, body: JSON.stringify(body)};
     if (!quiet) busy(1);
@@ -430,12 +552,14 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
       [sum("pending"), "changes to apply"], [S.pending_requests, "requests waiting for approval"],
       [S.verify.ok ? `${S.verify.entries.toLocaleString()} ✓` : "BROKEN", S.verify.ok ? "audit entries, chain intact" : S.verify.why],
     ].map(([n, l]) => `<div class="card stat"><b>${esc(n)}</b><span>${esc(l)}</span></div>`).join("");
+    const rp = page("regions", regions.length, loadState);
     $("regions").innerHTML = regions.map((r, i) => `<tr><td>${esc(r.name || r.account)}<div class="muted small"><code>${esc(r.account)}</code></div></td>
       <td>${modePill(r.mode)}</td>
       <td>${esc(r.region)}</td><td>${r.groups}</td><td>${r.rules}</td><td>${r.assets}</td><td>${r.pending ? `<span class="pill" style="--p:var(--warn)">${r.pending}</span>` : "0"}</td>
       <td class="small">${permCell(r.permissions)} <button class="btn" data-check="${i}">Check</button></td>
-      <td class="small">${esc(when(r.synced_at))}</td><td><button class="btn" data-open="${i}">Open</button>${r.reviewed ? ` <a class="btn" href="/review?account=${encodeURIComponent(r.account)}" target="_blank" rel="noopener">Review and tighten</a>` : ""}</td></tr>`).join("")
+      <td class="small">${esc(when(r.synced_at))}</td><td><button class="btn" data-open="${i}">Open</button>${r.reviewed ? ` <a class="btn" href="/review?account=${encodeURIComponent(r.account)}" target="_blank" rel="noopener">Review and tighten</a>` : ""}</td></tr>`).slice(rp.a, rp.b).join("")
       || `<tr><td colspan="10" class="muted">${S.sso ? "Nothing yet: sign in with AWS SSO above, choose your accounts and select Read." : "Nothing yet: run <code>sg_db.py import --regions … [--ou-id …]</code>."}</td></tr>`;
+    pagerAfter($("regions"), rp.bar);
     for (const b of document.querySelectorAll("[data-check]")) b.addEventListener("click", () => act(b, async () => {
       const r = regions[+b.dataset.check];
       const res = await api("/api/check", {account: r.account, region: r.region});
@@ -610,7 +734,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
         <p class="muted small">Accounts that spent less in the last 30 days are skipped (0 reads every one); their spend comes from Cost Explorer in the management account. Then security groups, then one price for every account's flow logs before anything is spent. 4 accounts are read at a time.</p>`;
     } else if (b.status === "pricing") {
       const left = k("starting");
-      h = `<p>${loading(`Checking spend, reading security groups and pricing flow logs: ${b.accounts - left} of ${b.accounts} accounts${k("skipped") ? `, ${k("skipped")} skipped (under US$${b.min_spend} a month)` : ""}${eta(b)}`)}</p><div class="bar-track"><div class="bar-fill" style="width:${Math.round(100 * (b.accounts - left) / b.accounts)}%"></div></div><div class="tools"><button class="btn" id="bStop">Stop</button></div>`;
+      h = `<p>${loading(`Checking spend, reading security groups and pricing flow logs: ${b.accounts - left} of ${b.accounts} accounts${k("skipped") ? `, ${k("skipped")} skipped (under US$${b.min_spend} a month)` : ""}${eta(b)}`)}</p><div class="bar-track"><div class="bar-fill" style="width:${Math.round(100 * (b.accounts - left) / b.accounts)}%"></div></div><div class="tools"><button class="btn danger" id="bStop">Stop</button></div>`;
     } else if (b.status === "confirm") {
       h = `<p><b>Ready to read flow logs in ${b.to_read} of ${b.accounts} accounts: ${esc(usd(b.cost))}</b>${b.cost_unknown ? ` plus ${b.cost_unknown} account(s) whose cost is not known until a first 1-day read` : ""}.
         ${k("skipped") ? `${k("skipped")} skipped: spent under US$${b.min_spend} in the last 30 days.` : ""}
@@ -618,7 +742,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
         <div class="tools">${go(`Read flow logs for ${b.to_read} accounts (${usd(b.cost)})`)}<button class="btn" id="bStop">Not now</button></div>`;
     } else {
       const pct = b.slices ? Math.round(100 * b.done / b.slices) : 0;
-      h = `<p>${loading(`Reading flow logs: ${b.read} of ${b.to_read} accounts done, ${k("running")} reading now · ${(b.bytes / 1e9).toFixed(2)} GB${eta(b)}`)}</p><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><div class="tools"><button class="btn" id="bStop">Stop</button></div>`;
+      h = `<p>${loading(`Reading flow logs: ${b.read} of ${b.to_read} accounts done, ${k("running")} reading now · ${(b.bytes / 1e9).toFixed(2)} GB${eta(b)}`)}</p><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><div class="tools"><button class="btn danger" id="bStop">Stop</button></div>`;
     }
     $("batch").innerHTML = h;
     $("bGo")?.addEventListener("click", () => act($("bGo"), async () => {
@@ -656,9 +780,11 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     const rows = SSO.chosen.filter((c) => (!q || `${c.name} ${c.account}`.toLowerCase().includes(q)) && (!onlyFailed || jobFor(c.account)?.status === "failed"));
     $("chosenSum").textContent = onlyFailed ? `Accounts that could not be read (${rows.length})` : `Each account (${SSO.chosen.length})`;
     if (SSO.chosen.length <= 10 && !$("chosenBox").dataset.touched) $("chosenBox").open = true;
+    const cp = page("chosen", rows.length, drawChosen);
     $("chosenRows").innerHTML = rows.map((c) => { const j = jobFor(c.account); const busy = j && [...LIVE, "confirm"].includes(j.status);
       return `<tr><td>${esc(c.name || c.account)}<div class="muted small"><code>${esc(c.account)}</code></div></td><td>${jobCell(j)}</td>
-      <td><button class="btn${reviewed.has(c.account) ? "" : " primary"}" data-read="${esc(c.account)}"${busy ? " disabled" : ""}>${reviewed.has(c.account) ? "Read again" : "Read"}</button>${reviewed.has(c.account) ? ` <a class="btn primary" href="/review?account=${encodeURIComponent(c.account)}" target="_blank" rel="noopener">Review and tighten</a>` : ""}</td></tr>`; }).join("");
+      <td><button class="btn${reviewed.has(c.account) ? "" : " primary"}" data-read="${esc(c.account)}"${busy ? " disabled" : ""}>${reviewed.has(c.account) ? "Read again" : "Read"}</button>${reviewed.has(c.account) ? ` <a class="btn primary" href="/review?account=${encodeURIComponent(c.account)}" target="_blank" rel="noopener">Review and tighten</a>` : ""}</td></tr>`; }).slice(cp.a, cp.b).join("");
+    pagerAfter($("chosenRows"), cp.bar);
     for (const b of document.querySelectorAll("[data-read]")) b.addEventListener("click", () => act(b, async () => {
       await api("/api/read", {account: b.dataset.read, regions: $("rdRegions").value, days: +$("rdDays").value}); await pollJobs();
     }));
@@ -756,8 +882,12 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
   async function loadGroups() {
     if (!S) await loadState();
     const w = where();
-    if (!w.account) { $("groupList").innerHTML = '<p class="muted">No account in the database yet.</p>'; return; }
-    groupsCache = await api(`/api/groups?account=${encodeURIComponent(w.account)}&region=${encodeURIComponent(w.region)}`);
+    if (!w.account) { $("groupList").innerHTML = '<tr><td colspan="6" class="muted">No account in the database yet.</td></tr>'; $("gPlan").innerHTML = ""; return; }
+    [groupsCache, planCache] = await Promise.all([
+      api(`/api/groups?account=${encodeURIComponent(w.account)}&region=${encodeURIComponent(w.region)}`),
+      api(`/api/verdicts?account=${encodeURIComponent(w.account)}&region=${encodeURIComponent(w.region)}`).catch(() => ({read: false, rules: [], groups: {}})),
+    ]);
+    openGroups.clear();
     const acct = S.accounts.find((a) => a.account === w.account) || {};
     const surv = acct.mode !== "enforce";
     $("gApply").disabled = surv;
@@ -767,36 +897,137 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     $("pGroup").innerHTML = groupsCache.map((g) => `<option value="${esc(g.id)}">${esc(g.name)} (${esc(g.id)})</option>`).join("");
     drawGroups();
   }
+  const PN = {"6": "tcp", "17": "udp", "1": "icmp", "-1": "all"};
+  const openGroups = new Set();
+  let planCache = {read: false, rules: [], groups: {}};
+  const fmtN = (n) => n >= 1e15 ? n.toExponential(1) : n >= 1e9 ? `${(n / 1e9).toFixed(n >= 1e10 ? 0 : 1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : Number(n).toLocaleString();
+  const portTxt = (proto, from, to) => proto === "-1" || proto === "all" ? "all traffic" : `${PN[proto] || proto} ${from === to ? from : from === 0 && to === 65535 ? "all ports" : `${from}-${to}`}`;
+  const planFor = (gid) => planCache.rules.filter((r) => r.group === gid);
+  const planKey = (gid, r) => `${gid}|${r.from}|${r.to}|${r.source}`;
+  const ACT = {tighten: ["Narrow the sources", "var(--accent)"], ports: ["Narrow the ports", "var(--accent)"], remove: ["Remove: nothing used it", "var(--bad)"],
+    keep: ["Keep: in use across the range", "var(--good)"], open: ["Open to everyone: decide", "var(--high)"], wait: ["Not enough evidence yet", "var(--muted)"]};
+  const actPill = (a) => `<span class="pill" style="--p:${ACT[a][1]}">${ACT[a][0]}</span>`;
+  const isAct = (r) => ["tighten", "ports", "remove"].includes(r.action);
+  function cutPct(a, b) { if (!a) return ""; const p = 100 * (a - b) / a; return p >= 99.95 && b ? "−99.9%+" : `−${p >= 10 ? Math.round(p) : p.toFixed(1)}%`; }
+  function newRule(r) {
+    if (!r.new) return '<span class="muted">unchanged</span>';
+    if (!r.new.length) return '<span class="cut">removed</span>';
+    const ports = [...new Set(r.new.map((n) => portTxt(n.proto, n.from, n.to)))];
+    const srcs = [...new Set(r.new.map((n) => n.source))];
+    return `<code>${esc(ports.join(", "))}</code> from ${srcs.slice(0, 6).map((x) => `<code>${esc(x)}</code>`).join(", ")}${srcs.length > 6 ? ` <span class="muted">+${srcs.length - 6} more</span>` : ""}`;
+  }
+  function cutCell(r) {
+    if (!r.new) return '<span class="muted">—</span>';
+    const out = [];
+    if (r.new_addresses !== r.addresses) out.push(`<b>${fmtN(r.addresses)} → ${fmtN(r.new_addresses)}</b> addresses <span class="cut">${cutPct(r.addresses, r.new_addresses)}</span>`);
+    if (r.new_ports !== r.port_count) out.push(`<b>${fmtN(r.port_count)} → ${fmtN(r.new_ports)}</b> ports <span class="cut">${cutPct(r.port_count, r.new_ports)}</span>`);
+    return out.join("<br>") || '<span class="muted">—</span>';
+  }
+  function planRows(rules, withGroup) {
+    return rules.map((r) => `<tr><td>${withGroup ? `<b>${esc(r.gname)}</b> ` : ""}<code>${esc(portTxt(r.proto, r.from, r.to))}</code> from <code>${esc(r.source)}</code>${r.desc ? `<div class="muted small">${esc(r.desc)}</div>` : ""}</td>
+      <td>${actPill(r.action)}<div class="muted small">${esc(r.note || "")}${r.seen ? ` · ${r.seen.toLocaleString()} source${r.seen === 1 ? "" : "s"} seen` : ""}</div></td>
+      <td>${newRule(r)}</td><td class="small">${cutCell(r)}</td>
+      <td class="act">${isAct(r) ? `<button class="btn sm primary" data-tkey="${esc(r.key)}">Propose</button>` : ""}</td></tr>`).join("");
+  }
+  const PLAN_HEAD = '<thead><tr><th>Rule now</th><th>The flow logs say</th><th>New rule</th><th>Taken away</th><th class="act"></th></tr></thead>';
+  function drawPlan() {
+    const w = where(), P = planCache, acts = P.rules.filter(isAct);
+    if (!P.read) {
+      $("gPlan").innerHTML = `<h3>Tighten this account</h3><p class="muted">No flow logs read for ${esc(w.account)} yet, so there is no plan. Read the account on the <b>Overview</b> (Read your accounts): the plan comes from who actually connected.</p>`;
+      return;
+    }
+    const cutA = acts.reduce((n, r) => n + (r.addresses - r.new_addresses), 0), allA = acts.reduce((n, r) => n + r.addresses, 0);
+    const k = (a) => P.rules.filter((r) => r.action === a).length;
+    $("gPlan").innerHTML = `<div class="plan-head"><div><h3>Tighten this account</h3>
+      <p class="muted small">From ${P.days ? `${Math.round(P.days)} days` : "the"} of VPC flow logs in ${esc(w.region)}. Every source seen is kept, with headroom; nothing is applied until a second person approves.</p></div>
+      ${acts.length ? `<button class="btn primary" id="tAll">Propose the whole plan (${acts.length} rule${acts.length === 1 ? "" : "s"})</button>` : ""}</div>
+      <div class="plan-tiles"><div><b>${k("tighten") + k("ports")}</b><span>rules to narrow</span></div><div><b>${k("remove")}</b><span>unused rules to remove</span></div>
+      <div><b>${fmtN(cutA)}</b><span>addresses taken away${allA ? ` (${cutPct(allA, allA - cutA)})` : ""}</span></div><div><b>${k("keep")}</b><span>in use: keep</span></div>
+      <div><b>${k("open") + k("wait")}</b><span>to decide, or not enough evidence</span></div></div>
+      ${acts.length ? `<details class="plan-list" open><summary>Every change in the plan (${acts.length})</summary><div class="scroll"><table class="plan-t">${PLAN_HEAD}<tbody id="planRows"></tbody></table></div></details>`
+        : '<p class="muted">Nothing to tighten: the flow logs support every rule as it is.</p>'}`;
+    if (acts.length) {
+      const pg = page("plan", acts.length, drawPlan);
+      $("planRows").innerHTML = planRows(acts.slice(pg.a, pg.b), true);
+      pagerAfter($("planRows"), pg.bar);
+      $("tAll").addEventListener("click", (e) => propose(e.target, {}, `${acts.length} rule(s)`));
+    }
+    wirePlan($("gPlan"));
+  }
+  function wirePlan(root) {
+    for (const b of root.querySelectorAll("[data-tkey]")) b.addEventListener("click", () => propose(b, {keys: [b.dataset.tkey]}, "this rule"));
+  }
+  function propose(btn, sel, what) {
+    const w = where();
+    return act(btn, async () => {
+      const res = await api("/api/tighten", {account: w.account, region: w.region, ...sel});
+      flash(res.id ? `Change request #${res.id} proposed for ${what}: ${res.rules} rule(s), ${fmtN(res.cut_addresses)} fewer addresses. A second person approves it under Change requests.` : `Nothing to change: ${res.status}.`);
+      await loadState();
+    });
+  }
   function drawGroups() {
+    drawPlan();
     const q = $("gFilter").value.toLowerCase().trim();
     const unused = groupsCache.filter((g) => g.enis === 0).length;
     $("gUnusedN").textContent = unused ? `(${unused})` : "";
     const shown = groupsCache.filter((g) => (g.enis !== 0 || $("gUnused").checked) && (!q || JSON.stringify(g).toLowerCase().includes(q)));
-    $("groupList").innerHTML = shown.map((g) => {
-      const rows = g.rules.map((r, i) => `<tr class="rule-${r.state}"><td>${r.state === "want" ? '<span class="pill" style="--p:var(--good)">to add</span>' : r.state === "have" ? '<span class="pill" style="--p:var(--bad)">to remove</span>' : ""}</td>
-        <td>${esc(r.direction === "in" ? "in" : "out")}</td><td><code>${esc(r.proto === "-1" ? "all" : r.proto)} ${r.proto === "-1" ? "" : esc(r.from === r.to ? r.from : `${r.from}-${r.to}`)}</code></td>
-        <td><code>${esc(r.source)}</code></td><td class="muted small">${esc(r.description)}</td>
-        <td>${r.state !== "have" ? `<button class="btn danger" data-rm="${esc(g.id)}|${i}">Propose removing</button>` : ""}</td></tr>`).join("");
-      return `<div class="card"><h3 style="margin-top:0">${esc(g.name)} <code class="muted small">${esc(g.id)}</code></h3>
-        <div class="muted small">${esc(g.vpc)} · ${esc(g.description)}${g.enis == null ? "" : g.enis ? ` · on ${g.enis} interface${g.enis === 1 ? "" : "s"}` : ' · <b>on no interface</b>: protects nothing'}</div>
-        <div class="scroll"><table><thead><tr><th></th><th>Dir</th><th>Ports</th><th>Source / destination</th><th>Description</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No rules.</td></tr>'}</tbody></table></div>
-        <div class="tools"><button class="btn" data-add="${esc(g.id)}">Propose a rule here</button></div></div>`;
-    }).join("") || '<p class="muted">No group matches.</p>';
-    for (const b of document.querySelectorAll("[data-add]")) b.addEventListener("click", () => openPropose({group: b.dataset.add, op: "add"}));
-    for (const b of document.querySelectorAll("[data-rm]")) b.addEventListener("click", () => {
+    const worth = (g) => planFor(g.id).filter(isAct).reduce((n, r) => n + (r.addresses - r.new_addresses) + 1, 0);
+    shown.sort((x, y) => worth(y) - worth(x) || x.name.localeCompare(y.name));
+    const pg = page("groups", shown.length, drawGroups);
+    $("groupList").innerHTML = shown.slice(pg.a, pg.b).map((g) => {
+      const plan = planFor(g.id), acts = plan.filter(isAct), cut = acts.reduce((n, r) => n + (r.addresses - r.new_addresses), 0);
+      const n = (a) => plan.filter((r) => r.action === a).length;
+      const say = !planCache.read ? '<span class="muted small">not read yet</span>'
+        : !plan.length ? '<span class="muted small">no flow log evidence for its rules</span>'
+        : [n("tighten") + n("ports") ? `<span class="pill" style="--p:var(--accent)">${n("tighten") + n("ports")} to narrow</span>` : "",
+           n("remove") ? `<span class="pill" style="--p:var(--bad)">${n("remove")} to remove</span>` : "",
+           n("open") ? `<span class="pill" style="--p:var(--high)">${n("open")} open to all</span>` : "",
+           !acts.length && !n("open") ? '<span class="pill" style="--p:var(--good)">fine as it is</span>' : ""].join(" ");
+      const pend = g.rules.filter((r) => r.state !== "both").length;
+      const isOpen = openGroups.has(g.id);
+      return `<tr class="grow${isOpen ? " is-open" : ""}"><td><b>${esc(g.name)}</b> <code class="muted small">${esc(g.id)}</code>${pend ? ` <span class="pill" style="--p:var(--warn)">${pend} pending</span>` : ""}
+          <div class="muted small">${esc(g.vpc)}${g.description ? " · " + esc(g.description) : ""}${g.enis === 0 ? " · <b>on no interface</b>: protects nothing" : ""}</div></td>
+        <td class="num">${g.enis == null ? "?" : g.enis}</td><td class="num">${g.rules.length}</td><td>${say}</td>
+        <td class="num">${cut ? `<b>${fmtN(cut)}</b>` : '<span class="muted">—</span>'}</td>
+        <td class="act">${acts.length ? `<button class="btn sm primary" data-tgroup="${esc(g.id)}">Propose ${acts.length}</button> ` : ""}<button class="btn sm" data-details="${esc(g.id)}" aria-expanded="${isOpen}">${isOpen ? "Hide details" : "Details"}</button></td></tr>
+        ${isOpen ? `<tr class="gdetail"><td colspan="6">${groupDetail(g)}</td></tr>` : ""}`;
+    }).join("") || '<tr><td colspan="6" class="muted">No group matches.</td></tr>';
+    pagerAfter($("groupList"), pg.bar);
+    for (const b of $("groupList").querySelectorAll("[data-details]")) b.addEventListener("click", () => {
+      const id = b.dataset.details; openGroups.has(id) ? openGroups.delete(id) : openGroups.add(id); drawGroups();
+    });
+    for (const b of $("groupList").querySelectorAll("[data-tgroup]")) b.addEventListener("click", () => propose(b, {groups: [b.dataset.tgroup]}, "this group"));
+    wirePlan($("groupList"));
+    for (const b of $("groupList").querySelectorAll("[data-add]")) b.addEventListener("click", () => openPropose({group: b.dataset.add, op: "add"}));
+    for (const b of $("groupList").querySelectorAll("[data-rm]")) b.addEventListener("click", () => {
       const [gid, i] = b.dataset.rm.split("|"); const r = groupsCache.find((g) => g.id === gid).rules[+i];
       openPropose({group: gid, op: "remove", rule: r});
     });
   }
+  function groupDetail(g) {
+    const plan = new Map(planFor(g.id).map((r) => [planKey(g.id, r), r]));
+    const rows = g.rules.map((r, i) => {
+      const v = r.direction === "in" ? plan.get(planKey(g.id, r)) : null;
+      const mark = r.state === "want" ? ' <span class="pill" style="--p:var(--good)">to add</span>' : r.state === "have" ? ' <span class="pill" style="--p:var(--bad)">to remove</span>' : "";
+      return `<tr><td><span class="dir dir-${r.direction}">${r.direction === "in" ? "In" : "Out"}</span> <code>${esc(portTxt(r.proto, r.from, r.to))}</code> ${r.direction === "in" ? "from" : "to"} <code>${esc(r.source)}</code>${mark}${r.description ? `<div class="muted small">${esc(r.description)}</div>` : ""}</td>
+        <td>${v ? `${actPill(v.action)}<div class="muted small">${esc(v.note || "")}</div>` : `<span class="muted small">${r.direction === "out" ? "outbound: not judged" : "no flow log evidence"}</span>`}</td>
+        <td>${v ? newRule(v) : '<span class="muted">—</span>'}</td><td class="small">${v ? cutCell(v) : '<span class="muted">—</span>'}</td>
+        <td class="act">${v && isAct(v) ? `<button class="btn sm primary" data-tkey="${esc(v.key)}">Propose</button> ` : ""}${r.state !== "have" ? `<button class="btn sm quiet" data-rm="${esc(g.id)}|${i}">Remove by hand</button>` : ""}</td></tr>`;
+    }).join("");
+    return `<table class="plan-t">${PLAN_HEAD}<tbody>${rows || '<tr><td colspan="5" class="muted">No rules.</td></tr>'}</tbody></table>
+      <div class="tools"><button class="btn sm" data-add="${esc(g.id)}">+ Propose a rule by hand</button></div>`;
+  }
   async function loadAssets(w) {
     const rows = await api(`/api/assets?account=${encodeURIComponent(w.account)}&region=${encodeURIComponent(w.region)}`);
+    const ap = page("assets", rows.length, () => loadAssets(w));
     $("assetRows").innerHTML = rows.map((a, i) => `<tr><td><code>${esc(a.eni)}</code><div class="muted small">${esc(a.kind)}</div></td>
       <td>${a.instance ? `<code>${esc(a.instance)}</code>` : '<span class="muted">-</span>'}${a.asg ? `<div class="muted small">${esc(a.asg)}</div>` : ""}</td>
       <td class="small"><code>${a.ips.slice(0, 3).map(esc).join("<br>")}</code></td>
       <td class="small">${a.groups.map((g, j) => `<code>${esc(g)}</code> ${esc(a.group_names[j])}`).join("<br>")}</td>
       <td class="small">${a.alone ? `<span class="muted" title="${esc(a.alone)}">no: ${esc(a.alone.split(":")[0])}</span>` : '<span class="pill" style="--p:var(--good)">possible</span>'}</td>
       <td><button class="btn" data-hist="${i}">History</button></td></tr>
-      <tr hidden id="hist-${i}"><td colspan="6"></td></tr>`).join("") || '<tr><td colspan="6" class="muted">No assets recorded: Reconcile with AWS reads them.</td></tr>';
+      <tr hidden id="hist-${i}"><td colspan="6"></td></tr>`).slice(ap.a, ap.b).join("") || '<tr><td colspan="6" class="muted">No assets recorded: Reconcile with AWS reads them.</td></tr>';
+    pagerAfter($("assetRows"), ap.bar);
     for (const b of document.querySelectorAll("[data-hist]")) b.addEventListener("click", () => act(b, async () => {
       const a = rows[+b.dataset.hist], row = $(`hist-${b.dataset.hist}`);
       if (!row.hidden) { row.hidden = true; return; }
@@ -924,6 +1155,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     const origin = $("aOrigin").value;
     if (origin) rows = rows.filter((e) => e.origin === origin);
     $("aN").textContent = `${rows.length.toLocaleString()} entries`;
+    const up = page("audit", rows.length, loadAudit);
     $("auditRows").innerHTML = rows.map((e) => {
       const d = e.detail || {};
       const lines = [...(d.added || []).map((r) => ["+", r]), ...(d.removed || []).map((r) => ["−", r])]
@@ -933,7 +1165,8 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
         <td><span class="pill" style="--p:${ext ? "var(--bad)" : e.origin === "apply" ? "var(--good)" : "var(--accent)"}">${esc(e.origin)}</span> ${esc(e.action)}${d.request ? ` <b>#${d.request}</b>` : ""}${lines}</td>
         <td class="small">${esc(e.account)} ${esc(e.region)}<div><code>${esc(e.group_id)}</code></div></td>
         <td class="small">${esc(e.reason)}${e.ticket ? ` <code>${esc(e.ticket)}</code>` : ""}</td></tr>`;
-    }).join("") || '<tr><td colspan="6" class="muted">Nothing in this window.</td></tr>';
+    }).slice(up.a, up.b).join("") || '<tr><td colspan="6" class="muted">Nothing in this window.</td></tr>';
+    pagerAfter($("auditRows"), up.bar);
   }
   let aT = null;
   $("aQ").addEventListener("input", () => { clearTimeout(aT); aT = setTimeout(loadAudit, 250); });
@@ -962,7 +1195,8 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     const shown = refusedData.rows.filter((r) => (!sev || r.sev === sev) && (!acct || r.account === acct) && (!risky || r.risky) && (!nw || r.new) && whereOk(r) && (!q ||
       [r.account, r.account_name, r.src, r.name, r.type, r.port, r.port_class, r.verdict, r.reason, r.kind, r.region, r.eni, r.dst].join(" ").toLowerCase().includes(q)));
     $("fN").textContent = `${shown.length.toLocaleString()} of ${refusedData.rows.length.toLocaleString()}`;
-    $("refusedRows").innerHTML = shown.slice(0, 2000).map((r, i) => `<tr><td><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span></td>
+    const fp = page("refused", shown.length, drawRefused);
+    $("refusedRows").innerHTML = shown.slice(fp.a, fp.b).map((r, i) => `<tr><td><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span></td>
       <td>${esc(r.account_name || r.account)}<div class="muted small"><code style="white-space:nowrap">${esc(r.account)}</code></div></td>
       <td><code>${esc(r.src)}</code> ${r.new ? '<span class="pill" style="--p:var(--bad)" title="First seen in the last 7 days; never before in the flow logs read">new</span>' : ""}${r.v6 ? ' <span class="pill" style="--p:var(--accent)">IPv6</span>' : ""} <span class="pill" style="--p:${r.internal ? "var(--good)" : "var(--warn)"}">${r.internal ? "internal" : "external"}</span>${r.scan ? ' <span class="pill" style="--p:var(--high)">scanning</span>' : ""}${r.threat ? ' <span class="pill" style="--p:var(--bad)" title="On a threat list: botnet command server, criminal netblock, compromised host or recent attacker">known malicious</span>' : ""}${r.tor ? ' <span class="pill" style="--p:var(--bad)" title="On the Tor Project\'s exit list">Tor</span>' : ""}
         <div class="muted small">${esc(r.name)}${r.type ? " · " + esc(r.type) : ""}${r.first_ever ? ` · first seen ${esc(when(r.first_ever))}${r.seen_before ? "" : r.new ? ", never before" : ""}` : ""}</div></td>
@@ -972,6 +1206,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
       <td>${esc(r.verdict)}<div class="muted small">${esc(r.reason)}</div></td>
       <td>${r.groups?.length && ["6", "17"].includes(String(r.proto)) ? `<button class="btn" data-allow="${shown.indexOf(r)}">Propose allowing</button>` : ""}</td></tr>`).join("")
       || '<tr><td colspan="8" class="muted">Nothing matches.</td></tr>';
+    pagerAfter($("refusedRows"), fp.bar);
     for (const b of document.querySelectorAll("[data-allow]")) b.addEventListener("click", () => {
       const r = shown[+b.dataset.allow];
       const target = `${r.account}|${r.region}`;
@@ -1104,10 +1339,12 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
       tile("--warn", sum(A, (a) => a.tighten + a.unused), "rules to tighten or remove"),
       tile("--muted", big(sum(A, (a) => a.high_refused)), "high-risk sources probing (refused)"),
     ].join("");
-    $("mHeat").innerHTML = `<thead><tr><th>Account</th><th class="h">Risk score</th>${DIMS.map((d) => `<th class="h" title="${esc(d[3])}">${esc(d[0])}</th>`).join("")}<th>Mode</th></tr></thead><tbody>${A.map((a) => {
+    const hp = page("heat", A.length, drawMacro);
+    $("mHeat").innerHTML = `<thead><tr><th>Account</th><th class="h">Risk score</th>${DIMS.map((d) => `<th class="h" title="${esc(d[3])}">${esc(d[0])}</th>`).join("")}<th>Mode</th></tr></thead><tbody>${A.slice(hp.a, hp.b).map((a) => {
       const sc = score(a);
       return `<tr><td>${acctLink(a)}</td><td class="h l${sc >= 10 ? 3 : sc >= 6 ? 2 : sc >= 2 ? 1 : 0}">${sc}</td>${DIMS.map((d) => `<td class="h l${d[2](a)}" title="${esc(d[3])}">${d[1](a)}</td>`).join("")}<td>${modePill(a.mode)}</td></tr>`;
     }).join("")}</tbody>`;
+    pagerAfter($("mHeat"), hp.bar);
     drawFocus(A);
     drawOwner(A);
     drawTimes(A);

@@ -51,7 +51,7 @@ ASSET = Path(__file__).resolve().parent / "assets" / "sg_console.html"
 MAX_BODY = 1 << 20
 RANGES = ("24h", "1w", "1m", "3m", "6m", "1y")
 MIN_SPEND = 100.0  # US$ in the last 30 days: reading an OU skips accounts spending less (0 reads every one)
-BATCH_WORKERS = 4  # accounts read at once when reading an OU: each runs its own Logs Insights queries
+BATCH_WORKERS = 8  # accounts read at once when reading an OU: each runs its own Logs Insights queries
 JOBS_SHOWN = 1000
 LABEL = "com.sg-tightener.console"
 UNIT = "sg-console.service"
@@ -86,6 +86,7 @@ class Console:
         self._job_extra: dict[int, dict] = {}
         self._owner_thread: threading.Thread | None = None
         self._spend_failed = 0.0
+        self._verdicts: dict = {}  # account: (mtime of its read, the engine's plan)
         self.httpd = None
 
     # ------------------------------------------------------------------ plumbing
@@ -547,7 +548,7 @@ class Console:
 
         try:
             t = self.targets(fresh=True)
-            sess = t.session(job["account"])
+            sess = sg_review.SafeSession(t.session(job["account"]))  # its regions are read at once
             if job.get("min_spend") and self._too_small(job, sess):
                 return
             regions = job["regions"]
@@ -556,12 +557,17 @@ class Console:
                 regions = sorted(r["RegionName"] for r in ec2.describe_regions()["Regions"])
                 self._say(job, f"{len(regions)} enabled regions")
             job["regions"] = regions
-            st = self.store()
-            try:
-                if job["name"]:
+            if job["name"]:
+                st = self.store()
+                try:
                     with st:
                         st.name_account(job["account"], job["name"])
-                for region in regions:
+                finally:
+                    st.close()
+
+            def one(region):
+                st = self.store()  # a connection each: the regions are read at once
+                try:
                     try:
                         ec2 = sess.client("ec2", region_name=region)
                         changes = sg_db.ensure_current(st, ec2, job["account"], region, t.actor, assets=True)
@@ -574,8 +580,10 @@ class Console:
                                        + (f", {len(changes)} changed outside the tool" if changes else ""))  # fmt: skip
                     except Exception as exc:  # noqa: BLE001 - one region out of reach must not stop the others
                         self._say(job, f"{region}: not read ({sg_review.describe_error(exc)[:200]})")
-            finally:
-                st.close()
+                finally:
+                    st.close()
+
+            sg_review.each_region(one, regions)
             now = time.time()
             doc = sg_review.load(job["account"]) or sg_review.new_doc(job["account"], job["name"])
             doc["name"] = job["name"] or doc.get("name", "")
@@ -793,6 +801,62 @@ class Console:
         self.httpd.shutdown()
 
     # ------------------------------------------------------------------ writes
+
+    # ---- the engine's plan for an account: every inbound rule, old and new
+    def verdicts(self, account: str, region: str = "") -> dict:
+        """What the flow logs say each inbound rule should become, for one account (and region): the old rule, the
+        new rule or rules (none to remove it), and how many addresses and ports that takes away. From the same
+        reading as the review page; kept until the account is read again."""
+        import sg_review
+
+        try:
+            path = sg_review._path(account)
+            mtime = path.stat().st_mtime
+        except (KeyError, OSError):
+            return {"read": False, "rules": [], "groups": {}}
+        got = self._verdicts.get(account)
+        if not got or got[0] != mtime:
+            doc = sg_review.load(account)
+            if not doc or not doc.get("chunks"):
+                return {"read": False, "rules": [], "groups": {}}
+            data = sg_review.build(doc, "24h", "", "", sg_review.load_names())  # the rules use the whole read, whatever the window
+            rows = [_plan_rule(r) for r in data.get("rules") or []]
+            got = (mtime, {"days": (data.get("summary") or {}).get("history_days"), "rules": rows})
+            self._verdicts[account] = got
+        rules = [r for r in got[1]["rules"] if not region or r["region"] == region]
+        groups: dict = {}
+        for r in rules:
+            g = groups.setdefault(r["group"], {"tighten": 0, "remove": 0, "ports": 0, "keep": 0, "wait": 0, "cut": 0})
+            g[r["action"]] = g.get(r["action"], 0) + 1
+            g["cut"] += r["cut_addresses"]
+        return {"read": True, "days": got[1]["days"], "rules": rules, "groups": groups}
+
+    def tighten(self, body: dict) -> dict:
+        """Propose the engine's plan as one change request: for each rule chosen (by ``keys``, or every rule in the
+        ``groups`` given, or the whole account and region), remove the old rule and add the new ones."""
+        account, region = _need(body, "account"), _need(body, "region")
+        plan = self.verdicts(account, region)
+        if not plan["read"]:
+            raise ConsoleError(409, f"read {account}'s flow logs first: the plan comes from them")
+        keys, groups = set(body.get("keys") or []), set(body.get("groups") or [])
+        chosen = [r for r in plan["rules"] if r["action"] in ACTIONABLE
+                  and (r["key"] in keys if keys else r["group"] in groups if groups else True)]  # fmt: skip
+        if not chosen:
+            raise ConsoleError(400, "nothing to change: the flow logs support every rule chosen as it is")
+        changes = []
+        for r in chosen:
+            old = {"direction": "in", "proto": r["proto"], "from": r["from"], "to": r["to"], "source": r["source"],
+                   "description": r["desc"]}  # fmt: skip
+            changes.append({"group": r["group"], "op": "remove", "rule": old})
+            for n in r["new"]:
+                changes.append({"group": r["group"], "op": "add", "rule": {"direction": "in", **n, "description": r["desc"]}})
+        cut = sum(r["cut_addresses"] for r in chosen)
+        reason = str(body.get("reason") or "").strip() or (
+            f"Tighten {len(chosen)} rule(s) to what {plan['days'] or '?'} days of VPC flow logs show in use "
+            f"({cut:,} fewer addresses let in)")
+        return {**self.propose({"account": account, "region": region, "changes": changes, "reason": reason,
+                                "ticket": body.get("ticket") or ""}), "rules": len(chosen), "cut_addresses": cut}
+
     def propose(self, body: dict) -> dict:
         account, region = _need(body, "account"), _need(body, "region")
         changes = []
@@ -1164,6 +1228,8 @@ def make_handler(console: Console, token: str, port: int):
                     return self._page(console.review(_need(q, "account"), token))
                 if url.path == "/api/state":
                     return self._json(200, console.state())
+                if url.path == "/api/verdicts":
+                    return self._json(200, console.verdicts(_need(q, "account"), str(q.get("region") or "")))
                 if url.path == "/api/groups":
                     return self._json(200, console.groups(_need(q, "account"), _need(q, "region")))
                 if url.path == "/api/assets":
@@ -1213,7 +1279,7 @@ def make_handler(console: Console, token: str, port: int):
                 return self._json(400, {"error": f"bad JSON: {exc}"})
             if not isinstance(body, dict):
                 return self._json(400, {"error": "bad JSON: an object is expected"})
-            route = {"/api/propose": console.propose, "/api/decide": console.decide, "/api/apply": console.apply,
+            route = {"/api/propose": console.propose, "/api/tighten": console.tighten, "/api/decide": console.decide, "/api/apply": console.apply,
                      "/api/reconcile": console.reconcile, "/api/adopt": console.adopt, "/api/check": console.check,
                      "/api/asset-apply": console.asset_apply, "/api/asset-revert": console.asset_revert,
                      "/api/sso/start": console.sso_start, "/api/sso/choose": console.sso_choose,
@@ -1235,6 +1301,66 @@ def make_handler(console: Console, token: str, port: int):
                 return self._json(500, {"error": str(exc)})
 
     return Handler
+
+
+
+ACTIONABLE = ("tighten", "remove", "ports")
+
+
+def _port_ranges(rule: dict, used: list) -> list | None:
+    """The ports a rule needs, as ranges, from the (protocol, port) seen through it: None when it cannot be
+    narrowed (all protocols, one port already, nothing seen, or too many gaps to be worth it)."""
+    import sg_review
+
+    proto, lo, hi = str(rule["proto"]), int(rule["from"]), int(rule["to"])
+    if proto not in ("6", "17") or hi <= lo:
+        return None
+    eph = sg_review.EPHEMERAL
+    ports = sorted({int(p) for pr, p in used if str(pr) == proto and (lo <= int(p) <= hi or int(p) >= eph <= hi)})
+    if not ports:
+        return None
+    out: list = []
+    for p in ports:
+        a, b = (max(lo, sg_review.EPHEMERAL), hi) if p >= sg_review.EPHEMERAL else (p, p)  # replies: one folded range
+        if out and a <= out[-1][1] + 1:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    if len(out) > 8 or sum(b - a + 1 for a, b in out) >= hi - lo + 1:
+        return None
+    return out
+
+
+def _plan_rule(r: dict) -> dict:
+    """One rule of the review's table, as the Security groups tab shows it: old, new and what goes."""
+    span = 1 if str(r["proto"]) in ("-1", "1") else int(r["to"]) - int(r["from"]) + 1
+    status = r.get("status", "")
+    cidrs = list(r.get("suggest") or [])
+    ranges = _port_ranges(r, r.get("ports_used") or []) if status in ("tighten", "used") else None
+    if status == "unused":
+        action, new = "remove", []
+    elif status == "tighten" and cidrs:
+        action = "tighten"
+        new = [{"proto": str(r["proto"]), "from": a, "to": b, "source": c}
+               for c in cidrs for a, b in (ranges or [[int(r["from"]), int(r["to"])]])]  # fmt: skip
+    elif status == "used" and ranges:
+        action = "ports"
+        new = [{"proto": str(r["proto"]), "from": a, "to": b, "source": r["source"]} for a, b in ranges]
+    else:
+        action = "keep" if status == "used" else "open" if status == "open" else "wait"
+        new = None
+    allowed = int(r.get("allowed") or 0)
+    new_addr = 0 if new == [] else int(r.get("suggest_size") or allowed) if action == "tighten" else allowed
+    new_ports = 0 if new == [] else sum(b - a + 1 for a, b in ranges) if ranges else span
+    return {"key": f"{r['region']}|{r['group']}|{r['proto']}|{r['from']}|{r['to']}|{r['source']}",
+            "region": r["region"], "group": r["group"], "gname": r.get("gname", ""), "proto": str(r["proto"]),
+            "from": int(r["from"]), "to": int(r["to"]), "ports": r.get("ports", ""), "source": r["source"],
+            "desc": r.get("desc", ""), "status": status, "note": r.get("note", ""), "action": action, "new": new,
+            "addresses": allowed, "new_addresses": allowed if new is None else new_addr,
+            "cut_addresses": 0 if new is None else max(0, allowed - new_addr),
+            "port_count": span, "new_ports": span if new is None else new_ports,
+            "seen": int(r.get("here") or 0), "last_used": r.get("last_used"), "days": r.get("days"),
+            "top": [t.get("src") for t in (r.get("top") or [])][:5]}  # fmt: skip
 
 
 def serve(console: Console, port: int = 8765, token: str | None = None) -> tuple[ThreadingHTTPServer, str]:

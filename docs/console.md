@@ -112,7 +112,7 @@ Old bookmarks ending in `?token=…` still work.
 | **Overview** | Every account and region: its **mode** (surveillance or enforce), groups, rules, assets, changes waiting to be applied, **whether this identity can apply there** (with a **Check** button: a DryRun of every write, nothing changes), when AWS was last read. The approvals mode, who you are acting as, and whether the audit trail's hash chain is intact. For an account `sg_review.py` has read, **Review and tighten** opens its Security Group Review (`/review?account=ID`), whose **Tighten** panel proposes the fitted rules here as a change request ([how](security-group-review.md#tighten-pull-the-room-back-by-kind-type-and-name)) |
 | **Risk overview** | Every account `sg_review.py` has read, side by side: headline tiles, a risk heatmap, over-provisioning by owner and over time, internet exposure, high-risk sources let in, the biggest rules to tighten, and blind spots ([below](#risk-overview-every-account)) |
 | **Over-provisioning** | For leaders: over-provisioned addresses by account and per asset, rated red, amber or green, with KPIs, the trend, and **Reduce** into each account's Tighten panel ([below](#over-provisioning-by-account-and-asset)) |
-| **Security groups** | Pick an account and region. Every group and rule, marked *to add* (approved, not in AWS yet) or *to remove* (in AWS, not wanted). **Propose a change**, **Propose removing** a rule, **Reconcile with AWS**, **Apply approved changes** (press twice; off in surveillance mode), **Propose keeping what AWS holds**. Below, every **asset** (network interface): what it is attached to, its addresses and groups, whether it can have a group of its own (auto scaling, EKS, ECS and AWS-managed interfaces cannot), and its **History** of group changes |
+| **Security groups** | Tighten an account at a time. Pick an account and region: **Tighten this account** shows the plan from its flow logs (rules to narrow, unused rules to remove, addresses taken away) and **Propose the whole plan** sends it as one change request. Each group is one row, worst first, 50 to a page, with **Propose** for that group and **Details** for its rules: the rule now, what the flow logs say, the new rule and what it takes away. **Reconcile with AWS**, **Apply approved changes** (press twice; off in surveillance mode); **Propose a change by hand** and **Propose keeping what AWS holds** below. Then every **asset** (network interface) and its **History** of group changes |
 | **Change requests** | Requests waiting for approval, approved, applied, rejected, withdrawn. Approve, or reject with a note, someone else's request; withdraw your own. Apply an approved one. An **asset request** (from `sg_db.py asset-propose`) shows the interface, the group it gets, the rules narrowed and why, and once approved **Create the group and move** the interface |
 | **Audit trail** | Every entry, newest first, searchable (who, why, ticket, group, rule) and filtered by time and origin. Changes made outside the tool are red, with who made them from CloudTrail |
 | **Rejected traffic** | Every source the security groups and network ACLs refused, in every account `sg_review.py` has read, worst verdict first. Each source is marked **internal** or **external**, **IPv6**, **scanning**, and **new** (first seen in the last 7 days, never before in at least 14 days of flow logs), with when it was first seen. Filter by account, severity, risky ports, new addresses only, internal / external / IPv6 / scanning, and text. **Propose allowing** opens the change form with the source, port and a reason filled in |
@@ -120,6 +120,31 @@ Old bookmarks ending in `?token=…` still work.
 ![Change requests: approve or reject someone else's](images/sg-console-requests.png)
 
 ![Rejected traffic across every account read](images/sg-console-rejected-traffic.png)
+
+## Tighten an account: the plan
+
+The **Security groups** tab is built to tighten an account at a time, not a rule at a time. For the account and
+region chosen, the flow logs `sg_review.py` read decide what each inbound rule should become:
+
+| The flow logs say | New rule |
+|---|---|
+| **Narrow the sources** | the ranges that cover every source seen, with 30% headroom, inside the old range |
+| **Narrow the ports** | a port range cut to the ports used (replies to the account's own connections stay one range) |
+| **Remove: nothing used it** | none: the rule goes |
+| **Keep**, **Open to everyone: decide**, **Not enough evidence yet** | unchanged: a person decides, or read more days |
+
+Each change shows the **rule now**, the **new rule**, and what it takes away: addresses (16.8M → 4, −99.9%) and
+ports (65,536 → 2). **Propose the whole plan** puts every change into one change request (remove the old rule, add
+the new ones), with the reason written for you; **Propose** on a group or a rule sends just that. Nothing changes
+in AWS until a second person approves and someone applies it. Groups are listed worst first, 50 to a page;
+**Details** opens a group's rules only when you want to look closer.
+
+![Tighten this account: the plan from 90 days of flow logs](images/sg-console-tighten-plan.png)
+
+![Each group, worst first, with Details open on one](images/sg-console-tighten-groups.png)
+
+Every long table in the console (accounts, groups, assets, audit trail, rejected traffic, risk by account) is
+split into pages of 50 rows.
 
 ## Surveillance and enforce
 

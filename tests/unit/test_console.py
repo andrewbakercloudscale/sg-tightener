@@ -347,3 +347,75 @@ def test_the_risk_charts_get_each_accounts_spend_and_owner(tmp_path, monkeypatch
         assert spend is None and "AccessDenied" in why
     finally:
         ipintel.set_data_dir(old)
+
+
+def _demo_store(tmp_path):
+    """The demo account read by sg_review, and its groups in the console's database."""
+    ipintel.set_data_dir(tmp_path / "data")
+    doc = demo.build_doc(demo.ACCOUNT, time.time(), 90)
+    sg_review.save(doc)
+    st = sg_db.Store(tmp_path / "sg.db")
+    with st:
+        for region, x in doc["regions"].items():
+            groups = {}
+            for gid, g in x["snapshot"]["groups"].items():
+                rules = {}
+                for r in g["rules"]:
+                    for c in list(r.get("cidrs") or []) + list(r.get("cidrs6") or []):
+                        rules[(sg_db.IN, sg_db._proto(r["proto"]), r["from"], r["to"], c)] = ""
+                groups[gid] = {"name": g["name"], "vpc": g["vpc"], "description": "", "rules": rules}
+            st.import_region(demo.ACCOUNT, region, groups, "arn:aws:sts::111122223333:assumed-role/Admin/alice")
+    st.close()
+    return sg_console.Console(str(tmp_path / "sg.db"), targets=FakeTargets("arn:aws:sts::111122223333:assumed-role/Admin/alice"))
+
+
+def test_the_plan_gives_each_rule_its_new_rule_and_what_it_takes_away(tmp_path):
+    old = ipintel.DATA_DIR
+    try:
+        c = _demo_store(tmp_path)
+        plan = c.verdicts(demo.ACCOUNT, REGION)
+        assert plan["read"] and plan["rules"]
+        by = {r["action"] for r in plan["rules"]}
+        assert {"tighten", "remove"} <= by
+        t = next(r for r in plan["rules"] if r["action"] == "tighten" and r["source"] == "10.0.0.0/8")
+        assert t["new"] and all(n["proto"] == t["proto"] and n["from"] == t["from"] for n in t["new"])
+        assert t["addresses"] == 2 ** 24 and 0 < t["new_addresses"] < t["addresses"]
+        assert t["cut_addresses"] == t["addresses"] - t["new_addresses"]
+        gone = next(r for r in plan["rules"] if r["action"] == "remove")
+        assert gone["new"] == [] and gone["new_addresses"] == 0 and gone["new_ports"] == 0
+        assert all(r["new"] is None for r in plan["rules"] if r["action"] in ("keep", "open", "wait"))
+        assert sum(g["cut"] for g in plan["groups"].values()) == sum(r["cut_addresses"] for r in plan["rules"])
+    finally:
+        ipintel.set_data_dir(old)
+
+
+def test_proposing_the_plan_removes_each_old_rule_and_adds_its_new_ones(tmp_path):
+    old = ipintel.DATA_DIR
+    try:
+        c = _demo_store(tmp_path)
+        plan = c.verdicts(demo.ACCOUNT, REGION)
+        one = next(r for r in plan["rules"] if r["action"] == "tighten")
+        res = c.tighten({"account": demo.ACCOUNT, "region": REGION, "keys": [one["key"]]})
+        assert res["id"] and res["rules"] == 1 and res["cut_addresses"] == one["cut_addresses"]
+        st = sg_db.Store(tmp_path / "sg.db")
+        try:
+            req = st._request(res["id"])
+        finally:
+            st.close()
+        assert "flow logs" in req["reason"]
+        body = json.dumps(req["changes"])
+        assert one["source"] in body and one["new"][0]["source"] in body
+        whole = c.tighten({"account": demo.ACCOUNT, "region": REGION})
+        assert whole["rules"] == sum(1 for r in plan["rules"] if r["action"] in sg_console.ACTIONABLE)
+        with pytest.raises(sg_console.ConsoleError):
+            c.tighten({"account": demo.ACCOUNT, "region": REGION, "keys": ["no|such|rule"]})
+    finally:
+        ipintel.set_data_dir(old)
+
+
+def test_a_port_range_narrows_to_the_ports_seen():
+    assert sg_console._port_ranges({"proto": "6", "from": 8000, "to": 8100}, [("6", 8080), ("6", 8081), ("6", 8443), ("17", 8090)]) == [[8080, 8081]]
+    assert sg_console._port_ranges({"proto": "6", "from": 0, "to": 65535}, [("6", 443), ("6", 40000)]) == [[443, 443], [32768, 65535]]
+    assert sg_console._port_ranges({"proto": "6", "from": 443, "to": 443}, [("6", 443)]) is None
+    assert sg_console._port_ranges({"proto": "-1", "from": 0, "to": 65535}, [("6", 443)]) is None
+    assert sg_console._port_ranges({"proto": "6", "from": 1, "to": 100}, []) is None
