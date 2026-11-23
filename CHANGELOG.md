@@ -5,6 +5,9 @@
 - **Overview hides regions with no security group in use** (nothing there is attached to a network interface),
   with **Show them** to bring them back. The accounts tile counts accounts with groups in use.
 - **Overview sorted by relevance**: changes waiting first, then most assets, rules and groups.
+- **To apply** is now **Differs from AWS**: it counts rules where AWS no longer matches what is saved, usually
+  changed in AWS outside this tool (not change requests). Select the count to open the region, then keep what
+  AWS holds or put it back.
 
 ## 5.19.1 - 2026-11-23
 

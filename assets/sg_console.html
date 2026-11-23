@@ -376,7 +376,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <p class="muted small" id="svcText" style="margin:6px 0 0"></p>
     </div>
     <div class="grid" id="stats"></div>
-    <div class="card scroll"><table><thead><tr><th>Account</th><th>Mode</th><th>Region</th><th>Groups</th><th>Rules</th><th>Assets</th><th>To apply</th><th>Can apply here?</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table><p class="muted small" id="regionsEmpty" hidden style="margin:10px 0 0"></p></div>
+    <div class="card scroll"><table><thead><tr><th>Account</th><th>Mode</th><th>Region</th><th>Groups</th><th>Rules</th><th>Assets</th><th title="Rules where AWS differs from what is saved here, usually changed in AWS outside this tool. Open the region to keep what AWS holds, or apply to put it back.">Differs from AWS</th><th>Can apply here?</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table><p class="muted small" id="regionsEmpty" hidden style="margin:10px 0 0"></p></div>
   </section>
 
   <section id="tab-groups" hidden>
@@ -635,7 +635,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const nf = (n) => typeof n === "number" ? n.toLocaleString() : n;
     $("stats").innerHTML = [
       [new Set(allRegions.filter((r) => !isEmpty(r)).map((r) => r.account)).size, `accounts with groups in use, of ${S.accounts.length.toLocaleString()}`, "--accent"], [sum("groups"), "security groups in use", "--kind-dc"], [sum("rules"), "rules", "--kind-cdn"],
-      [sum("pending"), "changes to apply", sum("pending") ? "--warn" : "--good"], [S.pending_requests, "requests waiting for approval", S.pending_requests ? "--warn" : "--good"],
+      [sum("pending"), "rules differ from AWS (changed outside this tool): open the region to keep or revert", sum("pending") ? "--warn" : "--good"], [S.pending_requests, "requests waiting for approval", S.pending_requests ? "--warn" : "--good"],
       [S.verify.ok ? `${S.verify.entries.toLocaleString()} ✓` : "BROKEN", S.verify.ok ? "audit entries, chain intact" : S.verify.why, S.verify.ok ? "--good" : "--bad"],
     ].map(([n, l, c]) => `<div class="card stat mtile" style="--c:var(${c})"><b>${esc(nf(n))}</b><span>${esc(l)}</span></div>`).join("");
     $("regionsEmpty").hidden = !nEmpty;
@@ -644,7 +644,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const rp = page("regions", regions.length, loadState);
     $("regions").innerHTML = regions.map((r, i) => `<tr><td>${esc(r.name || r.account)}<div class="muted small"><code>${esc(r.account)}</code></div></td>
       <td>${modePill(r.mode)}</td>
-      <td>${esc(r.region)}</td><td>${r.groups}</td><td>${r.rules}</td><td>${r.assets}</td><td>${r.pending ? `<span class="pill" style="--p:var(--warn)">${r.pending}</span>` : "0"}</td>
+      <td>${esc(r.region)}</td><td>${r.groups}</td><td>${r.rules}</td><td>${r.assets}</td><td>${r.pending ? `<button class="pill" style="--p:var(--warn);cursor:pointer" data-open="${i}" title="Open to keep what AWS holds or put it back">${r.pending}</button>` : "0"}</td>
       <td class="small"><span class="cellrow">${permCell(r.permissions)} <button class="btn sm" data-check="${i}">Check</button></span></td>
       <td class="small">${esc(when(r.synced_at))}</td><td><span class="cellrow"><button class="btn sm" data-open="${i}">Open</button>${r.reviewed ? `<button class="btn sm primary" data-fix="${esc(r.account)}">Remediate</button><a class="btn sm quiet" href="/review?account=${encodeURIComponent(r.account)}" target="_blank" rel="noopener" title="The account's Security Group Review, in a new tab">Review</a>` : ""}</span></td></tr>`).slice(rp.a, rp.b).join("")
       || `<tr><td colspan="10" class="muted">${S.sso ? "Nothing yet: sign in with AWS SSO above, choose your accounts and select Read." : "Nothing yet: run <code>sg_db.py import --regions … [--ou-id …]</code>."}</td></tr>`;
