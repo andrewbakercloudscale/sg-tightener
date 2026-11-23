@@ -1,5 +1,10 @@
 # Changelog
 
+## 5.19.3 - 2026-11-23
+
+- **Always running switch drawn properly again**: since 5.19.0 the checkbox styling shrank it, so its knob covered the
+  first letter of the label.
+
 ## 5.19.2 - 2026-11-23
 
 - **Overview hides regions with no security group in use** (nothing there is attached to a network interface),

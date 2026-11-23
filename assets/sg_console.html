@@ -103,9 +103,9 @@ details summary { cursor: pointer; font-weight: 600; }
 .batch { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin: 10px 0; }
 .batch .bar-track { margin: 8px 0; }
 .switch { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; cursor: pointer; }
-.switch input { width: 40px; height: 22px; appearance: none; -webkit-appearance: none; background: var(--control-line); border-radius: 999px; position: relative; cursor: pointer; border: 0; padding: 0; }
-.switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
-.switch input:checked { background: var(--good); } .switch input:checked::after { left: 21px; }
+.switch input[type=checkbox] { width: 40px; height: 22px; appearance: none; -webkit-appearance: none; background: var(--control-line); border-radius: 999px; position: relative; cursor: pointer; border: 0; padding: 0; }
+.switch input[type=checkbox]::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+.switch input[type=checkbox]:checked { background: var(--good); } .switch input[type=checkbox]:checked::after { left: 21px; }
 .bar-track { height: 8px; background: var(--grid); border-radius: 999px; overflow: hidden; margin: 6px 0; } .bar-fill { height: 100%; background: var(--accent); }
 .mtiles { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
 .mtile { border-left: 4px solid var(--c, var(--muted)); }
