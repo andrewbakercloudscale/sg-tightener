@@ -1,5 +1,10 @@
 # Changelog
 
+## 5.19.4 - 2026-11-23
+
+- The Overview's **Differs from AWS** column is now **Changed outside tool**: rules someone changed directly in
+  AWS. Select the count to open the region and keep what AWS holds or put it back.
+
 ## 5.19.3 - 2026-11-23
 
 - **Flow logs in a custom format with only `pkt-srcaddr`/`pkt-dstaddr` are read.** The console and `sg_review.py`

@@ -376,7 +376,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <p class="muted small" id="svcText" style="margin:6px 0 0"></p>
     </div>
     <div class="grid" id="stats"></div>
-    <div class="card scroll"><table><thead><tr><th>Account</th><th>Mode</th><th>Region</th><th>Groups</th><th>Rules</th><th>Assets</th><th title="Rules where AWS differs from what is saved here, usually changed in AWS outside this tool. Open the region to keep what AWS holds, or apply to put it back.">Differs from AWS</th><th>Can apply here?</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table><p class="muted small" id="regionsEmpty" hidden style="margin:10px 0 0"></p></div>
+    <div class="card scroll"><table><thead><tr><th>Account</th><th>Mode</th><th>Region</th><th>Groups</th><th>Rules</th><th>Assets</th><th title="Rules where AWS differs from what is saved here, usually changed in AWS outside this tool. Open the region to keep what AWS holds, or apply to put it back.">Changed outside tool</th><th>Can apply here?</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table><p class="muted small" id="regionsEmpty" hidden style="margin:10px 0 0"></p></div>
   </section>
 
   <section id="tab-groups" hidden>
@@ -635,7 +635,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const nf = (n) => typeof n === "number" ? n.toLocaleString() : n;
     $("stats").innerHTML = [
       [new Set(allRegions.filter((r) => !isEmpty(r)).map((r) => r.account)).size, `accounts with groups in use, of ${S.accounts.length.toLocaleString()}`, "--accent"], [sum("groups"), "security groups in use", "--kind-dc"], [sum("rules"), "rules", "--kind-cdn"],
-      [sum("pending"), "rules differ from AWS (changed outside this tool): open the region to keep or revert", sum("pending") ? "--warn" : "--good"], [S.pending_requests, "requests waiting for approval", S.pending_requests ? "--warn" : "--good"],
+      [sum("pending"), "rules changed in AWS outside this tool: open the region to keep or revert", sum("pending") ? "--warn" : "--good"], [S.pending_requests, "requests waiting for approval", S.pending_requests ? "--warn" : "--good"],
       [S.verify.ok ? `${S.verify.entries.toLocaleString()} ✓` : "BROKEN", S.verify.ok ? "audit entries, chain intact" : S.verify.why, S.verify.ok ? "--good" : "--bad"],
     ].map(([n, l, c]) => `<div class="card stat mtile" style="--c:var(${c})"><b>${esc(nf(n))}</b><span>${esc(l)}</span></div>`).join("");
     $("regionsEmpty").hidden = !nEmpty;
