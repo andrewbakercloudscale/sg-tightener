@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.19.5 - 2026-11-23
+
+- **Reading an OU is about six times faster**: 24 accounts at once (was 8), each reading 8 slices at once (was 4).
+- **The Mac stays awake while an OU is read**: sleep dropped every query and let the SSO session run out.
+- Remediate's account list says **Loading accounts…** while it loads instead of showing an empty box.
+
 ## 5.19.4 - 2026-11-23
 
 - The Overview's **Differs from AWS** column is now **Changed outside tool**: rules someone changed directly in

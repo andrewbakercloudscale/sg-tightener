@@ -269,6 +269,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.19.5** | OU reads about six times faster and the Mac stays awake while they run |
 | **5.19.4** | Overview column **Changed outside tool** (was Differs from AWS) |
 | **5.19.3** | Flow logs that log only packet addresses (`pkt-srcaddr`) are read; Always running switch fixed |
 | **5.19.2** | Overview hides regions with no security group in use and sorts the rest by relevance |

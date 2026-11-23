@@ -52,7 +52,7 @@ ASSET = Path(__file__).resolve().parent / "assets" / "sg_console.html"
 MAX_BODY = 1 << 20
 RANGES = ("24h", "1w", "1m", "3m", "6m", "1y")
 MIN_SPEND = 100.0  # US$ in the last 30 days: reading an OU skips accounts spending less (0 reads every one)
-BATCH_WORKERS = 8  # accounts read at once when reading an OU: each runs its own Logs Insights queries
+BATCH_WORKERS = 24  # accounts read at once when reading an OU: each runs its own Logs Insights queries (its own quota)
 JOBS_SHOWN = 1000
 LABEL = "com.sg-tightener.console"
 UNIT = "sg-console.service"
@@ -60,6 +60,18 @@ PROTECTED = ("Desktop", "Documents", "Downloads", "Library/Mobile Documents")  #
 RUNTIME = ("boto3", "pyyaml")
 PASS_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy", "AWS_CA_BUNDLE",
             "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE", "SG_TIGHTENER_DB")
+
+
+def _keep_awake():
+    """On macOS, stop the machine sleeping while a long read runs (sleep drops every query and the SSO
+    session runs out meanwhile). Returns the process to terminate afterwards, or None."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        return subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)  # fmt: skip
+    except OSError:
+        return None
 
 
 class ConsoleError(Exception):
@@ -757,7 +769,12 @@ class Console:
             self._run(j, self._job_extra[j["id"]])
 
         def go():
-            self._pool(b, run, jobs)
+            awake = _keep_awake()
+            try:
+                self._pool(b, run, jobs)
+            finally:
+                if awake:
+                    awake.terminate()
             for j in jobs:
                 if j["status"] == "queued":
                     j["status"] = "cancelled"

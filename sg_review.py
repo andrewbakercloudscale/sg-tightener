@@ -783,7 +783,7 @@ RANGES = {
 }
 LAG = 900  # flow logs reach CloudWatch up to ~10 minutes late: the newest quarter hour is left for the next read
 TAIL_LAG = 300  # watch also reads from the last full hour up to five minutes ago ("tail" slices), to alert in minutes
-WORKERS = 4
+WORKERS = 8  # slices of one account read at once: well inside the Logs Insights concurrent-query quota
 REGION_WORKERS = 8  # regions read at once in one account: each region has its own API limits
 EVIDENCE_DAYS = 30  # fewer days of flow logs than this and no rule is called unused or ready to tighten
 NEW_DAYS = 7  # a source first seen this recently is new...

@@ -1209,6 +1209,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   }
   const topCat = (mix) => { const e = Object.entries(mix || {}).sort((a, b) => b[1] - a[1])[0]; const t = Object.values(mix || {}).reduce((a, b) => a + b, 0); return e ? `${CATN[e[0]]} ${Math.round(100 * e[1] / t)}%` : ""; };
   async function loadFix() {
+    if (!fixAccts) $("xAcct").innerHTML = '<option value="">Loading accounts…</option>';
     fixAccts = await api("/api/flow-accounts");
     drawFixAccounts();
     if ($("xAcct").value) await loadFixPlan();
