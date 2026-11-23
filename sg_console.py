@@ -6,8 +6,10 @@ propose a change with a reason, approve or reject someone else's, apply approved
 with AWS, search the audit trail, and see every rejected flow across the accounts sg_review has read
 (an OU, with ``sg_review.py org``).
 
-It listens on 127.0.0.1 only. Start it and open the URL it prints: the one-time token in it logs the
-browser in (an HttpOnly, SameSite=Strict cookie); every change also carries the token in a header.
+It listens on 127.0.0.1 only and needs no sign-in of its own: open http://127.0.0.1:8765/. Other web
+pages cannot use it: every change carries a key that only the console's own page holds (in a header,
+with a JSON body), requests from other sites and other host names are refused, and nothing it returns
+can be read by another site.
 Who acts is the AWS identity the console runs as (``--profile``), exactly as with ``sg_db.py``: a
 second person approves from their own console or ``sg_db.py approve``, with their own credentials.
 
@@ -37,7 +39,6 @@ import subprocess
 import sys
 import threading
 import time
-from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -47,17 +48,10 @@ from sg_tightener import add_profile_arg, friendly_login_errors, use_profile
 
 LOG = logging.getLogger("sg_console")
 ASSET = Path(__file__).resolve().parent / "assets" / "sg_console.html"
-COOKIE = "sgc"
 MAX_BODY = 1 << 20
 RANGES = ("24h", "1w", "1m", "3m", "6m", "1y")
 LABEL = "com.sg-tightener.console"
 UNIT = "sg-console.service"
-COOKIE_AGE = 30 * 86400
-SIGN_IN_HELP = (b"To get in, do one of these:\n"
-                b"  - open your bookmark: the address that ends in ?token=...\n"
-                b"  - run  python3 sg_console.py open  (it opens the console here, signed in)\n"
-                b"  - copy the address from ~/.sg-tightener/console.log\n\n"
-                b"Sign-in lasts 30 days in this browser; clearing cookies or a private window signs you out.\n")
 PROTECTED = ("Desktop", "Documents", "Downloads", "Library/Mobile Documents")  # macOS keeps background programs out
 RUNTIME = ("boto3", "pyyaml")
 PASS_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy", "AWS_CA_BUNDLE",
@@ -791,8 +785,8 @@ def token_file() -> Path:
 
 
 def lasting_token(new: bool = False) -> str:
-    """The console's sign-in token, kept (mode 0600) so the address stays the same across restarts and the
-    always-running copy: a bookmark keeps working."""
+    """The key the console's own page puts on every change (it never appears in the address), kept (mode
+    0600) so a page left open keeps working when the console restarts or hands over to the always-running copy."""
     path = token_file()
     if not new:
         try:
@@ -819,6 +813,7 @@ def _need(body: dict, key: str) -> str:
 # ---------------------------------------------------------------------------------------------- HTTP
 def make_handler(console: Console, token: str, port: int):
     hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    origins = {f"http://{h}" for h in hosts}
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "sg-console"
@@ -828,10 +823,15 @@ def make_handler(console: Console, token: str, port: int):
             LOG.debug("%s %s", self.address_string(), fmt % a)
 
         # ---- auth
-        def _authed(self) -> bool:
-            c = cookies.SimpleCookie(self.headers.get("Cookie", ""))
-            got = c[COOKIE].value if COOKIE in c else ""
-            return bool(got) and hmac.compare_digest(got, token)
+        def _same_site(self) -> bool:
+            """Refuse what another web site makes the browser send (Fetch Metadata and Origin)."""
+            if self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none"):
+                return False
+            origin = self.headers.get("Origin")
+            return origin is None or origin in origins
+
+        def _keyed(self) -> bool:
+            return hmac.compare_digest(self.headers.get("X-SG-Token", ""), token)
 
         def _host_ok(self) -> bool:
             return self.headers.get("Host", "") in hosts  # refuses DNS rebinding
@@ -868,14 +868,10 @@ def make_handler(console: Console, token: str, port: int):
                 return self._send(421, b"wrong host", "text/plain")
             url = urlparse(self.path)
             q = {k: v[0] for k, v in parse_qs(url.query).items()}
-            if url.path == "/" and "token" in q:
-                if not hmac.compare_digest(q["token"], token):
-                    return self._send(403, b"That token is wrong or out of date.\n\n" + SIGN_IN_HELP, "text/plain; charset=utf-8")
-                return self._send(303, b"", "text/plain", {
-                    "Location": "/", "Set-Cookie": f"{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={COOKIE_AGE}"})
-            if not self._authed():
-                return self._send(403, b"This browser is not signed in to the console.\n\n" + SIGN_IN_HELP,
-                                  "text/plain; charset=utf-8")
+            if url.path == "/" and "token" in q:  # an old bookmark: the address no longer needs a token
+                return self._send(303, b"", "text/plain", {"Location": "/"})
+            if url.path.startswith("/api/") and not self._same_site():
+                return self._json(403, {"error": "requests from other sites are refused"})
             try:
                 if url.path == "/":
                     return self._page()
@@ -913,8 +909,8 @@ def make_handler(console: Console, token: str, port: int):
         def do_POST(self):
             if not self._host_ok():
                 return self._send(421, b"wrong host", "text/plain")
-            if not self._authed() or not hmac.compare_digest(self.headers.get("X-SG-Token", ""), token):
-                return self._json(403, {"error": "not signed in"})
+            if not self._same_site() or not self._keyed():
+                return self._json(403, {"error": "only the console's own page can make changes; reload it"})
             if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                 return self._json(415, {"error": "JSON only"})
             n = int(self.headers.get("Content-Length") or 0)
@@ -968,7 +964,7 @@ def _build_parser() -> argparse.ArgumentParser:
         q.add_argument("--data-dir", help="where sg_review keeps what it read (default ~/.sg-tightener)")
         add_profile_arg(q)
     s.add_argument("--service", action="store_true", help=argparse.SUPPRESS)  # run by launchd / systemd
-    s.add_argument("--new-token", action="store_true", help="make a new sign-in address (old bookmarks stop working)")
+    s.add_argument("--new-token", action="store_true", help="make a new page key (pages already open must be reloaded)")
     s.add_argument("--no-browser", action="store_true", help="do not open the browser")
     sub.add_parser("uninstall", help="stop running the console in the background")
     o = sub.add_parser("open", help="open the console in the browser")
@@ -989,7 +985,7 @@ def _service_cmd(args) -> list[str]:
 
 
 def _url(port: int) -> str:
-    return f"http://127.0.0.1:{port}/?token={lasting_token()}"
+    return f"http://127.0.0.1:{port}/"
 
 
 def _bind(console: Console, port: int, token: str, wait: float) -> ThreadingHTTPServer:
@@ -1041,7 +1037,7 @@ def main(argv=None) -> int:
     console.httpd = httpd
     st = console.state()
     LOG.info("acting as %s; database %s; two-person approval %s", st["me"], st["db"], "on" if st["approvals"] else "off")
-    url = f"http://127.0.0.1:{args.port}/?token={token}"
+    url = _url(args.port)
     print(f"\n  Security group console: {url}\n  (Ctrl-C stops it)\n", flush=True)
     if not args.service and not args.no_browser:
         threading.Timer(0.5, webbrowser.open, (url,)).start()

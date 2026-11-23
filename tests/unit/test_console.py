@@ -51,11 +51,9 @@ def console(tmp_path):
     ipintel.set_data_dir(old)
 
 
-def _req(port, method, path, body=None, cookie=True, header=True, host=None, ctype="application/json"):
+def _req(port, method, path, body=None, header=True, host=None, ctype="application/json", extra=None):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-    h = {"Host": host or f"127.0.0.1:{port}"}
-    if cookie:
-        h["Cookie"] = "sgc=t0ken"
+    h = {"Host": host or f"127.0.0.1:{port}", **(extra or {})}
     if body is not None:
         h["Content-Type"] = ctype
         if header:
@@ -70,17 +68,15 @@ def _req(port, method, path, body=None, cookie=True, header=True, host=None, cty
     return r.status, out, dict(r.getheaders())
 
 
-def test_the_token_logs_the_browser_in_and_nothing_works_without_it(console):
+def test_the_page_opens_without_a_token_and_other_sites_are_refused(console):
     p = console["port"]
-    status, body, _ = _req(p, "GET", "/", cookie=False)
-    assert status == 403 and "sg_console.py open" in body and "?token=" in body and "t0ken" not in body
-    assert _req(p, "GET", "/api/state", cookie=False)[0] == 403
-    status, body, _ = _req(p, "GET", "/?token=wrong", cookie=False)
-    assert status == 403 and "wrong or out of date" in body and "t0ken" not in body
-    status, _, headers = _req(p, "GET", "/?token=t0ken", cookie=False)
-    assert status == 303
-    assert "HttpOnly" in headers["Set-Cookie"] and "SameSite=Strict" in headers["Set-Cookie"]
-    status, page, headers = _req(p, "GET", "/")
+    status, _, headers = _req(p, "GET", "/?token=from-an-old-bookmark")
+    assert status == 303 and headers["Location"] == "/" and "Set-Cookie" not in headers
+    assert _req(p, "GET", "/api/state", extra={"Sec-Fetch-Site": "same-origin"})[0] == 200
+    assert _req(p, "GET", "/api/state", extra={"Sec-Fetch-Site": "cross-site"})[0] == 403
+    assert _req(p, "GET", "/api/state", extra={"Sec-Fetch-Site": "same-site"})[0] == 403
+    assert _req(p, "GET", "/api/state", extra={"Origin": "https://evil.example"})[0] == 403
+    status, page, headers = _req(p, "GET", "/", extra={"Sec-Fetch-Site": "none"})
     assert status == 200 and "Security Group Console" in page
     assert "{{" not in page, "nonce and token are filled in"
     csp = headers["Content-Security-Policy"]
@@ -99,7 +95,9 @@ def test_a_change_needs_the_header_and_json_so_another_page_cannot_post_one(cons
     p = console["port"]
     body = {"id": 1, "action": "approve"}
     assert _req(p, "POST", "/api/decide", body, header=False)[0] == 403
-    assert _req(p, "POST", "/api/decide", body, cookie=False)[0] == 403
+    assert _req(p, "POST", "/api/decide", body, extra={"Sec-Fetch-Site": "cross-site"})[0] == 403
+    assert _req(p, "POST", "/api/decide", body, extra={"Origin": "https://evil.example"})[0] == 403
+    assert _req(p, "POST", "/api/decide", body, extra={"Origin": f"http://127.0.0.1:{p}"})[0] != 403
     assert _req(p, "POST", "/api/decide", body, ctype="text/plain")[0] == 415
 
 
@@ -237,7 +235,6 @@ def test_review_page_is_served_with_the_nonce_and_can_propose_its_plan(console):
     p = console["port"]
     status, body, _ = _req(p, "GET", f"/review?account={demo.ACCOUNT}")
     assert status == 404 and "sg_review" in body["error"]
-    assert _req(p, "GET", f"/review?account={demo.ACCOUNT}", cookie=False)[0] == 403
     doc = demo.build_doc(demo.ACCOUNT, time.time(), 30)  # rules are fitted only from 30 days or more
     sg_review.save(doc)
     status, page, headers = _req(p, "GET", f"/review?account={demo.ACCOUNT}")

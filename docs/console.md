@@ -6,7 +6,7 @@ search the audit trail, and see every rejected flow across an OU.
 
 ```bash
 python sg_console.py install     # always running: starts at login, restarts if it stops, opens the browser
-python sg_console.py serve       # or just for now: opens http://127.0.0.1:8765/?token=… (Ctrl-C stops it)
+python sg_console.py serve       # or just for now: opens http://127.0.0.1:8765/ (Ctrl-C stops it)
 python sg_console.py open        # open it again later (same address every time: bookmark it)
 python sg_console.py uninstall   # stop running in the background
 ```
@@ -70,8 +70,9 @@ sg-tightener, turn Always running off and on again (or run `install` again) to r
 the environment it was turned on from are carried over. On Windows, start `sg_console.py serve` from
 Task Scheduler at log on.
 
-The address keeps the same token across restarts (`~/.sg-tightener/console-token`, mode `0600`), so a
-bookmark keeps working; `serve --new-token` makes a new one and old bookmarks stop working.
+The address is always `http://127.0.0.1:8765/`: there is no token or password, because AWS SSO is the
+sign-in that matters (see [Security model](#security-model) for what stops other web pages using it).
+Old bookmarks ending in `?token=…` still work.
 
 ![Overview, signed in: every account and region in the database](images/sg-console-overview.png)
 
@@ -137,12 +138,15 @@ To apply or reconcile in another account, the console assumes `--role-name` (def
 
 - **Localhost only.** It listens on `127.0.0.1`. To reach it from a laptop, use an SSH tunnel
   (`ssh -L 8765:127.0.0.1:8765 bastion`), never a public bind.
-- **Token.** The URL printed at start carries a random token. Opening it sets an `HttpOnly`,
-  `SameSite=Strict` cookie (30 days) and redirects to a URL without the token. Without the cookie every
-  request is refused. The token is kept in `~/.sg-tightener/console-token` (`0600`) so the address
-  stays the same; `serve --new-token` replaces it.
-- **No cross-site changes.** Every change (POST) also needs the token in an `X-SG-Token` header and a
-  JSON body: another web page cannot send either.
+- **No sign-in of its own.** AWS SSO (or the profile it runs as) is the sign-in; the page opens at
+  `http://127.0.0.1:8765/` with no token. Anyone who can use your login on this computer can use it, as
+  they could your `~/.aws` credentials, so don't run it on a computer other people log in to.
+- **No cross-site changes.** Every change (POST) needs a key that only the console's own page holds,
+  in an `X-SG-Token` header, and a JSON body; another web page can send neither and cannot read the
+  page to learn the key. The key is kept in `~/.sg-tightener/console-token` (`0600`) so an open page
+  keeps working across restarts; `serve --new-token` replaces it.
+- **No cross-site reads.** Requests to `/api/` that the browser marks as coming from another site
+  (`Sec-Fetch-Site`) or with a foreign `Origin` are refused, and no response allows cross-origin reads.
 - **No DNS rebinding.** Requests whose `Host` is not `127.0.0.1:PORT` or `localhost:PORT` are refused.
 - **Content Security Policy.** Only the page's own script runs (`script-src 'nonce-…'`), it can only
   talk to the console (`connect-src 'self'`), and it cannot be framed. Every value shown is escaped.
@@ -254,6 +258,6 @@ carry on. The same table is on the org page (`sg-review-org/index.html`, **All r
 | `--db` | `$SG_TIGHTENER_DB` or `~/.sg-tightener/sg.db` | The database |
 | `--profile` | the usual credential chain | AWS profile, for example an SSO one |
 | `--role-name`, `--external-id` | `OrganizationAccountAccessRole` | Role assumed in other accounts to apply and reconcile (not used when signed in with SSO on the page) |
-| `--new-token` | off | Make a new sign-in address (old bookmarks stop working) |
+| `--new-token` | off | Make a new page key (pages already open must be reloaded) |
 | `--no-browser` | off | Do not open the browser at start |
 | `--data-dir` | `~/.sg-tightener` | Where `sg_review` keeps what it read |

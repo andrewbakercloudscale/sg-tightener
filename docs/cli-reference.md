@@ -115,7 +115,7 @@ A local web console over the database. See [the console](console.md).
 python sg_console.py serve [--port 8765] [--profile P] [--db FILE] [--role-name R] [--external-id X] [--data-dir D]
 ```
 
-It listens on 127.0.0.1 and prints a URL with a one-time token. It acts as the AWS identity it runs as.
+It listens on 127.0.0.1 at http://127.0.0.1:8765/ and needs no sign-in of its own. It acts as the AWS identity it runs as.
 
 ---
 
