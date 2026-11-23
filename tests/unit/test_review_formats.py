@@ -45,3 +45,14 @@ def test_other_malformed_queries_still_raise():
 
     with pytest.raises(ClientError):
         sg_review.run_query(Logs(), ["g"], "q", 0, 3600)
+
+
+def test_reading_an_ou_again_keeps_to_the_regions_with_flow_logs(monkeypatch):
+    import sg_console
+
+    doc = {"regions": {"af-south-1": {"query_sets": [{"format": "x", "groups": ["g"]}]}, "us-east-1": {"query_sets": []}}}
+    monkeypatch.setattr(sg_review, "cached_accounts", lambda: ["111111111111"])
+    monkeypatch.setattr(sg_review, "load", lambda a: doc)
+    assert sg_console.Console._flow_regions("111111111111", "all") == ["af-south-1"]
+    assert sg_console.Console._flow_regions("222222222222", "all") == "all", "never read: every region"
+    assert sg_console.Console._flow_regions("111111111111", "eu-west-1") == "eu-west-1", "a choice is kept"

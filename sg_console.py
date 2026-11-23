@@ -715,7 +715,8 @@ class Console:
         if not accounts:
             raise ConsoleError(400, "choose the accounts to read first")
         busy = {j["account"] for j in self.jobs.values() if j["status"] in ("starting", "running", "confirm", "queued")}
-        jobs = [self.read_start({"account": a, "regions": body.get("regions") or "all", "days": body.get("days") or 30}, start=False)
+        jobs = [self.read_start({"account": a, "regions": self._flow_regions(a, body.get("regions") or "all"),
+                                 "days": body.get("days") or 30}, start=False)
                 for a in accounts if a not in busy]  # fmt: skip
         if not jobs:
             raise ConsoleError(409, "every one of these accounts is already being read")
@@ -731,6 +732,21 @@ class Console:
         self.batch = b
         threading.Thread(target=self._batch_price, args=(b, jobs), daemon=True).start()
         return self.batch_status()
+
+    @staticmethod
+    def _flow_regions(account: str, regions):
+        """For "all": only the regions an earlier read found readable flow logs in, so reading an OU again does
+        not walk every region of every account. Any other choice, or no earlier read, is left as it is."""
+        import sg_review
+
+        if regions != "all":
+            return regions
+        try:
+            doc = sg_review.load(account) if account in sg_review.cached_accounts() else None
+        except Exception:  # noqa: BLE001 - an unreadable cache is read again in full
+            doc = None
+        found = sorted(r for r, x in ((doc or {}).get("regions") or {}).items() if x.get("query_sets"))
+        return found or regions
 
     def _pool(self, b: dict, fn, items: list) -> None:
         from concurrent.futures import ThreadPoolExecutor

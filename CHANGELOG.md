@@ -3,6 +3,10 @@
 ## 5.19.5 - 2026-11-23
 
 - **Reading an OU is about six times faster**: 24 accounts at once (was 8), each reading 8 slices at once (was 4).
+- **An OU read does the last day of every account first**, then goes further back, so every report fills in
+  within the first part of the read instead of account by account.
+- **Reading an OU again keeps to the regions with flow logs** an earlier read found, instead of every region of
+  every account.
 - **The Mac stays awake while an OU is read**: sleep dropped every query and let the SSO session run out.
 - **An account whose flow-log group is younger than the look back is read, not failed.** A slice before the log
   group existed, or past its retention, now counts as empty instead of stopping that account's read.
