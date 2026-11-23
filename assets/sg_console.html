@@ -109,6 +109,13 @@ details summary { cursor: pointer; font-weight: 600; }
 .bar-track { height: 8px; background: var(--grid); border-radius: 999px; overflow: hidden; margin: 6px 0; } .bar-fill { height: 100%; background: var(--accent); }
 .mtiles { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
 .mtile { border-left: 4px solid var(--c, var(--muted)); }
+svg.focus { width: 100%; height: auto; display: block; }
+svg.focus .fg { stroke: var(--grid); stroke-width: 1; }
+svg.focus .fd { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 4; }
+svg.focus .fl { fill: var(--muted); font-size: 12px; }
+svg.focus .fn { fill: var(--ink); font-size: 12px; font-weight: 700; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; }
+.focus-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-top: 6px; }
+.focus-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--c); margin-right: 4px; }
 .mtile b { font-size: 26px; }
 table.heat td.h { text-align: center; font-variant-numeric: tabular-nums; font-weight: 650; border: 2px solid var(--surface); border-radius: 6px; }
 table.heat td:first-child { white-space: nowrap; }
@@ -301,6 +308,12 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
       <span class="muted small" id="mNote"></span>
     </div>
     <div class="grid mtiles" id="mTiles"></div>
+    <div class="card" id="mFocusCard"><h3 style="margin-top:0">Where to focus</h3>
+      <p class="muted small" id="mFocusLede"></p>
+      <div class="tools"><span class="seg" id="mFocusBy"><button data-fby="owner" aria-pressed="true">By owner</button><button data-fby="account" aria-pressed="false">By account</button></span><span class="muted small" id="mFocusNote"></span></div>
+      <div id="mFocus"></div>
+      <div class="focus-legend small"><span><i style="--c:var(--bad)"></i>Critical</span><span><i style="--c:var(--high)"></i>High</span><span><i style="--c:var(--warn)"></i>Medium</span><span><i style="--c:var(--good)"></i>Low</span><span class="muted">Colour: the worst account. Shaded corner: at least one critical risk, and above the middle spend. Select a bubble.</span></div>
+      <div id="mFocusList"></div></div>
     <div class="card"><h3 style="margin-top:0">Risk by account</h3><p class="muted small">Worst first. Red: act now. Orange: high. Amber: worth a look. Green: nothing found. The risk score adds the levels across the row.</p><div class="scroll"><table class="heat" id="mHeat"></table></div></div>
     <div class="card"><h3 style="margin-top:0">Over-provisioned by owner</h3>
       <p class="muted small">Addresses the rules let in today that were never seen in the flow logs, by who they belong to. Pull back the biggest owner first: private space nobody uses and whole provider ranges are usually most of it.</p>
@@ -994,6 +1007,77 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     ["Blind spots", (a) => (a.covered < 0.98 ? `${Math.round(a.covered * 100)}% read` : a.not_logged ? `${a.not_logged} not logged` : "none"), (a) => (a.covered < 0.98 || a.not_logged ? 2 : 0), "time not read, or groups without flow logs: risk this page cannot see"],
   ];
   const score = (a) => DIMS.reduce((t, d) => t + d[2](a), 0);
+  // risk points: 100 for each critical dimension, 10 for each high, 1 for each medium, so one critical outweighs nine highs
+  const POINTS = [0, 1, 10, 100];
+  const points = (a) => DIMS.reduce((t, d) => t + POINTS[d[2](a)], 0);
+  const worst = (a) => Math.max(0, ...DIMS.map((d) => d[2](a)));
+  const LCOL = ["var(--good)", "var(--warn)", "var(--high)", "var(--bad)"];
+  const money = (n) => n >= 1e6 ? `$${(n / 1e6).toFixed(1)}m` : n >= 1e3 ? `$${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1)}k` : `$${Math.round(n)}`;
+  let focusBy = "owner", focusPick = null;
+  function focusItems(A) {
+    const spendKnown = A.some((a) => a.spend != null);
+    const imp = (a) => spendKnown ? (a.spend || 0) : (a.assets_total || 0);
+    if (focusBy === "account") return {spendKnown, items: A.map((a) => ({key: a.account, label: a.name || a.account, x: imp(a), y: points(a), size: Math.max(1, a.assets_total || 1), lvl: worst(a), accounts: [a]}))};
+    const by = new Map();
+    for (const a of A) {
+      const o = a.owner == null ? "Owner not looked up yet" : a.owner || "No owner tag";
+      if (!by.has(o)) by.set(o, []);
+      by.get(o).push(a);
+    }
+    return {spendKnown, items: [...by].map(([o, xs]) => ({key: o, label: o, x: sum(xs, imp), y: sum(xs, points), size: xs.length, lvl: Math.max(...xs.map(worst)), accounts: xs}))};
+  }
+  function drawFocus(A) {
+    const {spendKnown, items} = focusItems(A);
+    for (const b of $("mFocusBy").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.fby === focusBy));
+    const what = spendKnown ? "monthly spend" : "network interfaces (spend not known)";
+    $("mFocusLede").textContent = `Each bubble is ${focusBy === "owner" ? "an owner, from the account's owner tag" : "an account"}. Up = more risk: risk points (100 for each critical risk in the heatmap below, 10 for each high, 1 for each medium${focusBy === "owner" ? ", added across their accounts" : ""}). Right = more important: ${what}${focusBy === "owner" ? " of their accounts" : ""}. Size = ${focusBy === "owner" ? "how many accounts they own" : "network interfaces"}. Both scales are logarithmic. Start at the top right.`;
+    $("mFocusNote").innerHTML = M.owners_pending ? loading("Looking up owner tags…") : esc(M.facts_note || "");
+    const W = 900, H = 380, L = 64, R = 20, T = 16, B = 46;
+    const lx = (v) => Math.log10(Math.max(v, 1));
+    const xs = items.map((i) => lx(i.x)), ys = items.map((i) => lx(i.y));
+    const x0 = Math.floor(Math.min(1, ...xs)), x1 = Math.ceil(Math.max(x0 + 1, ...xs) + 0.05);
+    const y0 = 0, y1 = Math.max(3, Math.ceil(Math.max(...ys) + 0.05));
+    const px = (v) => L + (lx(v) - x0) / (x1 - x0) * (W - L - R), py = (v) => H - B - (lx(v) - y0) / (y1 - y0) * (H - T - B);
+    const sorted = [...items].sort((p, q) => p.x - q.x), mid = sorted.length ? sorted[Math.floor(sorted.length / 2)].x : 1;
+    const smax = Math.max(1, ...items.map((i) => i.size)), rmax = items.length > 40 ? 12 : items.length > 15 ? 16 : 24, rad = (n) => 4 + rmax * Math.sqrt(n / smax);
+    const hot = (i) => i.y >= 100 && i.x >= mid;
+    const rank = (i) => i.y * Math.max(i.x, 1);
+    const top = items.filter(hot).sort((p, q) => rank(q) - rank(p));
+    const labelled = new Set(top.slice(0, 8).map((i) => i.key));
+    const fmtX = (v) => spendKnown ? money(v) : big(v);
+    let g = `<rect x="${px(mid)}" y="${T}" width="${W - R - px(mid)}" height="${py(100) - T}" fill="var(--bad)" opacity=".07"/><text x="${W - R - 6}" y="${T + 14}" text-anchor="end" class="fl">Start here</text>`;
+    for (let e = x0; e <= x1; e++) g += `<line x1="${px(10 ** e)}" x2="${px(10 ** e)}" y1="${T}" y2="${H - B}" class="fg"/><text x="${px(10 ** e)}" y="${H - B + 18}" text-anchor="middle" class="fl">${fmtX(10 ** e)}</text>`;
+    for (let e = y0; e <= y1; e++) g += `<line x1="${L}" x2="${W - R}" y1="${py(10 ** e)}" y2="${py(10 ** e)}" class="fg"/><text x="${L - 8}" y="${py(10 ** e) + 4}" text-anchor="end" class="fl">${(10 ** e).toLocaleString()}</text>`;
+    g += `<line x1="${L}" x2="${W - R}" y1="${py(100)}" y2="${py(100)}" class="fd"/><text x="${L + 6}" y="${py(100) - 5}" class="fl">A critical ↑</text>`;
+    g += `<line x1="${px(mid)}" x2="${px(mid)}" y1="${T}" y2="${H - B}" class="fd"/><text x="${px(mid)}" y="${H - B - 6}" text-anchor="middle" class="fl">Middle ${focusBy === "owner" ? "owner" : "account"}</text>`;
+    g += `<text x="${(L + W - R) / 2}" y="${H - 6}" text-anchor="middle" class="fl">Importance: ${what}</text><text transform="translate(14 ${(T + H - B) / 2}) rotate(-90)" text-anchor="middle" class="fl">Risk points</text>`;
+    const order = [...items].sort((p, q) => q.size - p.size);
+    g += order.map((i) => `<circle cx="${px(i.x)}" cy="${py(i.y)}" r="${rad(i.size)}" fill="${LCOL[i.lvl]}" fill-opacity="${focusPick === i.key ? 1 : 0.7}" stroke="${focusPick === i.key ? "var(--ink)" : "var(--surface)"}" stroke-width="${focusPick === i.key ? 2.5 : 1.5}" data-fkey="${esc(i.key)}" style="cursor:pointer"><title>${esc(i.label)}: ${i.y.toLocaleString()} risk points, ${fmtX(i.x)}${focusBy === "owner" ? `, ${i.size} account${i.size === 1 ? "" : "s"}` : ""}</title></circle>`).join("");
+    // labels for the top of the "Start here" corner, each placed where it overlaps no other label (or left out)
+    const boxes = [], clash = (b) => b.x0 < L || b.x1 > W - R || b.y0 < T || boxes.some((o) => b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0);
+    for (const i of top.filter((i) => labelled.has(i.key))) {
+      const t = i.label.length > 26 ? i.label.slice(0, 25) + "…" : i.label, w = t.length * 7 + 6, cx = px(i.x), cy = py(i.y), r = rad(i.size);
+      const spots = [[cx - w / 2, cy - r - 18], [cx - w / 2, cy + r + 2], [cx + r + 3, cy - 8], [cx - r - 3 - w, cy - 8], [cx - w / 2, cy - r - 34], [cx - w / 2, cy + r + 18]];
+      const at = spots.map(([x, y]) => ({x0: x, x1: x + w, y0: y, y1: y + 16})).find((b) => !clash(b));
+      if (!at) continue;
+      boxes.push(at);
+      g += `<text x="${at.x0 + w / 2}" y="${at.y0 + 12}" text-anchor="middle" class="fn">${esc(t)}</text>`;
+    }
+    $("mFocus").innerHTML = items.length ? `<svg viewBox="0 0 ${W} ${H}" class="focus" role="img" aria-label="Risk points against importance, ${focusBy === "owner" ? "by owner" : "by account"}">${g}</svg>` : "";
+    for (const c of $("mFocus").querySelectorAll("[data-fkey]")) c.addEventListener("click", () => { focusPick = focusPick === c.dataset.fkey ? null : c.dataset.fkey; drawFocus(A); });
+    const pick = items.find((i) => i.key === focusPick);
+    const list = pick ? [pick] : (top.length ? top : [...items].sort((p, q) => rank(q) - rank(p))).slice(0, 5);
+    const crit = (a) => DIMS.filter((d) => d[2](a) === 3).map((d) => d[0]);
+    $("mFocusList").innerHTML = list.length ? `<h4 style="margin:12px 0 4px">${pick ? esc(pick.label) : top.length ? "Start here" : "Highest risk"}</h4><table class="small"><thead><tr><th>${focusBy === "owner" && !pick ? "Owner" : "Account"}</th><th>Risk points</th><th>${spendKnown ? "Spend a month" : "Interfaces"}</th><th>Critical</th><th></th></tr></thead><tbody>${
+      (pick && focusBy === "owner" ? pick.accounts.map((a) => ({label: a.name || a.account, x: spendKnown ? a.spend || 0 : a.assets_total, y: points(a), lvl: worst(a), accounts: [a]})).sort((p, q) => q.y - p.y) : list).map((i) => {
+        const one = i.accounts.length === 1 ? i.accounts[0] : null;
+        const crits = [...new Set(i.accounts.flatMap(crit))];
+        return `<tr><td><span class="pill" style="--p:${LCOL[i.lvl]}">${["low", "medium", "high", "critical"][i.lvl]}</span> ${one && focusBy === "owner" && !pick ? `${esc(i.label)} <span class="muted">${esc(one.name || one.account)}</span>` : esc(i.label)}${!one ? ` <span class="muted">${i.accounts.length} accounts</span>` : ""}</td><td><b>${i.y.toLocaleString()}</b></td><td>${fmtX(i.x)}</td><td>${crits.map(esc).join(", ") || '<span class="muted">none</span>'}</td><td>${one ? `<a class="btn primary" href="/review?account=${encodeURIComponent(one.account)}" target="_blank" rel="noopener">Review and tighten</a>` : `<button class="btn" data-fopen="${esc(i.key)}">Their accounts</button>`}</td></tr>`;
+      }).join("")}</tbody></table>` : "";
+    for (const b of $("mFocusList").querySelectorAll("[data-fopen]")) b.addEventListener("click", () => { focusPick = b.dataset.fopen; drawFocus(A); });
+    if (M.owners_pending && !focusTimer) focusTimer = setTimeout(async () => { focusTimer = null; if (!$("tab-macro").hidden) await loadMacro(); }, 5000);
+  }
+  let focusTimer = null;
 
   async function loadMacro() {
     $("mNote").innerHTML = loading("Reading…");
@@ -1004,7 +1088,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     const A = [...M.accounts].sort((a, b) => score(b) - score(a) || b.over_now - a.over_now);
     $("mNote").textContent = A.length ? `${A.length} account${A.length === 1 ? "" : "s"} read` : "";
     if (!A.length) {
-      for (const id of ["mTiles", "mHeat", "mOwner", "mOverTime", "mHighTime", "mExposure", "mLetIn", "mTop", "mBlind"]) $(id).innerHTML = "";
+      for (const id of ["mFocus", "mFocusList", "mTiles", "mHeat", "mOwner", "mOverTime", "mHighTime", "mExposure", "mLetIn", "mTop", "mBlind"]) $(id).innerHTML = "";
       $("mTiles").innerHTML = '<div class="card">No account has been read yet. Read one on the Overview (or run <code>sg_review.py read</code>, or <code>sg_review.py org</code> for a whole OU).</div>';
       return;
     }
@@ -1024,6 +1108,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
       const sc = score(a);
       return `<tr><td>${acctLink(a)}</td><td class="h l${sc >= 10 ? 3 : sc >= 6 ? 2 : sc >= 2 ? 1 : 0}">${sc}</td>${DIMS.map((d) => `<td class="h l${d[2](a)}" title="${esc(d[3])}">${d[1](a)}</td>`).join("")}<td>${modePill(a.mode)}</td></tr>`;
     }).join("")}</tbody>`;
+    drawFocus(A);
     drawOwner(A);
     drawTimes(A);
     // exposure by port class
@@ -1092,6 +1177,7 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     $("mHighTime").innerHTML = hi.rows.some((r) => r.high) ? svgStack(hi.ts, hi.rows, ["high"], {high: "#d03b3b"}, {high: "High-risk sources"}, 150) : '<p class="muted">No high-risk source was refused in this window.</p>';
   }
   $("mRange").addEventListener("change", () => act(null, loadMacro));
+  $("mFocusBy").addEventListener("click", (e) => { const b = e.target.closest("[data-fby]"); if (!b || !M) return; focusBy = b.dataset.fby; focusPick = null; drawFocus(M.accounts); });
   $("mBy").addEventListener("click", (e) => { const b = e.target.closest("[data-by]"); if (!b || !M) return; mv.by = b.dataset.by; for (const x of $("mBy").children) x.setAttribute("aria-pressed", String(x === b)); drawOwner(M.accounts); });
   $("mScale").addEventListener("click", (e) => { const b = e.target.closest("[data-scale]"); if (!b || !M) return; mv.scale = b.dataset.scale; for (const x of $("mScale").children) x.setAttribute("aria-pressed", String(x === b)); drawOwner(M.accounts); });
   for (const id of ["fQ", "fSev", "fAcct", "fRisky", "fNew", "fWhere"]) $(id).addEventListener("input", drawRefused);

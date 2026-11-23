@@ -4115,6 +4115,17 @@ def account_spend(ce, days: int = SPEND_DAYS) -> dict[str, float]:
         kw["NextPageToken"] = r["NextPageToken"]
 
 
+OWNER_TAGS = ("owner", "accountowner", "businessowner", "ownername", "owneremail", "technicalowner", "productowner",
+              "teamowner", "contact", "team")  # tag keys read as the account's owner, first found wins (case, - and _ ignored)
+
+
+def owner_of(tags: list[dict]) -> str:
+    """The account's owner from its Organizations tags, or "" when it has none."""
+    norm = {k: v for t in tags or [] if (k := str(t.get("Key", "")).lower().replace("-", "").replace("_", "").replace(" ", ""))
+            and str(t.get("Value", "")).strip() for v in [str(t["Value"]).strip()]}  # fmt: skip
+    return next((norm[k] for k in OWNER_TAGS if k in norm), "")
+
+
 def org_tree(org) -> dict:
     """The organisation as a tree from an Organizations client: each OU with its own active accounts and
     the OUs under it, and the root at the top. The console's OU picker draws it."""

@@ -194,6 +194,22 @@ open its review.
 - **Tiles**: accounts read, critical items to act on, high-risk sources let in, rules open to the
   internet on risky ports, outbound calls to threat lists, never-seen addresses allowed in, rules to
   tighten or remove, and high-risk sources probing (refused).
+- **Where to focus**: a bubble chart, **By owner** or **By account**. Up = more risk: **risk points**
+  (100 for each red dimension in the heatmap below, 10 for each orange, 1 for each amber, added across
+  an owner's accounts), so one critical outweighs nine highs. Right = more important: the monthly
+  spend (last 30 days, from Cost Explorer in the management account; without it, network interfaces).
+  Size = accounts owned, or an account's interfaces. Colour = the worst account. Both scales are
+  logarithmic. The shaded **Start here** corner holds those with a critical risk and above the middle
+  spend; they are labelled, and listed under the chart worst first with **Review and tighten** (an
+  account) or **Their accounts** (an owner). Select a bubble to list it. The owner is the account's
+  Organizations tag (`Owner`, `AccountOwner`, `BusinessOwner`, `OwnerName`, `OwnerEmail`,
+  `TechnicalOwner`, `ProductOwner`, `TeamOwner`, `Contact` or `Team`, the first found); accounts
+  without one are drawn as "No owner tag". Tags are looked up in the background with the role in the
+  management account and kept a day.
+
+  ![Where to focus, by owner: risk points against monthly spend, with the Start here corner](images/sg-console-focus-owner.png)
+
+  ![Where to focus, by account](images/sg-console-focus-account.png)
 - **Risk by account**: a heatmap, one row per account, worst first. Each of eight dimensions is
   green (nothing found), amber (worth a look), orange (high) or red (act now); the **risk score** adds
   the levels across the row. The dimensions are needs attention (critical / high), high-risk sources

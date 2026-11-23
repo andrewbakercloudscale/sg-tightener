@@ -269,6 +269,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.17.0** | **Where to focus, by owner and by account**: a risk-points against monthly-spend bubble chart on the Risk overview, with a labelled **Start here** corner and a worst-first list to act on. Owners from the account owner tag |
 | **5.16.1** | **Role in every account** at the top of Read your accounts: change it once for every chosen account; no per-account role column |
 | **5.16.0** | **Reading an OU reads only accounts that spend** (over US$100 in the last 30 days by default, from Cost Explorer in the management account; 0 reads every one), shows the **time left**, and **leaves out security groups on no interface** |
 | **5.15.0** | **Read a whole OU from the console.** Sign in with the access portal or keys on this computer, choose **one role for every account**, tick an OU (PROD, say) to choose every account in it, then **Read all N accounts**: security groups first, one price for every account's flow logs, one click to read them all (4 at a time, with Stop). Then the Risk overview and Over-provisioning compare them, and Review and tighten dives into one |

@@ -193,6 +193,9 @@ class Keys:
             self._save()
         return tree
 
+    def org_client(self):
+        return self._org()
+
     def org_spend(self) -> dict[str, float]:
         """Each account's spend over the last 30 days, when this profile is the management account (only it sees
         every account's costs). Raises otherwise: each account is then asked for its own."""

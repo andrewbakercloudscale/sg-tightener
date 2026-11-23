@@ -203,7 +203,7 @@ def test_the_page_has_the_risk_overview():
     page = sg_console.ASSET.read_text()
     for needle in ('data-tab="macro"', 'id="tab-macro"', 'id="mHeat"', 'id="mOwner"', 'id="mOverTime"', 'id="mExposure"',
                    'id="mLetIn"', 'id="mBlind"', "/api/macro", 'data-tab="over"', 'id="oTiles"', 'id="oAccounts"',
-                   'id="oAssets"', 'id="oRagTime"', 'id="oWins"'):
+                   'id="oAssets"', 'id="oRagTime"', 'id="oWins"', 'id="mFocus"', 'data-fby="owner"', 'data-fby="account"'):
         assert needle in page
 
 
@@ -302,3 +302,48 @@ def test_spend_is_read_for_every_account_with_credits_left_out():
 
     assert sg_review.account_spend(Ce()) == {"111111111111": 121.0, "222222222222": 5.0}
     assert calls[0]["Filter"]["Not"]["Dimensions"]["Values"] == ["Credit", "Refund"] and len(calls) == 2
+
+
+def test_the_owner_comes_from_the_first_owner_like_tag():
+    assert sg_review.owner_of([{"Key": "team", "Value": "core"}, {"Key": "Business-Owner", "Value": "Jo"}]) == "Jo"
+    assert sg_review.owner_of([{"Key": "Owner", "Value": "  "}, {"Key": "Team", "Value": "core"}]) == "core"
+    assert sg_review.owner_of([{"Key": "CostCentre", "Value": "1"}]) == "" and sg_review.owner_of([]) == ""
+
+
+def test_the_risk_charts_get_each_accounts_spend_and_owner(tmp_path, monkeypatch):
+    old = ipintel.DATA_DIR
+    ipintel.set_data_dir(tmp_path / "data")
+    try:
+        class Org:
+            def get_paginator(self, name):
+                class P:
+                    def paginate(self, ResourceId):
+                        return [{"Tags": [{"Key": "Owner", "Value": "Jo"}] if ResourceId == "1" else []}]
+                return P()
+
+        class Auth:
+            def chosen(self):
+                return []
+
+            def org_spend(self):
+                return {"1": 250.0}
+
+            def org_client(self):
+                return Org()
+
+        c = sg_console.Console(str(tmp_path / "sg.db"), targets=FakeTargets("x"), sso=Auth())
+        spend, owners, pending, why = c._facts(["1", "2"])
+        assert spend == {"1": 250.0} and pending and not why
+        c._owner_thread.join(5)
+        spend, owners, pending, _ = c._facts(["1", "2"])
+        assert owners == {"1": "Jo", "2": ""} and not pending, "looked up once, kept a day"
+
+        class NoCosts(Auth):
+            def org_spend(self):
+                raise RuntimeError("AccessDenied")
+
+        c2 = sg_console.Console(str(tmp_path / "sg.db"), targets=FakeTargets("x"), sso=NoCosts())
+        spend, _, _, why = c2._facts(["1"])
+        assert spend is None and "AccessDenied" in why
+    finally:
+        ipintel.set_data_dir(old)

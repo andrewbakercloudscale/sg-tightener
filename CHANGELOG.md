@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.17.0 - 2026-11-23
+
+- **Where to focus, by owner and by account.** The Risk overview opens with a bubble chart: up = risk
+  points (100 per critical dimension, 10 per high, 1 per medium), right = monthly spend, size = accounts
+  owned (or interfaces), colour = the worst account, both scales logarithmic. The shaded **Start here**
+  corner (a critical risk, above the middle spend) is labelled and listed under the chart with
+  **Review and tighten** or **Their accounts**. Owners come from each account's owner tag in
+  Organizations (looked up in the background, kept a day); spend from Cost Explorer (kept a day).
+
 ## 5.16.1 - 2026-11-23
 
 - **One role, changed in one place.** Read your accounts shows **Role in every account** at the top:

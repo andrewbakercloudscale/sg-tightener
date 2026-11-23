@@ -84,6 +84,8 @@ class Console:
         self.service = service
         self.jobs: dict[int, dict] = {}
         self._job_extra: dict[int, dict] = {}
+        self._owner_thread: threading.Thread | None = None
+        self._spend_failed = 0.0
         self.httpd = None
 
     # ------------------------------------------------------------------ plumbing
@@ -299,10 +301,74 @@ class Console:
                 self._refused_cache = {k: v for k, v in self._refused_cache.items() if not (k[0] == "macro" and k[1] == account)}
                 self._refused_cache[key] = got
             rows.append({**got, "mode": modes.get(account, "surveillance")})
+        spend, owners, pending, why = self._facts([r["account"] for r in rows])
+        for r in rows:
+            r["spend"] = None if spend is None else spend.get(r["account"], 0.0)
+            r["owner"] = owners.get(r["account"])  # None: not looked up yet; "": no owner tag
         kinds = {k: sg_review.CAT_NAME[k] for k in sg_review.CATS}
         types = {k: n for k, (n, _) in sg_review.SOURCE_TYPES.items()}
         rag = {"green_max": sg_review.RAG_GREEN_MAX, "amber_max": sg_review.RAG_AMBER_MAX}
-        return {"range": range_key, "accounts": rows, "kinds": kinds, "types": types, "rag": rag}
+        return {"range": range_key, "accounts": rows, "kinds": kinds, "types": types, "rag": rag,
+                "owners_pending": pending, "facts_note": why}  # fmt: skip
+
+    # ------------------------------------------------------------------ who owns each account, and what it spends
+    def _owners_path(self) -> Path:
+        import sg_ipintel
+
+        return sg_ipintel.DATA_DIR / "owners.json"
+
+    def _facts(self, accounts: list[str]) -> tuple[dict | None, dict, bool, str]:
+        """Each account's spend (last 30 days) and owner tag, for the risk charts. Neither is ever waited for long:
+        spend is one Cost Explorer call kept a day; owners are looked up in the background and kept a day."""
+        auth, why, spend = self.auth(), [], None
+        if auth is not None and hasattr(auth, "org_spend") and time.time() - self._spend_failed > 600:
+            try:
+                spend = auth.org_spend()
+            except Exception as exc:  # noqa: BLE001 - said on the page; the charts fall back to asset counts
+                self._spend_failed = time.time()
+                why.append(f"spend not known ({str(exc)[:160]})")
+        try:
+            got = json.loads(self._owners_path().read_text())
+        except (OSError, ValueError):
+            got = {}
+        fresh = time.time() - 86400
+        owners = {a: v["owner"] for a, v in got.items() if a in set(accounts) and v.get("at", 0) > fresh}
+        missing = [a for a in accounts if a not in owners]
+        pending = bool(missing) and auth is not None and hasattr(auth, "org_client")
+        if pending and not (self._owner_thread and self._owner_thread.is_alive()):
+            self._owner_thread = threading.Thread(target=self._look_up_owners, args=(auth, missing), daemon=True)
+            self._owner_thread.start()
+        return spend, owners, pending, "; ".join(why)
+
+    def _look_up_owners(self, auth, accounts: list[str]) -> None:
+        import sg_review
+
+        try:
+            org = auth.org_client()
+        except Exception as exc:  # noqa: BLE001 - no management account: every account is "no owner tag"
+            LOG.warning("owners: %s", exc)
+            found = {a: "" for a in accounts}
+        else:
+            found = {}
+            for a in accounts:
+                try:
+                    tags = [t for page in org.get_paginator("list_tags_for_resource").paginate(ResourceId=a)
+                            for t in page.get("Tags", [])]  # fmt: skip
+                    found[a] = sg_review.owner_of(tags)
+                except Exception as exc:  # noqa: BLE001 - one account out of reach must not stop the rest
+                    LOG.warning("owner of %s: %s", a, exc)
+                    found[a] = ""
+        with self._lock:
+            path = self._owners_path()
+            try:
+                got = json.loads(path.read_text())
+            except (OSError, ValueError):
+                got = {}
+            got.update({a: {"owner": o, "at": time.time()} for a, o in found.items()})
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
+            tmp.write_text(json.dumps(got))
+            tmp.replace(path)
 
     def refused(self, range_key: str = "24h") -> dict:
         """Every refused source across the accounts sg_review has read, worst verdict first."""

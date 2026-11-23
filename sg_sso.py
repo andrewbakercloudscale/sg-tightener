@@ -391,13 +391,7 @@ class Sso:
         got = self.state.get("spend") or {}
         if got.get("role") == role and got.get("at", 0) > _now() - 86400 and got.get("map") is not None:
             return got["map"]
-        mgmt = self.state.get("mgmt")
-        if not mgmt:
-            probe = next((c["account"] for c in self.chosen()), "")
-            if not probe:
-                raise SsoError("choose accounts first")
-            org = self.role_session(probe, role).client("organizations", region_name="us-east-1")
-            mgmt = org.describe_organization()["Organization"]["MasterAccountId"]
+        mgmt = self._mgmt(role)
         import sg_review
 
         spend = sg_review.account_spend(self.role_session(mgmt, role).client("ce", region_name="us-east-1"))
@@ -405,6 +399,24 @@ class Sso:
             self.state.update(mgmt=mgmt, spend={"role": role, "at": _now(), "map": spend})
             self._save()
         return spend
+
+    def _mgmt(self, role: str) -> str:
+        mgmt = self.state.get("mgmt")
+        if not mgmt:
+            probe = next((c["account"] for c in self.chosen()), "")
+            if not probe:
+                raise SsoError("choose accounts first")
+            org = self.role_session(probe, role).client("organizations", region_name="us-east-1")
+            mgmt = org.describe_organization()["Organization"]["MasterAccountId"]
+        return mgmt
+
+    def org_client(self):
+        """Organizations in the management account, with the role chosen for every account: for account tags."""
+        import sg_review
+
+        role = next((c["role"] for c in self.chosen()), "")
+        return self.role_session(self._mgmt(role), role).client("organizations", region_name="us-east-1",
+                                                               config=sg_review.BOTO_CONFIG)  # fmt: skip
 
     def chosen(self) -> list[dict]:
         return list(self.state.get("chosen") or [])
