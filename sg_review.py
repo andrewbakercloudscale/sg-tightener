@@ -4091,6 +4091,30 @@ def org_accounts(sess, ou_id: str | None) -> list[dict]:
     return sorted((a for a in out if a.get("Status") == "ACTIVE"), key=lambda a: a.get("Name", ""))
 
 
+def org_tree(org) -> dict:
+    """The organisation as a tree from an Organizations client: each OU with its own active accounts and
+    the OUs under it, and the root at the top. The console's OU picker draws it."""
+
+    def pages(op, key, **kw):
+        out = []
+        for page in org.get_paginator(op).paginate(**kw):
+            out += page.get(key, [])
+        return out
+
+    def node(pid: str, name: str) -> dict:
+        accts = [{"account": a["Id"], "name": a.get("Name", "")} for a in pages("list_accounts_for_parent", "Accounts", ParentId=pid)
+                 if a.get("Status", "ACTIVE") == "ACTIVE"]  # fmt: skip
+        kids = [node(o["Id"], o.get("Name", o["Id"])) for o in pages("list_organizational_units_for_parent",
+                                                                      "OrganizationalUnits", ParentId=pid)]  # fmt: skip
+        return {"id": pid, "name": name, "accounts": sorted(accts, key=lambda a: a["name"].lower()),
+                "children": sorted(kids, key=lambda k: k["name"].lower())}  # fmt: skip
+
+    roots = org.list_roots().get("Roots", [])
+    if not roots:
+        raise RuntimeError("the organisation has no root")
+    return node(roots[0]["Id"], roots[0].get("Name") or "Root")
+
+
 ORG_REFUSED = 200  # refused sources per account in the roll-up (the account's own page has them all)
 
 

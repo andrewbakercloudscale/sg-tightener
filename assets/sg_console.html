@@ -88,6 +88,20 @@ details summary { cursor: pointer; font-weight: 600; }
 .acct-list { max-height: 360px; overflow: auto; border: 1px solid var(--grid); border-radius: 8px; }
 .acct-list label { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--grid); font-weight: 400; color: var(--ink); }
 .acct-list label:last-child { border-bottom: 0; }
+.eyebrow { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); margin: 0 0 8px; }
+.choice { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.opt { display: flex; gap: 12px; align-items: center; text-align: left; padding: 14px; border: 2px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--ink); cursor: pointer; font: inherit; }
+.opt b { display: block; font-size: 15px; } .opt span span { color: var(--ink-2); font-size: 13px; } .opt .ico { font-size: 24px; }
+.opt[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.opt[aria-pressed="true"] b { color: var(--accent); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: var(--surface); color: var(--ink); padding: 7px 12px; font: inherit; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.ou details { border-bottom: 1px solid var(--grid); } .ou details details { border-bottom: 0; margin-left: 18px; }
+.ou summary { display: flex; gap: 10px; align-items: center; padding: 7px 10px; font-weight: 400; }
+.ou summary input { margin: 0; } .ou .ou-accts { margin-left: 46px; padding: 0 0 6px; font-size: 12.5px; color: var(--ink-2); }
+.batch { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin: 10px 0; }
+.batch .bar-track { margin: 8px 0; }
 .switch { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; cursor: pointer; }
 .switch input { width: 40px; height: 22px; appearance: none; -webkit-appearance: none; background: var(--control-line); border-radius: 999px; position: relative; cursor: pointer; border: 0; padding: 0; }
 .switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
@@ -154,14 +168,28 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     <div class="card" id="ssoCard" hidden>
       <h3 style="margin-top:0">AWS sign-in</h3>
       <div id="ssoOut">
-        <p class="muted">Sign in with your company's AWS SSO (IAM Identity Center) to see your own accounts. Nothing is changed in AWS: the console reads until two people approve a change in an account switched to enforce mode.</p>
-        <div class="form">
-          <label class="wide">AWS access portal address<input id="ssoUrl" placeholder="https://your-company.awsapps.com/start" list="ssoPortals" autocomplete="url"></label>
-          <datalist id="ssoPortals"></datalist>
-          <label>Identity Center region<input id="ssoRegion" placeholder="eu-west-1"></label>
-          <div><button class="btn primary" id="ssoGo">Sign in with AWS SSO</button></div>
+        <p class="eyebrow">How do you sign in?</p>
+        <div class="choice" role="group" aria-label="How do you sign in?">
+          <button class="opt" data-method="sso" aria-pressed="true"><span class="ico" aria-hidden="true">🌐</span><span><b>Access portal (SSO)</b><span>IAM Identity Center, your whole organisation</span></span></button>
+          <button class="opt" data-method="keys" aria-pressed="false"><span class="ico" aria-hidden="true">🔑</span><span><b>Keys on this computer</b><span>An access key or profile in ~/.aws, any account</span></span></button>
         </div>
-        <p class="muted small" id="ssoHint"></p>
+        <div id="mSso">
+          <p class="muted small">Signs in through your organisation's AWS access portal (IAM Identity Center), the same as <code>aws sso login</code>. You approve it on AWS's own page; the sign-in stays on this computer. Nothing is changed in AWS: the console reads until two people approve a change in an account switched to enforce mode.</p>
+          <div class="form">
+            <label class="wide" id="ssoPortalWrap">Access portal<select id="ssoPortal"></select></label>
+            <div class="wide" id="ssoAdd" hidden><div class="form">
+              <label class="wide">AWS access portal address<input id="ssoUrl" placeholder="https://your-company.awsapps.com/start" autocomplete="url"></label>
+              <label>Identity Center region<input id="ssoRegion" placeholder="eu-west-1"></label></div></div>
+          </div>
+          <p class="small" id="ssoHint"></p>
+          <div class="tools"><button class="btn primary" id="ssoGo">Sign in</button><button class="btn" id="ssoAddBtn">Add a portal…</button></div>
+        </div>
+        <div id="mKeys" hidden>
+          <p class="muted small">Uses a profile or access key in <code>~/.aws</code> on this computer: it acts as that identity. In other accounts it assumes one role you name (OrganizationAccountAccessRole unless you choose another); the organisation's accounts and OUs are read with the profile, so use the management account or a delegated administrator to see them all. Keys never leave this computer.</p>
+          <div class="form"><label class="wide">Profile<select id="kProfile"></select></label></div>
+          <p class="small" id="kHint"></p>
+          <div class="tools"><button class="btn primary" id="kGo">Use this profile</button></div>
+        </div>
       </div>
       <div id="ssoWait" hidden>
         <p>An AWS sign-in page has opened in a new tab. Check it shows this code, then approve:</p>
@@ -172,17 +200,33 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
       <div id="ssoIn" hidden>
         <p><span class="pill" style="--p:var(--good)">signed in</span> <span id="ssoWho" class="small"></span> <button class="btn" id="ssoOutBtn">Sign out</button></p>
         <div id="ssoPick">
-          <p class="muted small">Choose the accounts to look at, and the role to use in each (read-only roles are listed first).</p>
-          <div class="tools"><input id="ssoFilter" type="search" placeholder="Filter accounts…" aria-label="Filter accounts"><button class="btn" id="ssoAll">Select all shown</button><button class="btn" id="ssoNone">Clear</button><span class="muted small" id="ssoN"></span></div>
-          <div class="acct-list" id="ssoAccounts"><p class="muted" style="padding:8px"><span class="spin" aria-hidden="true"></span>Loading your accounts…</p></div>
-          <div class="tools"><button class="btn primary" id="ssoUse">Use these accounts</button></div>
+          <div class="form">
+            <label id="pRoleWrap">Role in every account<select id="pRole"></select></label>
+            <label id="pRoleKeysWrap" hidden>Role to assume in every account<input id="pRoleKeys" list="pRolesKeys" value="OrganizationAccountAccessRole"><datalist id="pRolesKeys"></datalist></label>
+            <div><div class="seg" role="group" aria-label="Choose accounts by"><button data-by="ou" aria-pressed="true">By OU</button><button data-by="acct" aria-pressed="false">By account</button></div></div>
+          </div>
+          <p class="muted small" id="pRoleNote"></p>
+          <div id="pOu">
+            <p class="muted small">Tick an OU to choose every account in it and in the OUs under it; open it to see them.</p>
+            <div class="acct-list ou" id="ouTree"></div>
+            <div class="tools"><button class="btn" id="ouReload">Reload the OUs</button></div>
+          </div>
+          <div id="pAcct" hidden>
+            <div class="tools"><input id="ssoFilter" type="search" placeholder="Filter accounts…" aria-label="Filter accounts"><button class="btn" id="ssoAll">Select all shown</button><button class="btn" id="ssoNone">Clear</button><span class="muted small" id="ssoN"></span></div>
+            <div class="acct-list" id="ssoAccounts"></div>
+          </div>
+          <div class="tools"><button class="btn primary" id="ssoUse">Use these accounts</button><span class="small" id="pN"></span></div>
         </div>
         <div id="ssoChosen" hidden>
           <h3>Read your accounts</h3>
-          <p class="muted small">Reading an account puts its security groups into the console and reads its VPC flow logs (who connected, and who was refused). The cost of reading flow logs is shown before anything is spent; start with 1 day. <button class="btn" id="ssoChange">Change accounts</button></p>
+          <p class="muted small">Reading an account puts its security groups into the console and reads its VPC flow logs (who connected, and who was refused). The cost of reading flow logs is shown before anything is spent; start with 1 day. Then the <b>Risk overview</b> and <b>Over-provisioning</b> tabs compare them all, and <b>Review and tighten</b> opens one. <button class="btn" id="ssoChange">Change accounts</button></p>
           <div class="tools"><label class="small">Regions <input id="rdRegions" value="all" size="22" aria-label="Regions" title="all, or a list such as eu-west-1,us-east-1"></label>
             <label class="small">How far back <select id="rdDays"><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="365">1 year</option></select></label></div>
+          <div class="batch" id="batch"></div>
+          <details id="chosenBox"><summary id="chosenSum">Each account</summary>
+          <div class="tools" style="margin-top:8px"><input id="chosenFilter" type="search" placeholder="Filter accounts…" aria-label="Filter the chosen accounts"></div>
           <div class="scroll"><table><thead><tr><th>Account</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody id="chosenRows"></tbody></table></div>
+          </details>
         </div>
       </div>
     </div>
@@ -397,69 +441,179 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
   }
 
   // ---- AWS sign-in
-  let SSO = null, ssoAccounts = null, ssoTimer = null, jobTimer = null;
+  let SSO = null, ssoAccounts = null, ssoTimer = null, jobTimer = null, method = null, by = "ou", ouTree = null, ouErr = "", roleOpts = null;
+  const picked = new Set();
+  let onlyFailed = false;
+  const isKeys = () => (SSO && SSO.method === "keys");
+  function setMethod(m) {
+    method = m;
+    for (const b of document.querySelectorAll("[data-method]")) b.setAttribute("aria-pressed", String(b.dataset.method === m));
+    $("mSso").hidden = m !== "sso"; $("mKeys").hidden = m !== "keys";
+  }
+  function setBy(b) {
+    by = b;
+    for (const x of document.querySelectorAll("[data-by]")) x.setAttribute("aria-pressed", String(x.dataset.by === b));
+    $("pOu").hidden = b !== "ou"; $("pAcct").hidden = b !== "acct";
+    if (b === "ou") drawOu(); else drawAccounts();
+  }
   async function loadSso() {
     SSO = await api("/api/sso");
     $("ssoCard").hidden = false;
-    $("ssoOut").hidden = SSO.signed_in || !!SSO.pending;
-    $("ssoWait").hidden = !SSO.pending || SSO.signed_in;
-    $("ssoIn").hidden = !SSO.signed_in;
-    if (!SSO.signed_in && !SSO.pending) {
+    const keys = isKeys(), K = SSO.keys;
+    const signedIn = keys ? K.signed_in : SSO.signed_in;
+    $("ssoOut").hidden = signedIn || (!keys && !!SSO.pending);
+    $("ssoWait").hidden = keys || !SSO.pending || SSO.signed_in;
+    $("ssoIn").hidden = !signedIn;
+    if (!signedIn && !SSO.pending) {
+      if (!method) setMethod(keys ? "keys" : "sso");
+      document.querySelector("[data-method=keys]").hidden = !K;
       const portals = SSO.portals || [];
-      $("ssoPortals").innerHTML = portals.map((p) => `<option value="${esc(p.start_url)}">${esc(p.name)}</option>`).join("");
-      if (!$("ssoUrl").value) { $("ssoUrl").value = SSO.start_url || portals[0]?.start_url || ""; $("ssoRegion").value = SSO.region || portals[0]?.region || ""; }
-      $("ssoHint").textContent = SSO.error || (portals.length ? `Found ${portals.length} portal(s) in your AWS settings.` : "Your AWS administrator can give you the portal address: it is the page you open to choose an AWS account.");
+      const cur = portals.findIndex((p) => p.start_url === SSO.start_url);
+      $("ssoPortal").innerHTML = portals.map((p, i) => `<option value="${i}"${i === (cur < 0 ? 0 : cur) ? " selected" : ""}>${esc(p.name)} · ${esc(p.start_url.replace(/^https:\/\//, ""))}</option>`).join("");
+      $("ssoPortalWrap").hidden = !portals.length;
+      if (!portals.length) $("ssoAdd").hidden = false;
+      const p = portals[+$("ssoPortal").value] || {start_url: SSO.start_url, region: SSO.region};
+      $("ssoHint").textContent = SSO.error || (portals.length ? `Not signed in · region ${p.region || "not set"}` : "Your AWS administrator can give you the portal address: it is the page you open to choose an AWS account.");
       $("ssoHint").style.color = SSO.error ? "var(--bad)" : "";
+      if (K) {
+        $("kProfile").innerHTML = K.profiles.map((x) => `<option value="${esc(x.profile)}"${x.profile === K.profile ? " selected" : ""}>${esc(x.profile)} · ${esc(x.kind)}</option>`).join("") || '<option value="">No profiles in ~/.aws</option>';
+        $("kHint").textContent = K.error ? `Not signed in: ${K.error}` : `${K.profiles.length} profile(s) in your AWS settings.`;
+        $("kHint").style.color = K.error ? "var(--bad)" : "";
+      }
     }
     if (SSO.pending) { $("ssoCode").textContent = SSO.pending.code; $("ssoLink").href = SSO.pending.url; }
-    if (SSO.pending && !ssoTimer) ssoTimer = setInterval(async () => {
+    if (!keys && SSO.pending && !ssoTimer) ssoTimer = setInterval(async () => {
       try { const s = await api("/api/sso", undefined, true); if (!s.pending) { clearInterval(ssoTimer); ssoTimer = null; ssoAccounts = null; await loadState(); } } catch (e) { /* keep waiting */ }
     }, 2000);
-    if (SSO.signed_in) {
-      $("ssoWho").textContent = `${SSO.start_url}${SSO.expires ? ` · until ${when(SSO.expires)} UTC` : ""}${SSO.from === "aws cli" ? " · from aws sso login" : ""}`;
+    if (signedIn) {
+      $("ssoWho").textContent = keys ? `profile ${K.profile} · account ${K.account}` : `${SSO.start_url}${SSO.expires ? ` · until ${when(SSO.expires)} UTC` : ""}${SSO.from === "aws cli" ? " · from aws sso login" : ""}`;
       const picking = !SSO.chosen.length || $("ssoPick").dataset.open === "1";
       $("ssoPick").hidden = !picking; $("ssoChosen").hidden = picking;
-      if (picking) await loadSsoAccounts(); else drawChosen();
+      if (picking) await loadPicker(); else drawChosen();
     }
   }
-  async function reloadSsoAccounts() {
-    $("ssoAccounts").innerHTML = `<p class="muted" style="padding:8px">${loading("Loading your accounts…")}</p>`;
-    ssoAccounts = null;
-    try { ssoAccounts = await api("/api/sso/accounts?fresh=1"); } catch (e) { $("ssoAccounts").innerHTML = `<p style="padding:8px;color:var(--bad)">${esc(e.message)} <button class="btn" id="ssoRetry">Try again</button></p>`; $("ssoRetry").addEventListener("click", reloadSsoAccounts); return; }
-    await loadSsoAccounts();
-  }
-  async function loadSsoAccounts() {
+  const failBox = (el, msg, retry) => { $(el).innerHTML = `<p style="padding:8px;color:var(--bad)">${esc(msg)} <button class="btn" data-retry>Try again</button></p>`; $(el).querySelector("[data-retry]").addEventListener("click", retry); };
+  async function loadPicker() {
+    const keys = isKeys();
+    $("pRoleWrap").hidden = keys; $("pRoleKeysWrap").hidden = !keys;
+    if (!picked.size) for (const c of SSO.chosen) picked.add(c.account);
     if (!ssoAccounts) {
-      $("ssoAccounts").innerHTML = `<p class="muted" style="padding:8px">${loading("Loading your accounts…")}</p>`;
-      try { ssoAccounts = await api("/api/sso/accounts"); } catch (e) { $("ssoAccounts").innerHTML = `<p style="padding:8px;color:var(--bad)">${esc(e.message)} <button class="btn" id="ssoRetry">Try again</button></p>`; $("ssoRetry").addEventListener("click", reloadSsoAccounts); return; }
+      $("ssoAccounts").innerHTML = $("ouTree").innerHTML = `<p class="muted" style="padding:8px">${loading("Loading your accounts…")}</p>`;
+      try { ssoAccounts = await api("/api/sso/accounts?roles=0"); } catch (e) { failBox("ssoAccounts", e.message, () => { ssoAccounts = null; loadPicker(); }); failBox("ouTree", e.message, () => { ssoAccounts = null; loadPicker(); }); return; }
     }
-    const chosen = new Map(SSO.chosen.map((c) => [c.account, c.role]));
-    $("ssoAccounts").innerHTML = ssoAccounts.map((a, i) => `<label data-q="${esc((a.name + " " + a.account + " " + a.email).toLowerCase())}"><input type="checkbox" data-acct="${i}"${chosen.has(a.account) ? " checked" : ""}${a.busy ? " disabled" : ""}>
-      <span>${esc(a.name || a.account)} <span class="muted small"><code>${esc(a.account)}</code></span></span>
-      ${a.busy ? '<span class="muted small">AWS is busy: <button class="btn" data-sso-retry>Try again</button></span>' : ""}<select data-role="${i}"${a.busy ? " hidden" : ""} aria-label="Role in ${esc(a.name || a.account)}">${a.roles.map((r) => `<option${chosen.get(a.account) === r ? " selected" : ""}>${esc(r)}</option>`).join("")}</select></label>`).join("")
+    if (!roleOpts) {
+      if (keys) {
+        roleOpts = await api("/api/sso/roles").catch(() => []);
+        $("pRolesKeys").innerHTML = roleOpts.map((r) => `<option value="${esc(r.role)}">`).join("");
+        $("pRoleKeys").value = SSO.keys.role || roleOpts[0]?.role || "OrganizationAccountAccessRole";
+        $("pRoleNote").textContent = "Your profile's own account is read as the profile itself; the role is assumed in every other account.";
+      } else {
+        $("pRole").innerHTML = `<option>${loading("Looking up roles…")}</option>`;
+        $("pRoleNote").innerHTML = loading("Looking up the roles you have…");
+        try { roleOpts = await api("/api/sso/roles"); } catch (e) { roleOpts = []; $("pRoleNote").textContent = e.message; }
+        const want = SSO.chosen[0]?.role;
+        $("pRole").innerHTML = roleOpts.map((r) => `<option value="${esc(r.role)}"${r.role === want ? " selected" : ""}>${esc(r.role)}</option>`).join("") || '<option value="">No roles found</option>';
+        const top = roleOpts[0];
+        $("pRoleNote").textContent = top ? `Used in every account you choose. Of ${top.of} account(s) looked at, ${roleOpts.map((r) => `${r.role} is in ${r.accounts}`).join(", ")}. An account without it is reported when it is read.` : "";
+      }
+    }
+    setBy(by);
+  }
+  const role = () => isKeys() ? $("pRoleKeys").value.trim() : $("pRole").value;
+  const mineSet = () => new Set((ssoAccounts || []).map((a) => a.account));
+  function subtree(n) { return [...n.accounts.map((a) => a.account), ...n.children.flatMap(subtree)]; }
+  async function drawOu(fresh) {
+    if (!ouTree || fresh) {
+      $("ouTree").innerHTML = `<p class="muted" style="padding:8px">${loading("Reading your organisation's OUs…")}</p>`;
+      try { ouTree = await api(`/api/sso/ous?role=${encodeURIComponent(role())}${fresh ? "&fresh=1" : ""}`); ouErr = ""; }
+      catch (e) { ouTree = null; ouErr = e.message; }
+    }
+    if (!ouTree) { $("ouTree").innerHTML = `<p style="padding:8px;color:var(--bad)">${esc(ouErr)}</p><p class="muted small" style="padding:0 8px 8px">Choose another role above and select Reload the OUs, or choose <b>By account</b>.</p>`; drawN(); return; }
+    const mine = mineSet();
+    const node = (n, depth) => {
+      const all = subtree(n).filter((a) => mine.has(a)), on = all.filter((a) => picked.has(a)).length, total = subtree(n).length;
+      const accts = n.accounts.map((a) => `${esc(a.name || a.account)}${mine.has(a.account) ? "" : " (no access)"}`).join(", ");
+      return `<details${depth === 0 ? " open" : ""}><summary><input type="checkbox" data-ou="${esc(n.id)}"${all.length && on === all.length ? " checked" : ""}${on && on < all.length ? " data-mixed" : ""}${all.length ? "" : " disabled"} aria-label="Choose every account in ${esc(n.name)}">
+        <span><b>${esc(n.name)}</b> <span class="muted small">${total} account${total === 1 ? "" : "s"}${all.length < total ? `, ${all.length} you can use` : ""}${on ? ` · ${on} chosen` : ""}</span></span></summary>
+        ${n.accounts.length ? `<div class="ou-accts">${accts}</div>` : ""}${n.children.map((c) => node(c, depth + 1)).join("")}</details>`;
+    };
+    $("ouTree").innerHTML = node(ouTree, 0);
+    const byId = {}; (function walk(n) { byId[n.id] = n; n.children.forEach(walk); })(ouTree);
+    for (const c of $("ouTree").querySelectorAll("[data-ou]")) {
+      if (c.hasAttribute("data-mixed")) c.indeterminate = true;
+      c.addEventListener("click", (e) => e.stopPropagation());
+      c.addEventListener("change", () => { for (const a of subtree(byId[c.dataset.ou]).filter((x) => mine.has(x))) c.checked ? picked.add(a) : picked.delete(a); drawOu(); });
+    }
+    drawN();
+  }
+  function drawAccounts() {
+    $("ssoAccounts").innerHTML = (ssoAccounts || []).map((a, i) => `<label data-q="${esc((a.name + " " + a.account + " " + a.email).toLowerCase())}"><input type="checkbox" data-acct="${i}"${picked.has(a.account) ? " checked" : ""}>
+      <span>${esc(a.name || a.account)} <span class="muted small"><code>${esc(a.account)}</code></span></span><span></span></label>`).join("")
       || '<p class="muted" style="padding:8px">This sign-in has no AWS accounts.</p>';
-    for (const b of $("ssoAccounts").querySelectorAll("[data-sso-retry]")) b.addEventListener("click", (e) => { e.preventDefault(); reloadSsoAccounts(); });
+    for (const c of $("ssoAccounts").querySelectorAll("[data-acct]")) c.addEventListener("change", () => { const a = ssoAccounts[+c.dataset.acct].account; c.checked ? picked.add(a) : picked.delete(a); drawN(); });
     ssoFilter();
+  }
+  function drawN() {
+    const mine = mineSet(), n = [...picked].filter((a) => mine.has(a)).length;
+    $("pN").textContent = n ? `${n} account${n === 1 ? "" : "s"} chosen` : "";
+    $("ssoUse").textContent = n ? `Use these ${n} account${n === 1 ? "" : "s"}` : "Use these accounts";
   }
   function ssoFilter() {
     const q = $("ssoFilter").value.trim().toLowerCase(); let n = 0;
     for (const l of $("ssoAccounts").querySelectorAll("label")) { l.hidden = !!q && !l.dataset.q.includes(q); if (!l.hidden) n++; }
     $("ssoN").textContent = ssoAccounts ? `${n} of ${ssoAccounts.length} accounts` : "";
+    drawN();
   }
   const jobFor = (acct) => (S.jobs || []).find((j) => j.account === acct);
   const usd = (c) => c == null ? "cost not known yet" : `about US$${Number(c).toFixed(2)}`;
+  const LIVE = ["starting", "running", "queued"];
   function jobCell(j) {
     if (!j) return '<span class="muted">not read yet</span>';
     const last = esc(j.lines[j.lines.length - 1] || "");
     if (j.status === "starting") return `<span class="pill" style="--p:var(--accent)"><span class="spin" aria-hidden="true"></span>reading security groups…</span><div class="muted small">${last}</div>`;
-    if (j.status === "confirm") return `<b>Ready to read flow logs:</b> ${esc(j.hours)} hours in ${esc((j.logs_in || []).join(", "))}, ${esc(usd(j.cost))}.<div class="tools" style="margin:6px 0 0"><button class="btn primary" data-go="${j.id}">Read flow logs (${esc(usd(j.cost))})</button><button class="btn" data-stop="${j.id}">Not now</button></div>`;
+    if (j.status === "queued") return `<span class="pill" style="--p:var(--accent)"><span class="spin" aria-hidden="true"></span>waiting its turn</span>`;
+    if (j.status === "confirm") return j.batch ? `<b>Ready:</b> ${esc(j.hours)} hours, ${esc(usd(j.cost))} (in the total above)` : `<b>Ready to read flow logs:</b> ${esc(j.hours)} hours in ${esc((j.logs_in || []).join(", "))}, ${esc(usd(j.cost))}.<div class="tools" style="margin:6px 0 0"><button class="btn primary" data-go="${j.id}">Read flow logs (${esc(usd(j.cost))})</button><button class="btn" data-stop="${j.id}">Not now</button></div>`;
     if (j.status === "running") { const pct = j.total ? Math.round(100 * j.done / j.total) : 0; return `<span class="pill" style="--p:var(--accent)"><span class="spin" aria-hidden="true"></span>reading flow logs</span> ${j.done} of ${j.total} · ${(j.bytes / 1e9).toFixed(2)} GB<div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><button class="btn" data-stop="${j.id}">Stop</button>`; }
     const p = {done: "var(--good)", failed: "var(--bad)", stopped: "var(--warn)", cancelled: "var(--muted)"}[j.status] || "var(--muted)";
     return `<span class="pill" style="--p:${p}">${esc(j.status)}</span> <span class="muted small">${esc(when(j.started))}</span><details class="small"><summary>Details</summary><ul class="steps">${j.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`;
   }
+  function drawBatch() {
+    const b = S.batch, n = SSO.chosen.length, c = (b && b.count) || {};
+    const k = (s) => c[s] || 0;
+    const go = (label) => `<button class="btn primary" id="bGo">${esc(label)}</button>`;
+    let h;
+    if (!b || ["done", "stopped"].includes(b.status)) {
+      h = `${b ? `<p><span class="pill" style="--p:${b.status === "done" ? "var(--good)" : "var(--warn)"}">${b.status === "done" ? "read" : "stopped"}</span> ${b.accounts} account(s) · ${k("done")} done${k("failed") ? `, <b style="color:var(--bad)">${k("failed")} failed</b> <button class="btn" data-failed>Show them</button>` : ""}${k("cancelled") ? `, ${k("cancelled")} not read` : ""} · ${(b.bytes / 1e9).toFixed(2)} GB scanned</p><div class="tools"><button class="btn primary" data-show="macro">Risk overview</button><button class="btn primary" data-show="over">Over-provisioning</button></div>` : ""}
+        <div class="tools">${go(`Read all ${n} account${n === 1 ? "" : "s"}`)}<span class="muted small">Security groups first, then one price for every account's flow logs before anything is spent. ${4} accounts are read at a time.</span></div>`;
+    } else if (b.status === "pricing") {
+      const left = k("starting");
+      h = `<p>${loading(`Reading security groups and pricing flow logs: ${b.accounts - left} of ${b.accounts} accounts`)}</p><div class="bar-track"><div class="bar-fill" style="width:${Math.round(100 * (b.accounts - left) / b.accounts)}%"></div></div><div class="tools"><button class="btn" id="bStop">Stop</button></div>`;
+    } else if (b.status === "confirm") {
+      h = `<p><b>Ready to read flow logs in ${b.to_read} of ${b.accounts} accounts: ${esc(usd(b.cost))}</b>${b.cost_unknown ? ` plus ${b.cost_unknown} account(s) whose cost is not known until a first 1-day read` : ""}.
+        ${k("done") ? `${k("done")} had nothing to read (already read, or no VPC flow logs).` : ""} ${k("failed") ? `<b style="color:var(--bad)">${k("failed")} could not be read</b> <button class="btn" data-failed>Show them</button>` : ""}</p>
+        <div class="tools">${go(`Read flow logs for ${b.to_read} accounts (${usd(b.cost)})`)}<button class="btn" id="bStop">Not now</button></div>`;
+    } else {
+      const pct = b.slices ? Math.round(100 * b.done / b.slices) : 0;
+      h = `<p>${loading(`Reading flow logs: ${b.read} of ${b.to_read} accounts done, ${k("running")} reading now · ${(b.bytes / 1e9).toFixed(2)} GB`)}</p><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><div class="tools"><button class="btn" id="bStop">Stop</button></div>`;
+    }
+    $("batch").innerHTML = h;
+    $("bGo")?.addEventListener("click", () => act($("bGo"), async () => {
+      if (b && b.status === "confirm") await api("/api/read/all/confirm", {});
+      else await api("/api/read/all", {regions: $("rdRegions").value, days: +$("rdDays").value});
+      await pollJobs();
+    }));
+    $("bStop")?.addEventListener("click", () => act($("bStop"), async () => { await api("/api/read/all/stop", {}); await pollJobs(); }));
+    for (const x of $("batch").querySelectorAll("[data-show]")) x.addEventListener("click", () => show(x.dataset.show));
+    $("batch").querySelector("[data-failed]")?.addEventListener("click", () => { onlyFailed = !onlyFailed; $("chosenBox").open = true; $("chosenBox").dataset.touched = "1"; drawChosen(); });
+  }
   function drawChosen() {
+    drawBatch();
     const reviewed = new Set(S.accounts.filter((a) => a.reviewed).map((a) => a.account));
-    $("chosenRows").innerHTML = SSO.chosen.map((c) => { const j = jobFor(c.account); const busy = j && ["starting", "confirm", "running"].includes(j.status);
+    const q = $("chosenFilter").value.trim().toLowerCase();
+    const rows = SSO.chosen.filter((c) => (!q || `${c.name} ${c.account}`.toLowerCase().includes(q)) && (!onlyFailed || jobFor(c.account)?.status === "failed"));
+    $("chosenSum").textContent = onlyFailed ? `Accounts that could not be read (${rows.length})` : `Each account (${SSO.chosen.length})`;
+    if (SSO.chosen.length <= 10 && !$("chosenBox").dataset.touched) $("chosenBox").open = true;
+    $("chosenRows").innerHTML = rows.map((c) => { const j = jobFor(c.account); const busy = j && [...LIVE, "confirm"].includes(j.status);
       return `<tr><td>${esc(c.name || c.account)}<div class="muted small"><code>${esc(c.account)}</code></div></td><td class="small">${esc(c.role)}</td><td>${jobCell(j)}</td>
       <td><button class="btn${reviewed.has(c.account) ? "" : " primary"}" data-read="${esc(c.account)}"${busy ? " disabled" : ""}>${reviewed.has(c.account) ? "Read again" : "Read"}</button>${reviewed.has(c.account) ? ` <a class="btn primary" href="/review?account=${encodeURIComponent(c.account)}" target="_blank" rel="noopener">Review and tighten</a>` : ""}</td></tr>`; }).join("");
     for (const b of document.querySelectorAll("[data-read]")) b.addEventListener("click", () => act(b, async () => {
@@ -467,26 +621,39 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     }));
     for (const b of document.querySelectorAll("[data-go]")) b.addEventListener("click", () => act(b, async () => { await api("/api/read/confirm", {id: +b.dataset.go}); await pollJobs(); }));
     for (const b of document.querySelectorAll("[data-stop]")) b.addEventListener("click", () => act(b, async () => { await api("/api/read/stop", {id: +b.dataset.stop}); await pollJobs(); }));
-    const live = (S.jobs || []).filter((j) => ["starting", "running"].includes(j.status));
+    const live = (S.jobs || []).filter((j) => LIVE.includes(j.status));
     for (const j of live) liveJobs.add(j.id);
-    if (live.length && !jobTimer) jobTimer = setTimeout(pollJobs, 1500);
+    if ((live.length || (S.batch && ["pricing", "running"].includes(S.batch.status))) && !jobTimer) jobTimer = setTimeout(pollJobs, 1500);
   }
-  let liveJobs = new Set();
+  let liveJobs = new Set(), lastLoad = 0;
   async function pollJobs() {
     if (jobTimer) { clearTimeout(jobTimer); jobTimer = null; }
-    S.jobs = await api("/api/jobs", undefined, true);
-    const live = new Set(S.jobs.filter((j) => ["starting", "running"].includes(j.status)).map((j) => j.id));
+    [S.jobs, S.batch] = await Promise.all([api("/api/jobs", undefined, true), api("/api/batch", undefined, true)]);
+    const live = new Set(S.jobs.filter((j) => LIVE.includes(j.status)).map((j) => j.id));
     const finished = [...liveJobs].some((id) => !live.has(id));  // a read moved on: groups or traffic changed
     liveJobs = live;
-    if (finished) await loadState(); else drawChosen();
+    if (finished && Date.now() - lastLoad > 10000) { lastLoad = Date.now(); await loadState(); } else drawChosen();
   }
+  for (const b of document.querySelectorAll("[data-method]")) b.addEventListener("click", () => setMethod(b.dataset.method));
+  for (const b of document.querySelectorAll("[data-by]")) b.addEventListener("click", () => setBy(b.dataset.by));
+  $("ssoPortal").addEventListener("change", () => { const p = (SSO.portals || [])[+$("ssoPortal").value]; if (p) $("ssoHint").textContent = `Not signed in · region ${p.region}`; $("ssoAdd").hidden = true; });
+  $("ssoAddBtn").addEventListener("click", () => { $("ssoAdd").hidden = false; $("ssoUrl").focus(); });
   $("ssoGo").addEventListener("click", () => act($("ssoGo"), async () => {
+    const p = (SSO.portals || [])[+$("ssoPortal").value];
+    const adding = !$("ssoAdd").hidden || !p;
     const tab = window.open("about:blank", "_blank");  // opened in the click, so the browser allows it
     try {
-      const r = await api("/api/sso/start", {start_url: $("ssoUrl").value, region: $("ssoRegion").value});
+      const r = await api("/api/sso/start", adding ? {start_url: $("ssoUrl").value, region: $("ssoRegion").value} : {start_url: p.start_url, region: p.region});
       if (r.signed_in) { if (tab) tab.close(); } else if (tab) { tab.opener = null; tab.location.href = r.url; }
     } catch (e) { if (tab) tab.close(); throw e; }
-    await loadSso();
+    ssoAccounts = null; roleOpts = null; ouTree = null; picked.clear();
+    await loadState();
+  }));
+  $("kGo").addEventListener("click", () => act($("kGo"), async () => {
+    if (!$("kProfile").value) throw new Error("There are no profiles in ~/.aws on this computer.");
+    await api("/api/keys/use", {profile: $("kProfile").value});
+    ssoAccounts = null; roleOpts = null; ouTree = null; picked.clear();
+    await loadState();
   }));
   $("ssoCopy").addEventListener("click", () => act($("ssoCopy"), async () => {
     const url = $("ssoLink").href;
@@ -494,14 +661,21 @@ svg.tl text { fill: var(--ink-2); font-size: 11px; }
     catch (e) { flash(`Copy this link into a private (incognito) window: ${url}`); }
   }));
   $("ssoCancel").addEventListener("click", () => act($("ssoCancel"), async () => { await api("/api/sso/signout", {}); clearInterval(ssoTimer); ssoTimer = null; await loadState(); }));
-  $("ssoOutBtn").addEventListener("click", () => act($("ssoOutBtn"), async () => { await api("/api/sso/signout", {}); ssoAccounts = null; await loadState(); }));
+  $("ssoOutBtn").addEventListener("click", () => act($("ssoOutBtn"), async () => { await api("/api/sso/signout", {}); ssoAccounts = null; roleOpts = null; ouTree = null; picked.clear(); method = null; await loadState(); }));
   $("ssoFilter").addEventListener("input", ssoFilter);
-  $("ssoAll").addEventListener("click", () => { for (const l of $("ssoAccounts").querySelectorAll("label")) if (!l.hidden) { const c = l.querySelector("input"); if (!c.disabled) c.checked = true; } });
-  $("ssoNone").addEventListener("click", () => { for (const i of $("ssoAccounts").querySelectorAll("input")) i.checked = false; });
+  $("chosenFilter").addEventListener("input", () => drawChosen());
+  $("chosenBox").addEventListener("toggle", () => { $("chosenBox").dataset.touched = "1"; });
+  $("ssoAll").addEventListener("click", () => { for (const l of $("ssoAccounts").querySelectorAll("label")) if (!l.hidden) picked.add(ssoAccounts[+l.querySelector("input").dataset.acct].account); drawAccounts(); });
+  $("ssoNone").addEventListener("click", () => { picked.clear(); by === "ou" ? drawOu() : drawAccounts(); });
+  $("ouReload").addEventListener("click", () => act($("ouReload"), () => drawOu(true)));
+  $("pRole").addEventListener("change", () => { if (!ouTree) drawOu(true); });
+  $("pRoleKeys").addEventListener("change", () => { if (!ouTree) drawOu(true); });
   $("ssoChange").addEventListener("click", async () => { $("ssoPick").dataset.open = "1"; await loadSso(); });
   $("ssoUse").addEventListener("click", () => act($("ssoUse"), async () => {
-    const picks = [...$("ssoAccounts").querySelectorAll("input[data-acct]:checked")].map((i) => ({account: ssoAccounts[+i.dataset.acct].account, role: $("ssoAccounts").querySelector(`[data-role="${i.dataset.acct}"]`).value}));
-    if (!picks.length) throw new Error("Choose at least one account.");
+    const mine = mineSet(), r = role();
+    const picks = [...picked].filter((a) => mine.has(a)).map((account) => ({account, role: r}));
+    if (!picks.length) throw new Error("Choose at least one account (or an OU).");
+    if (!r) throw new Error("Choose the role to use in every account.");
     await api("/api/sso/choose", {accounts: picks}); $("ssoPick").dataset.open = ""; await loadState();
   }));
 

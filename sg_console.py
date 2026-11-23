@@ -50,6 +50,8 @@ LOG = logging.getLogger("sg_console")
 ASSET = Path(__file__).resolve().parent / "assets" / "sg_console.html"
 MAX_BODY = 1 << 20
 RANGES = ("24h", "1w", "1m", "3m", "6m", "1y")
+BATCH_WORKERS = 4  # accounts read at once when reading an OU: each runs its own Logs Insights queries
+JOBS_SHOWN = 1000
 LABEL = "com.sg-tightener.console"
 UNIT = "sg-console.service"
 PROTECTED = ("Desktop", "Documents", "Downloads", "Library/Mobile Documents")  # macOS keeps background programs out
@@ -68,7 +70,7 @@ class Console:
     """What the HTTP handler calls: every read and write, against the database and AWS."""
 
     def __init__(self, db_path: str | None, profile: str | None = None, role_name: str = sg_db.DEFAULT_ROLE,
-                 external_id: str = "", targets=None, sso=None, service: Service | None = None):  # fmt: skip
+                 external_id: str = "", targets=None, sso=None, service: Service | None = None, keys=None):  # fmt: skip
         self.db_path = db_path
         self.args = argparse.Namespace(profile=profile, role_name=role_name, external_id=external_id)
         self._targets = targets
@@ -76,6 +78,8 @@ class Console:
         self._lock = threading.Lock()
         self._refused_cache: dict = {}
         self.sso = sso
+        self.keys = keys  # sg_keys.Keys: signing in with a profile or keys on this computer instead of SSO
+        self.batch: dict | None = None  # reading many accounts at once (an OU)
         self.service = service
         self.jobs: dict[int, dict] = {}
         self._job_extra: dict[int, dict] = {}
@@ -85,17 +89,25 @@ class Console:
     def store(self) -> sg_db.Store:
         return sg_db.Store(self.db_path)
 
+    def auth(self):
+        """The sign-in in use: keys on this computer once a profile was chosen on the page, else AWS SSO."""
+        if self.keys is not None and self.keys.state.get("active"):
+            return self.keys
+        return self.sso
+
     def _sso_ready(self) -> bool:
-        return bool(not self._fixed and self.sso is not None and self.sso.chosen() and self.sso.token())
+        a = self.auth()
+        return bool(not self._fixed and a is not None and a.chosen() and a.token())
 
     def targets(self, fresh: bool = False):
         with self._lock:
             if self._sso_ready():  # signed in from the page: that identity acts, in the accounts chosen
                 import sg_sso
 
-                key = (self.sso.start_url, json.dumps(self.sso.chosen()), self.sso.token())
+                a = self.auth()
+                key = (a.start_url, json.dumps(a.chosen()), a.token())
                 if fresh or getattr(self._targets, "_key", None) != key:
-                    self._targets = sg_sso.SsoTargets(self.sso)
+                    self._targets = sg_sso.SsoTargets(a)
                     self._targets._key = key
                 return self._targets
             if self._targets is None or (fresh and not self._fixed) or (not self._fixed and hasattr(self._targets, "sso")):
@@ -150,7 +162,7 @@ class Console:
                 read = set()
             for a in accounts.values():
                 a["reviewed"] = a["account"] in read
-            chosen = self.sso.chosen() if self.sso else []
+            chosen = self.auth().chosen() if self.auth() else []
             for c in chosen:  # an account chosen in the sign-in but not read yet still has a row to read it from
                 accounts.setdefault(c["account"], {"account": c["account"], "name": c["name"], "regions": [],
                                                    "mode": st.mode(c["account"]), "reviewed": c["account"] in read})  # fmt: skip
@@ -158,7 +170,7 @@ class Console:
                 a["chosen"] = any(c["account"] == a["account"] for c in chosen)
             return {"me": me, "me_principal": sg_db.principal(me), "account": me_account,
                     "service": self.service.status() if self.service else None,
-                    "sso": bool(self.sso), "jobs": self.job_list(),
+                    "sso": bool(self.sso), "jobs": self.job_list(), "batch": self.batch_status(),
                     "approvals": st.approvals(), "db": str(st.path),
                     "verify": {"ok": ok, "entries": n, "why": why}, "accounts": list(accounts.values()),
                     "pending_requests": len(st.requests("pending"))}  # fmt: skip
@@ -311,34 +323,55 @@ class Console:
         return self.sso
 
     def sso_status(self) -> dict:
-        return self._need_sso().status()
+        out = self._need_sso().status()
+        out["method"] = "keys" if self.auth() is self.keys and self.keys is not None else "sso"
+        out["keys"] = self.keys.status() if self.keys is not None else None
+        if out["method"] == "keys":  # the page shows who acts and what is chosen from the sign-in in use
+            out["chosen"] = out["keys"]["chosen"]
+        return out
+
+    def _auth_call(self, fn, *a, status: int = 400):
+        import sg_keys
+        import sg_sso
+
+        try:
+            return fn(*a)
+        except (sg_sso.SsoError, sg_keys.KeysError) as exc:
+            raise ConsoleError(status, str(exc))
 
     def sso_start(self, body: dict) -> dict:
-        import sg_sso
+        sso = self._need_sso()
+        out = self._auth_call(sso.start, str(body.get("start_url") or ""), str(body.get("region") or ""))
+        if self.keys is not None and self.keys.state.get("active"):
+            self.keys.state["active"] = False
+            self.keys._save()
+        return out
 
-        try:
-            return self._need_sso().start(str(body.get("start_url") or ""), str(body.get("region") or ""))
-        except sg_sso.SsoError as exc:
-            raise ConsoleError(400, str(exc))
+    def keys_use(self, body: dict) -> dict:
+        if self.keys is None:
+            raise ConsoleError(400, "signing in with keys is not available in this console")
+        out = self._auth_call(self.keys.use, str(body.get("profile") or ""))
+        self.keys.state["active"] = True
+        self.keys._save()
+        return out
 
-    def sso_accounts(self, fresh: bool = False) -> list[dict]:
-        import sg_sso
+    def sso_accounts(self, fresh: bool = False, roles: bool = True) -> list[dict]:
+        a = self.auth() or self._need_sso()
+        return self._auth_call(a.accounts, fresh, roles, status=401)
 
-        try:
-            return self._need_sso().accounts(fresh)
-        except sg_sso.SsoError as exc:
-            raise ConsoleError(401, str(exc))
+    def sso_roles(self) -> list[dict]:
+        a = self.auth() or self._need_sso()
+        return self._auth_call(a.role_options)
+
+    def sso_ous(self, role: str, fresh: bool = False) -> dict:
+        a = self.auth() or self._need_sso()
+        return self._auth_call(a.org_tree, role, fresh, status=502)
 
     def sso_choose(self, body: dict) -> dict:
-        import sg_sso
-
         picks = body.get("accounts")
         if not isinstance(picks, list) or not picks:
             raise ConsoleError(400, "choose at least one account")
-        try:
-            chosen = self._need_sso().choose(picks)
-        except sg_sso.SsoError as exc:
-            raise ConsoleError(400, str(exc))
+        chosen = self._auth_call((self.auth() or self._need_sso()).choose, picks)
         st = self.store()
         try:
             with st:
@@ -350,12 +383,20 @@ class Console:
         return {"chosen": chosen}
 
     def sso_sign_out(self, body: dict) -> dict:
-        self._need_sso().sign_out()
+        a = self.auth() or self._need_sso()
+        a.sign_out()
+        if a is self.keys:  # back to the SSO sign-in
+            self.keys.state["active"] = False
+            self.keys._save()
         return {"signed_in": False}
 
     # ------------------------------------------------------------------ reading an account (background jobs)
     def job_list(self) -> list[dict]:
-        return sorted((dict(j) for j in self.jobs.values()), key=lambda j: -j["id"])[:20]
+        """The latest read of each account (all of them while an OU is read), newest first."""
+        latest: dict[str, dict] = {}
+        for j in sorted(self.jobs.values(), key=lambda j: -j["id"]):
+            latest.setdefault(j["account"], j)
+        return [{**j, "lines": j["lines"][-12:]} for j in list(latest.values())[:JOBS_SHOWN]]
 
     def _job(self, body: dict) -> dict:
         try:
@@ -364,7 +405,7 @@ class Console:
             raise ConsoleError(404, "no such read")
         return job
 
-    def read_start(self, body: dict) -> dict:
+    def read_start(self, body: dict, start: bool = True) -> dict:
         """Read an account: its security groups into the database, then plan the flow-log read and price it.
         Nothing is spent until ``read_confirm``."""
         account = _need(body, "account")
@@ -381,12 +422,13 @@ class Console:
         if any(j["account"] == account and j["status"] in ("starting", "running", "confirm") for j in self.jobs.values()):
             raise ConsoleError(409, f"{account} is already being read")
         jid = max(self.jobs, default=0) + 1
-        name = next((c["name"] for c in (self.sso.chosen() if self.sso else []) if c["account"] == account), "")
+        name = next((c["name"] for c in (self.auth().chosen() if self.auth() else []) if c["account"] == account), "")
         job = {"id": jid, "account": account, "name": name, "days": days, "regions": regions, "status": "starting",
                "lines": [], "done": 0, "total": 0, "bytes": 0, "cost": None, "started": time.time()}  # fmt: skip
         self.jobs[jid] = job
-        threading.Thread(target=self._prepare, args=(job,), daemon=True).start()
-        return dict(job)
+        if start:
+            threading.Thread(target=self._prepare, args=(job,), daemon=True).start()
+        return job if not start else dict(job)
 
     def _say(self, job: dict, line: str) -> None:
         job["lines"] = (job["lines"] + [line])[-60:]
@@ -486,6 +528,109 @@ class Console:
         elif extra:
             extra["stop"].set()
         return dict(job)
+
+    # ------------------------------------------------------------------ reading many accounts at once (an OU)
+    def batch_status(self) -> dict | None:
+        b = self.batch
+        if not b:
+            return None
+        jobs = [self.jobs[i] for i in b["jobs"] if i in self.jobs]
+        count: dict[str, int] = {}
+        for j in jobs:
+            count[j["status"]] = count.get(j["status"], 0) + 1
+        ready = [j for j in jobs if j["status"] in ("confirm", "queued", "running", "done", "stopped") and j.get("total")]
+        costs = [j["cost"] for j in ready if j.get("cost") is not None]
+        return {"id": b["id"], "status": b["status"], "accounts": len(jobs), "count": count, "days": b["days"],
+                "regions": b["regions"], "started": b["started"], "cost": round(sum(costs), 2),
+                "cost_unknown": len(ready) - len(costs), "to_read": len(ready),
+                "read": sum(1 for j in ready if j["status"] == "done"),
+                "slices": sum(j.get("total") or 0 for j in ready), "done": sum(j.get("done") or 0 for j in ready),
+                "bytes": sum(j.get("bytes") or 0 for j in jobs)}  # fmt: skip
+
+    def read_all(self, body: dict) -> dict:
+        """Price a read of many accounts (every one chosen, or those listed): their security groups go into
+        the database, then one total for their flow logs. Nothing is spent until ``read_all_confirm``."""
+        if self.batch and self.batch["status"] in ("pricing", "running"):
+            raise ConsoleError(409, "a read of many accounts is already under way")
+        chosen = (self.auth().chosen() if self.auth() else [])
+        want = body.get("accounts")
+        accounts = [c["account"] for c in chosen if not want or c["account"] in set(want)]
+        if not accounts:
+            raise ConsoleError(400, "choose the accounts to read first")
+        busy = {j["account"] for j in self.jobs.values() if j["status"] in ("starting", "running", "confirm", "queued")}
+        jobs = [self.read_start({"account": a, "regions": body.get("regions") or "all", "days": body.get("days") or 1}, start=False)
+                for a in accounts if a not in busy]  # fmt: skip
+        if not jobs:
+            raise ConsoleError(409, "every one of these accounts is already being read")
+        b = {"id": (self.batch["id"] if self.batch else 0) + 1, "status": "pricing", "jobs": [j["id"] for j in jobs],
+             "days": jobs[0]["days"], "regions": jobs[0]["regions"], "started": time.time(), "stop": threading.Event()}  # fmt: skip
+        for j in jobs:
+            j["batch"] = b["id"]
+        self.batch = b
+        threading.Thread(target=self._batch_price, args=(b, jobs), daemon=True).start()
+        return self.batch_status()
+
+    def _pool(self, b: dict, fn, items: list) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def one(x):
+            if not b["stop"].is_set():
+                fn(x)
+
+        with ThreadPoolExecutor(max_workers=BATCH_WORKERS) as pool:
+            list(pool.map(one, items))
+
+    def _batch_price(self, b: dict, jobs: list[dict]) -> None:
+        self._pool(b, self._prepare, jobs)
+        for j in jobs:
+            if j["status"] == "starting":  # stopped before its turn
+                j["status"] = "cancelled"
+                self._say(j, "not read")
+        b["status"] = "stopped" if b["stop"].is_set() else ("confirm" if any(j["status"] == "confirm" for j in jobs) else "done")
+
+    def read_all_confirm(self, body: dict) -> dict:
+        b = self.batch
+        if not b or b["status"] != "confirm":
+            raise ConsoleError(409, "no read of many accounts is waiting for confirmation")
+        jobs = [self.jobs[i] for i in b["jobs"] if self.jobs[i]["status"] == "confirm" and self._job_extra.get(i)]
+        for j in jobs:
+            j["status"] = "queued"
+        b["status"] = "running"
+
+        def run(j):
+            j["status"] = "running"
+            self._run(j, self._job_extra[j["id"]])
+
+        def go():
+            self._pool(b, run, jobs)
+            for j in jobs:
+                if j["status"] == "queued":
+                    j["status"] = "cancelled"
+                    self._job_extra.pop(j["id"], None)
+                    self._say(j, "not read")
+            b["status"] = "stopped" if b["stop"].is_set() else "done"
+
+        threading.Thread(target=go, daemon=True).start()
+        return self.batch_status()
+
+    def read_all_stop(self, body: dict) -> dict:
+        b = self.batch
+        if not b:
+            raise ConsoleError(409, "no read of many accounts")
+        b["stop"].set()
+        for i in b["jobs"]:
+            j, extra = self.jobs.get(i), self._job_extra.get(i)
+            if not j:
+                continue
+            if j["status"] == "confirm":
+                self._job_extra.pop(i, None)
+                j["status"] = "cancelled"
+                self._say(j, "not read")
+            elif extra and j["status"] == "running":
+                extra["stop"].set()
+        if b["status"] == "confirm":
+            b["status"] = "stopped"
+        return self.batch_status()
 
     # ------------------------------------------------------------------ always running
     def autostart(self, body: dict) -> dict:
@@ -896,7 +1041,13 @@ def make_handler(console: Console, token: str, port: int):
                 if url.path == "/api/sso":
                     return self._json(200, console.sso_status())
                 if url.path == "/api/sso/accounts":
-                    return self._json(200, console.sso_accounts(q.get("fresh") == "1"))
+                    return self._json(200, console.sso_accounts(q.get("fresh") == "1", q.get("roles") != "0"))
+                if url.path == "/api/sso/roles":
+                    return self._json(200, console.sso_roles())
+                if url.path == "/api/sso/ous":
+                    return self._json(200, console.sso_ous(q.get("role", ""), q.get("fresh") == "1"))
+                if url.path == "/api/batch":
+                    return self._json(200, console.batch_status())
                 if url.path == "/api/jobs":
                     return self._json(200, console.job_list())
                 return self._json(404, {"error": "not found"})
@@ -928,6 +1079,8 @@ def make_handler(console: Console, token: str, port: int):
                      "/api/sso/start": console.sso_start, "/api/sso/choose": console.sso_choose,
                      "/api/sso/signout": console.sso_sign_out, "/api/read": console.read_start,
                      "/api/read/confirm": console.read_confirm, "/api/read/stop": console.read_stop,
+                     "/api/read/all": console.read_all, "/api/read/all/confirm": console.read_all_confirm,
+                     "/api/read/all/stop": console.read_all_stop, "/api/keys/use": console.keys_use,
                      "/api/autostart": console.autostart}.get(urlparse(self.path).path)  # fmt: skip
             if not route:
                 return self._json(404, {"error": "not found"})
@@ -1027,10 +1180,12 @@ def main(argv=None) -> int:
         webbrowser.open(url)
         return 0
     use_profile(args.profile)
+    import sg_keys
     import sg_sso
 
     sso = sg_sso.Sso(sg_ipintel.DATA_DIR / "sso.json")
-    console = Console(args.db, args.profile, args.role_name, args.external_id, sso=sso,
+    keys = sg_keys.Keys(sg_ipintel.DATA_DIR / "keys.json")
+    console = Console(args.db, args.profile, args.role_name, args.external_id, sso=sso, keys=keys,
                       service=Service(_service_cmd(args), running_as_service=args.service))  # fmt: skip
     token = lasting_token(args.new_token)
     httpd = _bind(console, args.port, token, 120 if args.service else 0)

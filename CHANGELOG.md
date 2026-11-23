@@ -1,5 +1,22 @@
 # Changelog
 
+## 5.15.0 - 2026-11-23
+
+- **Read a whole OU from the console.** Choose accounts **By OU**: tick an OU (PROD, say) and every
+  account in it and the OUs under it is chosen; **By account** lists them with a filter. The OUs are read
+  with your role in the management account (SSO) or with the profile (keys), and kept for a day.
+- **One role for every account**, instead of one per account. With SSO, the roles you have are looked up
+  in a few accounts (read-only first), so a large organisation lists fast; an account without the role
+  is reported when it is read.
+- **Read all N accounts, one price.** Security groups for every account first (4 at a time), then one
+  total for their flow logs before anything is spent, then one click reads them all with progress and
+  **Stop**. Accounts with nothing to read or that failed are counted; **Show them** lists the failures.
+- **Sign in with keys on this computer** as well as the access portal: a profile or access key in
+  `~/.aws`, assuming one role (OrganizationAccountAccessRole unless you choose another) in the other
+  accounts. The access portal is now picked from the portals in `~/.aws/config`, with **Add a portal…**.
+- Fixed: several accounts read at once no longer fail with `database is locked` when the database is new;
+  the account that names who acts is the first chosen one the role works in.
+
 ## 5.14.0 - 2026-11-23
 
 - **No token to open the console.** It opens at `http://127.0.0.1:8765/`; AWS SSO (or the profile it

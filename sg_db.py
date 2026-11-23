@@ -62,6 +62,7 @@ import re
 import shlex
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -272,7 +273,15 @@ class Store:
         self.db = sqlite3.connect(str(self.path), isolation_level=None, timeout=30)
         if new:
             os.chmod(self.path, 0o600)
-        self.db.execute("PRAGMA journal_mode=WAL")
+        for attempt in range(50):  # switching to WAL skips the busy timeout: several readers opening at once retry
+            try:
+                if self.db.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal":
+                    self.db.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or attempt == 49:
+                    raise
+                time.sleep(0.1)
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
 

@@ -14,17 +14,22 @@ python sg_console.py uninstall   # stop running in the background
 The command line (`sg_db.py`) stays for scripts and cron; both work on the same database and the
 same rules.
 
-## Start here: sign in with AWS SSO and read your accounts
+## Start here: sign in, choose an OU, read every account in it
 
-No AWS CLI, profile or command line is needed after the console is running.
+No AWS CLI or command line is needed after the console is running.
 
-1. **Sign in.** On the Overview, **AWS sign-in** asks for your AWS access portal address
-   (`https://….awsapps.com/start`, the page you open to pick an AWS account) and its region. Both are
-   filled in when your `~/.aws/config` already has them. **Sign in with AWS SSO** opens the AWS
-   sign-in page in a new tab with a code; check the code matches and approve. If you already ran
-   `aws sso login` for the same portal, you are signed in straight away.
+1. **Sign in.** On the Overview, **AWS sign-in** asks how you sign in:
+   - **Access portal (SSO)**: IAM Identity Center, your whole organisation. Pick the portal (every
+     portal in `~/.aws/config` is listed; **Add a portal…** takes a new address and region) and
+     **Sign in**. The AWS sign-in page opens in a new tab with a code; check it matches and approve. If
+     you already ran `aws sso login` for the same portal, you are signed in straight away.
+   - **Keys on this computer**: a profile or access key in `~/.aws`. Pick the profile and **Use this
+     profile**. It acts as that identity in its own account and assumes one role you name in the others
+     (`OrganizationAccountAccessRole` unless you choose another). The organisation's accounts and OUs are
+     read with the profile, so use the management account or a delegated administrator to see them
+     all; from any other account only its own account is offered.
 
-   ![AWS sign-in on the Overview, with the Always running switch](images/sg-console-sso-signin.png)
+   ![AWS sign-in: access portal (SSO) or keys on this computer](images/sg-console-sso-signin.png)
 
    ![The code to check on the AWS sign-in page](images/sg-console-sso-code.png)
 
@@ -32,24 +37,35 @@ No AWS CLI, profile or command line is needed after the console is running.
    or turned on a VPN such as Zscaler, the browser is reusing its earlier sign-in. **Copy sign-in
    link**, paste it into a private (incognito) window (or quit and reopen the browser) and approve the
    same code; **Open the AWS sign-in page again** reopens it in a normal tab.
-2. **Choose accounts.** Every account your sign-in can use is listed, each with your roles there
-   (read-only roles such as `ReadOnlyAccess` or `SecurityAudit` first). Tick the accounts, pick a role
-   for each, **Use these accounts**.
+2. **Choose one role and the accounts.** **Role in every account** is used in all of them (with SSO,
+   the roles you have are looked up in a few accounts, read-only ones first; an account without the role
+   is reported when it is read). Then choose accounts **By OU**: tick an OU (for example PROD) to choose
+   every account in it and in the OUs under it; open an OU to see its accounts. The OUs are read with
+   that role in the management account (SSO) or with the profile (keys), and kept for a day
+   (**Reload the OUs** reads them again). **By account** lists every account with a filter instead.
+   **Use these N accounts**.
 
-   ![Choose accounts and a role in each, read-only roles first](images/sg-console-sso-accounts.png)
-3. **Read.** Pick the regions (`all` reads every enabled region) and how far back (start with 1 day),
-   then **Read**. The account's security groups and network interfaces go into the console at once
-   (free). The console then works out how much VPC flow log there is to read and shows the cost
-   (CloudWatch Logs Insights, about US$0.005 a GB scanned): **Read flow logs (about US$…)** spends it,
-   **Not now** does not. A bar shows the progress; **Stop** stops it.
-4. **Review and tighten** opens the account's Security Group Review: the over-provisioning timeline,
-   rejected traffic, and the Tighten panel, whose plan is proposed here as a change request.
+   ![One role for every account, and the PROD OU ticked: 160 accounts](images/sg-console-sso-accounts.png)
+3. **Read them all.** Pick the regions (`all` reads every enabled region) and how far back (start with
+   1 day), then **Read all N accounts**. Every account's security groups and network interfaces go into
+   the console (free, 4 accounts at a time), and its flow logs are priced. Then one total: **Read flow
+   logs for N accounts (about US$…)** spends it (CloudWatch Logs Insights, about US$0.005 a GB
+   scanned), **Not now** does not. Accounts with nothing to read, or that could not be read (no access
+   with the role, for example), are counted; **Show them** lists those that failed. A bar shows the
+   progress; **Stop** stops it. **Each account** has the same, one account at a time.
+
+   ![One price for every account in the OU before anything is spent](images/sg-console-read-ou.png)
+4. **Look across them, then dive in.** **Risk overview** and **Over-provisioning** compare every account
+   read, worst first; **Review and tighten** (or **Reduce**) opens one account's Security Group Review:
+   the over-provisioning timeline, rejected traffic, and the Tighten panel, whose plan is proposed here
+   as a change request.
 
 Nothing is changed in AWS by any of this. Every account starts in **surveillance** mode; a change
 reaches AWS only as a request a different person approves, in an account switched to enforce mode.
 
-The sign-in token (valid for the session length Identity Center sets, usually 8 to 12 hours) is kept in
-`~/.sg-tightener/sso.json` (mode `0600`) so an always-running console survives a restart; role
+The SSO sign-in token (valid for the session length Identity Center sets, usually 8 to 12 hours) is kept
+in `~/.sg-tightener/sso.json` (mode `0600`) so an always-running console survives a restart (with keys,
+only the profile name, role and accounts chosen are kept, in `~/.sg-tightener/keys.json`); role
 credentials are held only in memory and renewed as they expire. **Sign out** ends the session at
 AWS. A role that can only read is enough to read; applying needs the
 [write permissions](permissions.md).

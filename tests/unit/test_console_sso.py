@@ -6,6 +6,7 @@ import json
 import os
 import plistlib
 import time
+from typing import ClassVar
 
 import pytest
 
@@ -136,6 +137,8 @@ def test_a_throttled_role_listing_keeps_the_list_and_retries_gently(sso):
 
 def test_choosing_accounts_gives_a_session_per_account_with_the_chosen_role(sso):
     _signed_in(sso)
+    assert sso.choose([{"account": ACCOUNT, "role": "NotMine"}]), "roles not looked up yet: reading will say"
+    sso.accounts()  # now the roles are known
     with pytest.raises(sg_sso.SsoError):
         sso.choose([{"account": ACCOUNT, "role": "NotMine"}])
     with pytest.raises(sg_sso.SsoError):
@@ -288,7 +291,8 @@ def test_the_console_address_stays_the_same_across_restarts(tmp_path):
 def test_the_page_has_sign_in_read_and_always_running():
     page = sg_console.ASSET.read_text()
     for needle in ('id="ssoGo"', 'id="ssoAccounts"', 'id="chosenRows"', 'id="svcOn"', "/api/sso/start", "/api/read/confirm",
-                   "/api/autostart"):
+                   "/api/autostart", 'data-method="keys"', "/api/keys/use", 'id="ouTree"', "/api/sso/ous", "/api/sso/roles",
+                   'id="pRole"', "/api/read/all", "/api/read/all/confirm", 'id="batch"'):
         assert needle in page
 
 
@@ -312,3 +316,176 @@ def test_on_macos_a_copy_in_a_protected_folder_is_bundled_so_the_background_copy
     assert p["EnvironmentVariables"]["PYTHONPATH"] == str(app / "lib") and (app / "lib" / "six.py").exists()
     assert "/venv/" not in p["ProgramArguments"][0]
     assert not sg_console.Service([], system="Darwin", home=tmp_path, src=tmp_path / "code").needs_copy()
+
+
+# ---------------------------------------------------------------------------------------------- an OU at once
+class FakeOrg:
+    """root -> Prod (2 accounts, with Payments OU under it holding 1) and Sandbox (1)."""
+
+    TREE: ClassVar[dict] = {"r-1": (["111111111111"], ["ou-prod", "ou-sbx"]), "ou-prod": (["222222222222", "333333333333"], ["ou-pay"]),
+            "ou-pay": (["444444444444"], []), "ou-sbx": (["555555555555"], [])}
+    NAMES: ClassVar[dict] = {"ou-prod": "Prod", "ou-pay": "Payments", "ou-sbx": "Sandbox"}
+
+    def list_roots(self):
+        return {"Roots": [{"Id": "r-1", "Name": "Root"}]}
+
+    def describe_organization(self):
+        return {"Organization": {"MasterAccountId": "111111111111"}}
+
+    def get_paginator(self, op):
+        def pages(kw):
+            accts, ous = self.TREE[kw["ParentId"]]
+            if op == "list_accounts_for_parent":
+                return [{"Accounts": [{"Id": a, "Name": f"acct-{a[:3]}", "Status": "ACTIVE"} for a in accts]}]
+            return [{"OrganizationalUnits": [{"Id": o, "Name": self.NAMES[o]} for o in ous]}]
+        if op == "list_accounts":
+            return Pager(lambda kw: [{"Accounts": [{"Id": a, "Name": f"acct-{a[:3]}", "Status": "ACTIVE"}
+                                                   for v in self.TREE.values() for a in v[0]]}])
+        return Pager(pages)
+
+
+def _walk(n):
+    yield n
+    for c in n["children"]:
+        yield from _walk(c)
+
+
+def test_the_ou_tree_has_every_ou_with_its_own_accounts_and_the_ous_under_it():
+    tree = sg_review.org_tree(FakeOrg())
+    assert tree["name"] == "Root" and [a["account"] for a in tree["accounts"]] == ["111111111111"]
+    prod = next(n for n in _walk(tree) if n["name"] == "Prod")
+    assert [a["account"] for a in prod["accounts"]] == ["222222222222", "333333333333"]
+    assert [c["name"] for c in prod["children"]] == ["Payments"]
+    assert [c["name"] for c in tree["children"]] == ["Prod", "Sandbox"]
+
+
+def test_sso_reads_the_ou_tree_with_the_chosen_role_in_the_management_account(sso, monkeypatch):
+    _signed_in(sso)
+    used = []
+
+    class Sess:
+        def client(self, *a, **k):
+            return FakeOrg()
+
+    def role_session(account, role):
+        used.append((account, role))
+        return Sess()
+
+    monkeypatch.setattr(sso, "role_session", role_session)
+    monkeypatch.setattr(sso, "_list_accounts", lambda fresh=False: [{"accountId": "111111111111"}, {"accountId": "222222222222"}])
+    tree = sso.org_tree("CTO-Read")
+    assert tree["children"][0]["name"] == "Prod" and ("111111111111", "CTO-Read") in used
+    n = len(used)
+    sso.org_tree("CTO-Read")
+    assert len(used) == n, "kept for a day"
+    monkeypatch.setattr(sso, "_list_accounts", lambda fresh=False: [{"accountId": "222222222222"}])
+    with pytest.raises(sg_sso.SsoError, match="management account"):
+        sso.org_tree("Other")
+
+
+def test_one_role_for_every_account_is_offered_from_a_few_accounts(sso):
+    _signed_in(sso)
+    opts = sso.role_options()
+    assert opts[0]["role"] == "ReadOnlyAccess" and opts[0]["accounts"] == 2 and opts[0]["of"] == 2
+    fast = sso.accounts(roles=False)
+    assert {a["account"] for a in fast} == {ACCOUNT, OTHER} and fast[0]["roles"], "roles found before are given"
+    sso.choose([{"account": a["account"], "role": "ReadOnlyAccess"} for a in fast])
+    assert {c["role"] for c in sso.chosen()} == {"ReadOnlyAccess"}
+
+
+def test_keys_on_this_computer_list_profiles_and_read_the_organisation_with_the_profile(tmp_path, monkeypatch):
+    (tmp_path / "config").write_text("[default]\nregion = eu-west-1\n[profile mgmt]\nsso_session = acme\n"
+                                     "[sso-session acme]\nsso_start_url = https://x\n[profile ci]\nrole_arn = arn:aws:iam::1:role/x\n")
+    (tmp_path / "credentials").write_text("[default]\naws_access_key_id = AKIA\naws_secret_access_key = s\n")
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "config"))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "credentials"))
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    import sg_keys
+
+    got = {p["profile"]: p["kind"] for p in sg_keys.known_profiles()}
+    assert got == {"default": "keys", "mgmt": "sso", "ci": "role"}
+
+    class Sess:
+        def __init__(self, can_list=True):
+            self.can_list = can_list
+
+        def client(self, name, **k):
+            if name == "sts":
+                class Sts:
+                    def get_caller_identity(self):
+                        return {"Account": "111111111111", "Arn": "arn:aws:iam::111111111111:user/alice"}
+                return Sts()
+            if not self.can_list:
+                raise RuntimeError("AccessDenied")
+            return FakeOrg()
+
+    k = sg_keys.Keys(tmp_path / "keys.json", session_factory=lambda p: Sess())
+    with pytest.raises(sg_keys.KeysError):
+        k.use("nope")
+    st = k.use("mgmt")
+    assert st["signed_in"] and st["account"] == "111111111111" and "AKIA" not in (tmp_path / "keys.json").read_text()
+    assert len(k.accounts()) == 5 and k.accounts()[0]["account"] == "111111111111", "its own account first"
+    assert next(n for n in _walk(k.org_tree()) if n["name"] == "Payments")["accounts"][0]["account"] == "444444444444"
+    chosen = k.choose([{"account": "111111111111", "role": "CTO-Read"}, {"account": "222222222222", "role": "CTO-Read"}])
+    assert [c["role"] for c in chosen] == ["(this profile)", "CTO-Read"] and k.status()["role"] == "CTO-Read"
+    assert k.session("111111111111") is k.base()
+    k2 = sg_keys.Keys(tmp_path / "keys2.json", session_factory=lambda p: Sess(can_list=False))
+    k2.use("default")
+    assert [a["account"] for a in k2.accounts()] == ["111111111111"], "not the management account: its own only"
+
+
+class Chosen:
+    def __init__(self, accounts):
+        self._c = [{"account": a, "name": f"n{a[:3]}", "role": "CTO-Read"} for a in accounts]
+
+    def chosen(self):
+        return self._c
+
+
+def test_reading_an_ou_prices_every_account_then_reads_them_all_on_one_confirm(tmp_path, monkeypatch):
+    old = ipintel.DATA_DIR
+    ipintel.set_data_dir(tmp_path / "data")
+    try:
+        monkeypatch.setattr(sg_db, "ensure_current", lambda *a, **k: [])
+        accts = [f"{i}" * 12 for i in range(1, 7)]
+
+        def plan(sess, doc, regions, days, now, say=None):
+            if doc["account"] == accts[1]:
+                raise RuntimeError("AccessDenied: no CTO-Read here")
+            for r in regions:
+                doc["regions"][r] = {"query_sets": [["lg"]]}
+            return [] if doc["account"] == accts[2] else [("eu-west-1", now - 3600, now, [["lg"]], [])] * 2
+
+        monkeypatch.setattr(sg_review, "plan_read", plan)
+        monkeypatch.setattr(sg_review, "estimate", lambda doc, a, r, now=None: {"rate": 1e6})
+        ran = []
+        monkeypatch.setattr(sg_review, "run_read", lambda sess, doc, tasks, days, now, cancelled, progress=None:
+                            ran.append(doc["account"]) or {"done": len(tasks), "bytes": 1e9})
+        c = sg_console.Console(str(tmp_path / "sg.db"), targets=FakeTargets(), sso=Chosen(accts))
+
+        def wait(status):
+            for _ in range(500):
+                if c.batch_status()["status"] != status:
+                    return c.batch_status()
+                time.sleep(0.01)
+            raise AssertionError(c.batch_status())
+
+        b = c.read_all({"regions": "eu-west-1", "days": 1})
+        assert b["accounts"] == 6
+        with pytest.raises(sg_console.ConsoleError):
+            c.read_all({"regions": "eu-west-1"})  # one at a time
+        b = wait("pricing")
+        assert b["status"] == "confirm" and b["to_read"] == 4 and b["count"]["failed"] == 1 and b["count"]["done"] == 1
+        assert b["cost"] > 0 and b["cost_unknown"] == 0
+        assert not ran, "nothing is spent before the confirm"
+        c.read_all_confirm({})
+        b = wait("running")
+        assert b["status"] == "done" and sorted(ran) == sorted([accts[0], *accts[3:]]) and b["bytes"] == 4e9
+        assert len(c.job_list()) == 6 and all(j["batch"] == b["id"] for j in c.job_list())
+        # stopping while it is priced leaves the rest unread
+        c.read_all({"regions": "eu-west-1"})
+        c.read_all_stop({})
+        b = wait("pricing")
+        assert b["status"] in ("stopped", "confirm")  # stopped, unless every account was priced first
+    finally:
+        ipintel.set_data_dir(old)

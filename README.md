@@ -180,18 +180,19 @@ How it works:
 ### One console for every account, with two-person approval
 
 `python sg_console.py install` runs a local web console that is **always running** (starts at login;
-or `serve` for now), at a bookmarkable 127.0.0.1 address. **Sign in with AWS SSO on the page**, choose
-your accounts and a read-only role in each, and **Read**: the security groups go in, the flow-log cost
-is shown before anything is spent, and **Review and tighten** opens each account's review. No AWS CLI
+or `serve` for now), at `http://127.0.0.1:8765/`. **Sign in on the page** with your AWS access portal
+(SSO) or keys on this computer, choose **one role for every account**, tick an OU (PROD, say) and
+**Read all N accounts**: the security groups go in, one price for every account's flow logs is shown
+before anything is spent, the Risk overview compares them, and **Review and tighten** opens each one. No AWS CLI
 or command line is needed after that. Over the database it shows every account's groups and rules, change requests to propose and approve, the audit trail
 to search, a **Risk overview** of every account (a risk heatmap and over-provisioning by owner), **Over-provisioning** by account and asset rated red, amber or green, and **every rejected flow across an OU** in one table. Every change is a request with a
 reason and ticket, and **a different person must approve it** before it is applied. Proposal,
 approval and apply are each audited; break-glass (`sg_extend`) still goes straight through, flagged.
 See [the console](docs/console.md).
 
-| Sign in with AWS SSO | Choose accounts and roles | Read, cost shown first |
+| Sign in: access portal or keys | One role, choose an OU | Read them all, one price first |
 |---|---|---|
-| ![Sign in](docs/images/sg-console-sso-signin.png) | ![Choose accounts](docs/images/sg-console-sso-accounts.png) | ![Read](docs/images/sg-console-sso-read.png) |
+| ![Sign in](docs/images/sg-console-sso-signin.png) | ![Choose an OU](docs/images/sg-console-sso-accounts.png) | ![Read the OU](docs/images/sg-console-read-ou.png) |
 
 ![The console overview, signed in](docs/images/sg-console-overview.png)
 
@@ -268,6 +269,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.15.0** | **Read a whole OU from the console.** Sign in with the access portal or keys on this computer, choose **one role for every account**, tick an OU (PROD, say) to choose every account in it, then **Read all N accounts**: security groups first, one price for every account's flow logs, one click to read them all (4 at a time, with Stop). Then the Risk overview and Over-provisioning compare them, and Review and tighten dives into one |
 | **5.14.0** | **No token to open the console, loading animations, SSO with many accounts.** The console opens at `http://127.0.0.1:8765/` with AWS SSO as the sign-in (other web pages still cannot use it: a page-held key on every change, cross-site and foreign-origin requests refused, Host check). A loading bar and spinners show whenever something loads. Listing accounts no longer fails with `TooManyRequestsException` on large organisations |
 | **5.13.0** | **Over-provisioning for leaders: by account, per asset, red/amber/green.** A console tab rates every asset by its over-exposure (never-seen addresses that can reach it: green up to a /24, amber up to a /16, red above or open on a risky port), with KPIs (addresses allowed and their change, % of assets right-sized against a 90% target, red and amber counts, average per asset, accounts green, assets left to fix), the trend, each account's rating with **Reduce** into its Tighten panel, and the rules that would fix the most |
 | **5.12.0** | **Risk overview across every account.** A new console tab puts every account read side by side: headline tiles, a **risk heatmap** (eight dimensions per account, worst first), **over-provisioned by owner** (internal, data centre, AWS, SaaS, other networks, or by source type; size or share), over-provisioning and high-risk probing over time, rules open to the internet on risky ports, high-risk sources let in, the biggest rules to tighten, and blind spots |

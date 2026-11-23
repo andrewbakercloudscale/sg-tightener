@@ -26,6 +26,7 @@ LOG = logging.getLogger("sg_sso")
 CLIENT_NAME = "sg-tightener-console"
 ROLE_WORKERS = 3  # Identity Center throttles ListAccountRoles hard; more threads only means more 429s
 ROLE_RETRY_PAUSE = 1.0
+HOME_TRIES = 5  # chosen accounts tried for who acts, when the role is missing in the first
 GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 EARLY = 300  # treat a token or credentials as expired this many seconds before they are
 READ_ONLY_HINTS = ("readonly", "read-only", "read_only", "viewonly", "view-only", "securityaudit", "audit", "security")
@@ -91,6 +92,7 @@ class Sso:
         self._lock = threading.Lock()
         self._sessions: dict = {}
         self._accounts: list | None = None
+        self._plain: list | None = None
         self.pending: dict | None = None
         self.error = ""
         self.state = self._load()
@@ -180,6 +182,7 @@ class Sso:
                 self.state = {"start_url": start_url, "region": region, "chosen": []}
                 self._sessions.clear()
                 self._accounts = None
+                self._plain = None
             self.state.pop("signed_out", None)
             if self.token():  # already signed in (here, or with `aws sso login` for this portal)
                 self.pending, self.error = None, ""
@@ -228,6 +231,7 @@ class Sso:
                 self.pending = None
                 self._sessions.clear()
                 self._accounts = None
+                self._plain = None
                 self._save()
             LOG.info("signed in to AWS IAM Identity Center at %s", self.start_url)
             return
@@ -246,6 +250,7 @@ class Sso:
             self.state["signed_out"] = True
             self._sessions.clear()
             self._accounts = None
+            self._plain = None
             self.pending = None
             self._save()
 
@@ -256,15 +261,30 @@ class Sso:
             raise SsoError("not signed in to AWS: sign in with AWS SSO first")
         return tok
 
-    def accounts(self, fresh: bool = False) -> list[dict]:
-        """Every account this person may use, each with its roles (read-only ones first)."""
+    def _list_accounts(self, fresh: bool = False) -> list[dict]:
         tok = self._need_token()
+        if self._plain is not None and not fresh:
+            return self._plain
+        found = []
+        for page in self._client("sso", self.region).get_paginator("list_accounts").paginate(accessToken=tok):
+            found += page.get("accountList", [])
+        self._plain = found
+        return found
+
+    def accounts(self, fresh: bool = False, roles: bool = True) -> list[dict]:
+        """Every account this person may use, each with its roles (read-only ones first). With roles=False,
+        quickly, without asking for each account's roles (a large organisation has hundreds): the roles
+        found before are given where known."""
+        tok = self._need_token()
+        if not roles:
+            known = dict(self.state.get("roles") or {})
+            return sorted(({"account": a["accountId"], "name": a.get("accountName", ""), "email": a.get("emailAddress", ""),
+                            "roles": list(known.get(a["accountId"], []))} for a in self._list_accounts(fresh)),
+                          key=lambda x: (x["name"].lower(), x["account"]))  # fmt: skip
         if self._accounts is not None and not fresh:
             return self._accounts
         sso = self._client("sso", self.region)
-        found = []
-        for page in sso.get_paginator("list_accounts").paginate(accessToken=tok):
-            found += page.get("accountList", [])
+        found = self._list_accounts(fresh=True)
 
         known = dict(self.state.get("roles") or {})  # roles found before: used when AWS is too busy to say
 
@@ -304,20 +324,78 @@ class Sso:
             return accounts
         return self._accounts
 
+    def _roles_of(self, account: str) -> list[str]:
+        tok = self._need_token()
+        names = []
+        for page in self._client("sso", self.region).get_paginator("list_account_roles").paginate(accessToken=tok, accountId=account):
+            names += [r["roleName"] for r in page.get("roleList", [])]
+        return sorted(names, key=role_rank)
+
+    def role_options(self, sample: int = 8) -> list[dict]:
+        """The roles to offer for every account at once: those in a few accounts (and any found before),
+        with how many of the looked-at accounts have each, read-only roles first."""
+        known = dict(self.state.get("roles") or {})
+        accts = self._list_accounts()
+        for a in [a for a in accts if a["accountId"] not in known][:max(0, sample - len(known))]:
+            try:
+                known[a["accountId"]] = self._roles_of(a["accountId"])
+            except Exception as exc:  # noqa: BLE001 - throttled: offer what is known
+                LOG.warning("SSO roles for %s: %s", a["accountId"], exc)
+                break
+        with self._lock:
+            self.state["roles"] = {**(self.state.get("roles") or {}), **known}
+            self._save()
+        count: dict[str, int] = {}
+        for names in known.values():
+            for r in names:
+                count[r] = count.get(r, 0) + 1
+        return [{"role": r, "accounts": n, "of": len(known)} for r, n in sorted(count.items(), key=lambda x: (-x[1], role_rank(x[0])))]
+
+    def org_tree(self, role: str, fresh: bool = False) -> dict:
+        """The organisation's OUs and accounts, read with `role` in the management account (any account can
+        say which that is). Kept for a day: OUs rarely move."""
+        got = self.state.get("org") or {}
+        if not fresh and got.get("tree") and got.get("role") == role and got.get("at", 0) > _now() - 86400:
+            return got["tree"]
+        mine = {a["accountId"] for a in self._list_accounts()}
+        if not mine:
+            raise SsoError("this sign-in has no AWS accounts")
+        probe = next(iter(sorted(mine)))
+        try:
+            org = self.role_session(probe, role).client("organizations", region_name="us-east-1")
+            mgmt = org.describe_organization()["Organization"]["MasterAccountId"]
+        except Exception as exc:  # noqa: BLE001 - said in words on the page
+            raise SsoError(f"could not find your organisation with {role} in {probe}: {exc}")
+        if mgmt not in mine:
+            raise SsoError(f"your sign-in has no access to the management account {mgmt}, which holds the OUs: "
+                           "choose accounts by name instead")  # fmt: skip
+        try:
+            import sg_review
+
+            tree = sg_review.org_tree(self.role_session(mgmt, role).client("organizations", region_name="us-east-1",
+                                                                           config=sg_review.BOTO_CONFIG))  # fmt: skip
+        except Exception as exc:  # noqa: BLE001 - said in words on the page
+            raise SsoError(f"{role} in the management account {mgmt} cannot list the OUs ({exc}): "
+                           "choose another role, or choose accounts by name")  # fmt: skip
+        with self._lock:
+            self.state["org"] = {"tree": tree, "role": role, "at": _now()}
+            self._save()
+        return tree
+
     def chosen(self) -> list[dict]:
         return list(self.state.get("chosen") or [])
 
     def choose(self, picks: list[dict]) -> list[dict]:
         """Keep these accounts (each with the role to use) for the console."""
-        known = {a["account"]: a for a in self.accounts()}
+        known = {a["account"]: a for a in self.accounts(roles=False)}
         out = []
         for p in picks:
             acct, role = str(p.get("account", "")), str(p.get("role", ""))
             a = known.get(acct)
             if not a:
                 raise SsoError(f"{acct} is not an account this sign-in can use")
-            if role not in a["roles"]:
-                raise SsoError(f"{role} is not a role you have in {acct}")
+            if not role or (a["roles"] and role not in a["roles"]):  # roles not looked up yet: reading will say
+                raise SsoError(f"{role or 'no role'} is not a role you have in {acct}")
             out.append({"account": acct, "name": a["name"], "role": role})
         with self._lock:
             self.state["chosen"] = out
@@ -330,18 +408,26 @@ class Sso:
         pick = next((c for c in self.chosen() if c["account"] == account), None)
         if not pick:
             raise SsoError(f"{account} is not one of the accounts chosen in the console")
+        return self.role_session(account, pick["role"])
+
+    def role_session(self, account: str, role: str):
         with self._lock:
-            got = self._sessions.get(account)
+            got = self._sessions.get((account, role))
             if got and got[1] - EARLY > _now():
                 return got[0]
             tok = self._need_token()
-            c = self._client("sso", self.region).get_role_credentials(roleName=pick["role"], accountId=account, accessToken=tok)
+            try:
+                c = self._client("sso", self.region).get_role_credentials(roleName=role, accountId=account, accessToken=tok)
+            except Exception as exc:
+                if "Forbidden" in type(exc).__name__ or "ForbiddenException" in str(exc) or "No access" in str(exc):
+                    raise SsoError(f"you do not have {role} in {account}") from exc
+                raise
             rc = c["roleCredentials"]
             import boto3
 
             sess = boto3.Session(aws_access_key_id=rc["accessKeyId"], aws_secret_access_key=rc["secretAccessKey"],
                                  aws_session_token=rc["sessionToken"], region_name=self.region)  # fmt: skip
-            self._sessions[account] = (sess, rc["expiration"] / 1000.0)
+            self._sessions[(account, role)] = (sess, rc["expiration"] / 1000.0)
             return sess
 
 
@@ -353,9 +439,15 @@ class SsoTargets:
         if not chosen:
             raise SsoError("signed in, but no account chosen yet")
         self.sso = sso
-        self.account = home or chosen[0]["account"]
-        self.base = sso.session(self.account)
-        arn = self.base.client("sts").get_caller_identity().get("Arn", "")
+        tries = [home] if home else [c["account"] for c in chosen[:HOME_TRIES]]
+        for i, acct in enumerate(tries):  # who acts: from the first chosen account the role works in
+            try:
+                self.account, self.base = acct, sso.session(acct)
+                arn = self.base.client("sts").get_caller_identity().get("Arn", "")
+                break
+            except Exception:  # an account without the role: try the next
+                if i == len(tries) - 1:
+                    raise
         import sg_db
 
         self.actor = sg_db.actor_name(arn)
