@@ -376,7 +376,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <p class="muted small" id="svcText" style="margin:6px 0 0"></p>
     </div>
     <div class="grid" id="stats"></div>
-    <div class="card scroll"><table><thead><tr><th>Account</th><th>Mode</th><th>Region</th><th>Groups</th><th>Rules</th><th>Assets</th><th>To apply</th><th>Can apply here?</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table></div>
+    <div class="card scroll"><table><thead><tr><th>Account</th><th>Mode</th><th>Region</th><th>Groups</th><th>Rules</th><th>Assets</th><th>To apply</th><th>Can apply here?</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table><p class="muted small" id="regionsEmpty" hidden style="margin:10px 0 0"></p></div>
   </section>
 
   <section id="tab-groups" hidden>
@@ -617,19 +617,30 @@ section.nodata .card:not(.empty-state) { display: none; }
   }
 
   // ---- overview
+  let showEmptyRegions = false;
   async function loadState() {
     S = await api("/api/state");
     $("who").textContent = `Acting as ${S.me_principal}`;
     $("mode").innerHTML = S.approvals ? '<span class="pill" style="--p:var(--good)">two-person approval on</span>' : '<span class="pill" style="--p:var(--bad)">approvals off</span>';
     $("pendingCount").hidden = !S.pending_requests; $("pendingCount").textContent = S.pending_requests;
-    const regions = S.accounts.flatMap((a) => a.regions.map((r) => ({...r, account: a.account, name: a.name, mode: a.mode, reviewed: a.reviewed})));
-    const sum = (k) => regions.reduce((n, r) => n + r[k], 0);
+    const allRegions = S.accounts.flatMap((a) => a.regions.map((r) => ({...r, account: a.account, name: a.name, mode: a.mode, reviewed: a.reviewed})))
+      // Most relevant first: changes waiting, then most assets, rules, groups; ties by account name and region.
+      .sort((x, y) => (y.pending || 0) - (x.pending || 0) || y.assets - x.assets || y.rules - x.rules || y.groups - x.groups
+        || String(x.name || x.account).localeCompare(String(y.name || y.account)) || x.region.localeCompare(y.region));
+    const sum = (k) => allRegions.reduce((n, r) => n + r[k], 0);
+    // A region with no security group in use (only groups on no interface, which protect nothing) has nothing to show.
+    const isEmpty = (r) => !r.groups && !r.rules && !r.assets && !r.pending;
+    const nEmpty = allRegions.filter(isEmpty).length;
+    const regions = showEmptyRegions ? allRegions : allRegions.filter((r) => !isEmpty(r));
     const nf = (n) => typeof n === "number" ? n.toLocaleString() : n;
     $("stats").innerHTML = [
-      [S.accounts.length, "accounts", "--accent"], [sum("groups"), "security groups in use", "--kind-dc"], [sum("rules"), "rules", "--kind-cdn"],
+      [new Set(allRegions.filter((r) => !isEmpty(r)).map((r) => r.account)).size, `accounts with groups in use, of ${S.accounts.length.toLocaleString()}`, "--accent"], [sum("groups"), "security groups in use", "--kind-dc"], [sum("rules"), "rules", "--kind-cdn"],
       [sum("pending"), "changes to apply", sum("pending") ? "--warn" : "--good"], [S.pending_requests, "requests waiting for approval", S.pending_requests ? "--warn" : "--good"],
       [S.verify.ok ? `${S.verify.entries.toLocaleString()} ✓` : "BROKEN", S.verify.ok ? "audit entries, chain intact" : S.verify.why, S.verify.ok ? "--good" : "--bad"],
     ].map(([n, l, c]) => `<div class="card stat mtile" style="--c:var(${c})"><b>${esc(nf(n))}</b><span>${esc(l)}</span></div>`).join("");
+    $("regionsEmpty").hidden = !nEmpty;
+    $("regionsEmpty").innerHTML = nEmpty ? `${nEmpty.toLocaleString()} region${nEmpty === 1 ? "" : "s"} with no security group in use ${showEmptyRegions ? "shown" : "hidden"} (nothing there is attached to a network interface). <button class="btn sm quiet" id="regionsEmptyBtn">${showEmptyRegions ? "Hide them" : "Show them"}</button>` : "";
+    if (nEmpty) $("regionsEmptyBtn").addEventListener("click", () => { showEmptyRegions = !showEmptyRegions; loadState().catch((e) => flash(e.message, true)); });
     const rp = page("regions", regions.length, loadState);
     $("regions").innerHTML = regions.map((r, i) => `<tr><td>${esc(r.name || r.account)}<div class="muted small"><code>${esc(r.account)}</code></div></td>
       <td>${modePill(r.mode)}</td>

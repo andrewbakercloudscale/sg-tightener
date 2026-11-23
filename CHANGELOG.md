@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.19.2 - 2026-11-23
+
+- **Overview hides regions with no security group in use** (nothing there is attached to a network interface),
+  with **Show them** to bring them back. The accounts tile counts accounts with groups in use.
+- **Overview sorted by relevance**: changes waiting first, then most assets, rules and groups.
+
 ## 5.19.1 - 2026-11-23
 
 - **How far back defaults to 30 days** when reading accounts in the console (it was 1 day).
