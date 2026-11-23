@@ -53,6 +53,11 @@ RANGES = ("24h", "1w", "1m", "3m", "6m", "1y")
 LABEL = "com.sg-tightener.console"
 UNIT = "sg-console.service"
 COOKIE_AGE = 30 * 86400
+SIGN_IN_HELP = (b"To get in, do one of these:\n"
+                b"  - open your bookmark: the address that ends in ?token=...\n"
+                b"  - run  python3 sg_console.py open  (it opens the console here, signed in)\n"
+                b"  - copy the address from ~/.sg-tightener/console.log\n\n"
+                b"Sign-in lasts 30 days in this browser; clearing cookies or a private window signs you out.\n")
 PROTECTED = ("Desktop", "Documents", "Downloads", "Library/Mobile Documents")  # macOS keeps background programs out
 RUNTIME = ("boto3", "pyyaml")
 PASS_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy", "AWS_CA_BUNDLE",
@@ -865,11 +870,12 @@ def make_handler(console: Console, token: str, port: int):
             q = {k: v[0] for k, v in parse_qs(url.query).items()}
             if url.path == "/" and "token" in q:
                 if not hmac.compare_digest(q["token"], token):
-                    return self._send(403, b"wrong token: use the URL sg_console.py printed", "text/plain")
+                    return self._send(403, b"That token is wrong or out of date.\n\n" + SIGN_IN_HELP, "text/plain; charset=utf-8")
                 return self._send(303, b"", "text/plain", {
                     "Location": "/", "Set-Cookie": f"{COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={COOKIE_AGE}"})
             if not self._authed():
-                return self._send(403, b"open the URL sg_console.py printed (it carries a one-time token)", "text/plain")
+                return self._send(403, b"This browser is not signed in to the console.\n\n" + SIGN_IN_HELP,
+                                  "text/plain; charset=utf-8")
             try:
                 if url.path == "/":
                     return self._page()

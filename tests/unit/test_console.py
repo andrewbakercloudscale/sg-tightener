@@ -72,9 +72,11 @@ def _req(port, method, path, body=None, cookie=True, header=True, host=None, cty
 
 def test_the_token_logs_the_browser_in_and_nothing_works_without_it(console):
     p = console["port"]
-    assert _req(p, "GET", "/", cookie=False)[0] == 403
+    status, body, _ = _req(p, "GET", "/", cookie=False)
+    assert status == 403 and "sg_console.py open" in body and "?token=" in body and "t0ken" not in body
     assert _req(p, "GET", "/api/state", cookie=False)[0] == 403
-    assert _req(p, "GET", "/?token=wrong", cookie=False)[0] == 403
+    status, body, _ = _req(p, "GET", "/?token=wrong", cookie=False)
+    assert status == 403 and "wrong or out of date" in body and "t0ken" not in body
     status, _, headers = _req(p, "GET", "/?token=t0ken", cookie=False)
     assert status == 303
     assert "HttpOnly" in headers["Set-Cookie"] and "SameSite=Strict" in headers["Set-Cookie"]
