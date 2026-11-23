@@ -270,8 +270,15 @@ def fields_of(log_format: str | None) -> list[str]:
     return [f.strip("${}").replace("-", "_") for f in (log_format or DEFAULT_FORMAT).split()]
 
 
+def _has_needed(fields: list[str]) -> bool:
+    """Every NEEDED field is there; pkt-srcaddr and pkt-dstaddr stand in for srcaddr and dstaddr (custom formats
+    often log only the packet addresses, which are the better ones behind a NAT or transit gateway)."""
+    have = set(fields) | {f[4:] for f in fields if f in ("pkt_srcaddr", "pkt_dstaddr")}
+    return set(NEEDED) <= have
+
+
 def readable(log_format: str | None) -> bool:
-    return set(NEEDED) <= set(fields_of(log_format))
+    return _has_needed(fields_of(log_format))
 
 
 def _private(field: str) -> str:
@@ -289,7 +296,7 @@ def _base(log_format: str | None, vpc_ranges: list[str]) -> tuple[str, str, str,
     direction). Inbound is the flow-direction field when the format has it, else a target inside the
     account's VPCs (the report drops the interface's own outbound records)."""
     fields = fields_of(log_format)
-    if not set(NEEDED) <= set(fields):
+    if not _has_needed(fields):
         return None
     src = "f_pkt_srcaddr" if "pkt_srcaddr" in fields else "f_srcaddr"
     dst = "f_pkt_dstaddr" if "pkt_dstaddr" in fields else "f_dstaddr"
@@ -339,7 +346,7 @@ def egress_query(log_format: str | None, vpc_ranges: list[str]) -> str | None:
     port. Only with `read --egress`: it is a third query per slice. Ports from EPHEMERAL up are left out (they are
     replies to inbound connections when the format has no flow direction)."""
     fields = fields_of(log_format)
-    if not set(NEEDED) <= set(fields):
+    if not _has_needed(fields):
         return None
     src = "f_pkt_srcaddr" if "pkt_srcaddr" in fields else "f_srcaddr"
     dst = "f_pkt_dstaddr" if "pkt_dstaddr" in fields else "f_dstaddr"

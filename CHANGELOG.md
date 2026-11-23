@@ -2,6 +2,9 @@
 
 ## 5.19.3 - 2026-11-23
 
+- **Flow logs in a custom format with only `pkt-srcaddr`/`pkt-dstaddr` are read.** The console and `sg_review.py`
+  skipped them as having no source and target address, so every summary page said no flow logs had been read and
+  Remediate listed those accounts as having none. Read the accounts again to fill the reports.
 - **Always running switch drawn properly again**: since 5.19.0 the checkbox styling shrank it, so its knob covered the
   first letter of the label.
 

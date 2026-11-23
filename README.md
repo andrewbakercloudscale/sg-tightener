@@ -269,7 +269,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
-| **5.19.3** | The Always running switch is drawn properly again |
+| **5.19.3** | Flow logs that log only packet addresses (`pkt-srcaddr`) are read; Always running switch fixed |
 | **5.19.2** | Overview hides regions with no security group in use and sorts the rest by relevance |
 | **5.19.1** | The console reads 30 days of flow logs by default; **Remediate** on each account |
 | **5.19.0** | **Remediate an account**: pick an account and a look back (3 months by default); see the account before and after, where its traffic comes from, and each group's old rule beside its new rule; similar groups merged by default; untick anything sensitive and propose. Over-provisioning opens with a chart over time by source type |
