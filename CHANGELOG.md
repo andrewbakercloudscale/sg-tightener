@@ -1,5 +1,21 @@
 # Changelog
 
+## 5.19.6 - 2026-11-24
+
+- **Risk overview splits risk into Overall, External, SaaS and Internal.** Where to focus scores one kind at a
+  time: from the internet (scanners let in, open risky ports, threat lists, never-seen internet addresses,
+  probing), from SaaS and partner networks, or inside your network (private and AWS addresses, rules to tighten,
+  blind spots). Needs attention items are split by where their source sits.
+- **New Risk by owner chart**, its own card under Where to focus: one bubble per owner, grouped by any AWS
+  Organizations account tag (picked on the page and remembered; by default a tag naming an owner, else the one
+  that splits the accounts into the most readable groups). A table under it gives every owner's Overall,
+  External, SaaS and Internal risk points side by side.
+- Every Organizations tag of each account is now read, not only tags named like "owner": owners showed as
+  "No owner tag" in organisations that tag accounts with, say, a head of department or a custodian.
+- **Read all answers at once.** It used to load every account's cached read before replying, which could take
+  minutes on a large OU; that now happens as each account is prepared.
+- Two page loads of the same report no longer build it twice.
+
 ## 5.19.5 - 2026-11-23
 
 - **Reading an OU is about six times faster**: 24 accounts at once (was 8), each reading 8 slices at once (was 4).

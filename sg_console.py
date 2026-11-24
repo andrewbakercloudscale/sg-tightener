@@ -54,7 +54,7 @@ RANGES = ("24h", "1w", "1m", "3m", "6m", "1y")
 MIN_SPEND = 100.0  # US$ in the last 30 days: reading an OU skips accounts spending less (0 reads every one)
 SETTLING = 600  # a read written to in the last ten minutes keeps its last report row (built in this window)
 REPORT_PROCS = max(1, min(8, (os.cpu_count() or 2) - 1))  # processes building report rows at once
-REPORT_CACHE_VERSION = 1
+REPORT_CACHE_VERSION = 2
 FIRST_PASS = 86400  # an OU read does the last day of every account first, then goes further back
 BATCH_WORKERS = 24  # accounts read at once when reading an OU: each runs its own Logs Insights queries (its own quota)
 JOBS_SHOWN = 1000
@@ -96,6 +96,7 @@ class Console:
         self._lock = threading.Lock()
         self._refused_cache: dict = {}
         self._report_lock = threading.Lock()
+        self._report_gates: dict = {}
         self._owner_failed, self._owner_why = 0.0, ""
         self._reports_mem: dict | None = None
         self.sso = sso
@@ -315,7 +316,9 @@ class Console:
         spend, owners, pending, why = self._facts([r["account"] for r in rows])
         for r in rows:
             r["spend"] = None if spend is None else spend.get(r["account"], 0.0)
-            r["owner"] = owners.get(r["account"])  # None: not looked up yet; "": no owner tag
+            got = owners.get(r["account"]) or {}
+            r["owner"] = got.get("owner")  # None: not looked up yet; "": no owner tag
+            r["tags"] = got.get("tags") or {}  # every Organizations tag: the page groups risk by any of them
         kinds = {k: sg_review.CAT_NAME[k] for k in sg_review.CATS}
         types = {k: n for k, (n, _) in sg_review.SOURCE_TYPES.items()}
         rag = {"green_max": sg_review.RAG_GREEN_MAX, "amber_max": sg_review.RAG_AMBER_MAX}
@@ -343,7 +346,7 @@ class Console:
         except (OSError, ValueError):
             got = {}
         fresh = time.time() - 86400
-        owners = {a: v["owner"] for a, v in got.items() if a in set(accounts) and v.get("at", 0) > fresh}
+        owners = {a: v for a, v in got.items() if a in set(accounts) and v.get("at", 0) > fresh and "tags" in v}
         missing = [a for a in accounts if a not in owners]
         if missing and time.time() - self._owner_failed < 600:
             why.append(f"owners not known ({self._owner_why})")
@@ -369,17 +372,18 @@ class Console:
                 try:
                     tags = [t for page in org.get_paginator("list_tags_for_resource").paginate(ResourceId=a)
                             for t in page.get("Tags", [])]  # fmt: skip
-                    found[a] = sg_review.owner_of(tags)
+                    found[a] = {"owner": sg_review.owner_of(tags),
+                                "tags": {t["Key"]: t["Value"] for t in tags if str(t.get("Value", "")).strip()}}
                 except Exception as exc:  # noqa: BLE001 - one account out of reach must not stop the rest
                     LOG.warning("owner of %s: %s", a, exc)
-                    found[a] = ""
+                    found[a] = {"owner": "", "tags": {}}
         with self._lock:
             path = self._owners_path()
             try:
                 got = json.loads(path.read_text())
             except (OSError, ValueError):
                 got = {}
-            got.update({a: {"owner": o, "at": time.time()} for a, o in found.items()})
+            got.update({a: {**o, "at": time.time()} for a, o in found.items()})
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
             tmp.write_text(json.dumps(got))
@@ -390,6 +394,12 @@ class Console:
         (in memory and on disk) until that account's read changes; one being written right now keeps its
         last row until it settles, so a long OU read does not rebuild every report on every page load.
         What is missing is built in parallel processes: the build is CPU work, one account at a time."""
+        with self._report_lock:  # one build of each report at a time: a second page load waits for it, not repeats it
+            gate = self._report_gates.setdefault((kind, range_key), threading.Lock())
+        with gate:
+            return self._reports_now(kind, range_key, names)
+
+    def _reports_now(self, kind: str, range_key: str, names: dict) -> dict:
         import sg_review
 
         now, todo, out = time.time(), [], {}
@@ -624,6 +634,10 @@ class Console:
             if job.get("min_spend") and self._too_small(job, sess):
                 return
             regions = job["regions"]
+            if regions == ["all"] and job.get("flow_regions"):
+                found = self._flow_regions(job["account"], "all")
+                if found != "all":
+                    regions = job["regions"] = found
             if regions == ["all"]:
                 ec2 = sess.client("ec2", region_name=sess.region_name or "us-east-1")
                 regions = sorted(r["RegionName"] for r in ec2.describe_regions()["Regions"])
@@ -767,9 +781,10 @@ class Console:
         if not accounts:
             raise ConsoleError(400, "choose the accounts to read first")
         busy = {j["account"] for j in self.jobs.values() if j["status"] in ("starting", "running", "confirm", "queued")}
-        jobs = [self.read_start({"account": a, "regions": self._flow_regions(a, body.get("regions") or "all"),
-                                 "days": body.get("days") or 30}, start=False)
-                for a in accounts if a not in busy]  # fmt: skip
+        jobs = [self.read_start({"account": a, "regions": body.get("regions") or "all", "days": body.get("days") or 30},
+                                start=False) for a in accounts if a not in busy]  # fmt: skip
+        for j in jobs:  # narrowed to the regions with flow logs while it is prepared: loading every cache here hung the click
+            j["flow_regions"] = True
         if not jobs:
             raise ConsoleError(409, "every one of these accounts is already being read")
         try:

@@ -56,3 +56,13 @@ def test_reading_an_ou_again_keeps_to_the_regions_with_flow_logs(monkeypatch):
     assert sg_console.Console._flow_regions("111111111111", "all") == ["af-south-1"]
     assert sg_console.Console._flow_regions("222222222222", "all") == "all", "never read: every region"
     assert sg_console.Console._flow_regions("111111111111", "eu-west-1") == "eu-west-1", "a choice is kept"
+
+
+def test_risk_overview_splits_needs_attention_into_external_saas_and_internal():
+    row = sg_review.macro_row("111111111111", "demo", {"attention": [
+        {"sev": "critical", "cat": "internet"}, {"sev": "high", "cat": "saas"},
+        {"sev": "medium", "cat": "datacentre"}, {"sev": "high", "cat": "aws"}, {"sev": "high"}]})
+    sc = row["attention_scope"]
+    assert (sc["external"]["critical"], sc["saas"]["high"]) == (1, 1)
+    assert (sc["internal"]["medium"], sc["internal"]["high"]) == (1, 1)
+    assert sum(n for k in sc.values() for n in k.values()) == 4  # a config change has no source: Overall only

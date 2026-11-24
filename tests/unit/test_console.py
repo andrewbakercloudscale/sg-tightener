@@ -203,7 +203,8 @@ def test_the_page_has_the_risk_overview():
     page = sg_console.ASSET.read_text()
     for needle in ('data-tab="macro"', 'id="tab-macro"', 'id="mHeat"', 'id="mOwner"', 'id="mOverTime"', 'id="mExposure"',
                    'id="mLetIn"', 'id="mBlind"', "/api/macro", 'data-tab="over"', 'id="oTiles"', 'id="oAccounts"',
-                   'id="oAssets"', 'id="oRagTime"', 'id="oWins"', 'id="mFocus"', 'data-fby="owner"', 'data-fby="account"'):
+                   'id="oAssets"', 'id="oRagTime"', 'id="oWins"', 'id="mFocus"', 'id="mOwn"', 'id="mOwnTag"', 'data-lens="external"',
+                   'data-lens="saas"', 'data-lens="internal"'):
         assert needle in page
 
 
@@ -336,7 +337,8 @@ def test_the_risk_charts_get_each_accounts_spend_and_owner(tmp_path, monkeypatch
         assert spend == {"1": 250.0} and pending and not why
         c._owner_thread.join(5)
         spend, owners, pending, _ = c._facts(["1", "2"])
-        assert owners == {"1": "Jo", "2": ""} and not pending, "looked up once, kept a day"
+        assert {a: v["owner"] for a, v in owners.items()} == {"1": "Jo", "2": ""} and not pending, "looked up once, kept a day"
+        assert owners["1"]["tags"] == {"Owner": "Jo"}, "every tag is kept: the page groups risk by any of them"
 
         class NoCosts(Auth):
             def org_spend(self):

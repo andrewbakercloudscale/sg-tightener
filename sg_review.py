@@ -4387,7 +4387,21 @@ def macro_row(account: str, name: str, rep: dict, mode: str = "") -> dict:
         "egress_bad": sum(1 for p in posture if p.get("area") == "egress" and p.get("sev") in ("critical", "high")),
         "exposure": sum(1 for p in posture if p.get("area") == "exposure" and p.get("sev") in ("critical", "high")),
         "not_logged": s.get("not_logged", 0), "new_refused": s.get("new_refused", 0),
+        "attention_scope": _attention_scope(rep.get("attention") or []),
     }
+
+
+SCOPE_OF_CAT = {"internet": "external", "saas": "saas", "internal": "internal", "datacentre": "internal", "aws": "internal"}
+
+
+def _attention_scope(items: list) -> dict:
+    """Needs-attention counts by where the source sits: external (internet), SaaS and partners, or internal."""
+    out = {k: {sev: 0 for sev in SEVERITIES} for k in ("external", "saas", "internal")}
+    for it in items:
+        scope = SCOPE_OF_CAT.get(it.get("cat", ""))
+        if scope and it.get("sev") in out[scope]:
+            out[scope][it["sev"]] += 1
+    return out
 
 
 def org_row(account: str, name: str, rep: dict | None, status: str, page: str = "", error: str = "") -> dict:

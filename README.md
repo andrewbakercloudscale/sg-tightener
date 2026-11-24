@@ -269,6 +269,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.19.6** | Risk overview by External, SaaS and Internal risk, and a Risk by owner chart grouped by any account tag |
 | **5.19.5** | OU reads about six times faster and the Mac stays awake while they run |
 | **5.19.4** | Overview column **Changed outside tool** (was Differs from AWS) |
 | **5.19.3** | Flow logs that log only packet addresses (`pkt-srcaddr`) are read; Always running switch fixed |
