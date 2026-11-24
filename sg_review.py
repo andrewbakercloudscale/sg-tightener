@@ -41,6 +41,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import gzip
 import html
 import ipaddress
@@ -1267,9 +1268,11 @@ class Labeller:
 
 
 # ------------------------------------------------------------------------------------------- rules
+@functools.lru_cache(maxsize=1 << 18)
 def _ip(s) -> int | None:
+    # called for every flow row of every rule: the same few thousand IP addresses parsed a million times
     try:
-        return int(ipaddress.IPv4Address(s))
+        return sg_ipintel._v4(s)
     except (ValueError, TypeError):
         return None
 
