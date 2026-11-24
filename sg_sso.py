@@ -90,6 +90,7 @@ class Sso:
         self.cli_cache = cli_cache if cli_cache is not None else Path.home() / ".aws" / "sso" / "cache"
         self._client = client_factory or self._boto_client
         self._lock = threading.Lock()
+        self._session_locks: dict = {}
         self._sessions: dict = {}
         self._accounts: list | None = None
         self._plain: list | None = None
@@ -120,8 +121,9 @@ class Sso:
         from botocore.config import Config
 
         # adaptive retries back off when Identity Center throttles (it allows only a few calls a second)
-        return boto3.client(service, region_name=region, config=Config(signature_version=UNSIGNED,
-                                                                       retries={"mode": "adaptive", "max_attempts": 10}))
+        # a session of its own: boto3's default session is not safe to make clients from in several threads at once
+        return boto3.session.Session().client(service, region_name=region, config=Config(signature_version=UNSIGNED,
+                                                                                         retries={"mode": "adaptive", "max_attempts": 10}))
 
     # ---------------------------------------------------------------- status
     @property
@@ -448,11 +450,19 @@ class Sso:
         return self.role_session(account, pick["role"])
 
     def role_session(self, account: str, role: str):
+        # The lock covers only the cache and the token: fetching credentials and building a boto3 session under it
+        # made an OU read take every account's sign-in one after another (about 1.5 s each).
         with self._lock:
             got = self._sessions.get((account, role))
             if got and got[1] - EARLY > _now():
                 return got[0]
             tok = self._need_token()
+            one = self._session_locks.setdefault((account, role), threading.Lock())
+        with one:  # one fetch per account and role at a time; the others wait for it, then use it
+            with self._lock:
+                got = self._sessions.get((account, role))
+                if got and got[1] - EARLY > _now():
+                    return got[0]
             try:
                 c = self._client("sso", self.region).get_role_credentials(roleName=role, accountId=account, accessToken=tok)
             except Exception as exc:
@@ -464,7 +474,8 @@ class Sso:
 
             sess = boto3.Session(aws_access_key_id=rc["accessKeyId"], aws_secret_access_key=rc["secretAccessKey"],
                                  aws_session_token=rc["sessionToken"], region_name=self.region)  # fmt: skip
-            self._sessions[(account, role)] = (sess, rc["expiration"] / 1000.0)
+            with self._lock:
+                self._sessions[(account, role)] = (sess, rc["expiration"] / 1000.0)
             return sess
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.19.8 - 2026-11-24
+
+- **Pricing an OU read is several times faster.** Each account's sign-in (fetching its SSO role credentials)
+  ran one after another under a single lock, and every account also signed in again as the console identity:
+  the progress sat at "0 of N accounts" while they queued. Accounts now sign in in parallel, and each
+  account's read cache is loaded once instead of twice.
+
 ## 5.19.7 - 2026-11-24
 
 - **Fixed a memory leak when reading an OU.** Every account waiting for its flow-log read to be confirmed kept

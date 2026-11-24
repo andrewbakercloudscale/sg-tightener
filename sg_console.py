@@ -642,13 +642,14 @@ class Console:
         import sg_review
 
         try:
-            t = self.targets(fresh=True)
+            t = self.targets()  # not fresh: that signed in again (one STS call, under the lock) for every account
             sess = sg_review.SafeSession(t.session(job["account"]))  # its regions are read at once
             if job.get("min_spend") and self._too_small(job, sess):
                 return
             regions = job["regions"]
+            doc = sg_review.load(job["account"]) if sg_review._path(job["account"]).exists() else None  # loaded once
             if regions == ["all"] and job.get("flow_regions"):
-                found = self._flow_regions(job["account"], "all")
+                found = self._flow_regions(job["account"], "all", doc)
                 if found != "all":
                     regions = job["regions"] = found
             if regions == ["all"]:
@@ -684,7 +685,7 @@ class Console:
 
             sg_review.each_region(one, regions)
             now = time.time()
-            doc = sg_review.load(job["account"]) or sg_review.new_doc(job["account"], job["name"])
+            doc = doc or sg_review.new_doc(job["account"], job["name"])
             doc["name"] = job["name"] or doc.get("name", "")
             tasks = sg_review.plan_read(sess, doc, regions, job["days"], now, say=lambda s: None)
             sg_review.save(doc)
@@ -818,7 +819,7 @@ class Console:
         return self.batch_status()
 
     @staticmethod
-    def _flow_regions(account: str, regions):
+    def _flow_regions(account: str, regions, doc: dict | None = None):
         """For "all": only the regions an earlier read found readable flow logs in, so reading an OU again does
         not walk every region of every account. Any other choice, or no earlier read, is left as it is."""
         import sg_review
@@ -826,7 +827,7 @@ class Console:
         if regions != "all":
             return regions
         try:
-            doc = sg_review.load(account) if account in sg_review.cached_accounts() else None
+            doc = doc or (sg_review.load(account) if account in sg_review.cached_accounts() else None)
         except Exception:  # noqa: BLE001 - an unreadable cache is read again in full
             doc = None
         found = sorted(r for r, x in ((doc or {}).get("regions") or {}).items() if x.get("query_sets"))

@@ -598,3 +598,26 @@ def test_reading_an_ou_reads_the_last_day_of_every_account_first(tmp_path, monke
         assert b["status"] == "done" and b["done"] == 4 and b["bytes"] == 4e9
     finally:
         ipintel.set_data_dir(old)
+
+
+def test_two_accounts_get_their_credentials_at_the_same_time(sso):
+    import threading
+
+    _signed_in(sso)
+    svc = sso.fakes[1]
+    both = threading.Barrier(2, timeout=5)  # broken (an error) if the second call waits for the first to finish
+    real = svc.get_role_credentials
+
+    def meet(**kw):
+        both.wait()
+        return real(**kw)
+
+    svc.get_role_credentials = meet
+    got = []
+    ts = [threading.Thread(target=lambda a=a: got.append(sso.role_session(a, "ReadOnlyAccess"))) for a in (ACCOUNT, OTHER)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(10)
+    assert len(got) == 2 and not both.broken, "an OU read signs in to its accounts in parallel, not one by one"
+    assert sso.role_session(ACCOUNT, "ReadOnlyAccess") in got, "kept, not fetched again"
