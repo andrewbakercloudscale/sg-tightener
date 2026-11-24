@@ -203,6 +203,13 @@ details > summary:hover { color: var(--accent); }
 .cost-row { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: end; }
 .cost-row > span:not(.small) { display: grid; }
 .cost-row b { font-size: 1.35rem; line-height: 1.2; }
+.ext-desc { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#oExt code, #oExtTop code { white-space: nowrap; }
+#oExtTop td, #oExt td td { vertical-align: top; }
+#oExtTop tr:not(.ext-fix) td, #oExt td tr:not(.ext-fix) td { border-bottom: 0; }
+.ext-fix td { padding-top: 0; }
+#oExtTop td:nth-child(6), #oExt td td:nth-child(5) { min-width: 130px; }
+#oExtTop .pill, #oExt td td .pill { white-space: nowrap; }
 .cost-row > label { display: grid; gap: 2px; }
 .cost-row #cbDays { font-size: 1.05rem; font-weight: 600; }
 .cost-row > span.small { flex: 1 1 260px; }
@@ -1901,16 +1908,20 @@ section.nodata .card:not(.empty-state) { display: none; }
   function extFix(x) {
     if (x.status === "tighten" && x.suggest.length) return `Tighten to ${x.suggest.map((c) => `<code>${esc(c)}</code>`).join(", ")}`;
     if (x.status === "unused") return "Remove: nothing used it";
+    const inside = (x.seen_from || []).length && x.seen_from.every((t) => ["internal", "datacentre"].includes(t.cat));
+    if (x.open && inside) return "Only your own network uses it: restrict it to your VPC or private ranges";
     if (x.open) return x.here ? `Restrict to the ${x.here.toLocaleString()} IP address${x.here === 1 ? "" : "es"} that used it, or put it behind a load balancer or Session Manager` : "Remove, or restrict to known IP addresses";
     return "Restrict to the IP addresses that use it";
   }
   function extRuleRow(x, a) {
     const tier = ruleTier(x), pill = tier === 0 ? `<span class="pill" style="--p:var(--bad)">open to everyone, risky port</span>` : tier === 1 ? `<span class="pill" style="--p:var(--warn)">open to everyone</span>` : `<span class="pill" style="--p:var(--high)">wider than used</span>`;
-    const seen = (x.seen_from || []).filter((t) => t.src).map((t) => `<code>${esc(t.src)}</code>${t.name ? ` <span class="muted">${esc(t.name)}</span>` : ""}`).join(", ");
-    return `<tr>${a ? `<td style="white-space:nowrap">${acctLink(a)}</td>` : ""}<td>${pill}</td><td><b>${esc(x.group)}</b> <span class="muted">${esc(x.region)}</span>${x.desc ? `<div class="muted">${esc(x.desc)}</div>` : ""}</td><td>${esc(x.ports)}</td><td><code>${esc(x.source)}</code></td>
-      <td>${extRisk(x)}</td><td class="num">${x.enis}</td><td>${seen || '<span class="muted">nobody</span>'}${x.last_used ? `<div class="muted">last used ${esc(when(x.last_used))}</div>` : ""}</td><td>${extFix(x)}</td></tr>`;
+    const from = (x.seen_from || []).filter((t) => t.src), inside = from.length && from.every((t) => ["internal", "datacentre"].includes(t.cat));
+    const seen = from.length ? `${x.here ? `<b>${x.here.toLocaleString()}</b> IP address${x.here === 1 ? "" : "es"}` : ""}${inside ? ' <span class="pill" style="--p:var(--good)">only from inside your network</span>' : ""}<div class="muted">e.g. ${from.map((t) => `<code title="${esc(t.name || "")}">${esc(t.src)}</code>`).join(", ")}</div>` : "";
+    return `<tr>${a ? `<td style="white-space:nowrap">${acctLink(a)}</td>` : ""}<td>${pill}</td><td><b>${esc(x.group)}</b> <span class="muted">${esc(x.region)}</span>${x.desc ? `<div class="muted ext-desc" title="${esc(x.desc)}">${esc(x.desc)}</div>` : ""}</td><td>${esc(x.ports)}</td><td><code>${esc(x.source)}</code></td>
+      <td>${extRisk(x)}</td><td class="num">${x.enis}</td><td>${seen || '<span class="muted">nobody</span>'}${x.last_used ? `<div class="muted">last used ${esc(when(x.last_used))}</div>` : ""}</td></tr>
+      <tr class="ext-fix"><td colspan="${a ? 8 : 7}"><b>What to do:</b> ${extFix(x)}</td></tr>`;
   }
-  const EXT_HEAD = (acct) => `<thead><tr>${acct ? "<th>Account</th>" : ""}<th>Risk</th><th>Group</th><th>Port</th><th>Allows</th><th>Lets in from outside</th><th class="num">Assets reached</th><th>Used by</th><th>What to do</th></tr></thead>`;
+  const EXT_HEAD = (acct) => `<thead><tr>${acct ? "<th>Account</th>" : ""}<th>Risk</th><th>Group</th><th>Port</th><th>Allows</th><th>Lets in from outside</th><th class="num">Assets reached</th><th>Used by</th></tr></thead>`;
   function drawExternal(A) {
     const E = A.filter((a) => a.ext_rules).sort((p, q) => extTier(p) - extTier(q) || q.open_risky - p.open_risky || extFind(q) - extFind(p) || q.ext_now - p.ext_now);
     if (!E.length) { $("oExt").innerHTML = `<p class="muted">${A.length ? "Being worked out: the accounts are rebuilt in the background. Look again in a few minutes." : "No accounts read."}</p>`; $("oExtTop").innerHTML = ""; return; }

@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.19.12 - 2026-11-24
+
+- **The five biggest external risks read at a glance.** Each rule says how many IP addresses used it, flags
+  rules open to everyone that only your own network uses (restrict them to your VPC or private ranges), and puts
+  what to do on its own line instead of off the edge of the table.
+
 ## 5.19.11 - 2026-11-24
 
 - **Largest external exposure, on Over-provisioning.** A table of the accounts that let the most of the public
