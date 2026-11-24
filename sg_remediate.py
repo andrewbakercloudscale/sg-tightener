@@ -293,7 +293,8 @@ def totals(plan_groups: list[dict], merges: list[dict], groups: dict) -> dict:
             "ports": sum(g["ports"] for g in plan_groups), "new_ports": sum(g["new_ports"] for g in plan_groups),
             "interfaces": sum(g["enis"] for g in plan_groups), "mix": mix,
             "removed": sum(g["actions"]["remove"] for g in plan_groups), "open": sum(g["open"] for g in plan_groups),
-            "wait": sum(g["actions"]["wait"] for g in plan_groups), "keep": sum(g["actions"]["keep"] for g in plan_groups),
+            "wait": sum(g["actions"]["wait"] for g in plan_groups),
+            "incomplete": sum(1 for g in plan_groups for r in g["rules"] if r.get("status") == "incomplete"), "keep": sum(g["actions"]["keep"] for g in plan_groups),
             "narrowed": sum(g["actions"]["tighten"] + g["actions"]["ports"] for g in plan_groups)}  # fmt: skip
 
 

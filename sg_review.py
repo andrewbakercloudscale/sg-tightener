@@ -247,6 +247,7 @@ def load_names(path=None) -> list[dict]:
 # ------------------------------------------------------------------------------------- flow-log reads
 
 ROWS = 10000  # the most rows one Logs Insights query returns
+MIN_SPLIT = 240  # a slice that hits ROWS is halved while longer than this (an hour of a busy EKS VPC: ~7.5 minutes)
 EPHEMERAL = 32768  # ports from here up are folded into one: replies to the account's own connections land there
 PRIVATE_V4 = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
 PRIVATE_V6 = ("fc00::/7", "fe80::/10")  # unique local and link-local: never routed on the internet
@@ -970,7 +971,7 @@ def _stamp(t: float) -> str:
 
 def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cancelled=lambda: False,
                egress: bool = False) -> list[dict]:
-    """One slice read (split in halves, down to an hour, while the detail query hits the row limit)."""
+    """One slice read (split in halves, down to a few minutes, while the detail query hits the row limit)."""
     rows, pub, egr, nbytes, cut, pub_cut, errors = [], [], [], 0, False, False, []
     for q in qsets:
         rs, b, status = None, 0, ""
@@ -984,7 +985,7 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
             errors.append(f"detail query {status}")
             continue
         if len(rs) >= ROWS:
-            if e - s > HOUR:
+            if e - s > MIN_SPLIT:
                 mid = s + _floor((e - s) // 2, HOUR) if e - s >= 2 * HOUR else (s + e) // 2
                 parts = [
                     *read_chunk(logs, region, mid, e, qsets, vpcs, cancelled, egress),
@@ -1042,7 +1043,8 @@ def estimate(doc: dict | None, account: str, regions: list[str] = (), now: float
     for days in READ_DAYS:
         missing = 0
         for r in regions:
-            have = [(c["s"], c["e"]) for c in doc["chunks"] if c["r"] == r and c["st"] in ("ok", "cut")]
+            have = [(c["s"], c["e"]) for c in doc["chunks"] if c["r"] == r and c["st"] in ("ok", "cut")
+                    and not coarse_cut(c)]  # cut hours are read again
             missing += sum(e - s for s, e in plan(now, days, have))
         est = rate * missing if rate is not None else None
         out.append({"days": days, "missing_hours": round(missing / HOUR, 1), "bytes": est,
@@ -3333,7 +3335,7 @@ def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regi
     elif not logged:
         row["status"], row["note"] = "not logged", "Some of this group's interfaces have no flow log (accepted traffic) in CloudWatch Logs"
     elif g["region"] in cut_regions:
-        row["status"], row["note"] = "incomplete", "Some slices hit the 10,000 row limit even at an hour: not safe to act on"
+        row["status"], row["note"] = "incomplete", "Some slices were cut at the 10,000 row limit: not safe to act on until they are read again, in shorter slices"
     elif days < EVIDENCE_DAYS:
         row["status"], row["note"] = "watch", f"Only {days:.0f} days of flow logs: read a longer range before changing this rule"
     elif not here and not unattr:
@@ -3361,7 +3363,7 @@ def _status(row, rule, entry, logged, g, cut_regions, days) -> tuple[str, str]:
     if not logged:
         return "not logged", "Some of this group's interfaces have no flow log (accepted traffic) in CloudWatch Logs"
     if g["region"] in cut_regions:
-        return "incomplete", "Some slices hit the 10,000 row limit even at an hour: not safe to act on"
+        return "incomplete", "Some slices were cut at the 10,000 row limit: not safe to act on until they are read again, in shorter slices"
     if days < EVIDENCE_DAYS:
         return "watch", f"Only {days:.0f} days of flow logs: read a longer range before changing this rule"
     if not row["here"] and not row["unattributed"]:
@@ -3491,10 +3493,25 @@ def plan_read(sess, doc: dict, regions: Sequence[str], days: int, now: float, sa
             doc["chunks"] = [c for c in doc["chunks"] if c["r"] != region or "egr" in c]
         drop_stale_tails(doc, region, now)
         have = [(c["s"], c["e"]) for c in doc["chunks"] if c["r"] == region and c["st"] in ("ok", "cut")
-                and not c.get("tail")]  # fmt: skip
+                and not c.get("tail") and not coarse_cut(c)]  # fmt: skip
         vpcs = _vpc_ranges(entry["snapshot"])
-        tasks += [(region, s, e, qsets, vpcs) for s, e in plan(now, days, have)]
+        span = entry.get("slice")  # how short this region's slices had to be to stay under the row limit
+        tasks += [(region, a, b, qsets, vpcs) for s, e in plan(now, days, have) for a, b in _pieces(s, e, span)]
     return tasks
+
+
+def coarse_cut(c: dict) -> bool:
+    """A slice that hit the row limit while it could still have been split (read before slices went below an
+    hour): read again, split finer, and replaced."""
+    return c["st"] == "cut" and c["e"] - c["s"] > MIN_SPLIT
+
+
+def _pieces(s: int, e: int, span) -> list[tuple[int, int]]:
+    """[s, e) in pieces of ``span`` seconds (whole, when there is no span or it is longer)."""
+    if not span or e - s <= span * 1.5:
+        return [(s, e)]
+    span = max(int(span), MIN_SPLIT // 2)
+    return [(a, min(a + span, e)) for a in range(s, e, span)]
 
 
 def drop_stale_tails(doc: dict, region: str, now: float) -> None:
@@ -3537,7 +3554,16 @@ def run_read(sess, doc: dict, tasks: list[tuple], days: int, now: float, cancell
             logs = clients.get(region) or clients.setdefault(
                 region, sess.client("logs", region_name=region, config=BOTO_CONFIG)
             )
-        for chunk in read_chunk(logs, region, s, e, qsets, vpcs, cancelled, bool(doc.get("egress"))):
+        got = read_chunk(logs, region, s, e, qsets, vpcs, cancelled, bool(doc.get("egress")))
+        with lock:
+            if any(c["st"] != "failed" for c in got):  # replaces an earlier read of these hours that hit the row limit
+                doc["chunks"] = [c for c in doc["chunks"]
+                                 if not (c["r"] == region and coarse_cut(c) and c["s"] < e and c["e"] > s)]  # fmt: skip
+            if len(got) > 1 and region in doc["regions"]:  # split to stay under the row limit: start there next time
+                span = min(c["e"] - c["s"] for c in got)
+                entry = doc["regions"][region]
+                entry["slice"] = min(entry.get("slice") or span, span)
+        for chunk in got:
             if tail:
                 chunk["tail"] = True
             with lock:

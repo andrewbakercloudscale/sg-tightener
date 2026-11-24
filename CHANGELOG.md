@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.22.0 - 2026-11-24
+
+- **Busy VPCs can now be tightened.** A slice that hit Logs Insights' 10,000 row limit was split only down to
+  an hour and then kept cut, and a rule with cut hours is never tightened, since sources could be missing. An
+  hour of a busy EKS VPC is well over 10,000 rows (five minutes of one was 4,588), so 2,223 of 6,495 slices,
+  in 112 of 158 accounts, were cut and their rules left as they were. Slices are now split down to a few
+  minutes. The next read of an account reads its cut hours again in shorter slices and replaces them (only
+  those hours are charged again, at about the same bytes), and starts that region at the shorter length.
+- **Remediate says why a rule is left alone**: cut at 10,000 rows (read again to fix) is no longer counted as
+  "too little evidence".
+
 ## 5.21.1 - 2026-11-24
 
 - **Stop works at once while many accounts are being priced.** It did nothing visible until every account

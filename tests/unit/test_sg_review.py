@@ -230,7 +230,7 @@ class _FakeLogs:
         kw = self.q[queryId]
         span = kw["endTime"] + 1 - kw["startTime"]
         detail = "sum(f_bytes)" in kw["queryString"]
-        n = sg_flows.ROWS if detail and span > 3600 else 2
+        n = sg_flows.ROWS if detail and span > getattr(self, "fits", 3600) else 2
         row = [{"field": "src", "value": "10.0.0.5"}, {"field": "dst", "value": "10.0.1.1"},
                {"field": "eni", "value": "eni-1"}, {"field": "proto", "value": "6"},
                {"field": "dport", "value": "443"}, {"field": "port", "value": "443"},
@@ -245,6 +245,47 @@ def test_read_chunk_splits_a_full_slice_down_to_hours():
     assert sorted(c["e"] - c["s"] for c in out) == [3600] * 4
     assert all(c["st"] == "ok" and len(c["rows"]) == 2 for c in out)
     assert sum(c["b"] for c in out) > 0
+
+
+def test_a_busy_hour_is_split_below_an_hour_until_it_fits():
+    """Two thirds of the slices of 112 accounts hit 10,000 rows at an hour (busy EKS VPCs) and were kept cut,
+    which left every rule there 'not safe to act on'. Five minutes of one fitted in 4,588 rows."""
+    logs = _FakeLogs()
+    logs.fits = 600  # only ten minutes or less fit
+    start = 1_790_000_000 // 3600 * 3600
+    out = sg_review.read_chunk(logs, "eu-west-1", start, start + 3600, [{"format": None, "groups": ["g"]}], [])
+    assert all(c["st"] == "ok" for c in out) and max(c["e"] - c["s"] for c in out) <= 600
+    assert sorted((c["s"], c["e"]) for c in out)[0][0] == start and max(c["e"] for c in out) == start + 3600
+    assert sum(c["e"] - c["s"] for c in out) == 3600
+
+
+def test_an_hour_read_cut_before_is_read_again_split_and_replaced_and_the_next_read_starts_split():
+    logs = _FakeLogs()
+    logs.fits = 900
+    start = 1_790_000_000 // 3600 * 3600
+    qs = [{"format": None, "groups": ["g"]}]
+    old = {"r": "eu-west-1", "s": start, "e": start + 3600, "st": "cut", "b": 5, "rows": [], "pub": [], "pc": False, "err": ""}
+    doc = sg_review.new_doc("111122223333", "")
+    doc["regions"]["eu-west-1"] = {"query_sets": qs}
+    doc["chunks"] = [old]
+    assert sg_review.coarse_cut(old)
+
+    class Sess:
+        def client(self, *_a, **_k):
+            return logs
+
+    saved = []
+    orig = sg_review.save
+    sg_review.save = lambda d: saved.append(1)
+    try:
+        sg_review.run_read(Sess(), doc, [("eu-west-1", start, start + 3600, qs, [])], 1, start + 7200)
+    finally:
+        sg_review.save = orig
+    assert old not in doc["chunks"], "the cut hour is replaced"
+    assert all(c["st"] == "ok" for c in doc["chunks"]) and sum(c["e"] - c["s"] for c in doc["chunks"]) == 3600
+    assert doc["regions"]["eu-west-1"]["slice"] == 900
+    assert sg_review._pieces(start, start + 3600, 900) == [(start + i * 900, start + (i + 1) * 900) for i in range(4)]
+    assert sg_review._pieces(start, start + 3600, None) == [(start, start + 3600)]
 
 
 # ------------------------------------------------------------------ port classes, attribution, extract data
