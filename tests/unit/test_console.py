@@ -199,6 +199,11 @@ def test_risk_overview_compares_every_account_read(console):
     assert again["accounts"] == got["accounts"], "cached while the read has not changed"
 
 
+def test_remediate_has_a_box_to_find_an_account():
+    page = sg_console.ASSET.read_text()
+    assert 'id="xFind"' in page and '$("xFind").value' in page
+
+
 def test_the_page_has_the_risk_overview():
     page = sg_console.ASSET.read_text()
     for needle in ('data-tab="macro"', 'id="tab-macro"', 'id="mHeat"', 'id="mOwner"', 'id="mOverTime"', 'id="mExposure"',

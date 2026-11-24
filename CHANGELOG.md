@@ -1,5 +1,15 @@
 # Changelog
 
+## 5.21.1 - 2026-11-24
+
+- **Stop works at once while many accounts are being priced.** It did nothing visible until every account
+  already being priced (24 at a time, each walking its regions) had finished, and those were then still offered
+  to read. Now the read stops straight away, the accounts not yet priced are marked not read, regions not yet
+  started are skipped, and nothing priced after Stop is offered. Pricing reads no flow logs, so nothing was spent.
+- **Remediate: find an account** by name or number in a box beside the account list.
+- **Remediate opens an account about twice as fast**: working out who owns the never-seen addresses a rule
+  lets in now looks only at the address ranges each named network overlaps. The plan is unchanged.
+
 ## 5.21.0 - 2026-11-24
 
 - **Back up the database**: `python sg_store.py backup` dumps everything (every schema, the audit trail

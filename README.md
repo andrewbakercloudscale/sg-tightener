@@ -269,6 +269,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.21.1** | Stop works at once while pricing a read of many accounts; find an account on Remediate, which opens faster |
 | **5.21.0** | `sg_store.py backup` and `restore`: pg_dump of everything, checked, the newest 14 kept |
 | **5.20.1** | The read cost estimate is rebuilt hourly, so hours since the last read are counted |
 | **5.20.0** | **PostgreSQL**: everything kept in one database instead of files (`sg_store.py setup`, `migrate`), flow-log reads kept 12 months, a **Start the database** button in the console |

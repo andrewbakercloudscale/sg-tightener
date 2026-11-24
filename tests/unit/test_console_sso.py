@@ -504,6 +504,46 @@ def test_reading_an_ou_prices_every_account_then_reads_them_all_on_one_confirm(t
         ipintel.set_data_dir(old)
 
 
+def test_stop_while_pricing_many_accounts_stops_at_once_and_offers_nothing(tmp_path, monkeypatch):
+    """Stop pressed while accounts were being priced did nothing visible until every account already being
+    priced (24 at a time, each walking its regions) had finished; then those were still offered to read."""
+    import threading
+
+    old = ipintel.DATA_DIR
+    ipintel.set_data_dir(tmp_path / "data")
+    try:
+        monkeypatch.setattr(sg_db, "ensure_current", lambda *a, **k: [])
+        accts = [f"{i}" * 12 for i in range(1, 7)]
+        gate, started = threading.Event(), threading.Event()
+
+        def plan(sess, doc, regions, days, now, say=None):
+            started.set()
+            gate.wait(5)  # slow AWS
+            for r in regions:
+                doc["regions"][r] = {"query_sets": [["lg"]]}
+            return [("eu-west-1", now - 3600, now, [["lg"]], [])]
+
+        monkeypatch.setattr(sg_review, "plan_read", plan)
+        monkeypatch.setattr(sg_review, "estimate", lambda doc, a, r, now=None: {"rate": 1e6})
+        monkeypatch.setattr(sg_console, "BATCH_WORKERS", 2)
+        c = sg_console.Console(str(tmp_path / "sg.db"), targets=FakeTargets(), sso=Chosen(accts))
+        c.read_all({"regions": "eu-west-1", "days": 1, "min_spend": 0})
+        assert started.wait(5)
+        b = c.read_all_stop({})
+        assert b["status"] == "stopped", "at once, not when the accounts being priced finish"
+        assert b["count"].get("cancelled", 0) >= 4
+        gate.set()
+        for _ in range(500):
+            if not any(j["status"] in ("starting", "running") for j in c.job_list()):
+                break
+            time.sleep(0.01)
+        time.sleep(0.05)
+        b = c.batch_status()
+        assert b["status"] == "stopped" and b["count"].get("confirm", 0) == 0 and b["count"]["cancelled"] == 6
+    finally:
+        ipintel.set_data_dir(old)
+
+
 def test_reading_an_ou_skips_accounts_spending_under_the_minimum_and_says_how_long_is_left(tmp_path, monkeypatch):
     old = ipintel.DATA_DIR
     ipintel.set_data_dir(tmp_path / "data")

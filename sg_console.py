@@ -745,6 +745,8 @@ class Console:
                     st.close()
 
             def one(region):
+                if self._batch_stopped(job):  # Stop pressed: the regions not yet started are not read
+                    return
                 st = self.store()  # a connection each: the regions are read at once
                 try:
                     try:
@@ -934,6 +936,9 @@ class Console:
                 b["spend_from"] = "each account"
         self._pool(b, self._prepare, jobs)
         for j in jobs:
+            if b["stop"].is_set() and j["status"] == "confirm":  # priced after Stop was pressed: not offered
+                self._job_extra.pop(j["id"], None)
+                j["status"] = "starting"
             if j["status"] == "starting":  # stopped before its turn
                 j["status"] = "cancelled"
                 self._say(j, "not read")
@@ -1023,9 +1028,16 @@ class Console:
                 self._say(j, "not read")
             elif extra and j["status"] == "running":
                 extra["stop"].set()
-        if b["status"] == "confirm":
+            elif j["status"] == "starting" and b["status"] == "pricing":  # not priced yet: say so now, not when
+                j["status"] = "cancelled"                                 # the accounts being priced finish
+                self._say(j, "not read")
+        if b["status"] in ("confirm", "pricing"):  # pricing reads no flow logs: what is still finishing costs nothing
             b["status"] = "stopped"
         return self.batch_status()
+
+    def _batch_stopped(self, job: dict) -> bool:
+        b = self.batch
+        return bool(b and job.get("batch") == b["id"] and b["stop"].is_set())
 
     # ------------------------------------------------------------------ always running
     def autostart(self, body: dict) -> dict:

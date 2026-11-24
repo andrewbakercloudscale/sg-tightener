@@ -496,6 +496,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       into one. Untick anything sensitive, then propose. The approver only approves. If something breaks after it is
       applied, it shows on <b>Rejected traffic</b>, where <b>Propose allowing</b> opens it up again.</p>
     <div class="tools">
+      <input id="xFind" type="search" placeholder="Find an account (name or number)…" aria-label="Find an account to remediate">
       <select id="xAcct" aria-label="Account to remediate"></select>
       <label class="small">Look back <select id="xDays"><option value="30">1 month</option><option value="90" selected>3 months</option><option value="180">6 months</option><option value="365">1 year</option></select></label>
       <label class="small"><input type="checkbox" id="xHide" checked> Hide accounts without flow logs</label>
@@ -1297,9 +1298,10 @@ section.nodata .card:not(.empty-state) { display: none; }
   function drawFixAccounts() {
     const hide = $("xHide").checked, cur = $("xAcct").value || $("xAcct").dataset.want || "";
     const ok = fixAccts.filter((a) => a.status === "read"), noLogs = fixAccts.filter((a) => a.status === "no-flow-logs"), notRead = fixAccts.filter((a) => a.status !== "read" && a.status !== "no-flow-logs");
-    const shown = hide ? ok : fixAccts;
+    const q = $("xFind").value.trim().toLowerCase();
+    const shown = (hide ? ok : fixAccts).filter((a) => !q || `${a.name} ${a.account}`.toLowerCase().includes(q));
     const label = (a) => `${a.name || a.account} (${a.account}) · ${a.status === "read" ? `${Math.round(a.days)} days of flow logs` : a.status === "no-flow-logs" ? "no flow logs" : "flow logs not read"}`;
-    $("xAcct").innerHTML = shown.map((a) => `<option value="${esc(a.account)}"${a.account === cur ? " selected" : ""}>${esc(label(a))}</option>`).join("") || '<option value="">No account with flow logs read</option>';
+    $("xAcct").innerHTML = shown.map((a) => `<option value="${esc(a.account)}"${a.account === cur ? " selected" : ""}>${esc(label(a))}</option>`).join("") || `<option value="">${q ? "No account matches" : "No account with flow logs read"}</option>`;
     const msg = [];
     if (noLogs.length) msg.push(`<b>${noLogs.length} account${noLogs.length === 1 ? " has" : "s have"} no VPC flow logs</b> in CloudWatch Logs${hide ? " (hidden)" : ""}: turn them on for every VPC, to CloudWatch Logs, with a format that has the interface, source, destination, port and action (the default format does), then read the account.`);
     if (notRead.length) msg.push(`<b>${notRead.length} account${notRead.length === 1 ? "'s" : "s'"} flow logs not read yet</b>${hide ? " (hidden)" : ""}: on the Overview, Read all (or Read one), with How far back at 30 days or more.`);
@@ -1392,6 +1394,14 @@ section.nodata .card:not(.empty-state) { display: none; }
     for (const b of $("xRows").querySelectorAll("[data-xd]")) b.addEventListener("click", () => { const id = b.dataset.xd; fixOpen.has(id) ? fixOpen.delete(id) : fixOpen.add(id); drawFixRows(); });
   }
   $("xAcct").addEventListener("change", () => loadFixPlan().catch((e) => flash(e.message, true)));
+  let fixFindT = null;
+  $("xFind").addEventListener("input", () => {
+    if (!fixAccts) return;
+    const before = $("xAcct").value;
+    drawFixAccounts();
+    clearTimeout(fixFindT);  // the plan of the first match, once typing pauses
+    if ($("xAcct").value !== before) fixFindT = setTimeout(() => loadFixPlan().catch((e) => flash(e.message, true)), 500);
+  });
   $("xDays").addEventListener("change", () => loadFixPlan().catch((e) => flash(e.message, true)));
   $("xHide").addEventListener("change", () => { drawFixAccounts(); loadFixPlan().catch((e) => flash(e.message, true)); });
   document.addEventListener("click", (ev) => {

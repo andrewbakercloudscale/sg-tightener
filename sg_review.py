@@ -41,6 +41,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import bisect
 import functools
 import gzip
 import html
@@ -1985,16 +1986,26 @@ def _over_attr(over: list, lab) -> dict[tuple, int]:
     your other accounts' VPCs, VPN routes and named ranges first (narrowest first), then what is left by the owner
     of each piece: private space in no VPC or named range, an AWS service and region, a SaaS provider, an AS."""
     out: dict[tuple, int] = {}
-    rem = over
+    rem = list(over)
+    ends = [e for _s, e in rem]  # kept beside rem: each net touches only the pieces it overlaps (bisect), not all
     for f, last, cat, name, _c, extra in lab.nets:
         if not rem:
             break
-        part = sg_ipintel.intersect(rem, [(f, last)])
+        i = bisect.bisect_left(ends, f)
+        k = i
+        while k < len(rem) and rem[k][0] <= last:
+            k += 1
+        if i == k:
+            continue
+        window = rem[i:k]
+        part = sg_ipintel.intersect(window, [(f, last)])
         n = sg_ipintel.size(part)
         if n:
-            k = (cat, extra.get("group", cat), name)
-            out[k] = out.get(k, 0) + n
-            rem = sg_ipintel.subtract(rem, part)
+            key = (cat, extra.get("group", cat), name)
+            out[key] = out.get(key, 0) + n
+            left = sg_ipintel.subtract(window, part)
+            rem[i:k] = left
+            ends[i:k] = [e for _s, e in left]
     steps = OVER_STEPS
     for cat in CATS:
         for a, b in sg_ipintel.intersect(rem, lab.cat_iv[cat]):
