@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.19.7 - 2026-11-24
+
+- **Fixed a memory leak when reading an OU.** Every account waiting for its flow-log read to be confirmed kept
+  its whole read cache in memory: across an OU that reached 16 GB. Each account's cache is now loaded only
+  while it is being read.
+- **Risk overview, Over-provisioning, Rejected traffic and Remediate answer at once during an OU read.** An
+  account read since its row was built shows its last row, and the rows are rebuilt in the background (at most
+  every ten minutes) instead of the page waiting for every account to be built again.
+
 ## 5.19.6 - 2026-11-24
 
 - **Risk overview splits risk into Overall, External, SaaS and Internal.** Where to focus scores one kind at a

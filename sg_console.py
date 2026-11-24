@@ -397,12 +397,23 @@ class Console:
         with self._report_lock:  # one build of each report at a time: a second page load waits for it, not repeats it
             gate = self._report_gates.setdefault((kind, range_key), threading.Lock())
         with gate:
-            return self._reports_now(kind, range_key, names)
+            out, stale = self._reports_now(kind, range_key, names)
+        if stale:  # shown at once from the last rows, brought up to date in the background
+            key = ("refresh", kind, range_key)
+            with self._report_lock:
+                busy, last = self._report_gates.get(key) or (None, 0.0)
+                if (busy is None or not busy.is_alive()) and time.time() - last > SETTLING:  # not every page load
+                    t = threading.Thread(target=self._reports_now, args=(kind, range_key, names, False), daemon=True)
+                    self._report_gates[key] = (t, time.time())
+                    t.start()
+        return out
 
-    def _reports_now(self, kind: str, range_key: str, names: dict) -> dict:
+    def _reports_now(self, kind: str, range_key: str, names: dict, stale_ok: bool = True) -> tuple[dict, bool]:
+        """(rows, some shown stale). With ``stale_ok`` an account read since its row was built keeps that row
+        (rebuilt later, in the background); only accounts with no row at all are built before answering."""
         import sg_review
 
-        now, todo, out = time.time(), [], {}
+        now, todo, out, stale = time.time(), [], {}, False
         with self._report_lock:
             cache = self._report_cache()
             for account in sg_review.cached_accounts():
@@ -413,6 +424,8 @@ class Console:
                 hit = cache.get(f"{kind}|{range_key}|{account}")
                 if hit and (hit["mtime"] == mtime or (now - mtime < SETTLING and now - hit["at"] < SETTLING)):
                     out[account] = hit["row"]
+                elif hit and stale_ok:
+                    out[account], stale = hit["row"], True
                 else:
                     out[account] = None
                     todo.append((account, mtime))
@@ -424,7 +437,7 @@ class Console:
                     out[account] = row
                     cache[f"{kind}|{range_key}|{account}"] = {"mtime": mtime, "at": now, "row": row}
                 self._save_report_cache()
-        return out
+        return out, stale
 
     def _build_reports(self, kind: str, range_key: str, items: list[tuple[str, str]]) -> list:
         import sg_review
@@ -688,7 +701,9 @@ class Console:
             cost = est["rate"] * hours * 3600 / 1e9 * sg_review.INSIGHTS_PER_GB if est["rate"] is not None else None
             job.update(status="confirm", total=len(tasks), cost=None if cost is None else round(cost, 2), hours=round(hours),
                        logs_in=with_logs)  # fmt: skip
-            self._job_extra[job["id"]] = {"sess": sess, "doc": doc, "tasks": tasks, "now": now, "stop": threading.Event()}
+            # not the doc: an OU's worth of read caches kept while waiting for confirmation took over 16 GB
+            self._job_extra[job["id"]] = {"sess": sess, "tasks": tasks, "now": now, "stop": threading.Event()}
+            del doc
             self._say(job, f"flow logs in {', '.join(with_logs)}: {len(tasks)} slice(s), {round(hours)} hours to read, "
                            + (f"about US${cost:.2f}" if cost is not None else "cost not known until a first 1-day read"))  # fmt: skip
         except Exception as exc:
@@ -715,7 +730,9 @@ class Console:
             job.update(done=d0 + done, total=d0 + total, bytes=b0 + nbytes)
 
         try:
-            state = sg_review.run_read(x["sess"], x["doc"], x["tasks"], job["days"], x["now"], x["stop"].is_set, progress)
+            doc = sg_review.load(job["account"]) or sg_review.new_doc(job["account"], job.get("name", ""))
+            state = sg_review.run_read(x["sess"], doc, x["tasks"], job["days"], x["now"], x["stop"].is_set, progress)
+            del doc
             state = {"done": d0 + state["done"], "bytes": b0 + state["bytes"]}
             job.update(done=state["done"], bytes=state["bytes"])
             job["status"] = "stopped" if x["stop"].is_set() else "done"
@@ -868,8 +885,10 @@ class Console:
                 return
             j["status"] = "running"
             try:
-                got = sg_review.run_read(x["sess"], x["doc"], new, j["days"], now, x["stop"].is_set,
+                doc = sg_review.load(j["account"]) or sg_review.new_doc(j["account"], j.get("name", ""))
+                got = sg_review.run_read(x["sess"], doc, new, j["days"], now, x["stop"].is_set,
                                          lambda d, t, n: j.update(done=d, total=len(tasks), bytes=n))  # fmt: skip
+                del doc  # loaded for this pass only: holding every account's at once filled the memory
                 first[j["id"]] = (got["done"], got["bytes"])
             except Exception:  # the second pass reads it again and reports the failure
                 LOG.exception("first pass of %s failed", j["account"])

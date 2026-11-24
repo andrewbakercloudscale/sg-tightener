@@ -421,3 +421,25 @@ def test_a_port_range_narrows_to_the_ports_seen():
     assert sg_console._port_ranges({"proto": "6", "from": 443, "to": 443}, [("6", 443)]) is None
     assert sg_console._port_ranges({"proto": "-1", "from": 0, "to": 65535}, [("6", 443)]) is None
     assert sg_console._port_ranges({"proto": "6", "from": 1, "to": 100}, []) is None
+
+
+def test_a_report_answers_from_its_last_rows_while_an_account_is_being_read(tmp_path, monkeypatch):
+    import os
+
+    import sg_review
+
+    monkeypatch.setattr(sg_review, "_dir", lambda: tmp_path / "review")
+    (tmp_path / "review").mkdir()
+    f = tmp_path / "review" / "1.json.gz"
+    f.write_text("x")
+    monkeypatch.setattr(sg_review, "cached_accounts", lambda: ["1"])
+    monkeypatch.setattr(sg_review, "_path", lambda a: f)
+    built = []
+    monkeypatch.setattr(sg_review, "report_row", lambda kind, a, n, r: built.append(a) or {"v": len(built)})
+    c = sg_console.Console(str(tmp_path / "sg.db"), targets=FakeTargets("x"))
+    assert c._reports("macro", "1m", {}) == {"1": {"v": 1}}
+    os.utime(f, (1, 1))  # read again long ago: past settling, so its row is out of date
+    assert c._reports("macro", "1m", {}) == {"1": {"v": 1}}, "the last row, at once"
+    c._report_gates[("refresh", "macro", "1m")][0].join(5)
+    assert built == ["1", "1"], "rebuilt once, in the background"
+    assert c._reports("macro", "1m", {}) == {"1": {"v": 2}}
