@@ -19,7 +19,7 @@ database and its flow logs are read (the cost is shown first). **Always running*
 keeps the console running in the background and starts it at login, at the same bookmarkable address.
 
 Usage:
-  sg_console.py serve [--port 8765] [--profile P] [--role-name OrganizationAccountAccessRole] [--db FILE]
+  sg_console.py serve [--port 8765] [--profile P] [--role-name OrganizationAccountAccessRole] [--db DSN]
   sg_console.py install [--port 8765]     # always running: start at login, restart if it stops
   sg_console.py uninstall                 # stop running in the background
   sg_console.py open                      # open the console in the browser
@@ -63,9 +63,10 @@ JOBS_SHOWN = 1000
 LABEL = "com.sg-tightener.console"
 UNIT = "sg-console.service"
 PROTECTED = ("Desktop", "Documents", "Downloads", "Library/Mobile Documents")  # macOS keeps background programs out
-RUNTIME = ("boto3", "pyyaml")
+RUNTIME = ("boto3", "pyyaml", "psycopg", "psycopg-binary")
 PASS_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy", "AWS_CA_BUNDLE",
-            "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE", "SG_TIGHTENER_DB")
+            "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE", "SG_TIGHTENER_DB",
+            "SG_TIGHTENER_PG_DSN", "SG_TIGHTENER_PG_SCHEMA")
 
 
 def _keep_awake():
@@ -114,6 +115,7 @@ class Console:
         self._verdicts: dict = {}
         self._flow_status: dict = {}  # account: (mtime of its read, its flow log status)  # account: (mtime of its read, the engine's plan)
         self.httpd = None
+        self._db_start: dict | None = None
 
     # ------------------------------------------------------------------ plumbing
     def store(self) -> sg_db.Store:
@@ -164,21 +166,38 @@ class Console:
             names = st.account_names()
             perms = {(p["account"], p["region"]): p for p in st.permissions()}
             accounts: dict[str, dict] = {}
-            for account, region in st.regions():
+            modes = st.modes()
+            mode = lambda a: modes.get(a) or modes.get(sg_db.ANY_ACCOUNT) or sg_db.SURVEILLANCE  # noqa: E731
+            # every figure in one query per table: one query per region and group took seconds across an OU
+            q = st.db.execute
+            groups: dict = {}
+            for account, region, gid in q("SELECT account, region, group_id FROM groups"):
+                groups.setdefault((account, region), []).append(gid)
+            n_rules = {(a, r, g): n for a, r, g, n in q("SELECT account, region, group_id, COUNT(*) FROM rules WHERE "
+                                                          "state = 'desired' GROUP BY account, region, group_id")}  # fmt: skip
+            used: dict = {}
+            n_assets: dict = {}
+            for account, region, gs in q("SELECT account, region, groups FROM assets"):
+                n_assets[(account, region)] = n_assets.get((account, region), 0) + 1
+                u = used.setdefault((account, region), {})
+                for g in json.loads(gs):
+                    u[g] = u.get(g, 0) + 1
+            key = "account, region, group_id, direction, proto, from_port, to_port, source"
+            diff = (f"(SELECT {key} FROM rules WHERE state = 'desired' EXCEPT SELECT {key} FROM rules WHERE state = 'synced') "
+                    f"UNION ALL (SELECT {key} FROM rules WHERE state = 'synced' EXCEPT SELECT {key} FROM rules WHERE "
+                    f"state = 'desired')")  # fmt: skip
+            pending = {(a, r): n for a, r, n in q(f"SELECT account, region, COUNT(*) FROM ({diff}) d GROUP BY account, region")}
+            for account, region, synced in q("SELECT account, region, synced_at FROM regions ORDER BY account, region"):
                 a = accounts.setdefault(account, {"account": account, "name": names.get(account, ""), "regions": [],
-                                                  "mode": st.mode(account)})  # fmt: skip
+                                                  "mode": mode(account)})  # fmt: skip
                 p = perms.get((account, region))
-                every = st.groups(account, region)
-                used = self._in_use(st, account, region)
-                groups = every if used is None else {g: x for g, x in every.items() if g in used}
-                rules = sum(len(st.rules(account, region, g, "desired")) for g in groups)
-                synced = st.db.execute("SELECT synced_at FROM regions WHERE account = ? AND region = ?",
-                                       (account, region)).fetchone()[0]  # fmt: skip
-                n_assets = st.db.execute("SELECT COUNT(*) FROM assets WHERE account = ? AND region = ?",
-                                         (account, region)).fetchone()[0]  # fmt: skip
-                a["regions"].append({"region": region, "groups": len(groups), "rules": rules, "assets": n_assets,
-                                     "unused": len(every) - len(groups),
-                                     "pending": len(st.pending(account, region)), "synced_at": synced,
+                every = groups.get((account, region), [])
+                u = used.get((account, region))  # None: the region's interfaces were never read
+                kept = every if u is None else [g for g in every if g in u]
+                a["regions"].append({"region": region, "groups": len(kept),
+                                     "rules": sum(n_rules.get((account, region, g), 0) for g in kept),
+                                     "assets": n_assets.get((account, region), 0), "unused": len(every) - len(kept),
+                                     "pending": pending.get((account, region), 0), "synced_at": synced,
                                      "permissions": None if p is None else {
                                          "ok": p["ok"], "at": p["checked_at"], "by": sg_db.principal(p["actor"]),
                                          "problems": sg_db._permission_problems(p["result"])[:20]}})  # fmt: skip
@@ -198,7 +217,7 @@ class Console:
             chosen = self.auth().chosen() if self.auth() else []
             for c in chosen:  # an account chosen in the sign-in but not read yet still has a row to read it from
                 accounts.setdefault(c["account"], {"account": c["account"], "name": c["name"], "regions": [],
-                                                   "mode": st.mode(c["account"]), "reviewed": c["account"] in read})  # fmt: skip
+                                                   "mode": mode(c["account"]), "reviewed": c["account"] in read})  # fmt: skip
             for a in accounts.values():
                 a["chosen"] = any(c["account"] == a["account"] for c in chosen)
             return {"me": me, "me_principal": sg_db.principal(me), "account": me_account,
@@ -295,6 +314,48 @@ class Console:
         data["console"] = {"token": token}
         return sg_review.render_page(data)
 
+    # ------------------------------------------------------------------ the database
+    def database(self) -> dict:
+        """Does the database answer, can this computer start it, and how a start is going."""
+        import sg_store
+
+        return {**sg_store.server_status(), "starting": bool(self._db_start and self._db_start["running"]),
+                "steps": list((self._db_start or {}).get("steps") or []), "error": (self._db_start or {}).get("error", "")}
+
+    def database_start(self, _body: dict | None = None) -> dict:
+        """Start the local database in the background (colima first if Docker's engine is not running)."""
+        import sg_store
+
+        with self._lock:
+            if self._db_start and self._db_start["running"]:
+                return self.database()
+            job = self._db_start = {"running": True, "steps": [], "error": ""}
+
+        def go():
+            try:
+                sg_store.start_server(say=job["steps"].append)
+                self._database_back()
+            except Exception as exc:  # noqa: BLE001 - shown on the page
+                LOG.warning("starting the database: %s", exc)
+                job["error"] = str(exc)
+            finally:
+                job["running"] = False
+
+        threading.Thread(target=go, daemon=True).start()
+        return self.database()
+
+    def _database_back(self) -> None:
+        """The database answers again: read what was kept in it, and build the reports."""
+        for auth in (self.sso, self.keys):
+            if auth is not None and getattr(auth, "unloaded", False):
+                auth.state, auth.unloaded = auth._load(), False
+        self._reports_mem = None
+        try:
+            _keep_unsaved_token()
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("console key not kept: %s", exc)
+        self.warm_reports()
+
     def warm_reports(self) -> None:
         """Build every tab's report rows in the background (at start, and after a read), so a tab opened later
         answers at once instead of building 150 accounts while the page waits."""
@@ -349,10 +410,11 @@ class Console:
                 "owners_pending": pending, "facts_note": why, "no_flow_logs_read": len(unread)}  # fmt: skip
 
     # ------------------------------------------------------------------ who owns each account, and what it spends
-    def _owners_path(self) -> Path:
+    def _owners_path(self):
         import sg_ipintel
+        import sg_store
 
-        return sg_ipintel.DATA_DIR / "owners.json"
+        return sg_store.File(sg_ipintel.DATA_DIR / "owners.json")
 
     def _facts(self, accounts: list[str]) -> tuple[dict | None, dict, bool, str]:
         """Each account's spend (last 30 days) and owner tag, for the risk charts. Neither is ever waited for long:
@@ -407,10 +469,7 @@ class Console:
             except (OSError, ValueError):
                 got = {}
             got.update({a: {**o, "at": time.time()} for a, o in found.items()})
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
-            tmp.write_text(json.dumps(got))
-            tmp.replace(path)
+            path.write_text(json.dumps(got))
 
     def _reports(self, kind: str, range_key: str, names: dict) -> dict:
         """{account: row or None (no flow logs read)} for every account sg_review has read. Each row is kept
@@ -439,11 +498,7 @@ class Console:
         now, todo, out, stale = time.time(), [], {}, False
         with self._report_lock:
             cache = self._report_cache()
-            for account in sg_review.cached_accounts():
-                try:
-                    mtime = sg_review._path(account).stat().st_mtime
-                except OSError:
-                    continue
+            for account, mtime in sorted(sg_review.stamps().items()):
                 hit = cache.get(f"{kind}|{range_key}|{account}")
                 if hit and (hit["mtime"] == mtime or (now - mtime < SETTLING and now - hit["at"] < SETTLING)):
                     out[account] = hit["row"]
@@ -459,7 +514,7 @@ class Console:
                 for (account, mtime), row in zip(todo, got):
                     out[account] = row
                     cache[f"{kind}|{range_key}|{account}"] = {"mtime": mtime, "at": now, "row": row}
-                self._save_report_cache()
+                self._save_report_cache([f"{kind}|{range_key}|{a}" for a, _ in todo])
         return out, stale
 
     def _build_reports(self, kind: str, range_key: str, items: list[tuple[str, str]]) -> list:
@@ -481,28 +536,24 @@ class Console:
 
     def _report_cache(self) -> dict:
         if self._reports_mem is None:
+            import sg_store
+
             try:
-                self._reports_mem = json.loads(self._report_cache_path().read_text())
-            except (OSError, ValueError):
+                self._reports_mem = sg_store.report_rows(REPORT_CACHE_VERSION)
+            except Exception as exc:  # noqa: BLE001 - rebuilt from the reads
+                LOG.warning("report rows not loaded: %s", exc)
                 self._reports_mem = {}
-            if self._reports_mem.get("_v") != REPORT_CACHE_VERSION:
-                self._reports_mem = {"_v": REPORT_CACHE_VERSION}
         return self._reports_mem
 
-    def _save_report_cache(self) -> None:
-        path = self._report_cache_path()
+    def _save_report_cache(self, keys=None) -> None:
+        """Keep the rows named by ``keys`` (all of them by default) in the database."""
+        import sg_store
+
+        rows = self._reports_mem or {}
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
-            tmp.write_text(json.dumps(self._reports_mem))
-            tmp.replace(path)
-        except OSError as exc:
-            LOG.warning("report cache not saved: %s", exc)
-
-    def _report_cache_path(self) -> Path:
-        import sg_review
-
-        return sg_review._dir().parent / "report-cache.json"
+            sg_store.save_report_rows(REPORT_CACHE_VERSION, {k: rows[k] for k in (rows if keys is None else keys) if k in rows})
+        except Exception as exc:  # noqa: BLE001 - rebuilt from the reads
+            LOG.warning("report rows not saved: %s", exc)
 
     def refused(self, range_key: str = "24h") -> dict:
         """Every refused source across the accounts sg_review has read, worst verdict first."""
@@ -670,7 +721,7 @@ class Console:
             if job.get("min_spend") and self._too_small(job, sess):
                 return
             regions = job["regions"]
-            doc = sg_review.load(job["account"]) if sg_review._path(job["account"]).exists() else None  # loaded once
+            doc = sg_review.load(job["account"])  # loaded once
             if regions == ["all"] and job.get("flow_regions"):
                 found = self._flow_regions(job["account"], "all", doc)
                 if found != "all":
@@ -1048,8 +1099,10 @@ class Console:
         import sg_review
 
         try:
-            mtime = sg_review._path(account).stat().st_mtime
-        except OSError:
+            mtime = sg_review.stamp(account)
+        except KeyError:
+            mtime = None
+        if mtime is None:
             return {"status": "unknown", "days": days, "have_days": 0, "groups": [], "merges": [], "totals": {}}
         groups, assets = self._account_groups(account)
         # kept until the account's read or its groups change: building a plan takes seconds, opening it again none
@@ -1115,9 +1168,10 @@ class Console:
         import sg_review
 
         try:
-            path = sg_review._path(account)
-            mtime = path.stat().st_mtime
-        except (KeyError, OSError):
+            mtime = sg_review.stamp(account)
+        except KeyError:
+            mtime = None
+        if mtime is None:
             return {"read": False, "rules": [], "groups": {}}
         got = self._verdicts.get(account)
         if not got or got[0] != mtime:
@@ -1440,29 +1494,58 @@ class Service:
             go()
 
 
-def token_file() -> Path:
+def token_file():
     import sg_ipintel
+    import sg_store
 
-    return sg_ipintel.DATA_DIR / "console-token"
+    return sg_store.File(sg_ipintel.DATA_DIR / "console-token")
 
 
 def lasting_token(new: bool = False) -> str:
-    """The key the console's own page puts on every change (it never appears in the address), kept (mode
-    0600) so a page left open keeps working when the console restarts or hands over to the always-running copy."""
+    """The key the console's own page puts on every change (it never appears in the address), kept (in the
+    database) so a page left open keeps working when the console restarts or hands over to the always-running copy."""
+    import sg_store
+
+    global _UNSAVED_TOKEN
     path = token_file()
-    if not new:
-        try:
-            got = path.read_text().strip()
-            if len(got) >= 24:
-                return got
-        except OSError:
-            pass
-    tok = secrets.token_urlsafe(24)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(tok + "\n")
-    return tok
+    try:
+        if not new:
+            try:
+                got = path.read_text().strip()
+                if len(got) >= 24:
+                    return got
+            except OSError:
+                pass
+        tok = secrets.token_urlsafe(24)
+        path.write_text(tok + "\n")
+        return tok
+    except sg_store.NotConfigured:  # the database is not running: this run's own key, kept once it starts
+        _UNSAVED_TOKEN = _UNSAVED_TOKEN or secrets.token_urlsafe(24)
+        return _UNSAVED_TOKEN
+
+
+_UNSAVED_TOKEN = ""
+
+
+def _keep_unsaved_token() -> None:
+    global _UNSAVED_TOKEN
+    if _UNSAVED_TOKEN:
+        token_file().write_text(_UNSAVED_TOKEN + "\n")
+        _UNSAVED_TOKEN = ""
+
+
+def _database_down(exc: Exception) -> bool:
+    """The database is not set up, not running, or went away mid-request."""
+    import sg_store
+
+    if isinstance(exc, sg_store.NotConfigured):
+        return True
+    try:
+        import psycopg
+
+        return isinstance(exc, psycopg.OperationalError)
+    except ImportError:
+        return False
 
 
 def _need(body: dict, key: str) -> str:
@@ -1539,6 +1622,8 @@ def make_handler(console: Console, token: str, port: int):
                     return self._page()
                 if url.path == "/review":
                     return self._page(console.review(_need(q, "account"), token))
+                if url.path == "/api/database":
+                    return self._json(200, console.database())
                 if url.path == "/api/state":
                     return self._json(200, console.state())
                 if url.path == "/api/remediation":
@@ -1579,6 +1664,8 @@ def make_handler(console: Console, token: str, port: int):
             except ConsoleError as exc:
                 return self._json(exc.status, {"error": str(exc)})
             except Exception as exc:
+                if _database_down(exc):
+                    return self._json(503, {"error": f"the database is not running: {exc}", "database": False})
                 LOG.exception("GET %s failed", url.path)
                 return self._json(500, {"error": str(exc)})
 
@@ -1606,7 +1693,8 @@ def make_handler(console: Console, token: str, port: int):
                      "/api/read/confirm": console.read_confirm, "/api/read/stop": console.read_stop,
                      "/api/read/all": console.read_all, "/api/read/all/confirm": console.read_all_confirm,
                      "/api/read/all/stop": console.read_all_stop, "/api/keys/use": console.keys_use,
-                     "/api/autostart": console.autostart}.get(urlparse(self.path).path)  # fmt: skip
+                     "/api/autostart": console.autostart,
+                     "/api/database/start": console.database_start}.get(urlparse(self.path).path)  # fmt: skip
             if not route:
                 return self._json(404, {"error": "not found"})
             try:
@@ -1616,6 +1704,8 @@ def make_handler(console: Console, token: str, port: int):
             except sg_db.Refused as exc:
                 return self._json(409, {"error": str(exc)})
             except Exception as exc:
+                if _database_down(exc):
+                    return self._json(503, {"error": f"the database is not running: {exc}", "database": False})
                 LOG.exception("POST %s failed", self.path)
                 return self._json(500, {"error": str(exc)})
 
@@ -1642,10 +1732,10 @@ def _build_parser() -> argparse.ArgumentParser:
     i = sub.add_parser("install", help="always running: start the console at login and restart it if it stops")
     for q in (s, i):
         q.add_argument("--port", type=int, default=8765)
-        q.add_argument("--db", help=f"database file (default ${sg_db.DB_ENV} or ~/.sg-tightener/sg.db)")
+        q.add_argument("--db", help=f"PostgreSQL connection string (default ${sg_db.DB_ENV}, else sg_store.py setup's database)")
         q.add_argument("--role-name", default=sg_db.DEFAULT_ROLE, help="role assumed in other accounts to apply and reconcile")
         q.add_argument("--external-id", default="")
-        q.add_argument("--data-dir", help="where sg_review keeps what it read (default ~/.sg-tightener)")
+        q.add_argument("--data-dir", help="a separate set of reads and caches (its own database schema; default ~/.sg-tightener)")
         add_profile_arg(q)
     s.add_argument("--service", action="store_true", help=argparse.SUPPRESS)  # run by launchd / systemd
     s.add_argument("--new-token", action="store_true", help="make a new page key (pages already open must be reloaded)")
@@ -1721,9 +1811,14 @@ def main(argv=None) -> int:
     token = lasting_token(args.new_token)
     httpd = _bind(console, args.port, token, 120 if args.service else 0)
     console.httpd = httpd
-    st = console.state()
-    LOG.info("acting as %s; database %s; two-person approval %s", st["me"], st["db"], "on" if st["approvals"] else "off")
-    console.warm_reports()
+    try:
+        st = console.state()
+        LOG.info("acting as %s; database %s; two-person approval %s", st["me"], st["db"], "on" if st["approvals"] else "off")
+        console.warm_reports()
+    except Exception as exc:  # noqa: BLE001 - the page offers to start it
+        if not _database_down(exc):
+            raise
+        LOG.warning("the database is not running (%s): the page offers to start it", exc)
     url = _url(args.port)
     print(f"\n  Security group console: {url}\n  (Ctrl-C stops it)\n", flush=True)
     if not args.service and not args.no_browser:

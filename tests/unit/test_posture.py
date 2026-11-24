@@ -6,6 +6,7 @@ import pytest
 
 import sg_ipintel as ipintel
 import sg_review
+import sg_store
 import sg_review_demo
 from sg_review import internet_path, posture_findings
 
@@ -158,8 +159,7 @@ def tor_list(tmp_path):
     """The demo's Tor relay on the Tor exit list, whatever lists this computer has downloaded."""
     old = ipintel.DATA_DIR
     ipintel.set_data_dir(tmp_path)
-    (tmp_path / "ipintel").mkdir()
-    (tmp_path / "ipintel" / "tor.json").write_text('["185.220.101.33"]')
+    sg_store.File(tmp_path / "ipintel" / "tor.json").write_text('["185.220.101.33"]')
     yield
     ipintel.set_data_dir(old)
 

@@ -147,7 +147,7 @@ breaking production.
 
 > **You cannot manage security groups in Terraform (or CloudFormation, CDK or Pulumi) with this
 > solution.** Every security group and every rule is held in sg-tightener's local database,
-> `~/.sg-tightener/sg.db`. That database is the source of truth. AWS is where the rules are
+> PostgreSQL (`python sg_store.py setup`). That database is the source of truth. AWS is where the rules are
 > enforced; the database is where they are decided.
 
 Why not Terraform:
@@ -269,6 +269,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.20.0** | **PostgreSQL**: everything kept in one database instead of files (`sg_store.py setup`, `migrate`), flow-log reads kept 12 months, a **Start the database** button in the console |
 | **5.19.12** | External risks: who used each rule, rules only your own network uses, what to do on its own line |
 | **5.19.11** | Largest external exposure by account and the five biggest external risks; look-back picked in the cost box |
 | **5.19.10** | Console pages about four times faster on a Mac; Remediate opens in seconds |
@@ -407,12 +408,17 @@ source .venv/bin/activate
 python -m pytest                     # all tests should pass
 ```
 
-`install.sh` creates `.venv`, installs `requirements.txt` (boto3, pandas, openpyxl, PyYAML), checks
-each one imports, and downloads the public address lists once. `--dev` adds pytest and moto. Run
-outside the venv, the tools say to run `./install.sh` rather than fail with a traceback. Everything is
-kept locally: security groups, rules and the audit trail in one **SQLite** file
-(`~/.sg-tightener/sg.db`, or `$SG_TIGHTENER_DB`), flow-log reads in `~/.sg-tightener/review/`, the
-address lists in `~/.sg-tightener/ipintel/`. No server or hosted database is needed.
+`install.sh` creates `.venv`, installs `requirements.txt` (boto3, pandas, openpyxl, PyYAML, psycopg), checks
+each one imports, sets up the database, and downloads the public address lists once. `--dev` adds pytest and
+moto. Run outside the venv, the tools say to run `./install.sh` rather than fail with a traceback.
+
+Everything is kept in **PostgreSQL**: security groups, rules, the audit trail, flow-log reads, the address
+lists and the console's caches. `install.sh` runs `python sg_store.py setup`, which starts it in Docker on
+127.0.0.1 only (on a Mac, [colima](https://github.com/abiosoft/colima): `brew install colima docker
+docker-compose`), or set `SG_TIGHTENER_PG_DSN` to a PostgreSQL you run. Flow-log reads are kept **12 months**;
+the audit trail and change requests are kept for good. After a restart the console offers a **Start the
+database** button (or `python sg_store.py start`; `brew services start colima` starts colima at login).
+[The database](docs/database.md#where-it-is-kept).
 
 Requires Python 3.9 or later and AWS credentials: read-only
 [`iam-policy-read.json`](iam-policy-read.json) for everything except changes,

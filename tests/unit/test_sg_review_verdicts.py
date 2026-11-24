@@ -9,6 +9,7 @@ import pytest
 
 import sg_ipintel as ipintel
 import sg_review
+import sg_store
 import sg_review_demo as demo
 
 
@@ -176,7 +177,7 @@ def test_watch_reads_the_gap_posts_new_items_and_keeps_quiet_next_time(monkeypat
     assert sg_review.main(argv) == 0
     assert asked == [1, "tail"]
     assert len(posted) == 1 and "critical".upper() in posted[0][1]
-    saved = json.loads((ipintel.DATA_DIR / "review" / f"{demo.ACCOUNT}.watch.json").read_text())
+    saved = json.loads(sg_store.File(ipintel.DATA_DIR / "review" / f"{demo.ACCOUNT}.watch.json").read_text())
     assert saved["sent"]
     assert sg_review.main(argv) == 0
     assert len(posted) == 1  # nothing new: nothing posted

@@ -214,8 +214,8 @@ One person running a lab can turn it off: `sg_db.py approvals off --reason "sing
 Signed in with AWS SSO on the page, the console acts as that sign-in, with the role chosen for each
 account. Otherwise it acts as the AWS identity it runs as (`--profile`, `AWS_PROFILE`), read again for
 every change, exactly like `sg_db.py`. To approve, the second person runs their own console (or
-`sg_db.py approve`) with **their** credentials against the **same database file**: run sg-tightener
-on one shared host (a bastion or a container with a volume), each person signing in with their own
+`sg_db.py approve`) with **their** credentials against the **same database**: point both at one PostgreSQL
+(`SG_TIGHTENER_PG_DSN`), or run sg-tightener on one shared host (a bastion or a container with a volume), each person signing in with their own
 SSO profile.
 
 To apply or reconcile in another account, the console assumes `--role-name` (default
@@ -345,10 +345,17 @@ target; rules to tighten or remove.
 
 ![Every asset in an account, rated](images/sg-console-over-per-asset.png)
 
+## When the database is not running
+
+The database runs in Docker (colima on a Mac), so after a restart it may be stopped. The console still
+opens, and every page shows **The database is not running** with a **Start the database** button: it starts
+colima if Docker's engine is stopped (the first start can take a few minutes), then the PostgreSQL
+container, shows each step, and reloads the page once the database answers. The same from a terminal:
+`python sg_store.py start`. `brew services start colima` starts colima at login so this is rarely needed.
+
 ## Rejected traffic across an OU
 
-The **Rejected traffic** tab reads what `sg_review.py` keeps for each account in
-`~/.sg-tightener/review/`. Fill it for a whole OU and keep it fresh:
+The **Rejected traffic** tab reads what `sg_review.py` keeps for each account in the database (12 months). Fill it for a whole OU and keep it fresh:
 
 ```bash
 python sg_review.py org   --regions eu-west-1 --ou-id ou-ab12-cdef3456 --days 7 --yes
@@ -364,7 +371,7 @@ carry on. The same table is on the org page (`sg-review-org/index.html`, **All r
 | Flag | Default | Meaning |
 |---|---|---|
 | `--port` | `8765` | Port on 127.0.0.1 |
-| `--db` | `$SG_TIGHTENER_DB` or `~/.sg-tightener/sg.db` | The database |
+| `--db` | `$SG_TIGHTENER_PG_DSN`, else `sg_store.py setup`'s database | A PostgreSQL address (`postgresql://…`) |
 | `--profile` | the usual credential chain | AWS profile, for example an SSO one |
 | `--role-name`, `--external-id` | `OrganizationAccountAccessRole` | Role assumed in other accounts to apply and reconcile (not used when signed in with SSO on the page) |
 | `--new-token` | off | Make a new page key (pages already open must be reloaded) |

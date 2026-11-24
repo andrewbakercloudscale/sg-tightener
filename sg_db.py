@@ -60,12 +60,12 @@ import logging
 import os
 import re
 import shlex
-import sqlite3
 import sys
 import time
 from pathlib import Path
 from typing import Iterable
 
+import sg_store
 import sg_tightener
 from sg_tightener import add_profile_arg, friendly_login_errors, use_profile
 
@@ -74,52 +74,7 @@ LOG = logging.getLogger("sg_db")
 DB_ENV = "SG_TIGHTENER_DB"
 GENESIS = "0" * 64
 IN, OUT = "in", "out"
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS regions (
-  account TEXT NOT NULL, region TEXT NOT NULL, imported_at TEXT NOT NULL, synced_at TEXT NOT NULL,
-  PRIMARY KEY (account, region));
-CREATE TABLE IF NOT EXISTS groups (
-  account TEXT NOT NULL, region TEXT NOT NULL, group_id TEXT NOT NULL,
-  name TEXT NOT NULL DEFAULT '', vpc_id TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
-  PRIMARY KEY (account, region, group_id));
-CREATE TABLE IF NOT EXISTS rules (
-  account TEXT NOT NULL, region TEXT NOT NULL, group_id TEXT NOT NULL,
-  state TEXT NOT NULL CHECK (state IN ('desired', 'synced')),
-  direction TEXT NOT NULL CHECK (direction IN ('in', 'out')),
-  proto TEXT NOT NULL, from_port INTEGER NOT NULL, to_port INTEGER NOT NULL, source TEXT NOT NULL,
-  description TEXT NOT NULL DEFAULT '',
-  PRIMARY KEY (account, region, group_id, state, direction, proto, from_port, to_port, source));
-CREATE TABLE IF NOT EXISTS audit (
-  seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, actor TEXT NOT NULL, origin TEXT NOT NULL,
-  action TEXT NOT NULL, account TEXT NOT NULL, region TEXT NOT NULL, group_id TEXT NOT NULL,
-  detail TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', ticket TEXT NOT NULL DEFAULT '',
-  prev TEXT NOT NULL, hash TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS audit_group ON audit (account, region, group_id);
-CREATE TABLE IF NOT EXISTS accounts (account TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS requests (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, account TEXT NOT NULL, region TEXT NOT NULL,
-  proposer TEXT NOT NULL, reason TEXT NOT NULL, ticket TEXT NOT NULL DEFAULT '', changes TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled', 'applied')),
-  decided_by TEXT NOT NULL DEFAULT '', decided_at TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
-  applied_at TEXT NOT NULL DEFAULT '');
-CREATE INDEX IF NOT EXISTS requests_status ON requests (status, account, region);
-CREATE TABLE IF NOT EXISTS modes (
-  account TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK (mode IN ('surveillance', 'enforce')),
-  set_by TEXT NOT NULL, set_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS permissions (
-  account TEXT NOT NULL, region TEXT NOT NULL, checked_at TEXT NOT NULL, actor TEXT NOT NULL,
-  ok INTEGER NOT NULL, result TEXT NOT NULL, PRIMARY KEY (account, region));
-CREATE TABLE IF NOT EXISTS assets (
-  account TEXT NOT NULL, region TEXT NOT NULL, eni TEXT NOT NULL, instance TEXT NOT NULL DEFAULT '',
-  asg TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', vpc_id TEXT NOT NULL DEFAULT '',
-  ips TEXT NOT NULL DEFAULT '[]', groups TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '',
-  observed_at TEXT NOT NULL, PRIMARY KEY (account, region, eni));
-CREATE TRIGGER IF NOT EXISTS audit_append_only_u BEFORE UPDATE ON audit
-  BEGIN SELECT RAISE(ABORT, 'the audit trail is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS audit_append_only_d BEFORE DELETE ON audit
-  BEGIN SELECT RAISE(ABORT, 'the audit trail is append-only'); END;
-"""
+SCHEMA = sg_store.DDL  # the tables live in sg_store, with every other table the tool keeps
 
 SURVEILLANCE, ENFORCE = "surveillance", "enforce"
 ANY_ACCOUNT = "*"  # the default mode, for accounts without their own
@@ -243,6 +198,7 @@ def _rule_json(rule: Rule, description: str = "") -> dict:
 
 # ------------------------------------------------------------------------------------------ store
 def default_path() -> Path:
+    """Where sg.db was before the database moved to PostgreSQL (sg_store.py migrate copies it)."""
     env = os.environ.get(DB_ENV)
     return Path(env).expanduser() if env else Path.home() / ".sg-tightener" / "sg.db"
 
@@ -262,35 +218,28 @@ def actor_name(arn: str = "") -> str:
 class Store:
     """The database. Every write goes through a transaction and leaves an audit entry."""
 
-    def __init__(self, path: str | Path | None = None):
-        self.path = Path(path) if path else default_path()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(self.path.parent, 0o700)
-        except OSError:
-            pass
-        new = not self.path.exists()
-        self.db = sqlite3.connect(str(self.path), isolation_level=None, timeout=30)
-        if new:
-            os.chmod(self.path, 0o600)
-        for attempt in range(50):  # switching to WAL skips the busy timeout: several readers opening at once retry
-            try:
-                if self.db.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal":
-                    self.db.execute("PRAGMA journal_mode=WAL")
-                break
-            except sqlite3.OperationalError as exc:
-                if "locked" not in str(exc) or attempt == 49:
-                    raise
-                time.sleep(0.1)
-        self.db.execute("PRAGMA foreign_keys=ON")
-        self.db.executescript(SCHEMA)
+    def __init__(self, path: str | Path | None = None, schema: str | None = None):
+        """``path`` is a PostgreSQL connection string, or a data directory location (the old sg.db file) whose
+        schema is used; by default $SG_TIGHTENER_DB, else the ~/.sg-tightener schema."""
+        target = str(path) if path else os.environ.get(DB_ENV, "")
+        conninfo = None
+        if schema is None:
+            if target.startswith(("postgres://", "postgresql://")):
+                conninfo, schema = target, sg_store.schema_for_dir(sg_store.home_dir())
+            elif target:
+                schema = sg_store.locate(Path(target).expanduser())[0]
+            else:
+                schema = sg_store.schema_for_dir(sg_store.home_dir())
+        self.db = sg_store.Db(schema, conninfo)
+        self.path = f"PostgreSQL schema {schema}"
 
     def close(self) -> None:
         self.db.close()
 
-    # transactions: BEGIN IMMEDIATE so two writers queue rather than interleave
+    # transactions: one writer at a time (an advisory lock), so two writers queue rather than interleave
     def __enter__(self):
-        self.db.execute("BEGIN IMMEDIATE")
+        self.db.execute("BEGIN")
+        self.db.execute("SELECT pg_advisory_xact_lock(hashtext('sg-tightener-write'))")
         return self
 
     def __exit__(self, exc_type, *_):
@@ -593,10 +542,9 @@ class Store:
         if not changes:
             return None
         body = json.dumps([{"group": g, "op": op, "rule": _rule_json(r, d)} for g, op, r, d in changes], sort_keys=True)
-        cur = self.db.execute("INSERT INTO requests (at, account, region, proposer, reason, ticket, changes, status) "
-                              "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
-                              (_now(), account, region, actor, reason, ticket, body))  # fmt: skip
-        rid = cur.lastrowid
+        rid = self.db.execute("INSERT INTO requests (at, account, region, proposer, reason, ticket, changes, status) "
+                              "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending') RETURNING id",
+                              (_now(), account, region, actor, reason, ticket, body)).fetchone()[0]  # fmt: skip
         self.audit(actor, "tool", "request-proposed", account, region, _groups_of(changes),
                    {"request": rid, **_split(changes)}, reason, ticket)  # fmt: skip
         if not self.approvals():
@@ -1594,7 +1542,7 @@ def _only_account(store: Store, region: str) -> str:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sg_db.py", description=__doc__.splitlines()[0])
-    p.add_argument("--db", help=f"database file (default ${DB_ENV} or ~/.sg-tightener/sg.db)")
+    p.add_argument("--db", help=f"PostgreSQL connection string (default ${DB_ENV}, else sg_store.py setup's database)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def reasoned(q, required=True):

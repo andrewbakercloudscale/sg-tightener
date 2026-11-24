@@ -22,6 +22,8 @@ import threading
 import time
 from pathlib import Path
 
+import sg_store
+
 LOG = logging.getLogger("sg_sso")
 CLIENT_NAME = "sg-tightener-console"
 ROLE_WORKERS = 3  # Identity Center throttles ListAccountRoles hard; more threads only means more 429s
@@ -86,7 +88,7 @@ class Sso:
     """One Identity Center sign-in: the device flow, the accounts and roles, and a session per account."""
 
     def __init__(self, cache: Path, client_factory=None, cli_cache: Path | None = None):
-        self.cache = Path(cache)
+        self.cache = sg_store.File(cache)  # kept in the database under its old path
         self.cli_cache = cli_cache if cli_cache is not None else Path.home() / ".aws" / "sso" / "cache"
         self._client = client_factory or self._boto_client
         self._lock = threading.Lock()
@@ -100,19 +102,23 @@ class Sso:
 
     # ---------------------------------------------------------------- persistence
     def _load(self) -> dict:
+        """What was kept; empty (and ``unloaded``) while the database is not running."""
+        self.unloaded = False
         try:
             got = json.loads(self.cache.read_text())
             return got if isinstance(got, dict) else {}
+        except sg_store.NotConfigured:
+            self.unloaded = True
+            return {}
         except (OSError, ValueError):
             return {}
 
     def _save(self) -> None:
-        self.cache.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.cache.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")  # saves can overlap
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(self.state, f, indent=1)
-        os.replace(tmp, self.cache)
+        if getattr(self, "unloaded", False):  # loaded while the database was down: keep what it holds
+            kept = self._load()
+            if not self.unloaded:
+                self.state = {**kept, **self.state}
+        self.cache.write_text(json.dumps(self.state, indent=1))
 
     @staticmethod
     def _boto_client(service: str, region: str):

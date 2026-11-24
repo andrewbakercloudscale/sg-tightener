@@ -1,5 +1,19 @@
 # Changelog
 
+## 5.20.0 - 2026-11-24
+
+- **Everything is kept in PostgreSQL.** Security groups, the audit trail, flow-log reads, the address lists and
+  every cache moved from files (SQLite `sg.db`, `review/*.json.gz`, JSON state) into one database.
+  `python sg_store.py setup` starts it in Docker on 127.0.0.1 only (colima on a Mac); `SG_TIGHTENER_PG_DSN`
+  names one you run. `python sg_store.py migrate` copies an earlier version's files exactly, checks the audit
+  chain, and moves the originals aside. `install.sh` does both.
+- **Flow-log reads are kept 12 months**; older ones are deleted as accounts are read (or `sg_store.py prune`).
+  The audit trail and change requests are kept for good, since each audit entry's hash covers the one before.
+- **Start the database from the console.** When it is not running the console still opens and shows a
+  **Start the database** button, which starts colima if Docker's engine is stopped and then the container
+  (`python sg_store.py start` from a terminal).
+- The console's state behind every tab loads in about a tenth of a second instead of seconds.
+
 ## 5.19.12 - 2026-11-24
 
 - **The five biggest external risks read at a glance.** Each rule says how many IP addresses used it, flags

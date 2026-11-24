@@ -45,11 +45,24 @@ if [ "$dev" = 1 ]; then
 fi
 
 # Every package the tools import, checked, so a broken install fails here and not halfway through a read.
-if ! "$py" -c 'import boto3, botocore, pandas, openpyxl, yaml' 2>/dev/null; then
+if ! "$py" -c 'import boto3, botocore, pandas, openpyxl, yaml, psycopg' 2>/dev/null; then
   echo "A package did not install. Run: $py -m pip install -r requirements.txt and read the error" >&2
   exit 1
 fi
 "$py" -c 'import sg_tightener, sg_db, sg_review, sg_console' || { echo "The tools did not load: see the error above" >&2; exit 1; }
+
+# The database: PostgreSQL in a Docker container on 127.0.0.1 (colima on a Mac), unless SG_TIGHTENER_PG_DSN names
+# one you run. Everything the tools keep (groups, the audit trail, flow-log reads, caches) is in it.
+if [ -z "${SG_TIGHTENER_PG_DSN:-}" ] && [ ! -s "$HOME/.sg-tightener/pg.dsn" ]; then
+  echo "Setting up the database (PostgreSQL in Docker, on 127.0.0.1 only)..."
+  "$py" sg_store.py setup || { echo "The database is not set up: install Docker or colima (brew install colima docker docker-compose), then run: $py sg_store.py setup" >&2; exit 1; }
+  if [ -e "$HOME/.sg-tightener/sg.db" ]; then
+    echo "Copying what the earlier version kept in files (sg.db, reads, caches) into it..."
+    "$py" sg_store.py migrate || echo "Not copied: run $py sg_store.py migrate and read the error" >&2
+  fi
+else
+  "$py" sg_store.py start || { echo "The database does not answer: see the error above" >&2; exit 1; }
+fi
 
 # The public address lists, downloaded once now (each tool refreshes them when they are a day old). Not fatal:
 # offline, the tools fall back to a few built-in ranges until the next run with a network.
@@ -76,6 +89,11 @@ Then:
   python sg_review.py report                                # write the page
   python sg_review.py watch --regions eu-west-1 --slack URL --loop   # alerts on rejected traffic
   python sg_console.py serve                                # the console
+  python sg_store.py status                                 # the database: where, how big, what it holds
+
+The database runs in Docker (colima on a Mac). After a restart, start it from the console's
+"Start the database" button or with: python sg_store.py start
+To have colima start at login: brew services start colima
 
 Tests:
   ./install.sh --dev && python -m pytest

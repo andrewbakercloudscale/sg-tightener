@@ -341,10 +341,10 @@ def propose(store: sg_db.Store, account: str, p: dict, groups: dict, assets: dic
             reason = (f"Merge {len(members) + 1} groups into {m['target_name']} ({m['target']}) in {region}: "
                       f"after tightening they allow the same traffic; {len(enis)} interface(s) move")  # fmt: skip
             with store:
-                cur = store.db.execute("INSERT INTO requests (at, account, region, proposer, reason, ticket, changes, status) "
-                                       "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
-                                       (sg_db._now(), account, region, actor, reason, ticket, json.dumps(body, sort_keys=True)))  # fmt: skip
-                mid = cur.lastrowid
+                mid = store.db.execute("INSERT INTO requests (at, account, region, proposer, reason, ticket, changes, status) "
+                                       "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending') RETURNING id",
+                                       (sg_db._now(), account, region, actor, reason, ticket,
+                                        json.dumps(body, sort_keys=True))).fetchone()[0]  # fmt: skip
                 store.audit(actor, "tool", "merge-request-proposed", account, region, ",".join([m["target"]] + members),
                             {"request": mid, "target": m["target"], "members": members, "enis": sorted(enis)}, reason, ticket)
                 if not store.approvals():

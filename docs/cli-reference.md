@@ -42,6 +42,22 @@ Flow-log source, used by `analyse`, `sg_diagnose` and `sg_extend`: give
 
 ---
 
+## `sg_store.py`
+
+Where everything is kept: PostgreSQL ([the database](database.md#where-it-is-kept)).
+
+```bash
+python sg_store.py setup [--port 55432]   # PostgreSQL in Docker on 127.0.0.1, save how to reach it, create tables
+python sg_store.py start                  # start it again (colima first, when Docker's engine is not running)
+python sg_store.py migrate [--keep]       # copy an earlier version's sg.db, reads and state files, once
+python sg_store.py status                 # where it is and what it holds
+python sg_store.py prune                  # delete flow-log reads older than 12 months now
+```
+
+`SG_TIGHTENER_PG_DSN` names another PostgreSQL; `SG_TIGHTENER_PG_SCHEMA` another schema.
+
+---
+
 ## `sg_db.py`
 
 The security group database: every group and rule, and an append-only, hash-chained audit trail.
@@ -90,7 +106,7 @@ applied. `mode enforce --account ID` (after a passing `check`) lets approved cha
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--db` | `$SG_TIGHTENER_DB` or `~/.sg-tightener/sg.db` | The database file (before the command) |
+| `--db` | `$SG_TIGHTENER_DB` (a PostgreSQL address or a location), else `sg_store.py setup`'s database | The database (before the command) |
 | `--reason`, `--ticket` | | Why, kept in the audit trail. `--reason` is required for `add`, `remove`, `exec`, `adopt` and `create-group` |
 | `--source` | | A CIDR (IPv4 or IPv6), `pl-…`, `sg-…`, or `ACCOUNT/sg-…` for another account's group |
 | `--proto`, `--port` | | `tcp`, `udp`, `icmp`, `all` or a number; `22`, `8000-8100` or `all` |

@@ -13,13 +13,13 @@ Every source is named: this account's VPCs and the ranges you call internal, dat
 VPN routes, other private space), AWS (and which service), SaaS providers, or any other network by AS number.
 Partners and other networks you know can be named in a names file (``~/.sg-tightener/names.yaml``, or
 ``--names``): ranges and AS numbers, each with a name and a type.
-The naming lists download to ``~/.sg-tightener/ipintel`` and are looked up locally: no address leaves the machine.
+The naming lists download into the database (sg_store.py) and are looked up locally: no address leaves the machine.
 
 Modes:
   read      Read the account's security groups, interfaces, network ACLs, VPN routes, flow logs and 90 days
             of rule changes, then its VPC flow logs in CloudWatch Logs by Logs Insights, a slice at a time
             (hourly for the last day, six-hourly for the last week, daily beyond). Slices are kept in
-            ``~/.sg-tightener/review/<account>.json.gz``, so a later read fills only the gap. Logs Insights
+            the database (sg_store.py), 12 months at most, so a later read fills only the gap. Logs Insights
             bills about US$0.005 a GB scanned: the cost is estimated and confirmed before reading.
   report    Write one self-contained HTML page (no server, no network) with the three timelines, the rules
             table and what to change, the CSV and an approved.json per region to download.
@@ -70,6 +70,7 @@ except ImportError:  # run outside the venv: say how to install, not a traceback
 
 import sg_ipintel
 import sg_securityhub
+import sg_store
 import sg_tightener
 
 LOG = logging.getLogger("sg_review")
@@ -811,38 +812,41 @@ _ACCT_RE = re.compile(r"^[0-9]{12}$")
 
 
 # ------------------------------------------------------------------------------------------- cache
+# Each account's read is kept in the database (sg_store: review_accounts, review_regions, review_slices), so a
+# later read fills only the gap. Slices older than 12 months are deleted on every save.
 def _dir():
-    d = sg_ipintel.DATA_DIR / "review"
-    d.mkdir(parents=True, exist_ok=True)
-    os.chmod(d, 0o700)
-    return d
+    """Where the reads' companion state is keyed (watch, Security Hub, the VPC index): no longer a folder on disk."""
+    return sg_ipintel.DATA_DIR / "review"
 
 
 def cached_accounts() -> list[str]:
-    return sorted(p.name.split(".")[0] for p in _dir().glob("*.json.gz") if _ACCT_RE.fullmatch(p.name.split(".")[0]))
+    return [a for a in sg_store.review_accounts() if _ACCT_RE.fullmatch(a)]
 
 
-def _path(account: str):
+def _check(account: str) -> str:
     if not _ACCT_RE.fullmatch(account or ""):
         raise KeyError(account)
-    return _dir() / f"{account}.json.gz"
+    return account
+
+
+def stamp(account: str) -> float | None:
+    """When the account's read was last saved, or None when it has never been read."""
+    return sg_store.review_stamp(_check(account))
+
+
+def stamps() -> dict[str, float]:
+    """{account: when its read was last saved} for every account read."""
+    return {a: t for a, t in sg_store.review_stamps().items() if _ACCT_RE.fullmatch(a)}
 
 
 def load(account: str) -> dict | None:
-    try:
-        with gzip.open(_path(account), "rt") as f:
-            doc = json.load(f)
-    except (OSError, ValueError, EOFError):
-        return None
-    return doc if doc.get("schema") == SCHEMA else None
+    return sg_store.review_load(_check(account), doc_schema=SCHEMA)
 
 
 def save(doc: dict) -> None:
-    path = _path(doc["account"])
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    with os.fdopen(fd, "wb") as raw, gzip.open(raw, "wt") as f:
-        json.dump(doc, f, separators=(",", ":"))
-    os.replace(tmp, path)
+    _check(doc["account"])
+    doc.setdefault("reads", [])
+    sg_store.review_save(doc)
     if doc.get("mode") != "demo":
         idx = vpc_index(build_missing=False)
         idx[doc["account"]] = _vpcs_of(doc)
@@ -860,17 +864,13 @@ def _vpcs_of(doc: dict) -> dict:
 
 
 def _save_index(idx: dict) -> None:
-    path = _dir() / "vpcs.json"
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    with os.fdopen(fd, "w") as f:
-        json.dump(idx, f, separators=(",", ":"))
-    os.replace(tmp, path)
+    sg_store.File(_dir() / "vpcs.json").write_text(json.dumps(idx, separators=(",", ":")))
 
 
 def vpc_index(build_missing: bool = True) -> dict:
     """{account: {name, vpcs: [[region, vpc id, vpc name, IPv4 ranges, IPv6 ranges]]}} for every account read."""
     try:
-        idx = json.loads((_dir() / "vpcs.json").read_text())
+        idx = json.loads(sg_store.File(_dir() / "vpcs.json").read_text())
         if not isinstance(idx, dict):
             idx = {}
     except (OSError, ValueError):
@@ -901,11 +901,10 @@ def forget(account: str) -> bool:
     idx = vpc_index(build_missing=False)
     if idx.pop(account, None) is not None:  # a forgotten account no longer names sources in other reviews
         _save_index(idx)
-    try:
-        _path(account).unlink()
-        return True
-    except FileNotFoundError:
-        return False
+    gone = sg_store.review_forget(_check(account))
+    for p in (_watch_path(account), _hub_path(account)):
+        sg_store.File(p).unlink()
+    return gone
 
 
 def new_doc(account: str, name: str, mode: str = "live") -> dict:
@@ -3837,19 +3836,14 @@ def _watch_path(account: str) -> Path:
 
 def load_watch(account: str) -> dict:
     try:
-        with open(_watch_path(account)) as f:
-            got = json.load(f)
+        got = json.loads(sg_store.File(_watch_path(account)).read_text())
         return got if isinstance(got.get("sent"), dict) else {"sent": {}}
-    except (OSError, ValueError):
+    except (OSError, ValueError, AttributeError):
         return {"sent": {}}
 
 
 def save_watch(account: str, state: dict) -> None:
-    path = _watch_path(account)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    with os.fdopen(fd, "w") as f:
-        json.dump(state, f, indent=1)
-    os.replace(tmp, path)
+    sg_store.File(_watch_path(account)).write_text(json.dumps(state, indent=1))
 
 
 def fresh_items(items: list[dict], state: dict, now: float, floor: str = "medium",
@@ -4091,7 +4085,7 @@ def push_hub(sess, account: str, findings: list[dict], regions: Sequence[str] = 
     """Send `findings` for `account`, archiving the ones sent before that are gone; per region, as Security Hub
     is regional. The state is kept in <account>.securityhub.json."""
     try:
-        state = json.loads(_hub_path(account).read_text())
+        state = json.loads(sg_store.File(_hub_path(account)).read_text())
     except (OSError, ValueError):
         state = {}
     now = sg_securityhub._now()
@@ -4106,11 +4100,7 @@ def push_hub(sess, account: str, findings: list[dict], regions: Sequence[str] = 
         total["archived"] += sum(1 for f in todo if f["RecordState"] == "ARCHIVED")
         for k in ("sent", "failed", "errors"):
             total[k] += res[k]
-    path = _hub_path(account)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    with os.fdopen(fd, "w") as f:
-        json.dump(state, f, indent=1)
-    os.replace(tmp, path)
+    sg_store.File(_hub_path(account)).write_text(json.dumps(state, indent=1))
     if total["failed"]:
         LOG.warning("Security Hub refused %d finding(s): %s", total["failed"], "; ".join(total["errors"][:3]))
     return total

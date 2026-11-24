@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import sqlite3
-
+import psycopg
 import pytest
 
 import sg_db
@@ -36,11 +35,14 @@ def test_import_takes_every_rule_as_desired_and_synced(store):
         store.import_region(ACCT, REGION, {}, "alice")
 
 
-def test_file_is_private(tmp_path):
-    s = Store(tmp_path / "d" / "sg.db")
-    assert (tmp_path / "d" / "sg.db").stat().st_mode & 0o077 == 0
-    assert (tmp_path / "d").stat().st_mode & 0o077 == 0
-    s.close()
+def test_each_location_is_its_own_database(tmp_path):
+    a, b = Store(tmp_path / "a" / "sg.db"), Store(tmp_path / "b" / "sg.db")
+    with a:
+        a.import_region(ACCT, REGION, {"sg-1": group({HTTPS_VPC: ""})}, "alice")
+    assert a.imported(ACCT, REGION) and not b.imported(ACCT, REGION)
+    assert Store(tmp_path / "a" / "sg.db").imported(ACCT, REGION)  # the same location is the same data
+    a.close()
+    b.close()
 
 
 def test_external_rule_is_recorded_and_apply_would_put_it_back(store):
@@ -101,10 +103,10 @@ def test_audit_trail_is_append_only_and_hash_chained(store, tmp_path):
         store.desire(ACCT, REGION, "sg-1", "alice", "why", add={SSH_WORLD: ""})
     assert store.verify() == (True, 2, "")
     for sql in ("UPDATE audit SET actor = 'mallory'", "DELETE FROM audit WHERE seq = 1"):
-        with pytest.raises(sqlite3.DatabaseError, match="append-only"):
+        with pytest.raises(psycopg.errors.RaiseException, match="append-only"):
             store.db.execute(sql)
     # someone who drops the trigger to edit an entry is still caught by the chain
-    store.db.execute("DROP TRIGGER audit_append_only_u")
+    store.db.execute("DROP TRIGGER audit_append_only_u ON audit")
     store.db.execute("UPDATE audit SET reason = 'nothing to see' WHERE seq = 2")
     ok, _, why = store.verify()
     assert not ok and "changed after it was written" in why
@@ -114,7 +116,7 @@ def test_removed_entry_breaks_the_chain(store):
     with store:
         store.desire(ACCT, REGION, "sg-1", "alice", "one", add={SSH_WORLD: ""})
         store.desire(ACCT, REGION, "sg-1", "alice", "two", remove=[SSH_WORLD])
-    store.db.execute("DROP TRIGGER audit_append_only_d")
+    store.db.execute("DROP TRIGGER audit_append_only_d ON audit")
     store.db.execute("DELETE FROM audit WHERE seq = 2")
     ok, _, why = store.verify()
     assert not ok and "removed or reordered" in why

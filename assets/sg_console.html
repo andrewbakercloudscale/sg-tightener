@@ -314,6 +314,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   </nav>
 </header>
 <main>
+  <div id="dbBox" class="flash err" hidden><div id="dbMsg"></div><p style="margin:8px 0 0"><button class="btn" id="dbStart" type="button">Start the database</button></p></div>
   <div id="flash" hidden></div>
 
   <section id="tab-overview">
@@ -621,10 +622,38 @@ section.nodata .card:not(.empty-state) { display: none; }
     try {
       const r = await fetch(path, opts);
       const j = await r.json().catch(() => ({error: `HTTP ${r.status}`}));
+      if (r.status === 503 && j.database === false) dbDown();
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
       return j;
     } finally { if (!quiet) busy(-1); }
   }
+  // ---- the database: when it is not running, offer to start it (colima and the container)
+  let dbPoll = null;
+  async function dbDown() {
+    let st;
+    try { st = await (await fetch("/api/database")).json(); } catch (e) { return; }
+    drawDb(st);
+  }
+  function drawDb(st) {
+    const box = $("dbBox");
+    if (st.ok && !st.starting) {
+      if (!box.hidden) { box.hidden = true; location.reload(); }
+      return;
+    }
+    box.hidden = false;
+    const steps = st.steps.length ? `<div class="muted">${st.steps.map(esc).join(" · ")}</div>` : "";
+    const why = st.error ? `<div>${esc(st.error)}</div>` : `<div class="muted">${esc(st.why)}</div>`;
+    const can = st.can_start || st.error;
+    $("dbMsg").innerHTML = (st.starting ? "<b>Starting the database…</b> colima's first start can take a few minutes."
+      : "<b>The database is not running.</b> " + (can ? "Start it here: this starts colima (Docker's engine) if it is stopped, then the PostgreSQL container."
+      : st.local ? "Install Docker or colima to start it from here." : "No local database is set up here: run <code>python3 sg_store.py setup</code>.")) + why + steps;
+    $("dbStart").hidden = !can || st.starting;
+    if (st.starting && !dbPoll) dbPoll = setInterval(async () => {
+      try { const s = await (await fetch("/api/database")).json(); if (!s.starting) { clearInterval(dbPoll); dbPoll = null; } drawDb(s); } catch (e) { /* the console restarting */ }
+    }, 2000);
+  }
+  $("dbStart").addEventListener("click", (e) => act(e.target, async () => { drawDb(await api("/api/database/start", {})); }));
+
   function flash(msg, err) {
     const f = $("flash");
     f.hidden = false; f.className = "flash" + (err ? " err" : ""); f.textContent = msg;

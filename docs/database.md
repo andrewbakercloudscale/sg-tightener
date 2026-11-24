@@ -4,10 +4,37 @@
 > change, including the ones made behind the tool's back. Terraform cannot manage security groups
 > with this solution ([why](../README.md#security-groups-live-in-a-local-database-not-in-terraform)).
 
-`sg_db.py` keeps every security group and rule in a local SQLite database:
+`sg_db.py` keeps every security group and rule in PostgreSQL, with everything else sg-tightener keeps.
 
-- `$SG_TIGHTENER_DB`, or `~/.sg-tightener/sg.db` (the directory is `0700`, the file `0600`);
-- `--db FILE` on any `sg_db.py` command.
+## Where it is kept
+
+| What | Where |
+|---|---|
+| The server | `python sg_store.py setup` starts `postgres:17.6-alpine` in Docker, on `127.0.0.1:55432` only, data in the volume `sg-tightener-pgdata`. The password is in `~/.sg-tightener/pg.env` and how to connect in `~/.sg-tightener/pg.dsn` (both `0600`) |
+| Your own server | `SG_TIGHTENER_PG_DSN=postgresql://user:pass@host/db` (or `--db` with that address on any `sg_db.py` command) |
+| Schemas | `sgt` for `~/.sg-tightener`; another `--data-dir` gets a schema of its own (`t_` and a hash of its path); `SG_TIGHTENER_PG_SCHEMA` overrides |
+| Tables | `regions`, `groups`, `rules`, `accounts`, `audit`, `requests`, assets (below); `review_accounts`, `review_regions`, `review_slices`, `review_reads` (flow-log reads); `report_rows` (the console's report cache); `files` (small state: address lists, watch and Security Hub state, sign-in caches, owners, the console key) |
+
+```bash
+python sg_store.py setup      # start the server in Docker, save how to reach it, create the tables
+python sg_store.py start      # start it again (and colima first, when Docker's engine is not running)
+python sg_store.py migrate    # copy sg.db, the flow-log reads and the state files of an earlier version, once
+python sg_store.py status     # where it is and how much each table holds
+python sg_store.py prune      # delete flow-log reads older than 12 months now (reads and saves do it anyway)
+```
+
+- **Docker must be running.** On a Mac that is colima: `brew services start colima` starts it at login. When
+  it is not, every tool says so, and the console shows **Start the database**, which starts colima (when
+  Docker's engine is stopped) and then the container.
+- **Retention**: flow-log reads (each account's slices and reads) are kept **12 months** and older ones are
+  deleted when an account is read or loaded. The audit trail and change requests are **never** deleted:
+  each audit entry's hash covers the one before it, so deleting old ones would break `verify`.
+- **Frozen when fetched**: a slice of flow logs is read once, to 15 minutes ago (flow logs arrive within
+  about ten), and never read again; later reads add new slices.
+- `migrate` copies exactly (ids, hashes), checks the audit chain, and refuses a schema that already holds
+  data. The files it copied are moved to `~/.sg-tightener/migrated-<time>/` (`--keep` leaves them).
+- Still files, on purpose: what one command writes for another (`plan.json`, `approved.json`, manifests,
+  reports), `names.yaml` (yours to edit), and `console.log`.
 
 ---
 

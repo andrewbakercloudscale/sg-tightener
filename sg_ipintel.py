@@ -304,9 +304,14 @@ def set_data_dir(path) -> None:
 
 
 def _dir():
-    d = DATA_DIR / "ipintel"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    """Where the lists are keyed: they are kept in the database (sg_store), under ipintel/<name>."""
+    return DATA_DIR / "ipintel"
+
+
+def _file(path):
+    import sg_store
+
+    return sg_store.File(path)
 
 
 def _get(url: str, timeout: float = 30) -> bytes:
@@ -406,10 +411,8 @@ def parse_asn(raw: bytes) -> list[tuple]:
 
 
 def _fresh(path, age: float) -> bool:
-    try:
-        return time.time() - path.stat().st_mtime < age
-    except OSError:
-        return False
+    at = _file(path).stamp()
+    return at is not None and time.time() - at < age
 
 
 def refresh(force: bool = False) -> dict:
@@ -422,7 +425,7 @@ def refresh(force: bool = False) -> dict:
             rows = [(p["ip_prefix"], p.get("service", ""), p.get("region", "")) for p in doc.get("prefixes") or []]
             rows += [(p["ipv6_prefix"], p.get("service", ""), p.get("region", ""))
                      for p in doc.get("ipv6_prefixes") or [] if p.get("ipv6_prefix")]  # fmt: skip
-            (d / "aws.json").write_text(json.dumps(rows))
+            _file(d / "aws.json").write_text(json.dumps(rows))
             got["aws"] = len(rows)
         except (OSError, ValueError, KeyError) as exc:
             log.info("AWS ranges not read: %s", exc)
@@ -434,13 +437,13 @@ def refresh(force: bool = False) -> dict:
             except (OSError, ValueError, AttributeError) as exc:
                 log.info("%s ranges not read: %s", name, exc)
         if pairs:
-            (d / "saas.json").write_text(json.dumps(pairs))
+            _file(d / "saas.json").write_text(json.dumps(pairs))
             got["saas"] = len(pairs)
     if force or not _fresh(d / "tor.json", DAY):
         try:
             rows = parse_tor(_get(TOR_URL, 30))
             if rows:  # an empty or broken list is not kept
-                (d / "tor.json").write_text(json.dumps(rows))
+                _file(d / "tor.json").write_text(json.dumps(rows))
                 got["tor"] = len(rows)
         except (OSError, ValueError) as exc:
             log.info("Tor exit list not read: %s", exc)
@@ -452,13 +455,13 @@ def refresh(force: bool = False) -> dict:
             except (OSError, ValueError) as exc:
                 log.info("%s not read: %s", name, exc)
         if pairs:  # a failed download keeps the old copy
-            (d / "threat.json").write_text(json.dumps(pairs))
+            _file(d / "threat.json").write_text(json.dumps(pairs))
             got["threat"] = len(pairs)
     if force or not _fresh(d / "asn.tsv.gz", 7 * DAY):
         try:
             raw = _get(ASN_URL, 90)
             parse_asn(raw)[:1]  # a broken download is not kept
-            (d / "asn.tsv.gz").write_bytes(raw)
+            _file(d / "asn.tsv.gz").write_bytes(raw)
             got["asn"] = True
         except (OSError, ValueError, EOFError) as exc:
             log.info("AS number list not read: %s", exc)
@@ -466,7 +469,7 @@ def refresh(force: bool = False) -> dict:
         try:
             raw = _get(ASN6_URL, 90)
             parse_asn(raw)[:1]
-            (d / "asn6.tsv.gz").write_bytes(raw)
+            _file(d / "asn6.tsv.gz").write_bytes(raw)
             got["asn6"] = True
         except (OSError, ValueError, EOFError) as exc:
             log.info("IPv6 AS number list not read: %s", exc)
@@ -639,10 +642,10 @@ class Intel:
 def get() -> Intel:
     """The lookups from whatever lists are on disk (the stand-ins for any not yet read)."""
     d = _dir()
-    key = tuple(
-        (p.name, p.stat().st_mtime) if p.exists() else (p.name, 0)
-        for p in (d / "aws.json", d / "saas.json", d / "asn.tsv.gz", d / "tor.json", d / "asn6.tsv.gz", d / "threat.json")
-    )
+    import sg_store
+
+    names = (d / "aws.json", d / "saas.json", d / "asn.tsv.gz", d / "tor.json", d / "asn6.tsv.gz", d / "threat.json")
+    key = (sg_store.data_schema(), *((p.name, at or 0) for p, at in sg_store.stamps(names).items()))
     with _lock:
         if _memo.get("key") == key:
             return _memo["intel"]
@@ -650,12 +653,12 @@ def get() -> Intel:
     saas_rows = _read_json(d / "saas.json") or SEED_SAAS
     asn_rows = SEED_ASN
     try:
-        asn_rows = parse_asn((d / "asn.tsv.gz").read_bytes()) or SEED_ASN
+        asn_rows = parse_asn(_file(d / "asn.tsv.gz").read_bytes()) or SEED_ASN
     except (OSError, ValueError, EOFError):
         pass
     asn6_rows: list = SEED_ASN6
     try:
-        asn6_rows = parse_asn((d / "asn6.tsv.gz").read_bytes()) or SEED_ASN6
+        asn6_rows = parse_asn(_file(d / "asn6.tsv.gz").read_bytes()) or SEED_ASN6
     except (OSError, ValueError, EOFError):
         pass
     intel = Intel(aws_rows, saas_rows, asn_rows, _read_json(d / "tor.json", flat=True) or (), asn6_rows,
@@ -670,7 +673,7 @@ def get() -> Intel:
 
 def _read_json(path, flat: bool = False):
     try:
-        rows = json.loads(path.read_text())
+        rows = json.loads(_file(path).read_text())
         return list(rows) if flat else [tuple(r) for r in rows]
     except (OSError, ValueError, TypeError):
         return None

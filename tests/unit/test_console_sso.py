@@ -15,6 +15,7 @@ import sg_db
 import sg_ipintel as ipintel
 import sg_review
 import sg_sso
+import sg_store
 
 ACCOUNT, OTHER = "111122223333", "444455556666"
 
@@ -102,7 +103,8 @@ def test_sign_in_shows_a_code_then_lists_accounts_with_read_only_roles_first(sso
     accts = sso.accounts()
     assert [a["name"] for a in accts] == ["data-prod", "payments-prod"]
     assert accts[0]["roles"][0] == "ReadOnlyAccess"
-    assert oct((sso.cache.stat().st_mode) & 0o777) == "0o600"
+    assert sso.cache.exists() and sso.cache.key == "sso.json"  # kept in the database, not a file
+    assert not sso.cache.path.exists()
 
 
 def test_a_throttled_role_listing_keeps_the_list_and_retries_gently(sso):
@@ -293,7 +295,7 @@ def test_the_console_address_stays_the_same_across_restarts(tmp_path):
     try:
         a = sg_console.lasting_token()
         assert sg_console.lasting_token() == a and len(a) >= 24
-        assert oct(os.stat(sg_console.token_file()).st_mode & 0o777) == "0o600"
+        assert sg_console.token_file().exists()  # kept in the database, not a file
         assert sg_console.lasting_token(new=True) != a
     finally:
         ipintel.set_data_dir(old)
@@ -434,7 +436,7 @@ def test_keys_on_this_computer_list_profiles_and_read_the_organisation_with_the_
     with pytest.raises(sg_keys.KeysError):
         k.use("nope")
     st = k.use("mgmt")
-    assert st["signed_in"] and st["account"] == "111111111111" and "AKIA" not in (tmp_path / "keys.json").read_text()
+    assert st["signed_in"] and st["account"] == "111111111111" and "AKIA" not in sg_store.File(tmp_path / "keys.json").read_text()
     assert len(k.accounts()) == 5 and k.accounts()[0]["account"] == "111111111111", "its own account first"
     assert next(n for n in _walk(k.org_tree()) if n["name"] == "Payments")["accounts"][0]["account"] == "444444444444"
     chosen = k.choose([{"account": "111111111111", "role": "CTO-Read"}, {"account": "222222222222", "role": "CTO-Read"}])

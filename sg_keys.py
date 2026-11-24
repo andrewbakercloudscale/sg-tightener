@@ -17,6 +17,8 @@ import threading
 import time
 from pathlib import Path
 
+import sg_store
+
 DEFAULT_ROLE = "OrganizationAccountAccessRole"
 
 
@@ -52,7 +54,7 @@ class Keys:
     """The keys sign-in, with the same face the console uses for the SSO one."""
 
     def __init__(self, cache: Path, session_factory=None):
-        self.cache = Path(cache)
+        self.cache = sg_store.File(cache)  # kept in the database under its old path
         self._factory = session_factory or self._boto_session
         self._lock = threading.Lock()
         self._base = None
@@ -63,19 +65,23 @@ class Keys:
 
     # ---------------------------------------------------------------- persistence
     def _load(self) -> dict:
+        """What was kept; empty (and ``unloaded``) while the database is not running."""
+        self.unloaded = False
         try:
             d = json.loads(self.cache.read_text())
             return d if isinstance(d, dict) else {}
+        except sg_store.NotConfigured:
+            self.unloaded = True
+            return {}
         except (OSError, ValueError):
             return {}
 
     def _save(self) -> None:
-        self.cache.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.cache.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(self.state, f, indent=1)
-        os.replace(tmp, self.cache)
+        if getattr(self, "unloaded", False):  # loaded while the database was down: keep what it holds
+            kept = self._load()
+            if not self.unloaded:
+                self.state = {**kept, **self.state}
+        self.cache.write_text(json.dumps(self.state, indent=1))
 
     @staticmethod
     def _boto_session(profile: str | None):

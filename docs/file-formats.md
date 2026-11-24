@@ -332,7 +332,7 @@ prefixes (`enis[].ipv6`, `enis[].prefixes6`); chunk rows hold IPv6 source addres
 
 ## The security group database
 
-`~/.sg-tightener/sg.db` (or `$SG_TIGHTENER_DB`) is SQLite: tables `regions`, `groups`, `rules`
+PostgreSQL (see [the database](database.md#where-it-is-kept)), schema `sgt`: tables `regions`, `groups`, `rules`
 (`state` desired or synced, `direction` in or out, `proto`, `from_port`, `to_port`, `source`,
 `description`) and `audit`. See [the database](database.md) for every column and the hash chain.
 `sg_db.py log --json` writes the audit trail as a list of entries with `detail` parsed.

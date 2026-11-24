@@ -244,11 +244,10 @@ def propose(store: sg_db.Store, plan: dict, actor: str, reason: str, ticket: str
     body = {k: plan[k] for k in ("eni", "instance", "vpc_id", "from_groups", "group_name", "ingress", "egress",
                                  "narrowed", "evidence", "generated_at")}  # fmt: skip
     body["kind"] = "asset"
-    cur = store.db.execute("INSERT INTO requests (at, account, region, proposer, reason, ticket, changes, status) "
-                           "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
+    rid = store.db.execute("INSERT INTO requests (at, account, region, proposer, reason, ticket, changes, status) "
+                           "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending') RETURNING id",
                            (sg_db._now(), plan["account"], plan["region"], actor, reason, ticket,
-                            json.dumps(body, sort_keys=True)))  # fmt: skip
-    rid = cur.lastrowid
+                            json.dumps(body, sort_keys=True))).fetchone()[0]  # fmt: skip
     store.audit(actor, "tool", "asset-request-proposed", plan["account"], plan["region"], ",".join(plan["from_groups"]),
                 {"request": rid, "eni": plan["eni"], "instance": plan["instance"], "from_groups": plan["from_groups"],
                  "inbound": len(plan["ingress"]), "outbound": len(plan["egress"]), **plan["narrowed"]}, reason, ticket)  # fmt: skip
