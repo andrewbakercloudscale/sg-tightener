@@ -442,6 +442,25 @@ def test_a_report_answers_from_its_last_rows_while_an_account_is_being_read(tmp_
     assert c._reports("macro", "1m", {}) == {"1": {"v": 2}}
 
 
+def test_the_read_cost_estimate_is_rebuilt_hourly_as_unread_hours_build_up(tmp_path, monkeypatch):
+    import sg_review
+
+    read_at = {"1": time.time()}
+    monkeypatch.setattr(sg_review, "cached_accounts", lambda: list(read_at))
+    monkeypatch.setattr(sg_review, "stamps", lambda: dict(read_at))
+    built = []
+    monkeypatch.setattr(sg_review, "report_row", lambda kind, a, n, r: built.append(a) or {"v": len(built)})
+    c = sg_console.Console(str(tmp_path / "sg.db"), targets=FakeTargets("x"))
+    assert c._reports("estimate", "all", {}) == {"1": {"v": 1}}
+    assert c._reports("estimate", "all", {}) == {"1": {"v": 1}} and built == ["1"], "kept within the hour"
+    real = time.time
+    monkeypatch.setattr(sg_console.time, "time", lambda: real() + 2 * 3600)  # two hours on, the account not read again
+    assert c._reports("estimate", "all", {}) == {"1": {"v": 1}}, "the last row, at once"
+    c._report_gates[("refresh", "estimate", "all")][0].join(5)
+    assert built == ["1", "1"], "rebuilt once, in the background"
+    assert c._reports("estimate", "all", {}) == {"1": {"v": 2}}
+
+
 def test_the_cost_of_a_read_is_estimated_for_every_look_back(tmp_path, monkeypatch):
     c = sg_console.Console(str(tmp_path / "sg.db"), targets=FakeTargets("x"))
     rows = {"1": {"rate": 1e3, "spent": 2.5, "regions": 1, "cost": {"7": 10.0, "30": 40.0}, "bytes": {"7": 2e12, "30": 8e12}},

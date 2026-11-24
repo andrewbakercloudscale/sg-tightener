@@ -53,6 +53,7 @@ ASSET = Path(__file__).resolve().parent / "assets" / "sg_console.html"
 MAX_BODY = 1 << 20
 RANGES = ("24h", "1w", "1m", "3m", "6m", "1y")
 MIN_SPEND = 100.0  # US$ in the last 30 days: reading an OU skips accounts spending less (0 reads every one)
+AGES = {"estimate": 3600}  # reports that depend on the time as well as the read: rebuilt (in the background) this often
 SETTLING = 600  # a read written to in the last ten minutes keeps its last report row (built in this window)
 REPORT_PROCS = max(1, min(8, (os.cpu_count() or 2) - 1))  # processes building report rows at once
 REPORT_CACHE_VERSION = 3
@@ -500,7 +501,11 @@ class Console:
             cache = self._report_cache()
             for account, mtime in sorted(sg_review.stamps().items()):
                 hit = cache.get(f"{kind}|{range_key}|{account}")
-                if hit and (hit["mtime"] == mtime or (now - mtime < SETTLING and now - hit["at"] < SETTLING)):
+                if hit and kind in AGES and now - hit["at"] > AGES[kind]:  # e.g. the cost of what is unread grows by the hour
+                    out[account], stale = hit["row"], True
+                    if not stale_ok:
+                        todo.append((account, mtime))
+                elif hit and (hit["mtime"] == mtime or (now - mtime < SETTLING and now - hit["at"] < SETTLING)):
                     out[account] = hit["row"]
                 elif hit and stale_ok:
                     out[account], stale = hit["row"], True

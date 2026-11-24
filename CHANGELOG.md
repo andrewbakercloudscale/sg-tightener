@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.20.1 - 2026-11-24
+
+- **The read cost keeps up with the clock.** Each account's estimate of what is not yet read was kept until
+  that account was read again, so hours that passed since were left out and the cost read low. It is now
+  rebuilt every hour in the background (the page still answers at once).
+
 ## 5.20.0 - 2026-11-24
 
 - **Everything is kept in PostgreSQL.** Security groups, the audit trail, flow-log reads, the address lists and

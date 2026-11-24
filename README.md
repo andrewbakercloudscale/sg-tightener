@@ -269,6 +269,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.20.1** | The read cost estimate is rebuilt hourly, so hours since the last read are counted |
 | **5.20.0** | **PostgreSQL**: everything kept in one database instead of files (`sg_store.py setup`, `migrate`), flow-log reads kept 12 months, a **Start the database** button in the console |
 | **5.19.12** | External risks: who used each rule, rules only your own network uses, what to do on its own line |
 | **5.19.11** | Largest external exposure by account and the five biggest external risks; look-back picked in the cost box |
