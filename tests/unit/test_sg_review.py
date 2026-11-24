@@ -830,3 +830,46 @@ def test_asset_rag_thresholds():
     assert sg_review.asset_rag(sg_review.RAG_GREEN_MAX + 1) == "amber"
     assert sg_review.asset_rag(sg_review.RAG_AMBER_MAX) == "amber" and sg_review.asset_rag(sg_review.RAG_AMBER_MAX + 1) == "red"
     assert sg_review.asset_rag(0, open_risky=True) == "red"
+
+
+def test_a_read_timeout_is_retried_like_throttling():
+    from botocore.exceptions import ReadTimeoutError
+
+    calls, waits = [], []
+
+    def fn():
+        calls.append(1)
+        if len(calls) < 3:
+            raise ReadTimeoutError(endpoint_url="https://logs.af-south-1.amazonaws.com/")
+        return "ok"
+
+    assert sg_review.with_backoff(fn, sleep=waits.append) == "ok" and len(waits) == 2
+
+
+def test_a_slice_out_of_reach_is_recorded_failed_and_the_rest_of_the_account_is_still_read():
+    from botocore.exceptions import ReadTimeoutError
+
+    start = 1_790_000_000 // 3600 * 3600
+    qs = [{"format": None, "groups": ["g"]}]
+    good = _FakeLogs()
+
+    class Dead:
+        def start_query(self, **_k):
+            raise ReadTimeoutError(endpoint_url="https://logs.af-south-1.amazonaws.com/")
+
+    class Sess:
+        def client(self, _svc, region_name=None, **_k):
+            return Dead() if region_name == "af-south-1" else good
+
+    doc = sg_review.new_doc("111122223333", "")
+    doc["regions"] = {"eu-west-1": {"query_sets": qs}, "af-south-1": {"query_sets": qs}}
+    orig, slept = sg_review.save, sg_review.time.sleep
+    sg_review.save, sg_review.time.sleep = (lambda d: None), (lambda s: None)
+    try:
+        sg_review.run_read(Sess(), doc, [("af-south-1", start, start + 3600, qs, []),
+                                         ("eu-west-1", start, start + 3600, qs, [])], 1, start + 7200)  # fmt: skip
+    finally:
+        sg_review.save, sg_review.time.sleep = orig, slept
+    st = {c["r"]: c["st"] for c in doc["chunks"]}
+    assert st == {"af-south-1": "failed", "eu-west-1": "ok"}
+    assert "ReadTimeoutError" in next(c["err"] for c in doc["chunks"] if c["r"] == "af-south-1")

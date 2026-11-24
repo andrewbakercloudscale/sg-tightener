@@ -65,7 +65,8 @@ from typing import Callable, Sequence
 
 try:
     from botocore.config import Config as BotoConfig
-    from botocore.exceptions import BotoCoreError, ClientError
+    from botocore.exceptions import (BotoCoreError, ClientError, ConnectionClosedError, ConnectTimeoutError,
+                                     EndpointConnectionError, ReadTimeoutError)
 except ImportError:  # run outside the venv: say how to install, not a traceback
     sys.exit("sg-tightener's Python packages are not installed: run ./install.sh, then source .venv/bin/activate")
 
@@ -94,13 +95,17 @@ def _is_throttle(exc: BaseException) -> bool:
     return status == 429 or any(m in code for m in _THROTTLE_MARKS)
 
 
+TRANSIENT = (ReadTimeoutError, ConnectTimeoutError, EndpointConnectionError, ConnectionClosedError)
+
+
 def with_backoff(fn: Callable, attempts: int = 7, sleep: Callable = time.sleep):
-    """fn(), retried on throttling after 1, 2, 4 ... seconds (capped at 30), with jitter."""
+    """fn(), retried on throttling, and on a network timeout or dropped connection, after 1, 2, 4 ... seconds
+    (capped at 30), with jitter."""
     for attempt in range(attempts):
         try:
             return fn()
-        except ClientError as exc:
-            if not _is_throttle(exc) or attempt == attempts - 1:
+        except (ClientError, *TRANSIENT) as exc:
+            if (isinstance(exc, ClientError) and not _is_throttle(exc)) or attempt == attempts - 1:
                 raise
             wait = min(30.0, 2.0**attempt) * random.uniform(0.5, 1.0)
             LOG.debug("throttled, retrying in %.1fs", wait)
@@ -3572,7 +3577,11 @@ def run_read(sess, doc: dict, tasks: list[tuple], days: int, now: float, cancell
             logs = clients.get(region) or clients.setdefault(
                 region, sess.client("logs", region_name=region, config=BOTO_CONFIG)
             )
-        got = read_chunk(logs, region, s, e, qsets, vpcs, cancelled, bool(doc.get("egress")))
+        try:
+            got = read_chunk(logs, region, s, e, qsets, vpcs, cancelled, bool(doc.get("egress")))
+        except (ClientError, BotoCoreError) as exc:  # one slice out of reach must not stop the account's read
+            got = [{"r": region, "s": s, "e": e, "st": "failed", "b": 0, "rows": [], "pub": [], "pc": False,
+                    "err": describe_error(exc)[:300]}]  # fmt: skip
         with lock:
             if any(c["st"] != "failed" for c in got):  # replaces an earlier read of these hours that hit the row limit
                 doc["chunks"] = [c for c in doc["chunks"]
