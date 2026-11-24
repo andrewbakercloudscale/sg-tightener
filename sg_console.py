@@ -55,6 +55,7 @@ MIN_SPEND = 100.0  # US$ in the last 30 days: reading an OU skips accounts spend
 SETTLING = 600  # a read written to in the last ten minutes keeps its last report row (built in this window)
 REPORT_PROCS = max(1, min(8, (os.cpu_count() or 2) - 1))  # processes building report rows at once
 REPORT_CACHE_VERSION = 2
+DEFAULT_DAYS = 7  # a read's default look back: 30 days across an OU can cost hundreds of dollars in Logs Insights
 FIRST_PASS = 86400  # an OU read does the last day of every account first, then goes further back
 BATCH_WORKERS = 24  # accounts read at once when reading an OU: each runs its own Logs Insights queries (its own quota)
 JOBS_SHOWN = 1000
@@ -593,7 +594,7 @@ class Console:
         Nothing is spent until ``read_confirm``."""
         account = _need(body, "account")
         try:
-            days = int(body.get("days") or 30)
+            days = int(body.get("days") or DEFAULT_DAYS)
         except (TypeError, ValueError):
             raise ConsoleError(400, "days is a number")
         import sg_review
@@ -799,7 +800,7 @@ class Console:
         if not accounts:
             raise ConsoleError(400, "choose the accounts to read first")
         busy = {j["account"] for j in self.jobs.values() if j["status"] in ("starting", "running", "confirm", "queued")}
-        jobs = [self.read_start({"account": a, "regions": body.get("regions") or "all", "days": body.get("days") or 30},
+        jobs = [self.read_start({"account": a, "regions": body.get("regions") or "all", "days": body.get("days") or DEFAULT_DAYS},
                                 start=False) for a in accounts if a not in busy]  # fmt: skip
         for j in jobs:  # narrowed to the regions with flow logs while it is prepared: loading every cache here hung the click
             j["flow_regions"] = True
@@ -990,6 +991,23 @@ class Console:
         finally:
             st.close()
 
+    def read_estimate(self) -> dict:
+        """What a read of every account read before would cost in CloudWatch Logs Insights, for each look back,
+        from the bytes per second each account's earlier reads scanned (what is already read is not read again),
+        and what reads have cost so far."""
+        import sg_review
+
+        rows = [r for r in self._reports("estimate", "all", {}).values() if r]
+        out = {}
+        for days in sg_review.READ_DAYS:
+            known = [r["cost"].get(str(days)) for r in rows if r["rate"] is not None and r["regions"]]
+            nbytes = [(r.get("bytes") or {}).get(str(days)) for r in rows if r["rate"] is not None and r["regions"]]
+            out[str(days)] = {"cost": round(sum(c or 0 for c in known), 2), "accounts": len(known),
+                              "bytes": round(sum(b or 0 for b in nbytes))}
+        return {"by_days": out, "per_gb": sg_review.INSIGHTS_PER_GB, "evidence_days": sg_review.EVIDENCE_DAYS,
+                "spent": round(sum(r["spent"] for r in rows), 2), "default_days": DEFAULT_DAYS,
+                "unknown": sum(1 for r in rows if r["rate"] is None and r["regions"])}
+
     def flow_accounts(self) -> list[dict]:
         """Every account in the console with whether its flow logs were read, how many days, or why not."""
         st = self.store()
@@ -1103,7 +1121,7 @@ class Console:
         cut = sum(r["cut_addresses"] for r in chosen)
         reason = str(body.get("reason") or "").strip() or (
             f"Tighten {len(chosen)} rule(s) to what {plan['days'] or '?'} days of VPC flow logs show in use "
-            f"({cut:,} fewer addresses let in)")
+            f"({cut:,} fewer IP addresses let in)")
         return {**self.propose({"account": account, "region": region, "changes": changes, "reason": reason,
                                 "ticket": body.get("ticket") or ""}), "rules": len(chosen), "cut_addresses": cut}
 
@@ -1480,6 +1498,8 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.state())
                 if url.path == "/api/remediation":
                     return self._json(200, console.remediation(_need(q, "account"), int(q.get("days") or sg_remediate.DEFAULT_DAYS)))
+                if url.path == "/api/read/estimate":
+                    return self._json(200, console.read_estimate())
                 if url.path == "/api/flow-accounts":
                     return self._json(200, console.flow_accounts())
                 if url.path == "/api/verdicts":

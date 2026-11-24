@@ -734,10 +734,10 @@ def drift_findings(doc: dict, now: float, window: float = DRIFT_WINDOW) -> list[
                                f"{ev['who'] or 'Someone'} opened {gname} to {cidr} on {ports}",
                                f"{ev['name']} at {_stamp(ev['t'])} UTC by {ev['who'] or 'an unknown principal'}"
                                + (f" from {ev['ip']}" if ev.get("ip") else "")
-                               + f": {cidr} ({net.num_addresses:,} addresses) on {pc['svc']}."
+                               + f": {cidr} ({net.num_addresses:,} IP addresses) on {pc['svc']}."
                                + (" It is still there." if still else " It has since been removed."),
                                "Ask whoever made the change why; take it out unless it is meant and approved, and "
-                               "narrow it to the addresses that need it.",
+                               "narrow it to the IP addresses that need it.",
                                region, gname, cli if still else "", group=gid, target=f"{ports} from {cidr}"),
                     "kind": "drift", "event": {"t": ev["t"], "group": gid, "who": ev["who"]}, "still": still,
                     "rule": {"proto": str(proto), "from": lo, "to": hi, "cidr": cidr, "id": rule_id}})
@@ -1060,7 +1060,7 @@ def _iv(cidrs) -> list[tuple[int, int]]:
 
 
 class Labeller:
-    """Category and name of a source address; one lookup per address."""
+    """Category and name of a source IP address; one lookup per IP address."""
 
     def __init__(self, doc: dict, onprem: str = "", internal: str = "", names: list[dict] | None = None,
                  accounts: list[dict] | None = None):  # fmt: skip
@@ -1209,7 +1209,7 @@ class Labeller:
         if out is None:
             for (a, b), cidr in zip(PRIVATE, PRIVATE_V4):
                 if a <= n <= b:
-                    out = {"cat": "datacentre", "name": "Private address outside every scanned VPC", "range": cidr}
+                    out = {"cat": "datacentre", "name": "Private IP address outside every scanned VPC", "range": cidr}
                     break
         if out is None:
             out = self._external(ip)
@@ -1219,7 +1219,7 @@ class Labeller:
         return out
 
     def _external(self, ip: str) -> dict:
-        """A public address, IPv4 or IPv6, from the published lists (and the names file's AS numbers)."""
+        """A public IP address, IPv4 or IPv6, from the published lists (and the names file's AS numbers)."""
         lab = self.intel.label(ip)
         mine = self.name_asn.get(lab.get("asn")) if lab["kind"] != "aws" and lab.get("group") != "anon" else None
         if mine:  # an AS number in the names file: its name and type, over the built-in lists
@@ -2217,20 +2217,20 @@ def refused_verdict(ctx, src: str, r: dict) -> dict:
         if cat in ("internal", "datacentre"):
             return {"key": "internal-scan", "sev": "critical", "label": "Internal scan",
                     "title": "A host inside your network is scanning",
-                    "reason": f"{src}{f' ({name})' if name != src else ''} tried {_n_ports(r)} ports on {_n_dsts(r)} addresses ({retries}). Refused, "
+                    "reason": f"{src}{f' ({name})' if name != src else ''} tried {_n_ports(r)} ports on {_n_dsts(r)} IP addresses ({retries}). Refused, "
                               "but scanning from inside is how a compromised host looks for its next step.",
                     "action": f"Find out what runs on {src}. If nothing there should scan, isolate it and look for "
                               "compromise.", "wanted": False}  # fmt: skip
         who = {"scanner": "a known internet scanner", "anon": "a Tor or VPN exit",
-               "threat": f"a known malicious address ({name})"}.get(group, "a scan")  # fmt: skip
+               "threat": f"a known malicious IP address ({name})"}.get(group, "a scan")  # fmt: skip
         return {"key": "scan", "sev": "info", "label": "Defence working", "title": "Scan refused",
                 "reason": f"{who[0].upper() + who[1:]} sweeping {_n_ports(r)} ports on {_n_dsts(r)} addresses: "
                           "refused, nothing got in.", "action": "None.", "wanted": False}  # fmt: skip
     if group in ("scanner", "anon", "threat"):
         what = {"scanner": "A known internet scanner", "anon": "A Tor or VPN exit",
-                "threat": "A known malicious address, on a threat list"}[group]  # fmt: skip
+                "threat": "A known malicious IP address, on a threat list"}[group]  # fmt: skip
         return {"key": "scan", "sev": "info", "label": "Defence working",
-                "title": "Known malicious address refused" if group == "threat" else "Scanner refused",
+                "title": "Known malicious IP address refused" if group == "threat" else "Scanner refused",
                 "reason": f"{what} ({name}): refused, nothing got in.", "action": "None.", "wanted": False}
     for (eni, proto, port, dst), _f in tgts[:5]:
         e = ctx.enis.get(eni)
@@ -2277,8 +2277,8 @@ def refused_verdict(ctx, src: str, r: dict) -> dict:
         if mover:
             m, (_mf, ml, _mfl) = mover
             mn = ctx.lab(m)["name"]
-            return {"key": "moved", "sev": "high", "label": "New address?",
-                    "title": "A client that is let in may have moved address",
+            return {"key": "moved", "sev": "high", "label": "New IP address?",
+                    "title": "A client that is let in may have moved IP address",
                     "reason": f"{mn} ({m}) was let in on {plabel} to {where} until {_day(ml)}; {name} ({src}) "
                               f"started being refused there {_day(tf)} ({retries}).",
                     "action": f"Confirm with {mn}, then add {src}/32 and remove {m} once it is gone.",
@@ -2286,10 +2286,10 @@ def refused_verdict(ctx, src: str, r: dict) -> dict:
         kin = _same_provider(ctx, src, lb, (eni, proto, port))
         if kin:
             return {"key": "provider", "sev": "medium", "label": "Same provider let in",
-                    "title": "Another address of a provider that is let in",
+                    "title": "Another IP address of a provider that is let in",
                     "reason": f"{lb.get('provider') or name} is let in on {plabel} to {where} from {kin}, but not from "
                               f"{src} ({retries}).",
-                    "action": f"If {lb.get('provider') or name} added an address, add it (prefer its published "
+                    "action": f"If {lb.get('provider') or name} added an IP address, add it (prefer its published "
                               "ranges, or a prefix list).", "wanted": True}  # fmt: skip
         if cat == "aws" and lb.get("service") in HEALTH_SERVICES:
             return {"key": "health", "sev": "medium", "label": "Health check refused",
@@ -2310,7 +2310,7 @@ def refused_verdict(ctx, src: str, r: dict) -> dict:
         if group == "partner":
             return {"key": "partner", "sev": "high", "label": "Partner refused", "title": "A named partner is refused",
                     "reason": f"{name} ({src}, from your names file) is refused on {plabel} to {where} ({retries}).",
-                    "action": f"Add {src}/32 if {name} should reach {plabel}; check their addresses with them.",
+                    "action": f"Add {src}/32 if {name} should reach {plabel}; check their IP addresses with them.",
                     "wanted": True}  # fmt: skip
         if group in ("saas", "security") and periods >= 2:
             return {"key": "service", "sev": "medium", "label": "Service refused",
@@ -2322,7 +2322,7 @@ def refused_verdict(ctx, src: str, r: dict) -> dict:
         break
     if periods >= 3 and len(r["targets"]) == 1 and cat == "internet":
         return {"key": "retry", "sev": "low", "label": "Keeps retrying", "title": "An internet client keeps retrying",
-                "reason": f"{name} tries one port on one address again and again ({retries}): it behaves like a "
+                "reason": f"{name} tries one port on one IP address again and again ({retries}): it behaves like a "
                           "client, not a scanner.", "action": "Find out who it is before letting it in.",
                 "wanted": False}  # fmt: skip
     return {"key": "refused", "sev": "info", "label": "Refused", "title": "Refused",
@@ -2334,7 +2334,7 @@ NOVELTY_SKIP = frozenset({"scan", "resolved"})  # a refused scanner being new te
 
 def _note_novelty(v: dict, nov: dict, read_since: float) -> None:
     """Add to a verdict whether its source is new: first seen in the last NEW_DAYS days, never in the flow logs
-    read before. A "New address?" verdict whose source was seen weeks ago says so."""
+    read before. A "New IP address?" verdict whose source was seen weeks ago says so."""
     v.update(nov)
     first = nov.get("first_ever")
     if first is None or v["key"] in NOVELTY_SKIP:
@@ -2343,7 +2343,7 @@ def _note_novelty(v: dict, nov: dict, read_since: float) -> None:
     if nov["new"]:
         v["reason"] = v["reason"].rstrip() + f" First seen {_day(first)}: never before in {days} days of flow logs."
     elif v["key"] == "moved" and nov["seen_before"]:
-        v["reason"] = v["reason"].rstrip() + f" Not a new address though: first seen {_day(first)}."
+        v["reason"] = v["reason"].rstrip() + f" Not a new IP address though: first seen {_day(first)}."
 
 
 def _mover(ctx, src: str, tgt: tuple, tf: float):
@@ -2401,7 +2401,7 @@ def active_verdict(ctx, src: str, a: dict) -> dict | None:
     sev, eni, proto, port, flows, pc = worst
     e = ctx.enis.get(eni) or {}
     rules = _allowed_by(ctx, e, src, proto, port)
-    who = {"scanner": "A known internet scanner", "anon": "A Tor or VPN exit", "threat": "A known malicious address",
+    who = {"scanner": "A known internet scanner", "anon": "A Tor or VPN exit", "threat": "A known malicious IP address",
            "hosting": "A server on anyone's hosting"}.get(group, "A source that scanned refused ports")  # fmt: skip
     label = {"hosting": "Let in: unknown server", "threat": "Known malicious let in"}.get(group, "Scan got in")
     return {"key": "let-in", "sev": sev, "label": label,
@@ -2762,7 +2762,7 @@ def internet_path(snap: dict, eni: dict, rule: dict, v6: bool = False) -> tuple[
         if not eni.get("ipv6"):
             return False, "it has no IPv6 address"
     elif not eni.get("public"):
-        return False, "it has no public address"
+        return False, "it has no public IP address"
     r = _route(snap, eni)
     if r is None:
         return None, "the route tables were not read"
@@ -2834,7 +2834,7 @@ def posture_findings(doc: dict, inet_in: dict | None = None, egress_seen: dict |
                             + (f", and {len(live) - 1} more" if len(live) > 1 else "")
                             + (f". {used} internet source(s) connected in the range." if used else
                                ". No internet source connected in the range, so nothing would notice it closing."),
-                            "Remove the open rule, or narrow it to the addresses that need it (a VPN, a bastion's "
+                            "Remove the open rule, or narrow it to the IP addresses that need it (a VPN, a bastion's "
                             "group, or the partner's range)." if pc["cls"] != "web" else
                             "Put the service behind a load balancer, or narrow the rule if it is not public.",
                             region, gname, _revoke_cli(region, gid, rule, c), group=gid, target=ports,
@@ -2849,7 +2849,7 @@ def posture_findings(doc: dict, inet_in: dict | None = None, egress_seen: dict |
                             f"The rule allows {c} on {pc['svc']}; {why}. "
                             + ("Turning on IPv6 for the subnet, or giving an interface an IPv6 address, exposes it "
                                "at once, and reviews that look only at IPv4 miss it." if v6 else
-                               "A public address or a route to an internet gateway later exposes it at once."),
+                               "A public IP address or a route to an internet gateway later exposes it at once."),
                             "Remove the rule now, while nothing depends on it.", region, gname,
                             _revoke_cli(region, gid, rule, c), group=gid, target=ports, extra={"source": c, "v6": v6}))
                 for c in rule.get("cidrs6") or []:
@@ -2859,7 +2859,7 @@ def posture_findings(doc: dict, inet_in: dict | None = None, egress_seen: dict |
                     out.append(_pt_item(
                         "ipv6", "v6-wide", "medium" if pc["risky"] or pc["cls"] == "all" else "low", "Wide IPv6 range",
                         f"{gname} lets in {c} on {ports}",
-                        f"{c} is a global IPv6 range of 2^{128 - net.prefixlen} addresses (an ISP-sized "
+                        f"{c} is a global IPv6 range of 2^{128 - net.prefixlen} IP addresses (an ISP-sized "
                         f"allocation or wider) on {pc['svc']}. IPv6 rules are easy to miss in an IPv4 review.",
                         "Narrow it to the /64s or /56s that need it.", region, gname,
                         _revoke_cli(region, gid, rule, c), group=gid, target=ports, extra={"source": c, "v6": True}))
@@ -2973,7 +2973,7 @@ def _egress_bad(region, enis, groups, egress_seen, lab) -> list[dict]:
         names = ", ".join((groups.get(g) or {}).get("name") or g for g in e.get("groups") or [])
         out.append(_pt_item(
             "egress", "egress-bad", "critical" if threat else "high",
-            "Outbound to a known malicious address" if threat else "Outbound to Tor or a scanner",
+            "Outbound to a known malicious IP address" if threat else "Outbound to Tor or a scanner",
             (f"{e['kind']} {eid} connected out to {len(threat)} address(es) on a threat list" if threat else
              f"{e['kind']} {eid} connected out to {len(ds)} Tor, VPN or scanner address(es)"),
             f"{ds[0]} ({lb.get('name', '')}) on port(s) {', '.join(map(str, sorted(bad[ds[0]][1])))}, "
@@ -3007,7 +3007,7 @@ def _egress_items(region, gid, g, mine, enis, groups, egress_seen, lab) -> list[
             out.append(_pt_item(
                 "egress", "egress-open", "low", "Outbound open",
                 f"{gname} (used by a database) may connect anywhere",
-                "Its outbound rule allows every protocol to every address. A database seldom needs more than its "
+                "Its outbound rule allows every protocol to every IP address. A database seldom needs more than its "
                 "replicas and AWS services; open outbound is how stolen data leaves.",
                 "Read with --egress to see what it connects to, then narrow the outbound rule.", region, gname,
                 group=gid))
@@ -3041,7 +3041,7 @@ def _egress_items(region, gid, g, mine, enis, groups, egress_seen, lab) -> list[
     out.append(_pt_item(
         "egress", "egress-fit", "medium" if n <= EGRESS_FIT_MAX else "low", "Outbound wider than used",
         f"{gname} may connect anywhere, but used {len(rules)} port(s)",
-        f"Its outbound rule allows every protocol to every address. Flow logs saw: {desc}"
+        f"Its outbound rule allows every protocol to every IP address. Flow logs saw: {desc}"
         + (f", and {len(rules) - 6} more port(s)" if len(rules) > 6 else "")
         + ". Amazon DNS, the time service and instance metadata are not logged and not filtered, so narrowing "
           "leaves them alone."
@@ -3322,7 +3322,7 @@ def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regi
         row["status"], row["note"] = "unused", f"No connection matched this rule in {days:.0f} days"
     elif net.prefixlen < sg_tightener.DEFAULT_V6_PREFIX_THRESHOLD and row["never"]:
         row["status"] = "tighten"
-        row["note"] = ("Wider than needed: the suggestion keeps the /64 of every address seen, with 30% headroom"
+        row["note"] = ("Wider than needed: the suggestion keeps the /64 of every IP address seen, with 30% headroom"
                        if private else "Public IPv6 range: the suggestion keeps only the /64s seen; check with the partner first")
     else:
         row["status"] = "used"
@@ -3354,9 +3354,9 @@ def _status(row, rule, entry, logged, g, cut_regions, days) -> tuple[str, str]:
     )
     plen = int(entry.split("/")[1]) if "/" in entry else 32
     if private and plen < sg_tightener.DEFAULT_PREFIX_THRESHOLD and row["never"]:
-        return "tighten", "Wider than needed: the suggested ranges keep every address seen, with 30% headroom"
+        return "tighten", "Wider than needed: the suggested ranges keep every IP address seen, with 30% headroom"
     if not private and not entry.startswith("pl-") and plen < 32 and row["never"]:
-        return "tighten", "Public range: the suggestion keeps only the addresses seen; check with the partner first"
+        return "tighten", "Public range: the suggestion keeps only the IP addresses seen; check with the partner first"
     return "used", ""
 
 
@@ -3775,7 +3775,7 @@ def cmd_reach(args) -> int:
         return 0
     s = got["summary"]
     print(f"{got['address']} can reach {s['groups']} security group(s) on {s['interfaces']} interface(s); "
-          f"{s['risky']} on risky ports, {s['open_to_all']} only because the rule is open to every address")
+          f"{s['risky']} on risky ports, {s['open_to_all']} only because the rule is open to every IP address")
     if got["groups_in"]:
         print(f"  its own interface is in {', '.join(got['groups_in'])}")
     for x in got["rows"]:
@@ -3929,7 +3929,7 @@ def _report_opts(args) -> tuple[str, str, list]:
 ALERTS = ("refused", "all")
 
 
-THREAT_ALERTS = frozenset({"Known malicious let in", "Outbound to a known malicious address"})
+THREAT_ALERTS = frozenset({"Known malicious let in", "Outbound to a known malicious IP address"})
 
 
 def alert_items(items: list[dict], mode: str = "refused") -> list[dict]:
@@ -4247,7 +4247,7 @@ OPEN_SOURCES = ("0.0.0.0/0", "::/0")
 
 
 def _high_risk(r: dict) -> bool:
-    """Scanning ports (many ports or many addresses), a known scanner, a threat list, a Tor or VPN exit."""
+    """Scanning ports (many ports or many IP addresses), a known scanner, a threat list, a Tor or VPN exit."""
     return bool(r.get("sweep")) or r.get("group") in HIGH_RISK_TYPES
 
 
@@ -4291,6 +4291,13 @@ def report_row(kind: str, account: str, name: str, range_key: str):
     A top-level function so the console can build many in parallel processes. "flow" is whether its flow
     logs were read and over how many days, for every account."""
     doc = load(account)
+    if kind == "estimate":  # what reading back each READ_DAYS would cost, from the bytes per second earlier reads scanned
+        if not doc:
+            return None
+        e = estimate(doc, account)
+        return {"rate": e["rate"], "spent": e["spent"], "regions": e["regions"],
+                "cost": {str(x["days"]): x["cost"] for x in e["ranges"]},
+                "bytes": {str(x["days"]): x["bytes"] for x in e["ranges"]}}
     if kind == "flow":
         import sg_remediate
 
@@ -4611,7 +4618,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sg_review.py", description=__doc__.splitlines()[0],
                                 formatter_class=argparse.RawDescriptionHelpFormatter)  # fmt: skip
     p.add_argument("--data-dir", default=str(sg_ipintel.DATA_DIR),
-                   help="where reads and address lists are kept (default ~/.sg-tightener)")  # fmt: skip
+                   help="where reads and IP address lists are kept (default ~/.sg-tightener)")  # fmt: skip
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("read", help="read an account's flow logs (live, read-only, cost confirmed first)")
     r.add_argument("--regions", required=True, help="comma-separated regions")
@@ -4619,7 +4626,7 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--profile", help="AWS profile (default: the usual credential chain)")
     r.add_argument("--name", help="a name for the account in the report (default: its alias)")
     r.add_argument("--egress", action="store_true", help="also read outbound connections, so the report can fit "
-                   "outbound rules and flag connections to Tor, scanners or threat-list addresses (about half as much again per read; "
+                   "outbound rules and flag connections to Tor, scanners or threat-list IP addresses (about half as much again per read; "
                    "stays on for this account)")
     r.add_argument("--yes", action="store_true", help="skip the typed confirmation")
     r.set_defaults(fn=cmd_read)
@@ -4629,7 +4636,7 @@ def _build_parser() -> argparse.ArgumentParser:
     o.add_argument("--internal", default="", help='your other accounts\' ranges, e.g. "10.40.0.0/16 Payments prod"')
     o.add_argument("--names", help="names file (YAML or JSON) naming partners and other networks by range or AS "
                    "number (default ~/.sg-tightener/names.yaml if it exists; `sg_review.py names` writes an example)")
-    o.add_argument("--offline", action="store_true", help="do not refresh the public address lists")
+    o.add_argument("--offline", action="store_true", help="do not refresh the public IP address lists")
     o.add_argument("--out", help="output file (default sg-review-<account>.html)")
     o.set_defaults(fn=cmd_report)
     a = sub.add_parser("approved", help="write sg-tightener's approved.json for one region")
@@ -4639,9 +4646,9 @@ def _build_parser() -> argparse.ArgumentParser:
     a.set_defaults(fn=cmd_approved)
     d = sub.add_parser("demo", help="write the report for a made-up account")
     d.add_argument("--out", default="sg-review-demo.html")
-    d.add_argument("--offline", action="store_true", help="do not refresh the public address lists")
+    d.add_argument("--offline", action="store_true", help="do not refresh the public IP address lists")
     d.set_defaults(fn=cmd_demo)
-    rc = sub.add_parser("reach", help="blast radius: every security group, port and interface one address can reach")
+    rc = sub.add_parser("reach", help="blast radius: every security group, port and interface one IP address can reach")
     rc.add_argument("address", help="an IPv4 or IPv6 address, such as a data centre laptop or a build server")
     rc.add_argument("--account")
     rc.add_argument("--json", action="store_true", help="print JSON")
@@ -4659,13 +4666,13 @@ def _build_parser() -> argparse.ArgumentParser:
         q.add_argument("--onprem", default="", help="data centre ranges to name, as for report")
         q.add_argument("--internal", default="", help="your other accounts' ranges, as for report")
         q.add_argument("--names", help="names file, as for report")
-        q.add_argument("--offline", action="store_true", help="do not refresh the public address lists")
+        q.add_argument("--offline", action="store_true", help="do not refresh the public IP address lists")
         q.add_argument("--securityhub", action="store_true", help="also send the findings to AWS Security Hub "
                        "(ASFF; findings no longer open are archived)")
     w.add_argument("--name", help="a name for the account in the alerts (default: as read before)")
     w.add_argument("--slack", help="Slack incoming-webhook URL (or SG_REVIEW_SLACK_WEBHOOK)")
-    w.add_argument("--email-to", help="comma-separated addresses to email (SMTP; see --smtp-host)")
-    w.add_argument("--email-from", help="sender address (or SG_REVIEW_EMAIL_FROM)")
+    w.add_argument("--email-to", help="comma-separated IP addresses to email (SMTP; see --smtp-host)")
+    w.add_argument("--email-from", help="sender IP address (or SG_REVIEW_EMAIL_FROM)")
     w.add_argument("--smtp-host", help="SMTP server (or SG_REVIEW_SMTP_HOST; default localhost); login from "
                    "SG_REVIEW_SMTP_USER and SG_REVIEW_SMTP_PASSWORD")
     w.add_argument("--smtp-port", type=int, default=587)
@@ -4675,7 +4682,7 @@ def _build_parser() -> argparse.ArgumentParser:
     w.add_argument("--max-cost", type=float, default=0.50, help="skip a read estimated above this many US$ (default 0.50)")
     w.add_argument("--loop", action="store_true", help="keep running, once every --every minutes")
     w.add_argument("--every", type=float, default=5, help="minutes between watches with --loop (default 5)")
-    w.add_argument("--alerts", default="refused", help="what to post: refused (rejected traffic, and known malicious addresses "
+    w.add_argument("--alerts", default="refused", help="what to post: refused (rejected traffic, and known malicious IP addresses "
                    "let in or called out to; the default) or all (adds exposure, rules opened wide, hygiene, PrivateLink)")
     w.add_argument("--ou-id", help="watch every active account in this OU and the OUs under it (a role assumed in each)")
     w.add_argument("--org", action="store_true", help="watch every active account in the organisation")
@@ -4706,7 +4713,7 @@ def _build_parser() -> argparse.ArgumentParser:
     h.add_argument("--onprem", default="", help="data centre ranges to name, as for report")
     h.add_argument("--internal", default="", help="your other accounts' ranges, as for report")
     h.add_argument("--names", help="names file, as for report")
-    h.add_argument("--offline", action="store_true", help="do not refresh the public address lists")
+    h.add_argument("--offline", action="store_true", help="do not refresh the public IP address lists")
     h.add_argument("--out", help="write the findings (ASFF JSON) to this file instead of sending them")
     h.set_defaults(fn=cmd_securityhub)
     return p

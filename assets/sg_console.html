@@ -198,6 +198,12 @@ details[open] > summary::before { transform: rotate(45deg) translate(-2px, -2px)
 details > summary:hover { color: var(--accent); }
 .ou summary { display: flex; margin-left: 0; }
 .batch { border: 1px solid var(--grid); border-radius: var(--radius); padding: 12px 14px; background: var(--surface-2); margin: 10px 0; }
+.cost-box { border: 1px solid var(--grid); border-left: 4px solid var(--accent); border-radius: var(--radius); background: var(--surface); padding: 10px 12px; margin: 8px 0; display: grid; gap: 6px; }
+.cost-box.warn { border-left-color: var(--warn); }
+.cost-row { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: end; }
+.cost-row > span:not(.small) { display: grid; }
+.cost-row b { font-size: 1.35rem; line-height: 1.2; }
+.cost-row > span.small { flex: 1 1 260px; }
 .batch:empty { display: none; }
 .batch p { margin: 0 0 4px; }
 .batch .tools { margin: 8px 0 0; }
@@ -362,7 +368,7 @@ section.nodata .card:not(.empty-state) { display: none; }
             <button class="btn primary" id="cRoleUse" hidden>Use this role in all accounts</button><span class="muted small" id="cRoleNote"></span></div>
           <p class="muted small">Reading an account puts its security groups into the console and reads its VPC flow logs (who connected, and who was refused). The cost of reading flow logs is shown before anything is spent; start with 1 day. Then the <b>Risk overview</b> and <b>Over-provisioning</b> tabs compare them all, and <b>Remediate</b> opens one.</p>
           <div class="tools"><button class="btn" id="ssoChange">Change accounts</button><label class="small">Regions <input id="rdRegions" value="all" size="22" aria-label="Regions" title="all, or a list such as eu-west-1,us-east-1"></label>
-            <label class="small">How far back <select id="rdDays"><option value="1">1 day</option><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="365">1 year</option></select></label></div>
+            <label class="small">How far back <select id="rdDays"><option value="1">1 day</option><option value="7" selected>7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="365">1 year</option></select></label></div>
           <div class="batch" id="batch"></div>
           <details id="chosenBox"><summary id="chosenSum">Each account</summary>
           <div class="tools" style="margin-top:8px"><input id="chosenFilter" type="search" placeholder="Filter accounts…" aria-label="Filter the chosen accounts"></div>
@@ -394,7 +400,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     </div>
     <div class="card plan" id="gPlan"></div>
     <div class="flash" id="modeNote" hidden></div>
-    <div class="card"><div class="scroll"><table class="grp"><thead><tr><th>Group</th><th class="num">Interfaces</th><th class="num">Rules</th><th>What the flow logs say</th><th class="num">Addresses taken away</th><th class="act"></th></tr></thead><tbody id="groupList"></tbody></table></div></div>
+    <div class="card"><div class="scroll"><table class="grp"><thead><tr><th>Group</th><th class="num">Interfaces</th><th class="num">Rules</th><th>What the flow logs say</th><th class="num">IP addresses taken away</th><th class="act"></th></tr></thead><tbody id="groupList"></tbody></table></div></div>
     <div class="card" id="proposeCard">
       <details id="proposeBox"><summary>Propose a change by hand</summary>
         <div class="form" style="margin-top:10px">
@@ -415,7 +421,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     <div class="flash" id="modeNote" hidden></div>
     <h3>Assets (network interfaces) and their groups</h3>
     <p class="lede">Every interface, what it is attached to and the groups it carries; every change to them is in the audit trail. To tighten one asset on its own, <code>sg_db.py asset-plan --eni … --approved approved.json</code> gives it a group of its own from its own flows; propose it with <code>sg_db.py asset-propose</code>, and it is approved and applied here. Auto scaling, EKS, ECS and AWS-managed interfaces inherit their groups: tighten the groups instead.</p>
-    <div class="card scroll"><table><thead><tr><th>Interface</th><th>Attached to</th><th>Addresses</th><th>Groups</th><th>Own group?</th><th></th></tr></thead><tbody id="assetRows"></tbody></table></div>
+    <div class="card scroll"><table><thead><tr><th>Interface</th><th>Attached to</th><th>IP addresses</th><th>Groups</th><th>Own group?</th><th></th></tr></thead><tbody id="assetRows"></tbody></table></div>
   </section>
 
   <section id="tab-requests" hidden>
@@ -439,7 +445,7 @@ section.nodata .card:not(.empty-state) { display: none; }
 
   <section id="tab-macro" hidden>
     <h2>Risk overview: every account</h2>
-    <p class="lede">Every account <code>sg_review.py</code> has read, side by side: how much the security groups let in that nobody uses, whose addresses those are, what is open to the internet, who is probing, and what got in that should not have. Select an account to open its review.</p>
+    <p class="lede">Every account <code>sg_review.py</code> has read, side by side: how much the security groups let in that nobody uses, whose IP addresses those are, what is open to the internet, who is probing, and what got in that should not have. Select an account to open its review.</p>
     <div class="tools">
       <select id="mRange" aria-label="Time window"><option value="24h">Last 24 hours</option><option value="1w">Last week</option><option value="1m" selected>Last month</option><option value="3m">Last 3 months</option><option value="6m">Last 6 months</option><option value="1y">Last year</option></select>
       <span class="muted small" id="mNote"></span>
@@ -460,10 +466,10 @@ section.nodata .card:not(.empty-state) { display: none; }
       <h4 style="margin:16px 0 4px">Every owner, by kind of risk</h4><div id="mOwnerRisk"></div></div>
     <div class="card"><h3 style="margin-top:0">Risk by account</h3><p class="muted small">Worst first. Red: act now. Orange: high. Amber: worth a look. Green: nothing found. The risk score adds the levels across the row.</p><div class="scroll"><table class="heat" id="mHeat"></table></div></div>
     <div class="card"><h3 style="margin-top:0">Over-provisioned by owner</h3>
-      <p class="muted small">Addresses the rules let in today that were never seen in the flow logs, by who they belong to. Pull back the biggest owner first: private space nobody uses and whole provider ranges are usually most of it.</p>
+      <p class="muted small">IP addresses the rules let in today that were never seen in the flow logs, by who they belong to. Pull back the biggest owner first: private space nobody uses and whole provider ranges are usually most of it.</p>
       <div class="tools"><span class="seg" id="mBy"><button data-by="cat" aria-pressed="true">By kind</button><button data-by="type" aria-pressed="false">By source type</button></span><span class="seg" id="mScale"><button data-scale="abs" aria-pressed="true">Size</button><button data-scale="share" aria-pressed="false">Share</button></span></div>
       <div id="mOwner"></div></div>
-    <div class="card"><h3 style="margin-top:0">Over-provisioned over time, every account</h3><p class="muted small">Never-seen addresses allowed, summed across the accounts, by kind. Each tightening shows as a step down; a step up is a rule widened or an account whose evidence starts later joining the sum.</p><div id="mOverTime"></div>
+    <div class="card"><h3 style="margin-top:0">Over-provisioned over time, every account</h3><p class="muted small">Never-seen IP addresses allowed, summed across the accounts, by kind. Each tightening shows as a step down; a step up is a rule widened or an account whose evidence starts later joining the sum.</p><div id="mOverTime"></div>
       <h3>High-risk sources probing, every account</h3><p class="muted small">Sources scanning ports, known scanners, threat lists and Tor exits refused in each period. Refused means the defences held; a jump means someone is looking.</p><div id="mHighTime"></div></div>
     <div class="two">
       <div class="card"><h3 style="margin-top:0">Open to the internet, by port class</h3><div id="mExposure"></div></div>
@@ -490,7 +496,7 @@ section.nodata .card:not(.empty-state) { display: none; }
 
   <section id="tab-over" hidden>
     <h2>Over-provisioning: every account, every asset</h2>
-    <p class="lede">How many addresses the security groups let reach each asset that were never seen in the flow logs, rated red, amber or green, by account, and whether it is coming down. <b>Remediate</b> works out the new rules for that account and proposes them for approval.</p>
+    <p class="lede">How many IP addresses the security groups let reach each asset that were never seen in the flow logs, rated red, amber or green, by account, and whether it is coming down. <b>Remediate</b> works out the new rules for that account and proposes them for approval.</p>
     <div class="tools">
       <select id="oRange" aria-label="Time window"><option value="1w">Last week</option><option value="1m" selected>Last month</option><option value="3m">Last 3 months</option><option value="6m">Last 6 months</option><option value="1y">Last year</option></select>
       <span class="muted small" id="oNote"></span>
@@ -498,12 +504,12 @@ section.nodata .card:not(.empty-state) { display: none; }
     <p class="small muted" id="oRagNote"></p>
     <div class="card" id="oTrendCard"><div class="card-head"><h3 style="margin:0">Over-provisioning over time</h3>
       <div class="seg" id="oBy" role="group" aria-label="Break down by"><button data-oby="type" aria-pressed="true">By source type</button><button data-oby="cat" aria-pressed="false">By where it comes from</button></div></div>
-      <p class="muted small">Addresses the security groups let in that never sent a thing in the flow logs, every account added up, at the end of each period. Falling is the goal; a step up is a rule widened or a new group.</p>
+      <p class="muted small">IP addresses the security groups let in that never sent a thing in the flow logs, every account added up, at the end of each period. Falling is the goal; a step up is a rule widened or a new group.</p>
       <div id="oTrend"></div></div>
     <div class="grid mtiles" id="oTiles"></div>
     <div class="card"><h3 style="margin-top:0">Assets by rating over time, every account</h3><p class="muted small">Each bar counts the assets in each rating at the end of that period. Red shrinking and green growing is the goal; a red step up is a rule widened or a new asset.</p><div id="oRagTime"></div></div>
     <div class="card"><h3 style="margin-top:0">By account</h3><p class="muted small">Worst first. An account is red if any asset is red. <b>Right-sized</b> is the share of its assets rated green; the line marks the target.</p><div id="oAccounts"></div></div>
-    <div class="card"><h3 style="margin-top:0">Biggest wins: the rules that would fix the most</h3><p class="muted small">Ranked by never-seen addresses times the assets the rule reaches. Tighten these first.</p><div id="oWins"></div></div>
+    <div class="card"><h3 style="margin-top:0">Biggest wins: the rules that would fix the most</h3><p class="muted small">Ranked by never-seen IP addresses times the assets the rule reaches. Tighten these first.</p><div id="oWins"></div></div>
     <div class="card"><h3 style="margin-top:0">Every asset</h3>
       <div class="tools"><select id="oAcct" aria-label="Account"><option value="">Every account</option></select><span class="chips" id="oRag"><button data-r="red" aria-pressed="true">Red</button><button data-r="amber" aria-pressed="true">Amber</button><button data-r="green" aria-pressed="false">Green</button></span><input id="oQ" type="search" placeholder="Filter: asset, group, kind, port…" aria-label="Filter assets"><span class="muted small" id="oN"></span></div>
       <div id="oAssets"></div></div>
@@ -518,14 +524,14 @@ section.nodata .card:not(.empty-state) { display: none; }
       <select id="fSev" aria-label="Severity"><option value="">Every severity</option><option>critical</option><option>high</option><option>medium</option><option>low</option><option>info</option></select>
       <select id="fAcct" aria-label="Account"><option value="">Every account</option></select>
       <label class="small"><input id="fRisky" type="checkbox"> risky ports only</label>
-      <label class="small"><input id="fNew" type="checkbox"> new addresses only</label>
+      <label class="small"><input id="fNew" type="checkbox"> new IP addresses only</label>
       <select id="fWhere" aria-label="Where from"><option value="">Internal and external</option><option value="ext">External only</option><option value="int">Internal only</option><option value="v6">IPv6 only</option><option value="scan">Scanning only</option><option value="bad">Known malicious or Tor</option></select>
       <span class="muted small" id="fN"></span>
     </div>
     <p id="fGap" class="small" hidden style="margin:8px 0;padding:8px 12px;border-left:4px solid var(--muted);border-radius:8px;background:color-mix(in srgb, var(--muted) 12%, transparent)"></p>
     <div class="grid" id="fAccounts"></div>
-    <div class="card" id="fChartCard"><div class="card-head"><h3 style="margin:0">Rejected addresses over time</h3><span class="muted small" id="fChartNote"></span></div>
-      <p class="muted small">Distinct source addresses refused in each period, one line per kind of source. Follows the account and time filters above.</p>
+    <div class="card" id="fChartCard"><div class="card-head"><h3 style="margin:0">Rejected IP addresses over time</h3><span class="muted small" id="fChartNote"></span></div>
+      <p class="muted small">Distinct source IP addresses refused in each period, one line per kind of source. Follows the account and time filters above.</p>
       <div id="fChart"></div></div>
     <div class="card scroll"><table><thead><tr><th>Severity</th><th>Account</th><th>Source</th><th>Refused on</th><th>Flows</th><th>Last seen</th><th>Verdict</th><th></th></tr></thead><tbody id="refusedRows"></tbody></table></div>
   </section>
@@ -821,28 +827,48 @@ section.nodata .card:not(.empty-state) { display: none; }
     const p = {done: "var(--good)", failed: "var(--bad)", stopped: "var(--warn)", cancelled: "var(--muted)", skipped: "var(--muted)"}[j.status] || "var(--muted)";
     return `<span class="pill" style="--p:${p}">${esc(j.status)}</span> <span class="muted small">${esc(when(j.started))}</span><details class="small"><summary>Details</summary><ul class="steps">${j.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`;
   }
+  // What a read costs, said before, beside and after the button: AWS bills Logs Insights by the data it scans.
+  let EST = null, estFor = null;
+  $("rdDays").addEventListener("change", () => { const b = S && S.batch; if (S && (!b || ["done", "stopped"].includes(b.status))) drawBatch(); });
+  const bytesTxt = (n) => n >= 1e12 ? `${(n / 1e12).toFixed(1)} TB` : n >= 1e9 ? `${(n / 1e9).toFixed(n >= 1e10 ? 0 : 1)} GB` : `${Math.round(n / 1e6)} MB`;
+  const money2 = (n) => `US$${Number(n).toLocaleString(undefined, {maximumFractionDigits: n >= 100 ? 0 : 2, minimumFractionDigits: n >= 100 ? 0 : 2})}`;
+  async function loadEstimate() {
+    try { EST = await api("/api/read/estimate"); } catch (e) { EST = null; }
+    const b = S && S.batch;
+    if (S && (!b || ["done", "stopped"].includes(b.status))) drawBatch();
+  }
+  function costBox() {
+    const days = +$("rdDays").value;
+    if (!EST) return `<div class="cost-box"><span class="spin" aria-hidden="true"></span> Working out the AWS cost of reading ${days} day${days === 1 ? "" : "s"}…</div>`;
+    const x = EST.by_days[String(days)] || {cost: 0, bytes: 0, accounts: 0};
+    const short = days < EST.evidence_days ? `<div class="small muted">Under ${EST.evidence_days} days, rules are not yet called unused or ready to tighten: read ${EST.evidence_days} days for those, ideally for the accounts that matter most first.</div>` : "";
+    return `<div class="cost-box"><div class="cost-row"><span><span class="small muted">Data to read</span><b>about ${bytesTxt(x.bytes)}</b></span><span><span class="small muted">Estimated AWS cost</span><b>about ${money2(x.cost)}</b></span><span class="small muted">${days} day${days === 1 ? "" : "s"} back, ${x.accounts} account${x.accounts === 1 ? "" : "s"} read before${EST.unknown ? `, plus ${EST.unknown} priced after a first look` : ""}. CloudWatch Logs Insights charges ${money2(EST.per_gb).replace(/0+$/, "")} per GB scanned; what was read before is not read again. The exact price is shown before anything is spent.</span></div>${short}<div class="small muted">Spent on reads so far: about ${money2(EST.spent)}.</div></div>`;
+  }
   function drawBatch() {
     const b = S.batch, n = SSO.chosen.length, c = (b && b.count) || {};
     const k = (s) => c[s] || 0;
     const go = (label) => `<button class="btn primary" id="bGo">${esc(label)}</button>`;
     let h;
     if (!b || ["done", "stopped"].includes(b.status)) {
-      h = `${b ? `<p><span class="pill" style="--p:${b.status === "done" ? "var(--good)" : "var(--warn)"}">${b.status === "done" ? "read" : "stopped"}</span> ${b.accounts} account(s) · ${k("done")} done${k("failed") ? `, <b style="color:var(--bad)">${k("failed")} failed</b> <button class="btn" data-failed>Show them</button>` : ""}${k("skipped") ? `, ${k("skipped")} skipped (spent under US$${b.min_spend} a month)` : ""}${k("cancelled") ? `, ${k("cancelled")} not read` : ""} · ${(b.bytes / 1e9).toFixed(2)} GB scanned</p><div class="tools"><button class="btn primary" data-show="macro">Risk overview</button><button class="btn primary" data-show="over">Over-provisioning</button></div>` : ""}
-        <div class="tools">${go(`Read all ${n} account${n === 1 ? "" : "s"}`)}<label class="small">Only accounts spending over US$<input id="bMin" type="number" min="0" step="50" value="${minSpend}" style="width:6em" aria-label="Minimum spend a month in US dollars"> a month</label></div>
+      h = `${b ? `<p><span class="pill" style="--p:${b.status === "done" ? "var(--good)" : "var(--warn)"}">${b.status === "done" ? "read" : "stopped"}</span> ${b.accounts} account(s)${b.bytes ? ` · <b>${bytesTxt(b.bytes)} read, about ${money2(b.bytes / 1e9 * (EST ? EST.per_gb : 0.005))} in AWS charges</b>` : ""} · ${k("done")} done${k("failed") ? `, <b style="color:var(--bad)">${k("failed")} failed</b> <button class="btn" data-failed>Show them</button>` : ""}${k("skipped") ? `, ${k("skipped")} skipped (spent under US$${b.min_spend} a month)` : ""}${k("cancelled") ? `, ${k("cancelled")} not read` : ""} · ${(b.bytes / 1e9).toFixed(2)} GB scanned</p><div class="tools"><button class="btn primary" data-show="macro">Risk overview</button><button class="btn primary" data-show="over">Over-provisioning</button></div>` : ""}
+        <div class="tools">${go(`Read all ${n} account${n === 1 ? "" : "s"}`)}</div>${costBox()}<div class="tools"><label class="small">Only accounts spending over US$<input id="bMin" type="number" min="0" step="50" value="${minSpend}" style="width:6em" aria-label="Minimum spend a month in US dollars"> a month</label></div>
         <p class="muted small">Accounts that spent less in the last 30 days are skipped (0 reads every one); their spend comes from Cost Explorer in the management account. Then security groups, then one price for every account's flow logs before anything is spent. 4 accounts are read at a time.</p>`;
     } else if (b.status === "pricing") {
       const left = k("starting");
       h = `<p>${loading(`Checking spend, reading security groups and pricing flow logs: ${b.accounts - left} of ${b.accounts} accounts${k("skipped") ? `, ${k("skipped")} skipped (under US$${b.min_spend} a month)` : ""}${eta(b)}`)}</p><div class="bar-track"><div class="bar-fill" style="width:${Math.round(100 * (b.accounts - left) / b.accounts)}%"></div></div><div class="tools"><button class="btn danger" id="bStop">Stop</button></div>`;
     } else if (b.status === "confirm") {
-      h = `<p><b>Ready to read flow logs in ${b.to_read} of ${b.accounts} accounts: ${esc(usd(b.cost))}</b>${b.cost_unknown ? ` plus ${b.cost_unknown} account(s) whose cost is not known until a first 1-day read` : ""}.
+      h = `<div class="cost-box warn"><div class="cost-row"><span><span class="small muted">Data to read</span><b>about ${bytesTxt(b.cost / (EST ? EST.per_gb : 0.005) * 1e9)}</b></span><span><span class="small muted">AWS will charge about</span><b>${money2(b.cost)}</b></span><span class="small muted">CloudWatch Logs Insights, billed to these accounts. Nothing is charged until you select Read below.</span></div></div>
+        <p><b>Ready to read flow logs in ${b.to_read} of ${b.accounts} accounts: ${esc(usd(b.cost))}</b>${b.cost_unknown ? ` plus ${b.cost_unknown} account(s) whose cost is not known until a first 1-day read` : ""}.
         ${k("skipped") ? `${k("skipped")} skipped: spent under US$${b.min_spend} in the last 30 days.` : ""}
         ${k("done") ? `${k("done")} had nothing to read (already read, or no VPC flow logs).` : ""} ${k("failed") ? `<b style="color:var(--bad)">${k("failed")} could not be read</b> <button class="btn" data-failed>Show them</button>` : ""}</p>
         <div class="tools">${go(`Read flow logs for ${b.to_read} accounts (${usd(b.cost)})`)}<button class="btn" id="bStop">Not now</button></div>`;
     } else {
       const pct = b.slices ? Math.round(100 * b.done / b.slices) : 0;
-      h = `<p>${loading(`Reading flow logs: ${b.read} of ${b.to_read} accounts done, ${k("running")} reading now · ${(b.bytes / 1e9).toFixed(2)} GB${eta(b)}`)}</p><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><div class="tools"><button class="btn danger" id="bStop">Stop</button></div>`;
+      h = `<p>${loading(`Reading flow logs: ${b.read} of ${b.to_read} accounts done, ${k("running")} reading now · ${bytesTxt(b.bytes)} read, about ${money2(b.bytes / 1e9 * (EST ? EST.per_gb : 0.005))} of ${money2(b.cost)} spent${eta(b)}`)}</p><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><div class="tools"><button class="btn danger" id="bStop">Stop</button></div>`;
     }
     $("batch").innerHTML = h;
+    const idle = !b || ["done", "stopped"].includes(b.status);
+    if (idle && (b ? b.id : 0) !== estFor) { estFor = b ? b.id : 0; loadEstimate(); }  // once, and again after each read
     $("bGo")?.addEventListener("click", () => act($("bGo"), async () => {
       if (b && b.status === "confirm") await api("/api/read/all/confirm", {});
       else await api("/api/read/all", {regions: $("rdRegions").value, days: +$("rdDays").value, min_spend: minSpend});
@@ -1025,7 +1051,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   function cutCell(r) {
     if (!r.new) return '<span class="muted">—</span>';
     const out = [];
-    if (r.new_addresses !== r.addresses) out.push(`<b>${fmtN(r.addresses)} → ${fmtN(r.new_addresses)}</b> addresses <span class="cut">${cutPct(r.addresses, r.new_addresses)}</span>`);
+    if (r.new_addresses !== r.addresses) out.push(`<b>${fmtN(r.addresses)} → ${fmtN(r.new_addresses)}</b> IP addresses <span class="cut">${cutPct(r.addresses, r.new_addresses)}</span>`);
     if (r.new_ports !== r.port_count) out.push(`<b>${fmtN(r.port_count)} → ${fmtN(r.new_ports)}</b> ports <span class="cut">${cutPct(r.port_count, r.new_ports)}</span>`);
     return out.join("<br>") || '<span class="muted">—</span>';
   }
@@ -1048,7 +1074,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <p class="muted small">From ${P.days ? `${Math.round(P.days)} days` : "the"} of VPC flow logs in ${esc(w.region)}. Every source seen is kept, with headroom; nothing is applied until a second person approves.</p></div>
       ${acts.length ? `<button class="btn primary" id="tAll">Propose the whole plan (${acts.length} rule${acts.length === 1 ? "" : "s"})</button>` : ""}</div>
       <div class="plan-tiles"><div><b>${k("tighten") + k("ports")}</b><span>rules to narrow</span></div><div><b>${k("remove")}</b><span>unused rules to remove</span></div>
-      <div><b>${fmtN(cutA)}</b><span>addresses taken away${allA ? ` (${cutPct(allA, allA - cutA)})` : ""}</span></div><div><b>${k("keep")}</b><span>in use: keep</span></div>
+      <div><b>${fmtN(cutA)}</b><span>IP addresses taken away${allA ? ` (${cutPct(allA, allA - cutA)})` : ""}</span></div><div><b>${k("keep")}</b><span>in use: keep</span></div>
       <div><b>${k("open") + k("wait")}</b><span>to decide, or not enough evidence</span></div></div>
       ${acts.length ? `<details class="plan-list" open><summary>Every change in the plan (${acts.length})</summary><div class="scroll"><table class="plan-t">${PLAN_HEAD}<tbody id="planRows"></tbody></table></div></details>`
         : '<p class="muted">Nothing to tighten: the flow logs support every rule as it is.</p>'}`;
@@ -1067,7 +1093,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const w = where();
     return act(btn, async () => {
       const res = await api("/api/tighten", {account: w.account, region: w.region, ...sel});
-      flash(res.id ? `Change request #${res.id} proposed for ${what}: ${res.rules} rule(s), ${fmtN(res.cut_addresses)} fewer addresses. A second person approves it under Change requests.` : `Nothing to change: ${res.status}.`);
+      flash(res.id ? `Change request #${res.id} proposed for ${what}: ${res.rules} rule(s), ${fmtN(res.cut_addresses)} fewer IP addresses. A second person approves it under Change requests.` : `Nothing to change: ${res.status}.`);
       await loadState();
     });
   }
@@ -1274,9 +1300,9 @@ section.nodata .card:not(.empty-state) { display: none; }
           <p class="small muted">${T.narrowed} rule(s) narrowed, ${T.removed} removed as unused, ${P.merges.length} merge(s).${T.open ? ` <b>${T.open} open to everyone</b>: left for you to decide (not counted above).` : ""}${T.wait ? ` ${T.wait} with too little evidence: left as they are.` : ""}</p></div>
         <div class="card"><h3>Where the traffic comes from</h3><p class="muted small">Connections let in over the look back, by source.</p>${mixBar(T.mix, true)}</div>
       </div>
-      ${P.merges.length ? `<div class="card"><h3>Groups to merge</h3><p class="muted small">Once tightened, these let in nearly the same traffic: each takes on at most a few more private addresses (256 in all), or one more port from sources it already lets in. Never a public address, a risky port or everyone. Their interfaces move onto one group; the emptied groups stay, on no interface, to delete later.</p>
+      ${P.merges.length ? `<div class="card"><h3>Groups to merge</h3><p class="muted small">Once tightened, these let in nearly the same traffic: each takes on at most a few more private IP addresses (256 in all), or one more port from sources it already lets in. Never a public IP address, a risky port or everyone. Their interfaces move onto one group; the emptied groups stay, on no interface, to delete later.</p>
         ${P.merges.map((m) => `<label class="merge"><input type="checkbox" data-xmerge="${esc(m.id)}"${fixMergeOff.has(m.id) || m.members.some((x) => fixOff.has(x.id)) ? "" : " checked"}${m.members.some((x) => fixOff.has(x.id)) ? " disabled" : ""}>
-          <span>Merge ${m.members.map((x) => `<b>${esc(x.name)}</b>${x.extra.length ? ` <span class="muted small">(gains ${[...x.gain_ports.map((r) => esc(portTxt(r.proto, r.from, r.to))), x.gain_addresses ? `${x.gain_addresses.toLocaleString()} private address${x.gain_addresses === 1 ? "" : "es"}` : "", x.gain_v6 ? `${x.gain_v6} IPv6 /64${x.gain_v6 === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ")})</span>` : ""}`).join(" + ")} into <b>${esc(m.target_name)}</b> <span class="muted small">${esc(m.region)} · ${m.enis} interface(s) · ${m.rules} rule(s) after</span></span></label>`).join("")}</div>` : ""}
+          <span>Merge ${m.members.map((x) => `<b>${esc(x.name)}</b>${x.extra.length ? ` <span class="muted small">(gains ${[...x.gain_ports.map((r) => esc(portTxt(r.proto, r.from, r.to))), x.gain_addresses ? `${x.gain_addresses.toLocaleString()} private IP address${x.gain_addresses === 1 ? "" : "es"}` : "", x.gain_v6 ? `${x.gain_v6} IPv6 /64${x.gain_v6 === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ")})</span>` : ""}`).join(" + ")} into <b>${esc(m.target_name)}</b> <span class="muted small">${esc(m.region)} · ${m.enis} interface(s) · ${m.rules} rule(s) after</span></span></label>`).join("")}</div>` : ""}
       <div class="card"><details id="xGroups"${fixOpen.has("*") ? " open" : ""}><summary>The ${P.groups.filter((g) => g.changes).length} groups this changes, of ${P.groups.length} (untick any that are sensitive)</summary>
         <div class="scroll"><table class="grp"><thead><tr><th><input type="checkbox" id="xAll" aria-label="Every group"${P.groups.every((g) => !g.changes || !fixOff.has(g.id)) ? " checked" : ""}></th><th>Group</th><th class="num">Interfaces</th><th class="num">IPv4 before</th><th class="num">After</th><th class="num">Change</th><th>Traffic from</th><th class="act"></th></tr></thead><tbody id="xRows"></tbody></table></div></details></div>
       <div class="fix-go"><div><b>${chosen.length}</b> group(s), <b>${nChanges}</b> rule change(s)${merges.length ? `, <b>${merges.length}</b> merge(s)` : ""} · IPv4 let in ${fmtN(aBefore)} → <b>${fmtN(aAfter)}</b> <span class="cut">${cutPct(aBefore, aAfter)}</span></div>
@@ -1455,7 +1481,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     }).join("");
     const peak = (k) => Math.max(...rows.map((r) => r[k] || 0));
     const legend = `<div class="legend">${order.map((k) => `<span><i style="background:${COL[k] || "#8f8d86"}"></i>${esc(NAMES[k] || k)} <b>${big(rows[rows.length - 1][k] || 0)}</b> <span class="muted">now, peak ${big(peak(k))}</span></span>`).join("")}</div>`;
-    return `${legend}<svg class="tl" viewBox="0 0 ${W} ${h}" role="img" aria-label="Rejected addresses over time, by kind of source">${grid}${axis}${lines}</svg>`;
+    return `${legend}<svg class="tl" viewBox="0 0 ${W} ${h}" role="img" aria-label="Rejected IP addresses over time, by kind of source">${grid}${axis}${lines}</svg>`;
   }
   function drawRefused() {
     if (!refusedData) return;
@@ -1505,8 +1531,8 @@ section.nodata .card:not(.empty-state) { display: none; }
     ["Needs attention", (a) => `${a.attention.critical || 0} / ${a.attention.high || 0}`, (a) => (a.attention.critical ? 3 : a.attention.high ? 2 : a.attention.medium ? 1 : 0), "critical / high items in the account's Needs attention box"],
     ["High-risk let in", (a) => a.high_active, (a) => (a.high_active ? 3 : 0), "scanners, threat lists or Tor exits a rule let in"],
     ["Open to internet, risky ports", (a) => `${a.open_risky}${a.open > a.open_risky ? ` <span class="small muted">+${a.open - a.open_risky}</span>` : ""}`, (a) => (a.open_risky ? 3 : a.open ? 1 : 0), "rules open to 0.0.0.0/0 or ::/0 on remote admin, database, Windows or container ports (+ other ports)"],
-    ["Outbound to threat lists", (a) => a.egress_bad, (a) => (a.egress_bad ? 3 : 0), "connections out to known malicious addresses, and other high outbound findings"],
-    ["Never-seen addresses allowed", (a) => big(a.over_now), (a) => (a.over_now > 1e7 ? 3 : a.over_now > 1e6 ? 2 : a.over_now > 1e4 ? 1 : 0), "over-provisioning: allowed in, never seen"],
+    ["Outbound to threat lists", (a) => a.egress_bad, (a) => (a.egress_bad ? 3 : 0), "connections out to known malicious IP addresses, and other high outbound findings"],
+    ["Never-seen IP addresses allowed", (a) => big(a.over_now), (a) => (a.over_now > 1e7 ? 3 : a.over_now > 1e6 ? 2 : a.over_now > 1e4 ? 1 : 0), "over-provisioning: allowed in, never seen"],
     ["Rules to tighten", (a) => a.tighten + a.unused, (a) => (a.tighten + a.unused > 10 ? 2 : a.tighten + a.unused ? 1 : 0), "rules wider than their traffic, plus rules nothing used"],
     ["Probing (high risk, refused)", (a) => a.high_refused, (a) => (a.high_refused > 100 ? 2 : a.high_refused ? 1 : 0), "scanners and scans the rules turned away: the defences working, but someone is looking"],
     ["Blind spots", (a) => (a.covered < 0.98 ? `${Math.round(a.covered * 100)}% read` : a.not_logged ? `${a.not_logged} not logged` : "none"), (a) => (a.covered < 0.98 || a.not_logged ? 2 : 0), "time not read, or groups without flow logs: risk this page cannot see"],
@@ -1523,9 +1549,9 @@ section.nodata .card:not(.empty-state) { display: none; }
   const dimNamed = (n) => DIMS.find((d) => d[0] === n);
   const LENSES = {
     overall: {name: "Overall", what: "every risk in the heatmap below", dims: DIMS},
-    external: {name: "External", what: "risk from the internet", dims: [attDim("external", "internet sources"), dimNamed("High-risk let in"), dimNamed("Open to internet, risky ports"), dimNamed("Outbound to threat lists"), overDim("Never-seen internet addresses allowed", ["internet"]), dimNamed("Probing (high risk, refused)")]},
-    saas: {name: "SaaS", what: "risk from SaaS and partner networks", dims: [attDim("saas", "SaaS and partner sources"), overDim("Never-seen SaaS and partner addresses allowed", ["saas"])]},
-    internal: {name: "Internal", what: "risk inside your network", dims: [attDim("internal", "internal sources"), overDim("Never-seen private and AWS addresses allowed", ["internal", "datacentre", "aws"]), dimNamed("Rules to tighten"), dimNamed("Blind spots")]},
+    external: {name: "External", what: "risk from the internet", dims: [attDim("external", "internet sources"), dimNamed("High-risk let in"), dimNamed("Open to internet, risky ports"), dimNamed("Outbound to threat lists"), overDim("Never-seen internet IP addresses allowed", ["internet"]), dimNamed("Probing (high risk, refused)")]},
+    saas: {name: "SaaS", what: "risk from SaaS and partner networks", dims: [attDim("saas", "SaaS and partner sources"), overDim("Never-seen SaaS and partner IP addresses allowed", ["saas"])]},
+    internal: {name: "Internal", what: "risk inside your network", dims: [attDim("internal", "internal sources"), overDim("Never-seen private and AWS IP addresses allowed", ["internal", "datacentre", "aws"]), dimNamed("Rules to tighten"), dimNamed("Blind spots")]},
   };
   // Two bubble charts share this code: Where to focus (one bubble an account) and Risk by owner (one bubble an owner tag value).
   const FOCUS = {by: "account", lens: "overall", pick: null, id: "mFocus"};
@@ -1673,7 +1699,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       tile(hiIn ? "--bad" : "--good", hiIn, "high-risk sources let in"),
       tile(openR ? "--bad" : "--good", openR, "rules open to the internet on risky ports"),
       tile(egress ? "--bad" : "--good", egress, "outbound to threat lists"),
-      tile("--high", big(sum(A, (a) => a.over_now)), "never-seen addresses allowed in"),
+      tile("--high", big(sum(A, (a) => a.over_now)), "never-seen IP addresses allowed in"),
       tile("--warn", sum(A, (a) => a.tighten + a.unused), "rules to tighten or remove"),
       tile("--muted", big(sum(A, (a) => a.high_refused)), "high-risk sources probing (refused)"),
     ].join("");
@@ -1701,7 +1727,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       : '<p class="muted">No rule in any account is open to the whole internet.</p>';
     const inn = A.flatMap((a) => a.high_active_list.map((r) => ({...r, a}))).sort((p, q) => q.flows - p.flows);
     const TYPE = {scanner: "Scanner", anon: "Tor or VPN exit", threat: "Threat list"};
-    $("mLetIn").innerHTML = inn.length ? `<table class="small"><thead><tr><th>Account</th><th>Source</th><th>Let in on</th><th>Flows</th><th>Last</th></tr></thead><tbody>${inn.slice(0, 20).map((r) => `<tr><td>${acctLink(r.a)}</td><td><code>${esc(r.src)}</code> <span class="pill" style="--p:var(--bad)">${esc(TYPE[r.type] || r.type)}</span><div class="muted">${esc(r.name)}</div></td><td>${r.ports.map(esc).join(", ")}</td><td>${Number(r.flows).toLocaleString()}</td><td>${esc(when(r.last))}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">None: no scanner, threat-list address or Tor exit was let in.</p>';
+    $("mLetIn").innerHTML = inn.length ? `<table class="small"><thead><tr><th>Account</th><th>Source</th><th>Let in on</th><th>Flows</th><th>Last</th></tr></thead><tbody>${inn.slice(0, 20).map((r) => `<tr><td>${acctLink(r.a)}</td><td><code>${esc(r.src)}</code> <span class="pill" style="--p:var(--bad)">${esc(TYPE[r.type] || r.type)}</span><div class="muted">${esc(r.name)}</div></td><td>${r.ports.map(esc).join(", ")}</td><td>${Number(r.flows).toLocaleString()}</td><td>${esc(when(r.last))}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">None: no scanner, threat-list IP address or Tor exit was let in.</p>';
     const top = A.flatMap((a) => a.top_rules.map((r) => ({...r, a}))).sort((p, q) => q.never - p.never).slice(0, 12);
     $("mTop").innerHTML = top.length ? `<table class="small"><thead><tr><th>Account</th><th>Group</th><th>Port</th><th>Allows</th><th>Never seen</th><th></th></tr></thead><tbody>${top.map((r) => `<tr><td>${acctLink(r.a)}</td><td>${esc(r.group)} <span class="muted">${esc(r.region)}</span></td><td>${esc(r.ports)}</td><td><code>${esc(r.source)}</code></td><td><b>${big(r.never)}</b></td><td>${r.status === "unused" ? '<span class="pill" style="--p:var(--warn)">nothing used it</span>' : '<span class="pill" style="--p:var(--high)">tighten</span>'}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">Nothing to tighten.</p>';
     const read = new Set(A.map((a) => a.account));
@@ -1775,7 +1801,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const T = tot(now);
     const split = keys.filter((k) => now[k]).sort((p, q) => now[q] - now[p]).map((k) => `<span><i style="background:${COL[k] || "#8f8d86"}"></i>${esc(NAMES[k])} <b>${big(now[k])}</b> <span class="muted">${Math.round((100 * now[k]) / T)}%</span></span>`).join("");
     $("oTrend").innerHTML = keys.length
-      ? `<div class="trend-now"><b>${big(last)}</b> never-seen addresses let in now ${delta(last, first)}</div>${svgStack(o.ts, o.rows, keys, COL, NAMES, 220)}${T ? `<div class="legend" style="margin-top:8px"><span class="muted small">Now:</span>${split}</div>` : ""}`
+      ? `<div class="trend-now"><b>${big(last)}</b> never-seen IP addresses let in now ${delta(last, first)}</div>${svgStack(o.ts, o.rows, keys, COL, NAMES, 220)}${T ? `<div class="legend" style="margin-top:8px"><span class="muted small">Now:</span>${split}</div>` : ""}`
       : '<p class="muted">Nothing over-provisioned in this window: every rule fits what the flow logs saw.</p>';
   }
   $("oBy").addEventListener("click", (e) => { const b = e.target.closest("[data-oby]"); if (!b || !O) return; oBy = b.dataset.oby; for (const x of $("oBy").children) x.setAttribute("aria-pressed", String(x === b)); if (O.accounts.length) drawOverTrend(O.accounts); });
@@ -1809,7 +1835,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   function drawOver() {
     const A = [...O.accounts].sort((a, b) => RANK[a.rag] - RANK[b.rag] || pct(a.asset_rag.green, a.assets_total) - pct(b.asset_rag.green, b.assets_total) || b.over_now - a.over_now);
     $("oNote").textContent = A.length ? `${A.length} account${A.length === 1 ? "" : "s"} read` : "";
-    $("oRagNote").innerHTML = `${ragPill("green")} up to ${big(O.rag.green_max)} never-seen addresses can reach the asset (a /24) · ${ragPill("amber")} up to ${big(O.rag.amber_max)} (a /16) · ${ragPill("red")} more, or open to the internet on a remote admin, database, Windows or container port. IPv4; rules open to the whole internet on other ports are listed but not counted.`;
+    $("oRagNote").innerHTML = `${ragPill("green")} up to ${big(O.rag.green_max)} never-seen IP addresses can reach the asset (a /24) · ${ragPill("amber")} up to ${big(O.rag.amber_max)} (a /16) · ${ragPill("red")} more, or open to the internet on a remote admin, database, Windows or container port. IPv4; rules open to the whole internet on other ports are listed but not counted.`;
     if (!A.length) {
       for (const id of ["oTiles", "oRagTime", "oAccounts", "oWins", "oAssets"]) $(id).innerHTML = "";
       $("oTiles").innerHTML = noFlowLogs(O.no_flow_logs_read || 0);
@@ -1827,7 +1853,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const worst = [...all].sort((p, q) => q.over - p.over)[0];
     const tile = (c, n, label, extra = "") => `<div class="card stat mtile" style="--c:${c}"><b>${n}</b><span>${label}</span>${extra ? `<div style="margin-top:4px">${extra}</div>` : ""}</div>`;
     $("oTiles").innerHTML = [
-      tile("var(--high)", big(over), "never-seen addresses allowed in, every account", delta(over, over0)),
+      tile("var(--high)", big(over), "never-seen IP addresses allowed in, every account", delta(over, over0)),
       tile(pct(green, assets) >= TARGET * 100 ? RAGC.green : RAGC.amber, `${pct(green, assets)}%`, `assets right-sized (${green} of ${assets}); target ${Math.round(TARGET * 100)}%`, `<div class="bar-track target" style="--t:${TARGET * 100}%"><div class="bar-fill" style="width:${pct(green, assets)}%;background:${RAGC.green}"></div></div>`),
       tile(RAGC.red, red, "red assets", delta(red, tot0("red"), String)),
       tile(RAGC.amber, amber, "amber assets", delta(amber, tot0("amber"), String)),

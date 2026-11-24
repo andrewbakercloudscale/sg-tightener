@@ -536,11 +536,11 @@ def test_known_malicious_sources_are_flagged_in_and_out():
     rep = sg_review.build(doc, "1m", "", demo_sg.INTERNAL, names=sg_review.parse_names(demo_sg.NAMES))
     let_in = [a for a in rep["attention"] if a.get("label") == "Known malicious let in"]
     assert let_in and let_in[0]["sev"] == "critical" and "198.51.100.66" in json.dumps(let_in[0])
-    out = [p for p in rep["posture"] if p["label"] == "Outbound to a known malicious address"]
+    out = [p for p in rep["posture"] if p["label"] == "Outbound to a known malicious IP address"]
     assert out and out[0]["sev"] == "critical" and out[0]["name"] == "eni-0app2"
     assert "198.51.100.99 (Feodo Tracker botnet C2)" in out[0]["reason"]
     refused = next(r for r in rep["refused"] if r["src"] == "198.51.100.66")
-    assert refused["verdict"]["title"] == "Known malicious address refused"
+    assert refused["verdict"]["title"] == "Known malicious IP address refused"
     rows = sg_review.refused_rows(ACCT, "demo", rep)
     assert next(r for r in rows if r["src"] == "198.51.100.66")["threat"]
     assert not next(r for r in rows if r["src"] == "198.51.100.66")["tor"]
@@ -548,10 +548,10 @@ def test_known_malicious_sources_are_flagged_in_and_out():
 
 def test_watch_always_posts_known_malicious_items():
     items = [{"kind": "refused", "label": "Refused"}, {"kind": "active", "label": "Known malicious let in"},
-             {"kind": "posture", "label": "Outbound to a known malicious address"},
+             {"kind": "posture", "label": "Outbound to a known malicious IP address"},
              {"kind": "active", "label": "Scan got in"}, {"kind": "drift", "label": "Opened wide"}]  # fmt: skip
     assert [i["label"] for i in sg_review.alert_items(items)] == [
-        "Refused", "Known malicious let in", "Outbound to a known malicious address"]  # fmt: skip
+        "Refused", "Known malicious let in", "Outbound to a known malicious IP address"]  # fmt: skip
     assert len(sg_review.alert_items(items, "all")) == 5
 
 
@@ -587,7 +587,7 @@ def test_page_extract_rule_shows_what_we_know_and_splits_by_destination(tmp_path
     page = tmp_path / "p.html"
     sg_review.write_page(data, str(page))
     html = page.read_text()
-    for needle in ("What we know", "data-xr-split", "destination address", "Copy this rule's command",
+    for needle in ("What we know", "data-xr-split", "destination IP address", "Copy this rule's command",
                    "Propose this one in the console", "Already let in", "Already allowed by", "Your interface"):
         assert needle in html, needle
 

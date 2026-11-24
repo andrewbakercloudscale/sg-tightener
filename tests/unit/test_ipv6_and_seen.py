@@ -203,7 +203,7 @@ def test_new_sources_are_marked_and_told_in_verdicts_rows_and_alerts(demo_report
     by = {x["src"]: x for x in rep["refused"] + rep["active"]}
     zs = by["165.225.12.40"]  # the partner's new Zscaler egress: refused for the last six days, never before
     assert zs["new"] and not zs["seen_before"] and zs["first_ever"] >= rep["end"] - 7 * 86400
-    assert zs["verdict"]["label"] == "New address?" and "never before in" in zs["verdict"]["reason"]
+    assert zs["verdict"]["label"] == "New IP address?" and "never before in" in zs["verdict"]["reason"]
     old = by["203.0.113.11"]  # the partner's other address: seen all along
     assert not old["new"] and old["first_ever"] < rep["end"] - 60 * 86400 and old["seen_before"]
     assert rep["summary"]["new_refused"] >= 3 and rep["summary"]["new_possible"]
@@ -229,7 +229,7 @@ def test_nothing_is_new_without_enough_history(demo_report):
 def test_a_new_address_verdict_says_when_the_source_is_not_new():
     v = {"key": "moved", "reason": "X was let in until 1 Nov; Y started being refused 2 Nov."}
     sg_review._note_novelty(v, {"first_ever": 1_700_000_000, "seen_before": True, "new": False}, 1_690_000_000)
-    assert "Not a new address though: first seen" in v["reason"]
+    assert "Not a new IP address though: first seen" in v["reason"]
     s = {"key": "scan", "reason": "Scan refused."}
     sg_review._note_novelty(s, {"first_ever": 1_700_000_000, "seen_before": False, "new": True}, 1_690_000_000)
     assert s["reason"] == "Scan refused." and s["new"]

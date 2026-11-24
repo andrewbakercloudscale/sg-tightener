@@ -251,7 +251,7 @@ def _fits(own: set, union: set) -> bool:
 
 
 def _gain(own: set, union: set) -> dict:
-    """What a member takes on in a merge, in words a person can check: new ports, and how many more addresses."""
+    """What a member takes on in a merge, in words a person can check: new ports, and how many more IP addresses."""
     extra = union - own
     have = {t[:4] for t in own}
     ports = sorted({t[:4] for t in extra} - have)

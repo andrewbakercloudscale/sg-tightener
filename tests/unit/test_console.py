@@ -443,3 +443,15 @@ def test_a_report_answers_from_its_last_rows_while_an_account_is_being_read(tmp_
     c._report_gates[("refresh", "macro", "1m")][0].join(5)
     assert built == ["1", "1"], "rebuilt once, in the background"
     assert c._reports("macro", "1m", {}) == {"1": {"v": 2}}
+
+
+def test_the_cost_of_a_read_is_estimated_for_every_look_back(tmp_path, monkeypatch):
+    c = sg_console.Console(str(tmp_path / "sg.db"), targets=FakeTargets("x"))
+    rows = {"1": {"rate": 1e3, "spent": 2.5, "regions": 1, "cost": {"7": 10.0, "30": 40.0}, "bytes": {"7": 2e12, "30": 8e12}},
+            "2": {"rate": None, "spent": 0.0, "regions": 1, "cost": {}, "bytes": {}},  # never read: priced after a first look
+            "3": None}  # no flow logs read
+    monkeypatch.setattr(c, "_reports", lambda kind, r, n: rows if kind == "estimate" else {})
+    e = c.read_estimate()
+    assert e["by_days"]["7"] == {"cost": 10.0, "accounts": 1, "bytes": 2e12}
+    assert e["by_days"]["30"]["cost"] == 40.0 and e["unknown"] == 1 and e["spent"] == 2.5
+    assert e["default_days"] == 7, "a week by default: 30 days across an OU can cost hundreds of dollars"

@@ -51,7 +51,7 @@ def test_open_ssh_on_a_public_routed_instance_is_critical_with_the_revoke():
 def test_no_public_address_or_no_igw_route_or_a_nacl_deny_is_latent_not_exposed():
     g = {"sg-1": {"name": "admin", "rules": [rule(cidrs=["0.0.0.0/0"])]}}
     private = posture_findings(doc(g, {"eni-1": eni(["sg-1"])}))
-    assert keys(private) == [("latent-open", "low")] and "no public address" in private[0]["reason"]
+    assert keys(private) == [("latent-open", "low")] and "no public IP address" in private[0]["reason"]
     unrouted = posture_findings(doc(g, {"eni-1": eni(["sg-1"], subnet="subnet-app", public="198.51.100.9")}))
     assert "internet gateway" in unrouted[0]["reason"] and unrouted[0]["key"] == "latent-open"
     nacl = {"subnet-pub": {"id": "acl-1", "entries": [
