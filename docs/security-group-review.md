@@ -62,7 +62,7 @@ python sg_review.py demo            # -> sg-review-demo.html
 | Parameter | Values | Effect on the graphs |
 |---|---|---|
 | `--regions` | `eu-west-1,us-east-1` | Which regions' security groups and flow logs are read. All regions appear on one page, and approved.json downloads are per region |
-| `--days` | `1`, `7`, `30`, `90`, `180`, `365` (default `1`) | How far back is read. It decides which **Time window** choices work: `1` gives the last 24 hours; `7` adds the last week; `30` the last month; `90` the last 3 months; `180` the last 6 months; `365` the last year. Every window can be chosen: one longer than the read is labelled "data for N days only" (or "no data"). Rules are only called *unused* or *Tighten* after 30 days of evidence |
+| `--days` | `1`, `7`, `30`, `90`, `180`, `365` (default `1`) | How far back is read. It decides which **Time window** choices work: `1` gives the last 24 hours; `7` adds the last week; `30` the last month; `90` the last 3 months; `180` the last 6 months; `365` the last year. Every window can be chosen: one longer than the read is labelled "data for N days only" (or "no data"). Rules are called *unused* or *Tighten* on whatever was read: a longer read means fewer sources that run rarely (monthly jobs, DR tests) are missed |
 | `--profile` | an AWS profile | The credentials to read with. The account is whichever one those credentials belong to |
 | `--name` | text | The account name shown in the header (default: the account alias) |
 | `--egress` | flag | Also read outbound connections: fills the outbound findings in [Exposure and hygiene](#exposure-and-hygiene). About half as much again per read; stays on for the account |

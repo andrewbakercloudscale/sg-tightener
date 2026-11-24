@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.23.0 - 2026-11-24
+
+- **Rules are tightened on whatever was read; you decide when to act.** A rule was not narrowed or called
+  unused until 30 days of flow logs had been read. Now one day is enough. Anything that runs less often (a
+  monthly job, a DR test) is refused after the change, shows on **Rejected traffic**, and **Propose allowing**
+  opens it again. Remediate says so beside the days read. aws-prd-plrabi, with its cut hours read again: IPv4
+  addresses let in go from 168M to 183, 14 rules narrowed and 6 removed.
+- Slices that hit 10,000 rows are split down to one minute (some VPCs are still over 10,000 rows in four).
+
 ## 5.22.0 - 2026-11-24
 
 - **Busy VPCs can now be tightened.** A slice that hit Logs Insights' 10,000 row limit was split only down to

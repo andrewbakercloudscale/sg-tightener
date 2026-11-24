@@ -888,7 +888,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const days = +$("rdDays").value;
     if (!EST) return `<div class="cost-box"><span class="spin" aria-hidden="true"></span> Working out the AWS cost of reading ${days} day${days === 1 ? "" : "s"}…</div>`;
     const x = EST.by_days[String(days)] || {cost: 0, bytes: 0, accounts: 0};
-    const short = days < EST.evidence_days ? `<div class="small muted">Under ${EST.evidence_days} days, rules are not yet called unused or ready to tighten: read ${EST.evidence_days} days for those, ideally for the accounts that matter most first.</div>` : "";
+    const short = EST.evidence_days && days < EST.evidence_days ? `<div class="small muted">Under ${EST.evidence_days} days, rules are not yet called unused or ready to tighten: read ${EST.evidence_days} days for those, ideally for the accounts that matter most first.</div>` : "";
     const pick = [...$("rdDays").options].map(o => `<option value="${o.value}"${+o.value === days ? " selected" : ""}>${o.textContent}</option>`).join("");
     return `<div class="cost-box"><div class="cost-row"><label><span class="small muted">How far back</span><select id="cbDays" aria-label="How far back to read">${pick}</select></label><span><span class="small muted">Not yet read, last ${days === 365 ? "year" : `${days} day${days === 1 ? "" : "s"}`}</span><b>about ${bytesTxt(x.bytes)}</b></span><span><span class="small muted">Estimated AWS cost</span><b>about ${money2(x.cost)}</b></span><span class="small muted">${x.accounts} account${x.accounts === 1 ? "" : "s"} read before${EST.unknown ? `, plus ${EST.unknown} priced after a first look` : ""}. Only hours never read before are read (and charged): what is read is kept on this computer, so each later read costs just the hours since the last one. CloudWatch Logs Insights charges US$${+EST.per_gb} per GB scanned. The exact price is shown before anything is spent.</span></div>${short}<div class="small muted">Spent on reads so far: about ${money2(EST.spent)}.</div></div>`;
   }
@@ -1336,7 +1336,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const short = P.have_days + 1 < P.days;
     const row = (label, b, a, fmt, good) => `<tr><th scope="row">${label}</th><td class="num">${fmt(b)}</td><td class="num"><b>${fmt(a)}</b></td><td class="num">${b !== a ? `<span class="${good ? "cut" : "muted"}">${cutPct(b, a) || ""}</span>` : '<span class="muted">same</span>'}</td></tr>`;
     $("xBody").innerHTML = `
-      ${short ? `<div class="flash">Only <b>${Math.round(P.have_days)} days</b> of flow logs read in this ${Math.round(P.days)}-day look back: rules with under 30 days of evidence are left as they are. <button class="btn sm" id="xRead">Read ${Math.round(P.days)} days for this account</button></div>` : ""}
+      ${short ? `<div class="flash">Only <b>${Math.round(P.have_days)} days</b> of flow logs read in this ${Math.round(P.days)}-day look back: rules are narrowed to the sources seen in it and rules nothing used are removed. Anything that runs less often (a monthly job, a DR test) will be refused: it shows on <b>Rejected traffic</b>, where <b>Propose allowing</b> opens it again. A longer read makes that less likely. <button class="btn sm" id="xRead">Read ${Math.round(P.days)} days for this account</button></div>` : ""}
       <div class="fix-top">
         <div class="card"><h3>Before and after</h3>
           <p class="muted small">${esc(P.name || P.account)}, ${Math.round(P.have_days)} days of flow logs. Every source seen is kept, with headroom.</p>

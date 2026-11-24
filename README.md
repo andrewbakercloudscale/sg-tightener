@@ -269,6 +269,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.23.0** | Rules tightened on whatever was read (no 30-day wait); Rejected traffic and Propose allowing undo a premature change |
 | **5.22.0** | Slices that hit 10,000 rows are split down to minutes, and earlier cut hours read again, so busy VPCs can be tightened |
 | **5.21.1** | Stop works at once while pricing a read of many accounts; find an account on Remediate, which opens faster |
 | **5.21.0** | `sg_store.py backup` and `restore`: pg_dump of everything, checked, the newest 14 kept |

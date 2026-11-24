@@ -247,7 +247,7 @@ def load_names(path=None) -> list[dict]:
 # ------------------------------------------------------------------------------------- flow-log reads
 
 ROWS = 10000  # the most rows one Logs Insights query returns
-MIN_SPLIT = 240  # a slice that hits ROWS is halved while longer than this (an hour of a busy EKS VPC: ~7.5 minutes)
+MIN_SPLIT = 60  # a slice that hits ROWS is halved while longer than this (the busiest VPCs read: under 4 minutes)
 EPHEMERAL = 32768  # ports from here up are folded into one: replies to the account's own connections land there
 PRIVATE_V4 = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
 PRIVATE_V6 = ("fc00::/7", "fe80::/10")  # unique local and link-local: never routed on the internet
@@ -798,7 +798,9 @@ LAG = 900  # flow logs reach CloudWatch up to ~10 minutes late: the newest quart
 TAIL_LAG = 300  # watch also reads from the last full hour up to five minutes ago ("tail" slices), to alert in minutes
 WORKERS = 8  # slices of one account read at once: well inside the Logs Insights concurrent-query quota
 REGION_WORKERS = 8  # regions read at once in one account: each region has its own API limits
-EVIDENCE_DAYS = 30  # fewer days of flow logs than this and no rule is called unused or ready to tighten
+EVIDENCE_DAYS = 0  # fewer days of flow logs than this and no rule is called unused or ready to tighten. Owner's
+# decision (2026-11-24): act on whatever was read; what runs less often than the read (monthly jobs, DR tests)
+# shows on Rejected traffic, where Propose allowing opens it again. It was 30.
 NEW_DAYS = 7  # a source first seen this recently is new...
 NEW_HISTORY_DAYS = 14  # ...when at least this many days of flow logs before it were read without it
 INSIGHTS_PER_GB = 0.005
@@ -3497,6 +3499,22 @@ def plan_read(sess, doc: dict, regions: Sequence[str], days: int, now: float, sa
         vpcs = _vpc_ranges(entry["snapshot"])
         span = entry.get("slice")  # how short this region's slices had to be to stay under the row limit
         tasks += [(region, a, b, qsets, vpcs) for s, e in plan(now, days, have) for a, b in _pieces(s, e, span)]
+    return tasks
+
+
+def cut_tasks(doc: dict, first_only: bool = False) -> list[tuple]:
+    """Read tasks for the hours an earlier read kept cut at the row limit (``coarse_cut``), in pieces of each
+    region's learned slice length. ``first_only``: one hour per region not yet split, to learn that length."""
+    tasks = []
+    for region, entry in (doc.get("regions") or {}).items():
+        qsets = entry.get("query_sets")
+        if not qsets:
+            continue
+        vpcs = _vpc_ranges(entry.get("snapshot") or {})
+        cut = sorted((c["s"], c["e"]) for c in doc["chunks"] if c["r"] == region and coarse_cut(c))
+        if first_only:
+            cut = cut[-1:] if cut and not entry.get("slice") else []
+        tasks += [(region, a, b, qsets, vpcs) for s, e in cut for a, b in _pieces(s, e, entry.get("slice"))]
     return tasks
 
 

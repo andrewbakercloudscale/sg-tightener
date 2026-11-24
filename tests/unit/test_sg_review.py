@@ -152,11 +152,13 @@ def test_sources_are_labelled_and_dr_shows_apart(report):
     assert not any(x["src"] == "52.95.110.1" for x in rep["active"])
 
 
-def test_short_evidence_is_never_called_unused():
+def test_one_day_of_evidence_is_acted_on_the_person_decides_when():
+    """Owner's decision: a day of flow logs is enough to tighten and to call a rule unused. What runs less often
+    is refused, shows on Rejected traffic, and Propose allowing opens it again."""
     doc = demo_sg.build_doc(ACCT, time.time(), 1)
     rep = sg_review.build(doc, "24h", "")
-    assert not any(r["status"] in ("unused", "tighten") for r in rep["rules"])
-    assert rep["summary"]["watch"] > 0
+    assert any(r["status"] in ("unused", "tighten") for r in rep["rules"])
+    assert rep["summary"]["watch"] == 0
 
 
 def test_approved_json_is_sg_tightener_v2(report):
@@ -286,6 +288,10 @@ def test_an_hour_read_cut_before_is_read_again_split_and_replaced_and_the_next_r
     assert doc["regions"]["eu-west-1"]["slice"] == 900
     assert sg_review._pieces(start, start + 3600, 900) == [(start + i * 900, start + (i + 1) * 900) for i in range(4)]
     assert sg_review._pieces(start, start + 3600, None) == [(start, start + 3600)]
+    assert sg_review.cut_tasks(doc) == [], "nothing cut is left to read again"
+    doc["chunks"].append({**old, "s": start - 3600, "e": start})
+    assert [(t[1], t[2]) for t in sg_review.cut_tasks(doc)] == [(start - 3600 + i * 900, start - 3600 + (i + 1) * 900) for i in range(4)]
+    assert sg_review.cut_tasks(doc, first_only=True) == [], "the slice length is already known"
 
 
 # ------------------------------------------------------------------ port classes, attribution, extract data

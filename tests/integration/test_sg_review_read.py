@@ -96,6 +96,6 @@ def test_read_then_report(estate):
     assert state["done"] == len(tasks) and state["bytes"] > 0
     rep = sg_review.build(doc, "24h")
     rule = next(r for r in rep["rules"] if r["group"] == sg)
-    assert rule["here"] == 1 and rule["status"] == "watch"  # one day of evidence: too early to call
+    assert rule["here"] == 1 and rule["status"] == "tighten"  # one day of evidence is acted on (owner's decision)
     assert {x["src"] for x in rep["refused"]} == {"10.9.9.9", "198.51.100.9"}
     assert sg_review.approved(doc, REGION)["ips"] == ["10.1.2.3"]
