@@ -47,7 +47,10 @@ def test_plan_slices_hourly_six_hourly_daily_and_fills_only_the_gap():
 def test_queries_filter_inbound_and_keep_refused_internet_sources_apart():
     fmt = "${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr} ${srcport} ${dstport} ${protocol} ${packets} ${bytes} ${start} ${end} ${action} ${log-status} ${flow-direction}"
     q = sg_flows.detail_query(fmt, ["10.0.0.0/16"])
-    assert 'f_flow_direction = "ingress"' in q and "least(f_dstport, 32768)" in q and "limit 10000" in q
+    assert 'f_flow_direction = "ingress"' in q and "limit 10000" in q
+    assert "least(f_dstport + least(1, floor(f_dstport / 1024)) * (f_srcport < f_dstport) * (32768 - f_dstport), 32768)" in q
+    assert "least(f_dstport, 32768)" in sg_flows.detail_query(fmt, [], fold="high")
+    assert "least(f_dstport, 32768)" in sg_flows.detail_query(fmt.replace(" ${srcport}", ""), [])
     assert 'f_action = "ACCEPT" or (isIpv4InSubnet(f_srcaddr, "10.0.0.0/8")' in q
     assert "least" not in sg_flows.detail_query(fmt, [], fold=False)
     p = sg_flows.public_query(None, ["10.0.0.0/16"])
@@ -873,3 +876,37 @@ def test_a_slice_out_of_reach_is_recorded_failed_and_the_rest_of_the_account_is_
     st = {c["r"]: c["st"] for c in doc["chunks"]}
     assert st == {"af-south-1": "failed", "eu-west-1": "ok"}
     assert "ReadTimeoutError" in next(c["err"] for c in doc["chunks"] if c["r"] == "af-south-1")
+
+
+def test_replies_are_folded_in_the_query_with_tcp_flags():
+    fmt = "${account-id} ${interface-id} ${pkt-srcaddr} ${srcport} ${pkt-dstaddr} ${dstport} ${tcp-flags} ${protocol} ${packets} ${bytes} ${action} ${flow-direction} ${start} ${end}"
+    port = sg_review.reply_port(sg_review.fields_of(fmt))
+    assert "floor(f_tcp_flags / 16) % 2" in port and "(1 - floor(f_tcp_flags / 2) % 2)" in port
+
+    def value(srcport, dstport, flags):  # the expression, evaluated as Logs Insights would
+        expr = port.replace("f_srcport", str(srcport)).replace("f_dstport", str(dstport)).replace("f_tcp_flags", str(flags))
+        return int(eval(expr, {"least": min, "greatest": max, "floor": lambda x: int(x // 1)}))  # noqa: S307
+
+    assert value(32163, 26085, 19) == 32768, "a NodePort's SYN-ACK to a client's random port is a reply"
+    assert value(32163, 9247, 0) == 9247 and value(32163, 40000, 0) == 32768
+    assert value(40000, 9092, 3) == 9092 and value(1500, 9092, 2) == 9092, "a SYN to a service port is kept"
+    assert value(443, 123, 0) == 123 and value(55000, 443, 0) == 443, "ports under 1024 are never folded"
+    assert value(40000, 50000, 2) == 32768, "from EPHEMERAL up is folded as before"
+
+
+def test_reads_saved_before_replies_were_folded_are_folded_once():
+    doc = sg_review.new_doc("111122223333", "")
+    assert doc["replies_folded"] == 1
+    del doc["replies_folded"]
+    doc["regions"]["eu-west-1"] = {"slice": 60}
+    rows = [["100.64.0.1", "10.0.0.5", "eni-1", "6", p, "ACCEPT", 1] for p in range(2000, 2030)]
+    rows += [["100.64.0.1", "10.0.0.5", "eni-1", "6", 8080, "ACCEPT", 4], ["10.0.0.9", "10.0.0.5", "eni-1", "6", 5432, "ACCEPT", 2],
+             ["10.0.0.9", "10.0.0.5", "eni-1", "6", 2001, "ACCEPT", 1]]  # fmt: skip
+    doc["chunks"] = [{"r": "eu-west-1", "s": 0, "e": 60, "st": "ok", "rows": rows, "k": 7}]
+    assert sg_review.fold_replies(doc) == 30
+    got = sorted(tuple(r) for r in doc["chunks"][0]["rows"])
+    assert ("100.64.0.1", "10.0.0.5", "eni-1", "6", 32768, "ACCEPT", 34) in got
+    assert ("100.64.0.1", "10.0.0.5", "eni-1", "6", 8080, "ACCEPT", 4) not in got, "8080 is one of its many ports"
+    assert ("10.0.0.9", "10.0.0.5", "eni-1", "6", 2001, "ACCEPT", 1) in got, "a source with few ports keeps them"
+    assert "k" not in doc["chunks"][0] and "slice" not in doc["regions"]["eu-west-1"]
+    assert sg_review.fold_replies(doc) == 0

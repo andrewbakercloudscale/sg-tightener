@@ -319,14 +319,70 @@ def _base(log_format: str | None, vpc_ranges: list[str]) -> tuple[str, str, str,
     return head, src, dst, by_dir
 
 
-def detail_query(log_format: str | None, vpc_ranges: list[str], fold: bool = True) -> str | None:
+def reply_port(fields: list[str]) -> str | None:
+    """A Logs Insights expression for the destination port with replies folded into EPHEMERAL, or None when the
+    format lacks srcport. A reply is a record to a port from 1024 up that either carries SYN-ACK (tcp-flags 18:
+    the source answered a connection) or has no SYN and comes from a lower port than it goes to (the middle of
+    a connection the target opened to the source's service). A Kubernetes NodePort answering clients on their
+    random ports 1024 to 65535 gave one source and target 17,000 ports a day; replies need no inbound rule,
+    since security groups are stateful. Insights has no if(), so it is arithmetic on 0 and 1."""
+    if "srcport" not in fields:
+        return None
+    hi = "least(1, floor(f_dstport / 1024))"
+    lower = "(f_srcport < f_dstport)"
+    if "tcp_flags" in fields:
+        reply = f"greatest(floor(f_tcp_flags / 16) % 2, (1 - floor(f_tcp_flags / 2) % 2) * {lower})"
+    else:
+        reply = lower
+    return f"least(f_dstport + {hi} * {reply} * ({EPHEMERAL} - f_dstport), {EPHEMERAL})"
+
+
+REPLY_PORTS = 20  # a source and target with more ports than this from 1024 up, in a read made before replies were folded
+
+
+def fold_replies(doc: dict) -> int:
+    """Rows saved before the detail query folded replies (5.24.0): a source and target seen on more than
+    REPLY_PORTS ports from 1024 up are replies, so those ports become EPHEMERAL, as a read now gives them.
+    Each region's learned slice length is forgotten too: it was learned while replies filled the row limit.
+    Returns the rows dropped. Once per read: marked ``replies_folded``."""
+    if doc.get("replies_folded"):
+        return 0
+    ports: dict = {}
+    for c in doc.get("chunks") or []:
+        for src, dst, eni, proto, dport, action, _ in c.get("rows") or []:
+            if 1024 <= dport < EPHEMERAL:
+                ports.setdefault((src, dst, eni, proto, action), set()).add(dport)
+    noisy = {k for k, v in ports.items() if len(v) > REPLY_PORTS}
+    dropped = 0
+    for c in doc.get("chunks") or []:
+        rows = c.get("rows") or []
+        if not rows:
+            continue
+        merged: dict = {}
+        for src, dst, eni, proto, dport, action, flows in rows:
+            if 1024 <= dport < EPHEMERAL and (src, dst, eni, proto, action) in noisy:
+                dport = EPHEMERAL
+            k = (src, dst, eni, proto, dport, action)
+            merged[k] = merged.get(k, 0) + (flows or 0)
+        if len(merged) < len(rows):
+            dropped += len(rows) - len(merged)
+            c["rows"] = [[*k, n] for k, n in merged.items()]
+            c.pop("k", None)  # a saved slice is only written again without its row id
+    for entry in (doc.get("regions") or {}).values():
+        entry.pop("slice", None)
+    doc["replies_folded"] = 1
+    return dropped
+
+
+def detail_query(log_format: str | None, vpc_ranges: list[str], fold: bool | str = True) -> str | None:
     """Accepted inbound connections, and refused ones from private addresses, by source, target, interface,
-    protocol, port (ports from EPHEMERAL up folded into one when ``fold``) and action."""
+    protocol, port and action. ``fold`` True: replies and ports from EPHEMERAL up folded into one; "high": only
+    ports from EPHEMERAL up; False: every port."""
     b = _base(log_format, vpc_ranges)
     if not b:
         return None
     head, src, dst, _ = b
-    port = f"least(f_dstport, {EPHEMERAL})" if fold else "f_dstport"
+    port = (fold is True and reply_port(fields_of(log_format))) or (f"least(f_dstport, {EPHEMERAL})" if fold else "f_dstport")
     return (
         f'{head} and (f_action = "ACCEPT" or {_private(src)})'
         f" | fields {port} as dport"
@@ -849,7 +905,10 @@ def stamps() -> dict[str, float]:
 
 
 def load(account: str) -> dict | None:
-    return sg_store.review_load(_check(account), doc_schema=SCHEMA)
+    doc = sg_store.review_load(_check(account), doc_schema=SCHEMA)
+    if doc:
+        fold_replies(doc)  # saved with the account's next read; `sg_review.py fold-replies` saves every account now
+    return doc
 
 
 def save(doc: dict) -> None:
@@ -918,7 +977,7 @@ def forget(account: str) -> bool:
 
 def new_doc(account: str, name: str, mode: str = "live") -> dict:
     return {"schema": SCHEMA, "account": account, "name": name, "mode": mode, "regions": {}, "chunks": [],
-            "reads": []}  # fmt: skip
+            "reads": [], "replies_folded": 1}  # fmt: skip
 
 
 # ---------------------------------------------------------------------------------------- planning
@@ -982,7 +1041,7 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
     rows, pub, egr, nbytes, cut, pub_cut, errors = [], [], [], 0, False, False, []
     for q in qsets:
         rs, b, status = None, 0, ""
-        for fold in (True, False):
+        for fold in (True, "high", False):
             query = detail_query(q["format"], vpcs, fold=fold)
             rs, b, status = run_query(logs, q["groups"], query, s, e, cancelled=cancelled)
             nbytes += b
@@ -3870,6 +3929,23 @@ def cmd_names(args) -> int:
     return 0
 
 
+def cmd_fold_replies(args) -> int:
+    """Every saved read, reply traffic folded (load does it) and saved, one account at a time."""
+    total = 0
+    for account in sorted(stamps()):
+        doc = sg_store.review_load(account, doc_schema=SCHEMA)
+        if not doc or doc.get("replies_folded"):
+            continue
+        before = sum(len(c.get("rows") or []) for c in doc["chunks"])
+        n = fold_replies(doc)
+        save(doc)
+        total += n
+        print(f"{account}: {before:,} rows, {n:,} folded away", flush=True)
+        del doc
+    print(f"done: {total:,} rows folded away")
+    return 0
+
+
 def cmd_forget(args) -> int:
     account = _pick_account(args.account)
     LOG.info("deleted what was read for %s" if forget(account) else "nothing was read for %s", account)
@@ -4791,6 +4867,8 @@ def _build_parser() -> argparse.ArgumentParser:
     f = sub.add_parser("forget", help="delete what was read for an account")
     f.add_argument("--account")
     f.set_defaults(fn=cmd_forget)
+    fr = sub.add_parser("fold-replies", help="fold reply traffic in reads saved before 5.24.0, and save them")
+    fr.set_defaults(fn=cmd_fold_replies)
     h = sub.add_parser("securityhub", help="send an account's findings to AWS Security Hub (ASFF), archiving the "
                        "ones no longer open")
     h.add_argument("--account", help="the account read (default: the only one)")
