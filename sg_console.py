@@ -1378,9 +1378,11 @@ class Service:
     def content(self) -> bytes:
         log = str(self.home / ".sg-tightener" / "console.log")
         if self.system == "Darwin":
+            # "Standard", not "Background": macOS keeps a background job on its slowest cores and throttles its
+            # disk, which made every page the console builds about four times slower
             return plistlib.dumps({"Label": LABEL, "ProgramArguments": self.cmd, "RunAtLoad": True, "KeepAlive": True,
                                    "ThrottleInterval": 10, "StandardOutPath": log, "StandardErrorPath": log,
-                                   "EnvironmentVariables": self._env(), "ProcessType": "Background"})  # fmt: skip
+                                   "EnvironmentVariables": self._env(), "ProcessType": "Standard"})  # fmt: skip
         quote = lambda a: '"' + a.replace("\\", "\\\\").replace('"', '\\"') + '"'
         env = "".join(f"Environment={quote(f'{k}={v}')}\n" for k, v in self._env().items())
         return (f"[Unit]\nDescription=sg-tightener security group console\n\n[Service]\n"

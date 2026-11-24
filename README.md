@@ -269,6 +269,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.19.10** | Console pages about four times faster on a Mac; Remediate opens in seconds |
 | **5.19.9** | Data to read and estimated AWS cost shown beside Read all; 7-day look-back by default; faster tabs |
 | **5.19.8** | Pricing an OU read is several times faster: accounts sign in in parallel |
 | **5.19.7** | Memory leak fixed when reading an OU; reports answer at once during a read |

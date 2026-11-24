@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.19.10 - 2026-11-24
+
+- **Every console page about four times faster on a Mac.** The background console ran as a macOS
+  "background" job, which keeps it on the slowest cores and throttles its disk. It now runs at normal priority
+  (run `sg_console.py install` again to pick this up). Remediate opens an account in about 5 seconds instead of
+  about 20, and the state behind every tab loads in under half a second instead of about 4.
+- **Remediate builds about twice as fast**: each flow's IP address is parsed once, not once per rule.
+
 ## 5.19.9 - 2026-11-24
 
 - **The AWS cost of a read is shown beside Read all.** Before you start, the console shows the data the read
