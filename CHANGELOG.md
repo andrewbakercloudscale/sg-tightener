@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.19.11 - 2026-11-24
+
+- **Largest external exposure, on Over-provisioning.** A table of the accounts that let the most of the public
+  internet in, worst first: rules open to everyone on a remote admin, database, Windows or container port,
+  external findings, known-bad sources getting in, rules open to everyone, and the never-seen public IP addresses
+  let in (anyone's AWS, SaaS and partners, every other network). Open an account for its five worst rules.
+- **The five biggest external risks**: the individual rules, across every account, that expose the most to the
+  internet, with who used them, the assets they reach and what to do (tighten to, remove or restrict).
+- **Pick how far back to read inside the cost box**, beside the data not yet read and its estimated AWS cost.
+  The box says plainly that only hours never read before are read and charged.
+
 ## 5.19.10 - 2026-11-24
 
 - **Every console page about four times faster on a Mac.** The background console ran as a macOS
