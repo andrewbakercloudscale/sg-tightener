@@ -648,7 +648,8 @@ section.nodata .card:not(.empty-state) { display: none; }
   let showEmptyRegions = false;
   async function loadState() {
     S = await api("/api/state");
-    $("who").textContent = `Acting as ${S.me_principal}`;
+    const p = String(S.me_principal || ""), user = p.includes("assumed-role/") ? p.split("/").pop() : "";
+    $("who").innerHTML = user ? `Signed in as <b>${esc(user)}</b> <span class="muted small" title="${esc(p)}">(${esc(p.split("/")[1] || "")})</span>` : `Acting as ${esc(p)}`;
     $("mode").innerHTML = S.approvals ? '<span class="pill" style="--p:var(--good)">two-person approval on</span>' : '<span class="pill" style="--p:var(--bad)">approvals off</span>';
     $("pendingCount").hidden = !S.pending_requests; $("pendingCount").textContent = S.pending_requests;
     const allRegions = S.accounts.flatMap((a) => a.regions.map((r) => ({...r, account: a.account, name: a.name, mode: a.mode, reviewed: a.reviewed})))

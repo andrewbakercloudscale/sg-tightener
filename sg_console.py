@@ -1401,7 +1401,13 @@ class Service:
         if self.system == "Darwin":
             target = f"gui/{os.getuid()}"
             self._run(["launchctl", "bootout", f"{target}/{LABEL}"], capture_output=True)
-            r = self._run(["launchctl", "bootstrap", target, str(self.path)], capture_output=True, text=True)
+            # bootout returns before the old console has exited (its report workers take a few seconds), and
+            # bootstrap fails with "Input/output error" until it has: try again for up to half a minute
+            for _ in range(30):
+                r = self._run(["launchctl", "bootstrap", target, str(self.path)], capture_output=True, text=True)
+                if r.returncode == 0:
+                    break
+                time.sleep(1)
         else:
             self._run(["systemctl", "--user", "daemon-reload"], capture_output=True)
             r = self._run(["systemctl", "--user", "enable", "--now", UNIT], capture_output=True, text=True)
