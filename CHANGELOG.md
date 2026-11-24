@@ -7,6 +7,7 @@
   (run `sg_console.py install` again to pick this up). Remediate opens an account in about 5 seconds instead of
   about 20, and the state behind every tab loads in under half a second instead of about 4.
 - **Remediate builds about twice as fast**: each flow's IP address is parsed once, not once per rule.
+- The read cost box shows the Logs Insights price unrounded (US$0.005 per GB, not US$0.01).
 
 ## 5.19.9 - 2026-11-24
 
