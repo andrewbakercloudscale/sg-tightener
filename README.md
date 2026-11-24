@@ -269,6 +269,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.21.0** | `sg_store.py backup` and `restore`: pg_dump of everything, checked, the newest 14 kept |
 | **5.20.1** | The read cost estimate is rebuilt hourly, so hours since the last read are counted |
 | **5.20.0** | **PostgreSQL**: everything kept in one database instead of files (`sg_store.py setup`, `migrate`), flow-log reads kept 12 months, a **Start the database** button in the console |
 | **5.19.12** | External risks: who used each rule, rules only your own network uses, what to do on its own line |
@@ -419,7 +420,7 @@ lists and the console's caches. `install.sh` runs `python sg_store.py setup`, wh
 docker-compose`), or set `SG_TIGHTENER_PG_DSN` to a PostgreSQL you run. Flow-log reads are kept **12 months**;
 the audit trail and change requests are kept for good. After a restart the console offers a **Start the
 database** button (or `python sg_store.py start`; `brew services start colima` starts colima at login).
-[The database](docs/database.md#where-it-is-kept).
+Back it up with `python sg_store.py backup` (the volume is the only copy). [The database](docs/database.md#where-it-is-kept).
 
 Requires Python 3.9 or later and AWS credentials: read-only
 [`iam-policy-read.json`](iam-policy-read.json) for everything except changes,

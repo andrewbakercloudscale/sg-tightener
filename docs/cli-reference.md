@@ -52,6 +52,8 @@ python sg_store.py start                  # start it again (colima first, when D
 python sg_store.py migrate [--keep]       # copy an earlier version's sg.db, reads and state files, once
 python sg_store.py status                 # where it is and what it holds
 python sg_store.py prune                  # delete flow-log reads older than 12 months now
+python sg_store.py backup [--dir D] [--keep 14]   # pg_dump to ~/.sg-tightener/backups/, checked, newest 14 kept
+python sg_store.py restore FILE --yes     # put a backup back (replaces everything), then verify the audit trail
 ```
 
 `SG_TIGHTENER_PG_DSN` names another PostgreSQL; `SG_TIGHTENER_PG_SCHEMA` another schema.

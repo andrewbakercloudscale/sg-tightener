@@ -26,6 +26,9 @@ Usage:
                                         then move them to ~/.sg-tightener/migrated-<time>/ (--keep leaves them)
   sg_store.py status                    where the database is and what it holds
   sg_store.py prune                     delete flow-log data older than 12 months now
+  sg_store.py backup [--dir D] [--keep 14]   pg_dump the whole database to ~/.sg-tightener/backups/ (0600),
+                                        check the file reads back, keep the newest 14
+  sg_store.py restore FILE --yes        put a backup back, replacing what the database holds now
 """
 
 from __future__ import annotations
@@ -786,6 +789,141 @@ def cmd_prune(_args) -> int:
     return 0
 
 
+# ------------------------------------------------------------------------------------------- backup and restore
+BACKUP_KEEP = 14
+
+
+def backup_dir() -> Path:
+    return home_dir() / "backups"
+
+
+def _local_server() -> bool:
+    """The database is the container ``setup`` made (so pg_dump runs inside it, matching its version)."""
+    try:
+        saved = dsn_file().read_text().strip()
+    except OSError:
+        return False
+    return env_file().exists() and dsn() == saved
+
+
+def _pg_tool(tool: str, *args: str) -> tuple[list, dict]:
+    """(command, environment) for pg_dump or pg_restore against the database: inside the local container, or
+    this computer's own copy for a server named by SG_TIGHTENER_PG_DSN. The password goes in the environment,
+    never on the command line."""
+    if _local_server():
+        docker = _bin("docker")
+        if not docker:
+            raise RuntimeError("Docker is not installed")
+        return ([docker, "compose", "-f", str(compose_file()), "--env-file", str(env_file()), "exec", "-T", "postgres",
+                 tool, "-U", "sgt", "-d", "sgtightener", *args], {})  # fmt: skip
+    exe = _bin(tool)
+    if not exe:
+        raise RuntimeError(f"{tool} is not installed on this computer (brew install libpq), and the database is not "
+                           "the local container")  # fmt: skip
+    from psycopg.conninfo import conninfo_to_dict
+
+    parts = conninfo_to_dict(dsn())
+    env = {f"PG{k.upper()}": str(v) for k, v in parts.items() if k in ("host", "port", "user", "password", "dbname")}
+    env = {("PGDATABASE" if k == "PGDBNAME" else k): v for k, v in env.items()}
+    return [exe, *args], env
+
+
+def backup(out_dir: Path | None = None, keep: int = BACKUP_KEEP, say=print) -> Path:
+    """pg_dump of the whole database (every schema) in PostgreSQL's custom format, written 0600, read back with
+    pg_restore --list before it counts, then all but the newest ``keep`` backups in that folder deleted."""
+    out_dir = Path(out_dir) if out_dir else backup_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(out_dir, 0o700)
+    if not reachable()[0]:
+        raise RuntimeError(f"the database does not answer ({reachable()[1]}): `python3 sg_store.py start` first")
+    final = out_dir / f"sgtightener-{time.strftime('%Y%m%d-%H%M%S')}.dump"
+    part = final.with_suffix(".dump.part")
+    cmd, env = _pg_tool("pg_dump", "-Fc", "-Z", "6")
+    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            r = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, env={**os.environ, **env}, timeout=3600)
+        if r.returncode != 0:
+            raise RuntimeError(f"pg_dump failed: {r.stderr.decode(errors='replace').strip()[-400:]}")
+        n = _entries(part)
+        if n == 0:
+            raise RuntimeError("pg_dump wrote a file pg_restore cannot list")
+        part.rename(final)
+    finally:
+        if part.exists():
+            part.unlink()
+    say(f"backed up to {final} ({final.stat().st_size / 1e6:.1f} MB, {n} entries, checked)")
+    old = sorted(out_dir.glob("sgtightener-*.dump"))[:-keep] if keep > 0 else []
+    for p in old:
+        p.unlink()
+    if old:
+        say(f"deleted {len(old)} older backup(s); keeping the newest {keep}")
+    return final
+
+
+def _entries(path: Path) -> int:
+    """How many objects a custom-format dump lists (0 if pg_restore cannot read it)."""
+    cmd, env = _pg_tool("pg_restore", "--list")
+    if _local_server():  # in the container: the file goes in on stdin
+        cmd = [c for c in cmd if c not in ("-U", "sgt", "-d", "sgtightener")]
+    with open(path, "rb") as f:
+        r = subprocess.run(cmd + ([] if _local_server() else [str(path)]), stdin=f if _local_server() else None,
+                           capture_output=True, env={**os.environ, **env}, timeout=600)  # fmt: skip
+    if r.returncode != 0:
+        return 0
+    return sum(1 for line in r.stdout.decode(errors="replace").splitlines() if line and not line.startswith(";"))
+
+
+def restore(path: Path, say=print) -> None:
+    """Put a backup back: every object in it is dropped and recreated (pg_restore --clean), in one transaction,
+    so a failure leaves the database as it was."""
+    path = Path(path)
+    if not path.is_file() or _entries(path) == 0:
+        raise RuntimeError(f"{path} is not a backup pg_restore can read")
+    if not reachable()[0]:
+        raise RuntimeError(f"the database does not answer ({reachable()[1]}): `python3 sg_store.py start` first")
+    args = ["--clean", "--if-exists", "--no-owner", "--single-transaction", "--exit-on-error"]
+    cmd, env = _pg_tool("pg_restore", *args)
+    if not _local_server():
+        cmd = cmd + [str(path)]
+    with open(path, "rb") as f:
+        r = subprocess.run(cmd, stdin=f if _local_server() else None, capture_output=True,
+                           env={**os.environ, **env}, timeout=3600)  # fmt: skip
+    if r.returncode != 0:
+        raise RuntimeError(f"pg_restore failed, nothing changed: {r.stderr.decode(errors='replace').strip()[-400:]}")
+    say(f"restored {path}")
+
+
+def cmd_backup(args) -> int:
+    try:
+        backup(args.dir, args.keep)
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_restore(args) -> int:
+    if not args.yes:
+        print(f"restore replaces everything the database holds now with {args.file}. "
+              "Back up first (sg_store.py backup), then run again with --yes.", file=sys.stderr)  # fmt: skip
+        return 2
+    try:
+        restore(args.file)
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    import sg_db
+
+    st = sg_db.Store()
+    try:
+        ok, n, why = st.verify()
+    finally:
+        st.close()
+    print(f"audit trail intact: {n} entries" if ok else f"audit trail NOT intact after restore: {why}")
+    return 0 if ok else 1
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="sg_store.py", description=__doc__.split("\n", 1)[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -796,9 +934,16 @@ def main(argv=None) -> int:
     sub.add_parser("start", help="start the local database (and colima, when Docker's engine is not running)")
     sub.add_parser("status", help="where the database is and what it holds")
     sub.add_parser("prune", help="delete flow-log data older than 12 months")
+    b = sub.add_parser("backup", help="pg_dump the whole database to ~/.sg-tightener/backups/")
+    b.add_argument("--dir", type=Path, help="another folder (default ~/.sg-tightener/backups)")
+    b.add_argument("--keep", type=int, default=BACKUP_KEEP, help="backups kept in that folder (0 keeps all)")
+    r = sub.add_parser("restore", help="put a backup back, replacing what the database holds now")
+    r.add_argument("file", type=Path)
+    r.add_argument("--yes", action="store_true", help="yes, replace what the database holds now")
     args = p.parse_args(argv)
     try:
-        return {"setup": cmd_setup, "start": cmd_start, "migrate": cmd_migrate, "status": cmd_status, "prune": cmd_prune}[args.cmd](args)
+        return {"setup": cmd_setup, "start": cmd_start, "migrate": cmd_migrate, "status": cmd_status, "prune": cmd_prune,
+                "backup": cmd_backup, "restore": cmd_restore}[args.cmd](args)
     except NotConfigured as exc:
         print(exc, file=sys.stderr)
         return 2

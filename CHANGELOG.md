@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.21.0 - 2026-11-24
+
+- **Back up the database**: `python sg_store.py backup` dumps everything (every schema, the audit trail
+  included) to `~/.sg-tightener/backups/` with pg_dump, run inside the container so the Mac needs no PostgreSQL
+  tools. Each file is private (0600), read back before it counts, and only the newest 14 are kept (`--keep`,
+  `--dir`). `python sg_store.py restore FILE --yes` puts one back in a single transaction and checks the
+  audit trail's hash chain.
+
 ## 5.20.1 - 2026-11-24
 
 - **The read cost keeps up with the clock.** Each account's estimate of what is not yet read was kept until

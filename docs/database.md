@@ -21,7 +21,17 @@ python sg_store.py start      # start it again (and colima first, when Docker's 
 python sg_store.py migrate    # copy sg.db, the flow-log reads and the state files of an earlier version, once
 python sg_store.py status     # where it is and how much each table holds
 python sg_store.py prune      # delete flow-log reads older than 12 months now (reads and saves do it anyway)
+python sg_store.py backup     # pg_dump everything to ~/.sg-tightener/backups/ (0600), checked; keeps the newest 14
+python sg_store.py restore ~/.sg-tightener/backups/sgtightener-….dump --yes   # put one back, replacing what is there
 ```
+
+- **Back it up.** Everything, the audit trail included, lives in the Docker volume `sg-tightener-pgdata`;
+  removing the volume or resetting colima loses it. `backup` dumps every schema in PostgreSQL's custom format
+  (pg_dump runs inside the container, so no PostgreSQL tools are needed on the Mac), reads the file back with
+  `pg_restore --list` before it counts, and deletes all but the newest `--keep` (14). Copy the folder
+  somewhere off the Mac (`--dir` writes elsewhere). `restore` drops and recreates everything in the backup in
+  one transaction (a failure changes nothing), then checks the audit trail's hash chain. Hourly from cron:
+  `0 * * * * cd /path/to/sg-tightener && .venv/bin/python sg_store.py backup --keep 48`.
 
 - **Docker must be running.** On a Mac that is colima: `brew services start colima` starts it at login. When
   it is not, every tool says so, and the console shows **Start the database**, which starts colima (when
