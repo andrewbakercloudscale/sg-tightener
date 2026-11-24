@@ -135,7 +135,7 @@ table.heat th.h { text-align: center; text-transform: none; letter-spacing: 0; f
 .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 14px; }
 .two > * { min-width: 0; }
-#mHeat, #mExposure, #mLetIn, #mTop, #mBlind, #oAccounts, #oAssets, #oWins { overflow-x: auto; max-width: 100%; }
+#mHeat, #mExposure, #mLetIn, #mTop, #mBlind, #oAccounts, #oAssets, #oWins, #oExt, #oExtTop { overflow-x: auto; max-width: 100%; }
 .rag { display: inline-block; min-width: 54px; text-align: center; font-size: 11.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; color: #fff; }
 .rag.red { background: #c62828; } .rag.amber { background: #e8a317; color: #241a00; } .rag.green { background: #2e7d32; }
 .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; }
@@ -509,6 +509,12 @@ section.nodata .card:not(.empty-state) { display: none; }
       <p class="muted small">IP addresses the security groups let in that never sent a thing in the flow logs, every account added up, at the end of each period. Falling is the goal; a step up is a rule widened or a new group.</p>
       <div id="oTrend"></div></div>
     <div class="grid mtiles" id="oTiles"></div>
+    <div class="card" id="oExtCard"><h3 style="margin-top:0">Largest external exposure</h3>
+      <p class="muted small">Accounts that let the most of the public internet in, worst first: open to everyone on a remote admin, database, Windows or container port, then external findings, then open to everyone on any port, then the most never-seen public IP addresses let in (anyone's AWS, SaaS and partners, and every other network). Select an account for its five worst rules.</p>
+      <div id="oExt"></div>
+      <h3>The five biggest external risks</h3>
+      <p class="muted small">The individual rules, across every account, that expose the most to the internet, and what to do about each.</p>
+      <div id="oExtTop"></div></div>
     <div class="card"><h3 style="margin-top:0">Assets by rating over time, every account</h3><p class="muted small">Each bar counts the assets in each rating at the end of that period. Red shrinking and green growing is the goal; a red step up is a rule widened or a new asset.</p><div id="oRagTime"></div></div>
     <div class="card"><h3 style="margin-top:0">By account</h3><p class="muted small">Worst first. An account is red if any asset is red. <b>Right-sized</b> is the share of its assets rated green; the line marks the target.</p><div id="oAccounts"></div></div>
     <div class="card"><h3 style="margin-top:0">Biggest wins: the rules that would fix the most</h3><p class="muted small">Ranked by never-seen IP addresses times the assets the rule reaches. Tighten these first.</p><div id="oWins"></div></div>
@@ -1866,6 +1872,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       tile(toFix ? RAGC.amber : RAGC.green, toFix, `assets to fix to reach ${Math.round(TARGET * 100)}% right-sized`),
       tile("var(--warn)", sum(A, (a) => a.tighten + a.unused), "rules to tighten or remove"),
     ].join("");
+    drawExternal(A);
     const r = aligned(A, (a, i) => ({red: a.asset_rag_series.red[i] || 0, amber: a.asset_rag_series.amber[i] || 0, green: a.asset_rag_series.green[i] || 0}));
     $("oRagTime").innerHTML = svgStack(r.ts, r.rows, ["red", "amber", "green"], RAGC, RAGN, 180);
     $("oAccounts").innerHTML = `<table class="small"><thead><tr><th>Rating</th><th>Account</th><th>Assets: red, amber, green</th><th>Right-sized</th><th class="num">Over-provisioned</th><th>Change in window</th><th>Trend</th><th class="num">Average per asset</th><th>Worst asset</th><th></th></tr></thead><tbody>${A.map((a) => {
@@ -1882,6 +1889,45 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("oWins").innerHTML = wins.length ? `<table class="small"><thead><tr><th>Account</th><th>Group</th><th>Port</th><th>Allows</th><th class="num">Never seen</th><th class="num">Assets reached</th><th></th></tr></thead><tbody>${wins.map((x) => `<tr><td style="white-space:nowrap">${acctLink(x.a)}</td><td>${esc(x.group)} <span class="muted">${esc(x.region)}</span></td><td>${esc(x.ports)}</td><td><code>${esc(x.source)}</code></td><td class="num"><b>${big(x.never)}</b></td><td class="num">${x.enis}</td><td>${x.status === "unused" ? '<span class="pill" style="--p:var(--warn)">remove: nothing used it</span>' : '<span class="pill" style="--p:var(--high)">tighten</span>'}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">Nothing to tighten.</p>';
     drawAssets(A);
   }
+  const EXT_N = {aws: "AWS (anyone's)", saas: "SaaS and partners", internet: "Other networks"};
+  const extFind = (a) => { const x = a.attention_scope || {}; return ["external", "saas"].reduce((n, k) => n + ((x[k] || {}).critical || 0) + ((x[k] || {}).high || 0), 0); };
+  const extTier = (a) => a.open_risky ? 0 : extFind(a) || a.high_active ? 1 : a.open ? 2 : 3;
+  const ruleTier = (x) => x.open && x.risky ? 0 : x.open ? 1 : 2;
+  function extRisk(x) {
+    if (x.open) return `<b>the whole internet</b>${x.risky ? ` on ${esc(x.service || "a risky port")}` : ""}`;
+    const by = Object.entries(x.never_ext_by || {}).filter(([, n]) => n).map(([k, n]) => `${EXT_N[k]} ${big(n)}`).join(" · ");
+    return `<b>${big(x.never_ext)}</b> public IP addresses never seen in the flow logs${by ? ` <span class="muted">(${by})</span>` : ""}`;
+  }
+  function extFix(x) {
+    if (x.status === "tighten" && x.suggest.length) return `Tighten to ${x.suggest.map((c) => `<code>${esc(c)}</code>`).join(", ")}`;
+    if (x.status === "unused") return "Remove: nothing used it";
+    if (x.open) return x.here ? `Restrict to the ${x.here.toLocaleString()} IP address${x.here === 1 ? "" : "es"} that used it, or put it behind a load balancer or Session Manager` : "Remove, or restrict to known IP addresses";
+    return "Restrict to the IP addresses that use it";
+  }
+  function extRuleRow(x, a) {
+    const tier = ruleTier(x), pill = tier === 0 ? `<span class="pill" style="--p:var(--bad)">open to everyone, risky port</span>` : tier === 1 ? `<span class="pill" style="--p:var(--warn)">open to everyone</span>` : `<span class="pill" style="--p:var(--high)">wider than used</span>`;
+    const seen = (x.seen_from || []).filter((t) => t.src).map((t) => `<code>${esc(t.src)}</code>${t.name ? ` <span class="muted">${esc(t.name)}</span>` : ""}`).join(", ");
+    return `<tr>${a ? `<td style="white-space:nowrap">${acctLink(a)}</td>` : ""}<td>${pill}</td><td><b>${esc(x.group)}</b> <span class="muted">${esc(x.region)}</span>${x.desc ? `<div class="muted">${esc(x.desc)}</div>` : ""}</td><td>${esc(x.ports)}</td><td><code>${esc(x.source)}</code></td>
+      <td>${extRisk(x)}</td><td class="num">${x.enis}</td><td>${seen || '<span class="muted">nobody</span>'}${x.last_used ? `<div class="muted">last used ${esc(when(x.last_used))}</div>` : ""}</td><td>${extFix(x)}</td></tr>`;
+  }
+  const EXT_HEAD = (acct) => `<thead><tr>${acct ? "<th>Account</th>" : ""}<th>Risk</th><th>Group</th><th>Port</th><th>Allows</th><th>Lets in from outside</th><th class="num">Assets reached</th><th>Used by</th><th>What to do</th></tr></thead>`;
+  function drawExternal(A) {
+    const E = A.filter((a) => a.ext_rules).sort((p, q) => extTier(p) - extTier(q) || q.open_risky - p.open_risky || extFind(q) - extFind(p) || q.ext_now - p.ext_now);
+    if (!E.length) { $("oExt").innerHTML = `<p class="muted">${A.length ? "Being worked out: the accounts are rebuilt in the background. Look again in a few minutes." : "No accounts read."}</p>`; $("oExtTop").innerHTML = ""; return; }
+    const open = $("oExt").dataset.open || "";
+    const rows = E.filter((a) => extTier(a) < 3 || a.ext_now).slice(0, 15);
+    $("oExt").innerHTML = rows.length ? `<table class="small"><thead><tr><th>#</th><th>Account</th><th class="num">Open to everyone, risky port</th><th class="num">External findings (critical, high)</th><th class="num">Known-bad sources getting in</th><th class="num">Open to everyone, any port</th><th class="num">Never-seen public IP addresses let in</th><th>AWS · SaaS and partners · other networks</th><th></th></tr></thead><tbody>${rows.map((a, i) => {
+      const c = (n, col) => n ? `<b style="color:${col}">${n.toLocaleString()}</b>` : '<span class="muted">0</span>';
+      const det = open === a.account ? `<tr><td></td><td colspan="8">${a.ext_rules.length ? `<table class="small">${EXT_HEAD(false)}<tbody>${a.ext_rules.map((x) => extRuleRow(x)).join("")}</tbody></table>` : '<p class="muted">No rule lets the public internet in.</p>'}</td></tr>` : "";
+      return `<tr><td>${i + 1}</td><td style="white-space:nowrap"><button class="btn sm quiet" data-ext="${esc(a.account)}" aria-expanded="${open === a.account}">${open === a.account ? "▾" : "▸"}</button> ${acctLink(a)}</td>
+        <td class="num">${c(a.open_risky, "var(--bad)")}</td><td class="num">${c(extFind(a), "var(--bad)")}</td><td class="num">${c(a.high_active, "var(--bad)")}</td><td class="num">${c(a.open, "var(--warn)")}</td>
+        <td class="num"><b>${big(a.ext_now)}</b></td><td class="muted">${["aws", "saas", "internet"].map((k) => big((a.ext_by_cat || {})[k] || 0)).join(" · ")}</td>
+        <td><button class="btn sm primary" data-fix="${esc(a.account)}">Remediate</button></td></tr>${det}`;
+    }).join("")}</tbody></table>` : '<p class="muted">No account lets the public internet in.</p>';
+    const top = E.flatMap((a) => a.ext_rules.map((x) => ({x, a}))).sort((p, q) => ruleTier(p.x) - ruleTier(q.x) || q.x.never_ext * Math.max(1, q.x.enis) - p.x.never_ext * Math.max(1, p.x.enis)).slice(0, 5);
+    $("oExtTop").innerHTML = top.length ? `<table class="small">${EXT_HEAD(true)}<tbody>${top.map(({x, a}) => extRuleRow(x, a)).join("")}</tbody></table>` : '<p class="muted">No rule lets the public internet in.</p>';
+  }
+  $("oExt").addEventListener("click", (e) => { const b = e.target.closest("[data-ext]"); if (!b || !O) return; const box = $("oExt"); box.dataset.open = box.dataset.open === b.dataset.ext ? "" : b.dataset.ext; drawExternal(O.accounts); });
   function drawAssets(A) {
     const acct = $("oAcct").value, q = $("oQ").value.toLowerCase().trim();
     const on = new Set([...$("oRag").children].filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.dataset.r));

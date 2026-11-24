@@ -199,3 +199,18 @@ def test_read_chunk_runs_the_outbound_query_only_when_asked(monkeypatch):
     assert "egr" not in c and len(calls) == 2
     (c,) = sg_review.read_chunk(None, "eu-west-1", 0, 3600, qs, ["10.0.0.0/16"], egress=True)
     assert c["egr"] == [["10.0.1.5", "52.1.1.1", "eni-1", "6", 443, 3]] and c["b"] == 30
+
+
+def test_the_worst_external_rules_come_first():
+    import sg_review
+
+    def rule(src, never_ext, enis=1, risky=False):
+        return {"gname": src, "group": "sg-1", "region": "eu-west-1", "ports": "tcp 22", "source": src,
+                "never_ext": never_ext, "enis": enis, "pc": {"risky": risky, "svc": "SSH" if risky else ""}}
+
+    rules = [rule("100.0.0.0/8", 12_582_912, enis=6), rule("0.0.0.0/0", 0), rule("10.0.0.0/8", 0),
+             rule("0.0.0.0/0", 0, risky=True), rule("13.0.0.0/8", 16_777_216, enis=2)]
+    got = sg_review._external_rules(rules)
+    assert [(x["source"], x["risky"]) for x in got] == [("0.0.0.0/0", True), ("0.0.0.0/0", False),
+                                                        ("100.0.0.0/8", False), ("13.0.0.0/8", False)]
+    assert got[0]["open"] and got[0]["service"] == "SSH"

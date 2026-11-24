@@ -802,6 +802,7 @@ INSIGHTS_PER_GB = 0.005
 TOP = 400  # sources listed per table (the charts count all of them)
 FIT_CAP = 1500  # sources one rule may carry into the page's Tighten panel; more and sg_tightener plan is the tool
 CATS = ("internal", "datacentre", "aws", "saas", "internet")
+EXTERNAL_CATS = ("aws", "saas", "internet")  # public IP addresses: anyone's AWS, SaaS and partners, everyone else
 CAT_NAME = {"internal": "Internal (your VPCs)", "datacentre": "Data centre and other private",
             "aws": "AWS", "saas": "External: SaaS and partners", "internet": "External: other networks"}  # fmt: skip
 PRIVATE = [sg_ipintel.cidr_iv(c) for c in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")]
@@ -3118,6 +3119,7 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
             deleted.append(row)
     seen_ints = sorted(n for n in map(_ip, seen) if n is not None)
     seen6 = {a for a in map(_addr6, seen) if a is not None}
+    ext_iv = {k: lab.cat_iv[k] for k in EXTERNAL_CATS}  # the public internet: AWS, SaaS and partners, everyone else
     out = []
     for g in groups.values():
         if not g["enis"]:
@@ -3158,13 +3160,16 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
                           if port_matches(rule, proto, dport) and inside(src)
                           and (n := _ip(dst)) is not None and any(a <= n <= b for a, b in vpc_iv)}  # fmt: skip
                 n_seen = sum(bisect_right(seen_ints, b) - bisect_right(seen_ints, a - 1) for a, b in ivs)
-                never = sg_ipintel.size(sg_ipintel.subtract(ivs, seen_iv))
+                never_iv = sg_ipintel.subtract(ivs, seen_iv)
+                never = sg_ipintel.size(never_iv)
+                never_ext = {k: sg_ipintel.size(sg_ipintel.intersect(never_iv, iv)) for k, iv in ext_iv.items()}
                 row = {"region": g["region"], "group": g["id"], "gname": g["name"], "vpc": g["vpc"],
                        "enis": len(g["enis"]), "ports": ports_label(rule), "proto": rule["proto"],
                        "from": rule["from"], "to": rule["to"], "source": entry,
                        "desc": (rule.get("descs") or {}).get(entry, ""), "allowed": allowed, "here": len(here),
                        "elsewhere": max(0, n_seen - len(here) - len(unattr - set(here))),
                        "unattributed": len(unattr - set(here)), "never": never,
+                       "never_ext": sum(never_ext.values()), "never_ext_by": never_ext,
                        "last_used": max((h[1] for h in here.values()), default=None), "since": since,
                        "days": round(days, 1), "suggest": [], "suggest_size": None, "note": "",
                        "pc": rule_port_class(rule)}  # fmt: skip
@@ -4398,10 +4403,34 @@ def macro_row(account: str, name: str, rep: dict, mode: str = "") -> dict:
         "exposure": sum(1 for p in posture if p.get("area") == "exposure" and p.get("sev") in ("critical", "high")),
         "not_logged": s.get("not_logged", 0), "new_refused": s.get("new_refused", 0),
         "attention_scope": _attention_scope(rep.get("attention") or []),
+        "ext_now": sum((s.get("over_by_cat") or {}).get(k, 0) for k in EXTERNAL_CATS),
+        "ext_by_cat": {k: (s.get("over_by_cat") or {}).get(k, 0) for k in EXTERNAL_CATS},
+        "ext_rules": _external_rules(rules),
     }
 
 
 SCOPE_OF_CAT = {"internet": "external", "saas": "saas", "internal": "internal", "datacentre": "internal", "aws": "internal"}
+
+
+def _external_rules(rules: list, n: int = 5) -> list[dict]:
+    """The rules that let the most of the public internet in: open to everyone on a risky port first, then open
+    to everyone, then by never-seen public IP addresses times the assets the rule reaches."""
+    def weight(r):
+        is_open = r.get("source") in OPEN_SOURCES
+        risky = bool((r.get("pc") or {}).get("risky"))
+        return (not (is_open and risky), not is_open, -(r.get("never_ext") or 0) * max(1, r.get("enis", 0)))
+
+    pick = [r for r in rules if r.get("source") in OPEN_SOURCES or r.get("never_ext")]
+    return [{"group": r.get("gname") or r.get("group"), "gid": r.get("group"), "region": r.get("region"),
+             "ports": r.get("ports"), "source": r.get("source"), "desc": r.get("desc", ""),
+             "open": r.get("source") in OPEN_SOURCES, "risky": bool((r.get("pc") or {}).get("risky")),
+             "service": (r.get("pc") or {}).get("svc", ""), "never_ext": r.get("never_ext") or 0,
+             "never_ext_by": r.get("never_ext_by") or {}, "allowed": r.get("allowed", 0), "here": r.get("here", 0),
+             "enis": r.get("enis", 0), "status": r.get("status"), "suggest": (r.get("suggest") or [])[:6],
+             "last_used": r.get("last_used"),
+             "seen_from": [{"src": t.get("src"), "name": t.get("name", ""), "cat": t.get("cat", "")}
+                           for t in (r.get("top") or [])[:3]]}
+            for r in sorted(pick, key=weight)[:n]]  # fmt: skip
 
 
 def _attention_scope(items: list) -> dict:
