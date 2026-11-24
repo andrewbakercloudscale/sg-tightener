@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import json
 import logging
@@ -98,6 +99,8 @@ class Console:
         self._refused_cache: dict = {}
         self._report_lock = threading.Lock()
         self._report_gates: dict = {}
+        self._warming: threading.Thread | None = None
+        self._plans: dict = {}  # the last remediation plans built, newest last
         self._owner_failed, self._owner_why = 0.0, ""
         self._reports_mem: dict | None = None
         self.sso = sso
@@ -291,6 +294,25 @@ class Console:
         data = sg_review.page_data(doc, names=sg_review.load_names())
         data["console"] = {"token": token}
         return sg_review.render_page(data)
+
+    def warm_reports(self) -> None:
+        """Build every tab's report rows in the background (at start, and after a read), so a tab opened later
+        answers at once instead of building 150 accounts while the page waits."""
+        def go():
+            for name, call in (("flow", self.flow_accounts), ("macro", lambda: self.macro("1m")),
+                               ("estimate", self.read_estimate), ("refused", lambda: self.refused("24h"))):
+                t = time.time()
+                try:
+                    call()
+                    LOG.info("reports ready: %s in %.0f s", name, time.time() - t)
+                except Exception as exc:  # noqa: BLE001 - a page builds it itself if this could not
+                    LOG.warning("warming %s: %s", name, exc)
+
+        with self._report_lock:
+            if self._warming and self._warming.is_alive():
+                return
+            self._warming = threading.Thread(target=go, daemon=True)
+            self._warming.start()
 
     def macro(self, range_key: str = "1m") -> dict:
         """Every account sg_review has read, side by side: over-provisioning by owner, exposure, probing, attention."""
@@ -925,6 +947,7 @@ class Console:
                     self._job_extra.pop(j["id"], None)
                     self._say(j, "not read")
             b["status"] = "stopped" if b["stop"].is_set() else "done"
+            self.warm_reports()
 
         threading.Thread(target=go, daemon=True).start()
         return self.batch_status()
@@ -1024,12 +1047,26 @@ class Console:
         """The remediation of one account over the last ``days`` days of its flow logs."""
         import sg_review
 
+        try:
+            mtime = sg_review._path(account).stat().st_mtime
+        except OSError:
+            return {"status": "unknown", "days": days, "have_days": 0, "groups": [], "merges": [], "totals": {}}
+        groups, assets = self._account_groups(account)
+        # kept until the account's read or its groups change: building a plan takes seconds, opening it again none
+        key = (account, int(days), mtime, hashlib.sha1(repr((groups, assets)).encode()).hexdigest())
+        with self._report_lock:
+            hit = self._plans.get(key)
+        if hit is not None:
+            return hit
         doc = sg_review.load(account)
         if not doc:
             return {"status": "unknown", "days": days, "have_days": 0, "groups": [], "merges": [], "totals": {}}
-        groups, assets = self._account_groups(account)
         out = sg_remediate.plan(doc, int(days), groups, assets)
         out["account"], out["name"] = account, doc.get("name", "")
+        with self._report_lock:
+            self._plans[key] = out
+            while len(self._plans) > 20:
+                self._plans.pop(next(iter(self._plans)))
         return out
 
     def remediate(self, body: dict) -> dict:
@@ -1678,6 +1715,7 @@ def main(argv=None) -> int:
     console.httpd = httpd
     st = console.state()
     LOG.info("acting as %s; database %s; two-person approval %s", st["me"], st["db"], "on" if st["approvals"] else "off")
+    console.warm_reports()
     url = _url(args.port)
     print(f"\n  Security group console: {url}\n  (Ctrl-C stops it)\n", flush=True)
     if not args.service and not args.no_browser:

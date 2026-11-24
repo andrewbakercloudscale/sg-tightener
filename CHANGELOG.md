@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.19.9 - 2026-11-24
+
+- **The AWS cost of a read is shown beside Read all.** Before you start, the console shows the data the read
+  will scan and its estimated CloudWatch Logs Insights charge for the chosen look-back, and what has been spent
+  on reads so far. The confirm step repeats the charge, and progress shows what has been spent of it.
+- **Reads look back 7 days by default**, not 30: about a quarter of the cost. Choose 30 days when you need
+  rules marked unused or to tighten (that needs 30 days of evidence).
+- **"IP addresses", never just "addresses"**, everywhere in the console and reports.
+- **Tabs open faster.** The IP intelligence data loads about three times faster in every report process,
+  Remediate plans are kept until the account's read or groups change, and the Risk overview, Over-provisioning,
+  Rejected traffic and cost rows are built in the background when the console starts and after each OU read.
+
 ## 5.19.8 - 2026-11-24
 
 - **Pricing an OU read is several times faster.** Each account's sign-in (fetching its SSO role credentials)

@@ -32,6 +32,7 @@ import ipaddress
 import json
 import logging
 import re
+import socket
 import threading
 import time
 import urllib.request
@@ -676,6 +677,13 @@ def _read_json(path, flat: bool = False):
 
 
 def _v4(s) -> int | None:
+    # inet_pton is about ten times faster than ipaddress, which matters for the 1.4 million ASN rows read
+    # in every report process; ipaddress still decides anything unusual (it refuses leading zeros, inet_pton not)
+    try:
+        if "0" not in s or not any(p[0] == "0" and len(p) > 1 for p in s.split(".")):
+            return int.from_bytes(socket.inet_pton(socket.AF_INET, s), "big")
+    except (OSError, TypeError, AttributeError, IndexError):
+        pass
     try:
         return int(ipaddress.IPv4Address(s))
     except ValueError:
@@ -683,6 +691,10 @@ def _v4(s) -> int | None:
 
 
 def _v6(s) -> int | None:
+    try:
+        return int.from_bytes(socket.inet_pton(socket.AF_INET6, s), "big")
+    except (OSError, TypeError, AttributeError):
+        pass
     try:
         return int(ipaddress.IPv6Address(s))
     except ValueError:
