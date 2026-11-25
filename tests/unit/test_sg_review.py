@@ -51,11 +51,30 @@ def test_queries_filter_inbound_and_keep_refused_internet_sources_apart():
     assert "least(f_dstport + least(1, floor(f_dstport / 1024)) * (f_srcport < f_dstport) * (32768 - f_dstport), 32768)" in q
     assert "least(f_dstport, 32768)" in sg_flows.detail_query(fmt, [], fold="high")
     assert "least(f_dstport, 32768)" in sg_flows.detail_query(fmt.replace(" ${srcport}", ""), [])
-    assert 'f_action = "ACCEPT" or (isIpv4InSubnet(f_srcaddr, "10.0.0.0/8")' in q
+    assert "f_action" not in q.split("|")[1], "refused internet connections are in the same scan"
     assert "least" not in sg_flows.detail_query(fmt, [], fold=False)
     p = sg_flows.public_query(None, ["10.0.0.0/16"])
     assert 'isIpv4InSubnet(f_dstaddr, "10.0.0.0/16")' in p and 'f_action = "REJECT" and not' in p
     assert sg_flows.detail_query("${version} ${srcaddr}", []) is None
+
+
+def test_one_scan_per_slice_gives_the_connections_and_the_refused_internet_sources():
+    """'i just want to do a single scan to get all the data we use': the refused-internet query scanned every
+    hour a second time, doubling the bytes billed."""
+    rows = [["10.1.2.3", "10.0.0.5", "eni-1", "6", 443, "ACCEPT", 9],
+            ["10.9.9.9", "10.0.0.5", "eni-1", "6", 22, "REJECT", 2],
+            ["198.51.100.9", "10.0.0.5", "eni-1", "6", 22, "REJECT", 5],
+            ["198.51.100.9", "10.0.0.6", "eni-2", "6", 3389, "REJECT", 1],
+            ["203.0.113.7", "10.0.0.5", "eni-1", "6", 443, "ACCEPT", 3]]  # fmt: skip
+    kept, pub = sg_review.public_rows(rows)
+    assert [r[0] for r in kept] == ["10.1.2.3", "10.9.9.9", "203.0.113.7"]
+    assert pub == [["198.51.100.9", 6, 2, 2, "10.0.0.5", "eni-1", 22, "6"]]
+    calls = []
+    logs = _FakeLogs()
+    orig = logs.start_query
+    logs.start_query = lambda **kw: (calls.append(kw["queryString"]), orig(**kw))[1]
+    sg_review.read_chunk(logs, "eu-west-1", 0, 3600, [{"format": None, "groups": ["g"]}], [])
+    assert len(calls) == 1
 
 
 def test_rule_history_event_parsing():
@@ -375,6 +394,9 @@ def test_a_minute_slice_learned_before_is_dropped_and_the_estimate_prices_long_s
     doc = sg_review.new_doc("111122223333", "")
     doc["chunks"] = [{"r": "x", "s": start, "e": start + 3600, "st": "cut", "b": 47e9, "rows": [], "pub": []},
                      {"r": "x", "s": start + 3600, "e": start + 3656, "st": "cut", "b": 3.2e9, "rows": [], "pub": []}]
+    assert round(sg_review.estimate(doc, "111122223333")["rate"] * 3600 / 1e9) == 24, "read twice before: once now"
+    for c in doc["chunks"]:
+        c["q1"] = 1
     assert round(sg_review.estimate(doc, "111122223333")["rate"] * 3600 / 1e9) == 47
 
 

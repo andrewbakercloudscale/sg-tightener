@@ -29,11 +29,12 @@ class _Logs:
 
     def get_query_results(self, queryId):
         if "sum(f_bytes)" in self.q[queryId]:
-            rows = [("10.1.2.3", "ACCEPT"), ("10.9.9.9", "REJECT")]
+            # one scan gives every connection, the refused internet ones too
+            rows = [("10.1.2.3", "ACCEPT", "5432"), ("10.9.9.9", "REJECT", "5432"), ("198.51.100.9", "REJECT", "22")]
             res = [[{"field": "src", "value": s}, {"field": "dst", "value": self.dst},
                     {"field": "eni", "value": self.eni}, {"field": "proto", "value": "6"},
-                    {"field": "dport", "value": "5432"}, {"field": "action", "value": a},
-                    {"field": "flows", "value": "4"}] for s, a in rows]  # fmt: skip
+                    {"field": "dport", "value": p}, {"field": "action", "value": a},
+                    {"field": "flows", "value": "4"}] for s, a, p in rows]  # fmt: skip
         else:
             res = [[{"field": "src", "value": "198.51.100.9"}, {"field": "flows", "value": "2"},
                     {"field": "ports", "value": "1"}, {"field": "dsts", "value": "1"},

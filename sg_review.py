@@ -383,8 +383,10 @@ def detail_query(log_format: str | None, vpc_ranges: list[str], fold: bool | str
         return None
     head, src, dst, _ = b
     port = (fold is True and reply_port(fields_of(log_format))) or (f"least(f_dstport, {EPHEMERAL})" if fold else "f_dstport")
+    # every connection, refused internet ones included: one scan of the log gives both who connected and who
+    # was turned away (``public_rows`` splits those out), where a second query would scan it all again
     return (
-        f'{head} and (f_action = "ACCEPT" or {_private(src)})'
+        f"{head}"
         f" | fields {port} as dport"
         f" | stats count(*) as flows, sum(f_bytes) as bytes by {src} as src, {dst} as dst,"
         f" f_interface_id as eni, f_protocol as proto, dport, f_action as action | sort flows desc | limit {ROWS}"
@@ -1084,17 +1086,12 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
                     parts[0]["b"] += nbytes  # the full slice's query was billed too
                 return parts  # fmt: skip
             cut = True
-        rows += [[r.get("src"), r.get("dst"), r.get("eni"), r.get("proto"), _int(r.get("dport")), r.get("action"),
-                  _int(r.get("flows"))] for r in rs]  # fmt: skip
-        ps, b, status = run_query(logs, q["groups"], public_query(q["format"], vpcs), s, e,
-                                           cancelled=cancelled)  # fmt: skip
-        nbytes += b
-        if ps is None:
-            errors.append(f"refused-internet query {status}")
-            continue
-        pub_cut = pub_cut or len(ps) >= ROWS
-        pub += [[r.get("src"), _int(r.get("flows")), _int(r.get("ports")), _int(r.get("dsts")), r.get("dst"),
-                 r.get("eni"), _int(r.get("port")), r.get("proto")] for r in ps]  # fmt: skip
+        got = [[r.get("src"), r.get("dst"), r.get("eni"), r.get("proto"), _int(r.get("dport")), r.get("action"),
+                _int(r.get("flows"))] for r in rs]  # fmt: skip
+        kept, refused = public_rows(got)
+        rows += kept
+        pub_cut = pub_cut or len(rs) >= ROWS
+        pub += refused
         eq = egress_query(q["format"], vpcs) if egress else None
         if eq:
             es, b, status = run_query(logs, q["groups"], eq, s, e, cancelled=cancelled)
@@ -1114,11 +1111,41 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
     top = cut and hint is not None and region in hint.get("_whole", ())
     out = {"r": region, "s": s, "e": e, "st": st, "b": nbytes, "rows": rows, "pub": pub, "pc": pub_cut,
            "err": "; ".join(errors)}
+    out["q1"] = 1  # one scan per slice (before, a second query scanned it all again for refused internet sources)
     if top:
         out["top"] = 1  # the busiest 10,000 rows of a slice no split can fit: not read again finer
     if egress:
         out["egr"] = egr
     return [out]
+
+
+def _is_public(ip) -> bool:
+    """An internet address: outside PRIVATE_V4 / PRIVATE_V6 (the same test ``_private`` makes in a query)."""
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return not any(a in ipaddress.ip_network(c) for c in (PRIVATE_V4 if a.version == 4 else PRIVATE_V6))
+
+
+def public_rows(rows: list[list]) -> tuple[list[list], list[list]]:
+    """Split one query's rows into the connection rows (accepted, or refused from a private address) and one row
+    per refused internet source, as the refused-internet query gave them: [src, flows, ports, targets, and the
+    target, interface, port and protocol it hit most]."""
+    kept: list = []
+    by: dict = {}
+    for r in rows:
+        if r[5] == "REJECT" and _is_public(r[0]):
+            by.setdefault(r[0], []).append(r)
+        else:
+            kept.append(r)
+    pub = []
+    for src, rs in by.items():
+        top = max(rs, key=lambda x: x[6] or 0)
+        pub.append([src, sum(x[6] or 0 for x in rs), len({(x[3], x[4]) for x in rs}), len({x[1] for x in rs}),
+                    top[1], top[2], top[4], top[3]])  # fmt: skip
+    pub.sort(key=lambda x: -x[1])
+    return kept, pub
 
 
 def _int(v) -> int:
@@ -1133,12 +1160,15 @@ def estimate(doc: dict | None, account: str, regions: list[str] = (), now: float
     now = now or time.time()
     doc = doc or new_doc(account, "")
     secs = sum(c["e"] - c["s"] for c in doc["chunks"] if c["st"] in ("ok", "cut"))
-    nbytes = sum(c["b"] for c in doc["chunks"])
+    def billed(c):  # what reading it again costs now: slices read with two queries scanned each hour twice
+        return c["b"] if c.get("q1") else c["b"] / 2
+
+    nbytes = sum(billed(c) for c in doc["chunks"])
     # minute-long pieces (a busy region split as far as it goes) scan several times the bytes per hour that
     # longer slices do, and busy regions are no longer read that way: price from the longer slices when known
     big = [c for c in doc["chunks"] if c["e"] - c["s"] > MIN_SPLIT]
     big_secs = sum(c["e"] - c["s"] for c in big if c["st"] in ("ok", "cut"))
-    rate = (sum(c["b"] for c in big) / big_secs if big_secs >= HOUR else nbytes / secs) if secs else None
+    rate = (sum(billed(c) for c in big) / big_secs if big_secs >= HOUR else nbytes / secs) if secs else None
     if rate is not None and doc.get("egress") and not any("egr" in c for c in doc["chunks"]):
         rate *= 1.5  # measured without the outbound query, which scans the same log again
     out = []
@@ -1156,8 +1186,8 @@ def estimate(doc: dict | None, account: str, regions: list[str] = (), now: float
         "rate": rate,
         "ranges": out,
         "regions": len(regions),
-        "spent_bytes": nbytes,
-        "spent": round(nbytes / 1e9 * INSIGHTS_PER_GB, 2),
+        "spent_bytes": sum(c["b"] for c in doc["chunks"]),  # what was actually billed
+        "spent": round(sum(c["b"] for c in doc["chunks"]) / 1e9 * INSIGHTS_PER_GB, 2),
     }
 
 

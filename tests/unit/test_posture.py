@@ -189,16 +189,16 @@ def test_read_chunk_runs_the_outbound_query_only_when_asked(monkeypatch):
 
     def fake(logs, groups, query, s, e, cancelled=None, **kw):
         calls.append(query)
-        if "egress" in query or "isIpv4InSubnet(f_srcaddr" in query:
+        if "sum(f_bytes)" not in query:  # the outbound query
             return [{"src": "10.0.1.5", "dst": "52.1.1.1", "eni": "eni-1", "proto": "6", "dport": "443", "flows": "3"}], 10, "Complete"
         return [], 10, "Complete"
 
     monkeypatch.setattr(sg_review, "run_query", fake)
     qs = [{"format": sg_review.DEFAULT_FORMAT, "groups": ["g"]}]
     (c,) = sg_review.read_chunk(None, "eu-west-1", 0, 3600, qs, ["10.0.0.0/16"])
-    assert "egr" not in c and len(calls) == 2
+    assert "egr" not in c and len(calls) == 1, "one scan of the log per slice"
     (c,) = sg_review.read_chunk(None, "eu-west-1", 0, 3600, qs, ["10.0.0.0/16"], egress=True)
-    assert c["egr"] == [["10.0.1.5", "52.1.1.1", "eni-1", "6", 443, 3]] and c["b"] == 30
+    assert c["egr"] == [["10.0.1.5", "52.1.1.1", "eni-1", "6", 443, 3]] and c["b"] == 20
 
 
 def test_the_worst_external_rules_come_first():

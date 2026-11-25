@@ -86,7 +86,8 @@ def test_labeller_puts_ipv6_inside_or_outside():
 
 def test_queries_treat_unique_local_ipv6_as_private_and_filter_by_vpc_ipv6():
     q = sg_review.detail_query(None, ["10.0.0.0/16", "2a05:d018:1::/56"])
-    assert 'isIpv6InSubnet(f_srcaddr, "fc00::/7")' in q
+    assert 'isIpv6InSubnet(f_srcaddr, "fc00::/7")' in sg_review.public_query(None, ["10.0.0.0/16"])
+    assert sg_review._is_public("2606:4700::1") and not sg_review._is_public("fd12::1")
     assert 'isIpv6InSubnet(f_dstaddr, "2a05:d018:1::/56")' in q and 'isIpv4InSubnet(f_dstaddr, "10.0.0.0/16")' in q
     snap = {"vpcs": [{"id": "v", "cidrs": ["10.0.0.0/16"], "cidrs6": ["2a05:d018:1::/56"]}]}
     assert sg_review._vpc_ranges(snap) == ["10.0.0.0/16", "2a05:d018:1::/56"]
