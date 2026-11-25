@@ -149,3 +149,24 @@ def test_the_page_looks_up_addresses_and_shows_them_before_a_fix_and_an_apply():
     assert 'id="ipQ"' in page and "/api/ip?ip=" in page and 'id="fixWho"' in page
     assert "c.who?.answers" in page
     assert ("seen", "all") in sg_console.WARM
+
+
+def test_a_private_address_seen_in_another_account_may_be_a_different_host(book):
+    p = book.ip_profile("10.1.0.10", account=ACCOUNT)
+    assert "may be a different host" in _answer(p, "Is it already let in elsewhere?")["a"]
+    p = book.ip_profile("198.51.100.7")
+    assert "different host" not in _answer(p, "Is it already let in elsewhere?")["a"]
+
+
+def test_without_an_account_nothing_is_called_other_and_icmp_is_named_not_port_zero(book, monkeypatch):
+    rows = {ACCOUNT: {"name": "a", "own": {}, "seen": {"8.8.8.8": [5, 0, 0, 1, 2, 0, 1, [REGION], [["1", 0, 5, 0]], 1]}}}
+    monkeypatch.setattr(book, "_reports_soon", lambda *a: (rows, 0))
+    p = book.ip_profile("8.8.8.8")
+    a = _answer(p, "Is it already let in elsewhere?")["a"]
+    assert "other" not in a and "on icmp" in a
+    assert _answer(p, "Has it scanned?")["a"] == "No: nothing refused in any account."
+
+
+def test_a_port_without_a_protocol_is_tcp(book):
+    p = book.ip_profile("10.1.0.10", "", 6380)
+    assert p["port"]["proto"] == "tcp" and "6380/tcp" in _answer(p, "What port is it asking for?")["a"]

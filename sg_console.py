@@ -815,7 +815,7 @@ class Console:
                          "ports": ports, "ports_let_in": x[9] if len(x) > 9 else 0,
                          "scan": x[5] >= 10 or (x[6] >= 5 and x[5] > 1)})  # fmt: skip
         seen.sort(key=lambda r: -(r["let_in"] + r["refused"] + r["replies"]))
-        pnum = {"tcp": "6", "udp": "17", "icmp": "1"}.get(str(proto).lower(), str(proto))
+        pnum = {"tcp": "6", "udp": "17", "icmp": "1"}.get(str(proto).lower(), str(proto)) or "6"  # a port alone: TCP
         port_info = None
         if port not in (None, ""):
             try:
@@ -2356,6 +2356,10 @@ def _when(t) -> str:
     return time.strftime("%Y-%m-%d", time.gmtime(t)) if t else "?"
 
 
+def _port_text(p: dict) -> str:
+    return f"{p['port']}" if p["proto"] in ("tcp", "udp") else p["proto"]
+
+
 def _ip_answers(ip, private, intel, ours, seen, port, account, names) -> list[dict]:
     """The questions asked before letting an address in, answered from what the estate knows: [{q, a, tone}], tone
     good | warn | bad | info."""
@@ -2402,20 +2406,26 @@ def _ip_answers(ip, private, intel, ours, seen, port, account, names) -> list[di
         say("Has it scanned?", f"Yes: {r['ports_refused']} ports refused on {r['addresses']} addresses in "
             f"{acct(r['account'])}" + (f", and scanned {len(scans) - 1} more account(s)" if len(scans) > 1 else "") + ".", "bad")
     elif seen:
-        say("Has it scanned?", "No: at most " + str(max(r["ports_refused"] for r in seen)) + " port(s) refused in any account.", "good")
+        most = max(r["ports_refused"] for r in seen)
+        say("Has it scanned?", f"No: at most {most} port(s) refused in any account." if most else "No: nothing refused in any account.", "good")
     if not seen:
         say("Have we seen it before?", "Never: in no account's flow logs read so far.", "warn")
     else:
         first, last = min(r["first"] for r in seen), max(r["last"] for r in seen)
         say("Have we seen it before?", f"Yes, in {len(seen)} account(s): first {_when(first)}, last {_when(last)}.", "info")
+        other = " other" if account else ""
+        homes = {o["account"] for o in ours}
+        reuse = (" Private addresses repeat across VPCs: in an account other than "
+                 + (", ".join(acct(a) for a in sorted(homes)) if homes else "its own") + " it may be a different host."
+                 if private and any(r["account"] not in homes for r in seen) else "")  # fmt: skip
         let = [r for r in seen if r["let_in"] and r["account"] != account]
         if let:
-            top = ", ".join(f"{acct(r['account'])} on " + ", ".join(f"{p['port']}" for p in r["ports"] if p["let_in"])[:60]
+            top = ", ".join(f"{acct(r['account'])} on " + ", ".join(_port_text(p) for p in r["ports"] if p["let_in"])[:60]
                             for r in let[:3])  # fmt: skip
-            say("Is it already let in elsewhere?", f"Yes, {len(let)} other account(s): {top}"
-                + (f" and {len(let) - 3} more" if len(let) > 3 else "") + ".", "good")
+            say("Is it already let in elsewhere?", f"Yes, {len(let)}{other} account(s): {top}"
+                + (f" and {len(let) - 3} more" if len(let) > 3 else "") + "." + reuse, "good")
         else:
-            say("Is it already let in elsewhere?", "No other account lets it in.", "warn")
+            say("Is it already let in elsewhere?", f"No{other} account lets it in." + reuse, "warn")
         talk = [r for r in seen if r["replies"]]
         if talk:
             say("Do our hosts connect to it?", f"Yes, from {len(talk)} account(s): "
@@ -2423,7 +2433,7 @@ def _ip_answers(ip, private, intel, ours, seen, port, account, names) -> list[di
                 + " (it answered their connections).", "info")  # fmt: skip
         ref = [r for r in seen if r["refused"] and r["account"] != account]
         if ref:
-            say("Is it refused elsewhere?", f"Yes, {len(ref)} other account(s): "
+            say("Is it refused elsewhere?", f"Yes, {len(ref)}{other} account(s): "
                 + ", ".join(acct(r["account"]) for r in ref[:3]) + (f" and {len(ref) - 3} more" if len(ref) > 3 else "") + ".", "info")
     return out
 
