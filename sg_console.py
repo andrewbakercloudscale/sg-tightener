@@ -59,12 +59,20 @@ SETTLING = 600  # a read written to in the last ten minutes keeps its last repor
 # Processes building report rows at once. Each holds one account's flow logs (often 1-3 GB): eight at once, two
 # builds at a time, drove a 32 GB Mac into swap (load 90, 2026-11-25). Now at most a quarter of the cores, at most
 # one per 6 GB of memory, one build at a time (REPORT_GATE), at low priority (nice) so the Mac stays usable.
-def _report_procs() -> int:
+def _mem_bytes() -> int:
     try:
-        mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     except (ValueError, OSError, AttributeError):
-        mem = 8 << 30
-    return max(1, min(4, (os.cpu_count() or 2) // 4, mem // (6 << 30)))
+        return 8 << 30
+
+
+def _mask_dsn(dsn: str) -> str:
+    """A connection string with its password hidden."""
+    return re.sub(r"(://[^:/@]+:)[^@]*@", r"\1•••@", re.sub(r"(password=)\S+", r"\1•••", dsn))
+
+
+def _report_procs() -> int:
+    return max(1, min(4, (os.cpu_count() or 2) // 4, _mem_bytes() // (6 << 30)))
 
 
 REPORT_PROCS = int(os.environ.get("SG_REPORT_PROCS") or _report_procs())
@@ -89,9 +97,10 @@ WARM_EVERY = 600
 # The console reads every chosen account's new flow logs by itself at these local times (on by default, once a day
 # at 08:00; changed or turned off on the Overview). A time missed while asleep or signed out is caught up within
 # SCHEDULE_CATCHUP; later than that it waits for the next one. Over max_cost (US$) it is priced and left for a yes.
-SCHEDULE_DEFAULT = {"on": True, "times": ["08:00"], "max_cost": 25.0, "days": 7}  # days: how far back it fills hours never read
+SCHEDULE_DEFAULT = {"on": True, "times": ["08:00"], "max_cost": 25.0, "days": 7, "on_wake": True}  # days: how far back it fills hours never read
 SCHEDULE_POLL = 60
 SCHEDULE_CATCHUP = 6 * 3600
+SCHEDULE_SOON = 2 * 3600  # a missed read is skipped when the next scheduled one is this close
 
 
 def _slots(cfg: dict, t: float, day_offset: int = 0) -> list[tuple[float, str]]:
@@ -106,9 +115,17 @@ def _slots(cfg: dict, t: float, day_offset: int = 0) -> list[tuple[float, str]]:
 
 
 def _due_slot(cfg: dict, t: float) -> str:
-    """The latest scheduled time already passed today, if it passed within SCHEDULE_CATCHUP; else ""."""
-    past = [s for at, s in _slots(cfg, t) if at <= t < at + SCHEDULE_CATCHUP]
-    return past[-1] if past else ""
+    """The latest scheduled time already passed (today or yesterday), else "". With "on_wake" (the default) a time
+    missed while the Mac slept or was signed out runs once when it is back, unless the next time is under
+    SCHEDULE_SOON away; without it, only within SCHEDULE_CATCHUP of the time."""
+    past = [(at, s) for at, s in _slots(cfg, t, -1) + _slots(cfg, t) if at <= t]
+    if not past:
+        return ""
+    at, s = past[-1]
+    if cfg.get("on_wake", True):
+        nxt = next((a for a, _ in _slots(cfg, t) + _slots(cfg, t, 1) if a > t), None)
+        return s if nxt is None or nxt - t >= SCHEDULE_SOON or t - at < SCHEDULE_CATCHUP else ""
+    return s if t < at + SCHEDULE_CATCHUP else ""
 
 
 def _next_slot(cfg: dict, t: float) -> str:
@@ -309,6 +326,7 @@ class Console:
                     "service": self.service.status() if self.service else None,
                     "sso": bool(self.sso), "jobs": self.job_list(), "batch": self.batch_status(),
                     "approvals": st.approvals(), "db": str(st.path),
+                    "apply_strategy": st.meta_get("apply_strategy", "room") or "room",
                     "verify": {"ok": ok, "entries": n, "why": why}, "accounts": list(accounts.values()),
                     "pending_requests": len(st.requests("pending"))}  # fmt: skip
         finally:
@@ -769,6 +787,140 @@ class Console:
         _, building = self._reports_soon(kind, range_key, {})
         return {"started": True, "building": building}
 
+    # ------------------------------------------------------------------ settings
+    def settings(self) -> dict:
+        """Everything the Settings tab shows: version (and the newest release), the repository and its author,
+        the schedule, how rules are narrowed and applied, performance, approvals, always running, the database
+        and the data kept."""
+        import sg_ipintel
+        import sg_review
+        import sg_store
+        import sg_tightener
+
+        st = self.store()
+        try:
+            approvals = st.approvals()
+            strategy = st.meta_get("apply_strategy", "room") or "room"
+        finally:
+            st.close()
+        try:
+            dsn = sg_store.dsn()
+        except Exception:  # noqa: BLE001 - shown as not set up
+            dsn = ""
+        bdir = sg_store.backup_dir()
+        backups = sorted(bdir.glob("*.dump")) if bdir.exists() else []
+        names = sg_review.names_path()
+        return {
+            "about": {"version": sg_tightener.__version__, "latest": self._latest_release(),
+                      "repo": "https://github.com/andrewbakercloudscale/sg-tightener", "author": "Andrew Baker",
+                      "license": "MIT", "site": "https://andrewbaker.ninja", "python": sys.version.split()[0]},
+            "schedule": self.schedule(),
+            "tighten": {**sg_review.tighten_prefs(), "defaults": dict(sg_review.TIGHTEN), "strategy": strategy,
+                        "strategies": dict(sg_db.APPLY_STRATEGIES)},
+            "performance": {"procs": REPORT_PROCS, "auto": _report_procs(), "cores": os.cpu_count(),
+                            "memory_gb": round(_mem_bytes() / 2**30), "from_env": bool(os.environ.get("SG_REPORT_PROCS")),
+                            "builds": {k: self.build_status(*k.split("|")) for k in list(self._builds)}},
+            "approvals": approvals, "service": self.service.status() if self.service else None,
+            "database": {"dsn": _mask_dsn(dsn), "from_env": bool(os.environ.get(sg_store.DSN_ENV)),
+                         "file": str(sg_store.dsn_file()), **sg_store.server_status()},
+            "data": {"dir": str(sg_ipintel.DATA_DIR), "names": str(names), "names_exists": Path(names).exists(),
+                     "retention_days": sg_store.RETENTION_DAYS, "backups_dir": str(bdir), "backups": len(backups),
+                     "last_backup": backups[-1].stat().st_mtime if backups else None, "backups_kept": sg_store.BACKUP_KEEP},
+        }
+
+    def _latest_release(self) -> dict:
+        """The newest version tag on GitHub, asked at most every six hours; {} when it cannot be asked."""
+        got = getattr(self, "_latest", None)
+        if got and time.time() - got[0] < 6 * 3600:
+            return got[1]
+        out: dict = {}
+        try:
+            import urllib.request
+
+            req = urllib.request.Request("https://api.github.com/repos/andrewbakercloudscale/sg-tightener/tags?per_page=30",
+                                         headers={"User-Agent": "sg-tightener", "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(req, timeout=5) as r:  # noqa: S310 - a fixed https address
+                tags = [t["name"] for t in json.loads(r.read().decode()) if re.fullmatch(r"v?\d+\.\d+\.\d+", t.get("name", ""))]
+            if tags:
+                best = max(tags, key=lambda x: tuple(int(n) for n in x.lstrip("v").split(".")))
+                out = {"version": best.lstrip("v"), "url": f"https://github.com/andrewbakercloudscale/sg-tightener/releases/tag/{best}"}
+        except Exception as exc:  # noqa: BLE001 - offline, private repository or rate limited: shown as not known
+            out = {"error": str(exc)[:200]}
+        self._latest = (time.time(), out)
+        return out
+
+    def load_saved_procs(self) -> None:
+        """The number of report workers chosen on the Settings tab (0: automatic); SG_REPORT_PROCS wins."""
+        global REPORT_PROCS
+        if os.environ.get("SG_REPORT_PROCS"):
+            return
+        try:
+            st = self.store()
+            try:
+                n = int(st.meta_get("report_procs", 0) or 0)
+            finally:
+                st.close()
+        except Exception:  # noqa: BLE001 - automatic
+            return
+        if n:
+            REPORT_PROCS = n
+
+    def set_settings(self, body: dict) -> dict:
+        """Save the settings this tab owns: the default apply strategy and the number of report workers."""
+        global REPORT_PROCS
+        st = self.store()
+        try:
+            with st:
+                if "strategy" in body:
+                    if body["strategy"] not in sg_db.APPLY_STRATEGIES:
+                        raise ConsoleError(400, "strategy is one of " + ", ".join(sg_db.APPLY_STRATEGIES))
+                    st.meta_set("apply_strategy", body["strategy"])
+                if "procs" in body:
+                    try:
+                        n = int(body["procs"] or 0)
+                    except (TypeError, ValueError):
+                        raise ConsoleError(400, "workers is a whole number") from None
+                    if not 0 <= n <= max(1, os.cpu_count() or 1):
+                        raise ConsoleError(400, f"workers is 0 (automatic) to {os.cpu_count()}")
+                    st.meta_set("report_procs", n)
+                    REPORT_PROCS = n or _report_procs()
+                    LOG.info("report workers now %d", REPORT_PROCS)
+        finally:
+            st.close()
+        return self.settings()
+
+    def backup_now(self, _body: dict | None = None) -> dict:
+        import sg_store
+
+        try:
+            path = sg_store.backup(say=LOG.info)
+        except Exception as exc:  # noqa: BLE001 - shown on the page
+            raise ConsoleError(500, f"backup failed: {exc}") from None
+        return {"path": str(path), "settings": self.settings()}
+
+    def test_dsn(self, body: dict) -> dict:
+        """Try a PostgreSQL connection string; with "save", write it to pg.dsn (used from the next start)."""
+        import sg_store
+
+        dsn = str(body.get("dsn") or "").strip()
+        if not dsn:
+            raise ConsoleError(400, "give a connection string, e.g. postgresql://user:password@host:5432/db")
+        try:
+            psy = sg_store._psycopg()
+            with psy.connect(dsn, connect_timeout=5) as c:
+                ver = c.execute("SELECT version()").fetchone()[0]
+        except Exception as exc:  # noqa: BLE001 - the answer to the test
+            return {"ok": False, "error": str(exc).splitlines()[0][:300]}
+        if body.get("save"):
+            if os.environ.get(sg_store.DSN_ENV):
+                raise ConsoleError(409, f"{sg_store.DSN_ENV} is set in the environment and wins over the file: change it there")
+            f = sg_store.dsn_file()
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(dsn + "\n")
+            os.chmod(f, 0o600)
+            LOG.info("database connection changed (takes effect when the console restarts)")
+        return {"ok": True, "version": ver.split(",")[0], "saved": bool(body.get("save")), "restart": bool(body.get("save"))}
+
     def tighten_prefs(self) -> dict:
         import sg_review
 
@@ -822,7 +974,8 @@ class Console:
             raise ConsoleError(400, "max_cost is US dollars and days a whole number")
         if not 1 <= days <= 90:
             raise ConsoleError(400, "days is from 1 to 90")
-        cfg = {"on": bool(body.get("on")), "times": times or SCHEDULE_DEFAULT["times"], "max_cost": max_cost, "days": days}
+        cfg = {"on": bool(body.get("on")), "times": times or SCHEDULE_DEFAULT["times"], "max_cost": max_cost, "days": days,
+               "on_wake": bool(body.get("on_wake", True))}
         st = self.store()
         try:
             with st:
@@ -2487,6 +2640,8 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.batch_status())
                 if url.path == "/api/schedule":
                     return self._json(200, console.schedule())
+                if url.path == "/api/settings":
+                    return self._json(200, console.settings())
                 if url.path == "/api/tighten":
                     return self._json(200, console.tighten_prefs())
                 if url.path == "/api/jobs":
@@ -2525,6 +2680,7 @@ def make_handler(console: Console, token: str, port: int):
                      "/api/read/confirm": console.read_confirm, "/api/read/stop": console.read_stop,
                      "/api/read/all": console.read_all, "/api/read/all/confirm": console.read_all_confirm, "/api/schedule": console.set_schedule,
                      "/api/reports/retry": console.reports_retry, "/api/tighten": console.set_tighten_prefs,
+                     "/api/settings": console.set_settings, "/api/backup": console.backup_now, "/api/dsn-test": console.test_dsn,
                      "/api/read/all/stop": console.read_all_stop, "/api/keys/use": console.keys_use,
                      "/api/autostart": console.autostart,
                      "/api/database/start": console.database_start}.get(urlparse(self.path).path)  # fmt: skip
@@ -2910,6 +3066,7 @@ def serve(console: Console, port: int = 8765, token: str | None = None) -> tuple
     httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(console, token, port))
     if os.environ.get("SG_NO_WARM") != "1":
         threading.Thread(target=console.warm, daemon=True, name="warm-reports").start()
+    console.load_saved_procs()
     if os.environ.get("SG_NO_SCHEDULE") != "1" and os.environ.get("SG_NO_WARM") != "1":
         threading.Thread(target=console.scheduler, daemon=True, name="scheduled-reads").start()
     httpd.daemon_threads = True

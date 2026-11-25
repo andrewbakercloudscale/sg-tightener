@@ -564,6 +564,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     <button role="tab" data-tab="refused" aria-selected="false">Rejected traffic</button>
     <button role="tab" data-tab="requests" aria-selected="false">Change requests<span class="count" id="pendingCount" hidden></span></button>
     <button role="tab" data-tab="audit" aria-selected="false">Audit trail</button>
+    <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
   </nav>
 </header>
 <main>
@@ -640,25 +641,68 @@ section.nodata .card:not(.empty-state) { display: none; }
         </div>
       </div>
     </div>
-    <div class="card" id="svcCard" hidden>
-      <label class="switch"><input type="checkbox" id="svcOn" role="switch"> Always running</label>
-      <p class="muted small" id="svcText" style="margin:6px 0 0"></p>
-    </div>
+    <div class="grid" id="stats"></div>
+    <div class="card scroll"><table><thead><tr><th>Account</th><th>Mode</th><th>Region</th><th>Groups</th><th>Rules</th><th>Assets</th><th title="Rules where AWS differs from what is saved here, usually changed in AWS outside this tool. Open the region to keep what AWS holds, or apply to put it back.">Changed outside tool</th><th>Can apply here?</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table><p class="muted small" id="regionsEmpty" hidden style="margin:10px 0 0"></p></div>
+  </section>
+
+  <section id="tab-settings" hidden>
+    <h2>Settings</h2>
+    <p class="lede">When flow logs are read, how rules are narrowed and applied, how hard this computer works, the database, and the data kept. Each setting is saved for this console.</p>
+    <div class="card" id="stAbout"><div class="card-head"><h3 style="margin:0">About</h3></div><div id="stAboutBody">Loading…</div></div>
     <div class="card" id="schedCard">
       <div class="card-head"><h3 style="margin:0">Scheduled flow-log reads</h3><button class="btn sm" type="button" id="schedWhy" aria-expanded="false">Explain</button></div>
-      <p class="small" id="schedHelp" hidden style="margin:6px 0">While the console runs it reads every chosen account's new flow logs by itself at these times (your computer's clock), so Rejected traffic and the other tabs are up to date when you look. Each read is priced first: within the limit it starts without asking; over it, it waits on this page for you to confirm, as a read you start does. It only reads hours not already read, back as far as <b>Fill back</b>. A time missed while the computer slept or you were signed out of AWS is read once you are back, within 6 hours; later than that it waits for the next time. Signing in to AWS stays your job: the SSO session usually lasts 8 to 12 hours.</p>
+      <p class="small" id="schedHelp" hidden style="margin:6px 0">While the console runs it reads every chosen account's new flow logs by itself at these times (your computer's clock), so Rejected traffic and the other tabs are up to date when you look. Each read is priced first: within the limit it starts without asking; over it, it waits on this page for you to confirm, as a read you start does. It only reads hours not already read, back as far as <b>Fill back</b>. With <b>read once when it is back</b> ticked, a time missed while the Mac slept (lid closed) or you were signed out of AWS is read once as soon as it is awake and signed in, unless the next scheduled time is under 2 hours away. Unticked, a missed time is only caught up within 6 hours. Signing in to AWS stays your job: the SSO session usually lasts 8 to 12 hours.</p>
       <div class="acts" style="margin-top:8px;align-items:center">
         <label class="switch"><input type="checkbox" id="schedOn" role="switch"> Read by itself every day at</label>
         <span id="schedTimes" style="display:inline-flex;gap:6px;flex-wrap:wrap"></span>
         <button class="btn sm" type="button" id="schedAdd">Add a time</button>
         <label class="small">Spend up to US$ <input id="schedMax" type="number" min="0" step="1" style="width:80px"> without asking</label>
         <label class="small">Fill back <input id="schedDays" type="number" min="1" max="90" style="width:64px"> days</label>
+        <label class="small"><input type="checkbox" id="schedWake"> If the Mac was asleep or signed out, read once when it is back</label>
         <button class="btn primary sm" type="button" id="schedSave">Save</button>
       </div>
       <p class="muted small" id="schedNote" style="margin:8px 0 0"></p>
     </div>
-    <div class="grid" id="stats"></div>
-    <div class="card scroll"><table><thead><tr><th>Account</th><th>Mode</th><th>Region</th><th>Groups</th><th>Rules</th><th>Assets</th><th title="Rules where AWS differs from what is saved here, usually changed in AWS outside this tool. Open the region to keep what AWS holds, or apply to put it back.">Changed outside tool</th><th>Can apply here?</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table><p class="muted small" id="regionsEmpty" hidden style="margin:10px 0 0"></p></div>
+    <div class="card" id="tPrefs"><div class="card-head"><h3 style="margin:0">How rules are narrowed</h3><button class="btn sm" type="button" id="tPrefsWhy" aria-expanded="false">Explain</button></div>
+      <div class="acts" style="flex-wrap:wrap;gap:14px;align-items:center">
+        <label class="small">Rules per security group <input id="tMax" type="number" min="1" max="1000" step="1" style="width:80px" aria-label="Rules per security group"></label>
+        <label class="small">Room for unseen addresses <input id="tTol" type="number" min="0" max="90" step="5" style="width:70px" aria-label="Most of a block that may be addresses never seen, in percent"> %</label>
+        <label class="small"><input id="tFill" type="checkbox"> Use every free rule for precision</label>
+        <label class="small">Outbound rules per port <input id="tOut" type="number" min="1" max="60" step="1" style="width:70px" aria-label="Outbound rules suggested per port"></label>
+        <button class="btn sm primary" type="button" id="tSave">Save and rebuild</button>
+        <button class="btn sm" type="button" id="tReset">Defaults</button>
+        <span class="muted small" id="tNote"></span></div>
+      <div class="small" id="tHelp" hidden style="margin-top:8px">
+        <p><b>Rules per security group</b>: AWS's limit on inbound rules in one group (60 unless your quota was raised). Rules not being narrowed keep their places; the rest is shared between the rules being narrowed so the group as a whole lets in the fewest addresses nobody was seen using. A group that cannot fit is merged down as tightly as the room allows.</p>
+        <p><b>Room for unseen addresses</b>: each source seen grows into the widest aligned block (never past its private range, never past the rule it replaces) in which at most this share of addresses was never seen. More room keeps working when a host is replaced at a new address in the same subnet; less lets in fewer strangers. Public addresses always stay single addresses.</p>
+        <p><b>Use every free rule for precision</b>: ignores the room above and spends every rule the group has free on letting in fewer never-seen addresses (the fewest possible for that many rules). Tightest, but a new host at a new address will be refused until it is let in again (it shows on <b>Rejected traffic</b> with <b>Fix…</b>).</p>
+        <p><b>Outbound rules per port</b>: how many destinations blocks an outbound suggestion may use for each port.</p>
+        <p>The same settings and maths as <code>sg_tightener.py plan</code>. Saving rebuilds the plan shown; nothing changes in AWS until a change is proposed, approved and applied.</p></div></div>
+    <div class="card" id="stApply"><div class="card-head"><h3 style="margin:0">How changes are applied</h3><button class="btn sm" type="button" id="stApplyWhy" aria-expanded="false">Explain</button></div>
+      <div class="acts"><label class="small">Default way to apply <select id="stStrategy" aria-label="Default apply strategy"></select></label><button class="btn sm primary" type="button" id="stApplySave">Save</button><span class="muted small" id="stApplyNote"></span></div>
+      <p class="small" id="stApplyHelp" hidden style="margin:8px 0 0">The order Apply uses when it replaces rules, preselected on Remediate (it can still be changed there for one apply). <b>Add first, then swap</b> adds the new rules while there is room and then removes one old rule per new one, the one with fewest flow-log hits first. <b>Bridge</b> adds a temporary rule spanning old and new sources, swaps underneath it, then removes it. <b>Remove first</b> removes every old rule and then adds: a short gap.</p></div>
+    <div class="card" id="stPerf"><div class="card-head"><h3 style="margin:0">Performance</h3><button class="btn sm" type="button" id="stPerfWhy" aria-expanded="false">Explain</button></div>
+      <div class="acts"><label class="small">Worker processes for reports <select id="stProcs" aria-label="Worker processes"></select></label><button class="btn sm primary" type="button" id="stPerfSave">Save</button><span class="muted small" id="stPerfNote"></span></div>
+      <p class="small" id="stPerfHelp" hidden style="margin:8px 0 0">Reports (Risk overview, Rejected traffic, the address book) are worked out per account in background processes, each holding one account's flow logs (often 1 to 3 GB). More workers finish sooner and use more memory; too many push the Mac into swap and slow everything. <b>Automatic</b> uses at most a quarter of the cores and one worker per 6 GB of memory, at low priority, one report at a time.</p>
+      <div id="stBuilds" class="small"></div></div>
+    <div class="card" id="stAccess"><div class="card-head"><h3 style="margin:0">Approvals and running</h3></div>
+      <div class="acts"><label class="switch"><input type="checkbox" id="stTwo" role="switch"> Two-person approval</label></div>
+      <p class="muted small" style="margin:4px 0 10px">On: a different person must approve each change request before it can be applied. Off suits one person running the console on their own laptop.</p>
+    <div id="svcCard" hidden>
+      <label class="switch"><input type="checkbox" id="svcOn" role="switch"> Always running</label>
+      <p class="muted small" id="svcText" style="margin:6px 0 0"></p>
+    </div>
+    </div>
+    <div class="card" id="stDb"><div class="card-head"><h3 style="margin:0">Database</h3><button class="btn sm" type="button" id="stDbWhy" aria-expanded="false">Explain</button></div>
+      <div id="stDbBody" class="small"></div>
+      <div class="acts" style="margin-top:8px"><input id="stDsn" type="text" placeholder="postgresql://user:password@host:5432/database" style="flex:1;min-width:320px" aria-label="PostgreSQL connection string" autocomplete="off">
+        <button class="btn sm" type="button" id="stDsnTest">Test</button><button class="btn sm primary" type="button" id="stDsnSave">Test and save</button></div>
+      <p class="small" id="stDbHelp" hidden style="margin:8px 0 0">Everything (groups, rules, the audit trail, flow logs read, reports) is kept in PostgreSQL. By default a local database in Docker on this Mac. To share one with your team, point every console at the same server: paste its connection string, <b>Test</b> it, then <b>Test and save</b>. It is written to the file shown (readable only by you) and used from the next start. If the environment variable is set, it wins over the file.</p>
+      <p class="small" id="stDsnNote"></p></div>
+    <div class="card" id="stData"><div class="card-head"><h3 style="margin:0">Data and backups</h3><button class="btn sm" type="button" id="stDataWhy" aria-expanded="false">Explain</button></div>
+      <div id="stDataBody" class="small"></div>
+      <div class="acts" style="margin-top:8px"><button class="btn sm primary" type="button" id="stBackup">Back up now</button><span class="muted small" id="stBackupNote"></span></div>
+      <p class="small" id="stDataHelp" hidden style="margin:8px 0 0"><b>Names file</b>: your own names for address ranges (data centres, partners, offices), so a source is named "Johannesburg DC" rather than "private address". <code>python sg_review.py names</code> writes an example. <b>Flow logs kept</b>: older reads are deleted; the audit trail is never deleted. <b>Back up now</b> dumps the whole database to the backups folder (the newest copies are kept); <code>python sg_store.py restore FILE --yes</code> puts one back.</p></div>
   </section>
 
   <section id="tab-requests" hidden>
@@ -735,7 +779,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <select id="xAcct" aria-label="Account to remediate"></select>
       <span class="range"><b>Evidence from</b><input type="date" id="xFrom" aria-label="Use flow logs from this date"><b>to</b><input type="date" id="xTo" aria-label="Use flow logs up to and including this date"><button class="btn sm" type="button" id="xRangeWhy" aria-expanded="false">Explain</button></span>
       <label class="small"><input type="checkbox" id="xHide" checked> Hide accounts without flow logs</label>
-      <button class="btn sm" type="button" id="tPrefsBtn" aria-expanded="false" aria-controls="tPrefs">Narrowing settings</button>
+      <button class="btn sm" type="button" id="tPrefsBtn" title="Rules per group, room for unseen addresses, and more: on Settings">Narrowing settings</button>
       <button class="btn sm primary" type="button" id="xPdf" style="margin-left:auto" disabled title="Opens the print dialog: choose Save as PDF">Export to PDF</button>
     </div>
     <p class="muted small" id="xRangeHelp" hidden>The plan is built only from flow logs already read, between these
@@ -743,21 +787,6 @@ section.nodata .card:not(.empty-state) { display: none; }
       days you do not trust, such as a day under attack: a source seen only then is not kept. Left empty, it uses the
       last 90 days of what was read. To have more days to choose from, read them first.</p>
     <div class="flash" id="xNote" hidden></div>
-    <div class="card" id="tPrefs" hidden><div class="card-head"><h3 style="margin:0">How rules are narrowed</h3><button class="btn sm" type="button" id="tPrefsWhy" aria-expanded="false">Explain</button></div>
-      <div class="acts" style="flex-wrap:wrap;gap:14px;align-items:center">
-        <label class="small">Rules per security group <input id="tMax" type="number" min="1" max="1000" step="1" style="width:80px" aria-label="Rules per security group"></label>
-        <label class="small">Room for unseen addresses <input id="tTol" type="number" min="0" max="90" step="5" style="width:70px" aria-label="Most of a block that may be addresses never seen, in percent"> %</label>
-        <label class="small"><input id="tFill" type="checkbox"> Use every free rule for precision</label>
-        <label class="small">Outbound rules per port <input id="tOut" type="number" min="1" max="60" step="1" style="width:70px" aria-label="Outbound rules suggested per port"></label>
-        <button class="btn sm primary" type="button" id="tSave">Save and rebuild</button>
-        <button class="btn sm" type="button" id="tReset">Defaults</button>
-        <span class="muted small" id="tNote"></span></div>
-      <div class="small" id="tHelp" hidden style="margin-top:8px">
-        <p><b>Rules per security group</b>: AWS's limit on inbound rules in one group (60 unless your quota was raised). Rules not being narrowed keep their places; the rest is shared between the rules being narrowed so the group as a whole lets in the fewest addresses nobody was seen using. A group that cannot fit is merged down as tightly as the room allows.</p>
-        <p><b>Room for unseen addresses</b>: each source seen grows into the widest aligned block (never past its private range, never past the rule it replaces) in which at most this share of addresses was never seen. More room keeps working when a host is replaced at a new address in the same subnet; less lets in fewer strangers. Public addresses always stay single addresses.</p>
-        <p><b>Use every free rule for precision</b>: ignores the room above and spends every rule the group has free on letting in fewer never-seen addresses (the fewest possible for that many rules). Tightest, but a new host at a new address will be refused until it is let in again (it shows on <b>Rejected traffic</b> with <b>Fix…</b>).</p>
-        <p><b>Outbound rules per port</b>: how many destinations blocks an outbound suggestion may use for each port.</p>
-        <p>The same settings and maths as <code>sg_tightener.py plan</code>. Saving rebuilds the plan shown; nothing changes in AWS until a change is proposed, approved and applied.</p></div></div>
     <dialog id="auditDlg" aria-labelledby="auditTitle">
       <div class="au-head"><div><div class="eyebrow">Audit</div><h2 id="auditTitle" style="margin:2px 0 4px">Before and after, rule by rule</h2>
         <p class="muted small" id="auditSub"></p></div>
@@ -1051,7 +1080,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     }
     for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
     for (const s of document.querySelectorAll("main > section")) s.hidden = s.id !== "tab-" + tab;
-    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, macro: loadMacro, over: loadOver, fix: loadFix, overview: loadState})[tab]?.())
+    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, macro: loadMacro, over: loadOver, fix: loadFix, overview: loadState, settings: loadSettings})[tab]?.())
       .catch((e) => flash(e.message, true));
   }
 
@@ -1123,7 +1152,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       const r = regions[+b.dataset.open]; $("gWhere").value = `${r.account}|${r.region}`; show("groups");
     });
     drawService();
-    loadSchedule();
+    if (S.apply_strategy && !$("gStrategy").dataset.touched) $("gStrategy").value = S.apply_strategy;
     if (S.sso) await loadSso();
     const sel = $("gWhere"), keep = sel.value;
     sel.innerHTML = regions.map((r) => `<option value="${esc(r.account)}|${esc(r.region)}">${esc(r.name || r.account)} · ${esc(r.region)}</option>`).join("");
@@ -1459,6 +1488,54 @@ section.nodata .card:not(.empty-state) { display: none; }
     flash(on ? "Always running is on: the console starts when you log in." : "Always running is off.");
     await loadState();
   }));
+  // ---- Settings
+  let SET = null;
+  const toggleHelp = (btn, box) => $(btn).addEventListener("click", () => { const h = $(box); h.hidden = !h.hidden; $(btn).setAttribute("aria-expanded", String(!h.hidden)); });
+  for (const [b, h] of [["stApplyWhy", "stApplyHelp"], ["stPerfWhy", "stPerfHelp"], ["stDbWhy", "stDbHelp"], ["stDataWhy", "stDataHelp"]]) toggleHelp(b, h);
+  async function loadSettings() {
+    if (!S) await loadState();
+    SET = await api("/api/settings");
+    const A = SET.about, L = A.latest || {};
+    const cmp = (x, y) => { const a = x.split(".").map(Number), b = y.split(".").map(Number); for (let i = 0; i < 3; i++) if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) - (b[i] || 0); return 0; };
+    const upd = L.version ? (cmp(A.version, L.version) >= 0 ? '<span class="pill" style="--p:var(--good)">up to date</span>' : `<span class="pill" style="--p:var(--warn)">${esc(L.version)} is out</span> <a href="${esc(L.url)}" target="_blank" rel="noopener">what's new</a> · update with <code>git pull</code>, then <code>python sg_console.py install</code>`) : `<span class="muted">newest release not known${L.error ? ": " + esc(L.error) : ""}</span>`;
+    $("stAboutBody").innerHTML = `<div class="facts"><div><span class="muted small">Version</span><b>${esc(A.version)}</b><span class="small">${upd}</span></div>
+      <div><span class="muted small">Repository</span><b style="font-size:14px"><a href="${esc(A.repo)}" target="_blank" rel="noopener">${esc(A.repo.replace("https://", ""))}</a></b><span class="muted small">${esc(A.license)} licence · Python ${esc(A.python)}</span></div>
+      <div><span class="muted small">Made by</span><b style="font-size:14px">${esc(A.author)}</b><span class="muted small"><a href="${esc(A.site)}" target="_blank" rel="noopener">${esc(A.site.replace("https://", ""))}</a></span></div></div>
+      <p class="muted small" style="margin:6px 0 0">sg-tightener narrows AWS security groups to the addresses that actually connect, from VPC flow log evidence, with every change proposed, approved and audited.</p>`;
+    const T = SET.tighten;
+    $("stStrategy").innerHTML = Object.entries(T.strategies).map(([k, v]) => `<option value="${esc(k)}" title="${esc(v)}">${esc(v.split(":")[0])}</option>`).join("");
+    $("stStrategy").value = T.strategy;
+    const P = SET.performance;
+    $("stProcs").innerHTML = `<option value="0">Automatic (${P.auto})</option>` + Array.from({length: Math.max(1, P.cores || 1)}, (_, i) => `<option value="${i + 1}">${i + 1}</option>`).join("");
+    $("stProcs").value = P.from_env ? String(P.procs) : String(P.procs === P.auto ? 0 : P.procs);
+    $("stProcs").disabled = P.from_env;
+    $("stPerfNote").textContent = `${P.cores} cores, ${P.memory_gb} GB memory · ${P.procs} worker${P.procs === 1 ? "" : "s"} now${P.from_env ? " (set by SG_REPORT_PROCS)" : ""}`;
+    const B = Object.entries(P.builds || {}).filter(([, b]) => b);
+    $("stBuilds").innerHTML = B.length ? `<p style="margin:8px 0 0">Latest builds: ${B.map(([k, b]) => `${esc(k.replace("|", " "))} ${b.running ? `running, ${b.done} of ${b.todo}` : `${b.done} of ${b.todo} in ${Math.round((b.finished - b.started) / 60)} min`}${b.failed ? `, <span style="color:var(--bad)">${b.failed} failed</span>` : ""}`).join(" · ")}</p>` : "";
+    $("stTwo").checked = !!SET.approvals;
+    const D = SET.database;
+    $("stDbBody").innerHTML = `<p style="margin:0"><span class="pill" style="--p:${D.ok ? "var(--good)" : "var(--bad)"}">${D.ok ? "connected" : "not answering"}</span> <code>${esc(D.dsn || "not set up")}</code></p>
+      <p class="muted" style="margin:4px 0 0">${D.from_env ? "From the environment variable SG_TIGHTENER_PG_DSN." : `From <code>${esc(D.file)}</code>.`} ${D.local ? "A local database in Docker on this Mac." : "A database elsewhere."}${D.ok ? "" : " " + esc(D.why || "")}</p>`;
+    const X = SET.data;
+    $("stDataBody").innerHTML = `<div class="facts"><div><span class="muted small">Data folder</span><b style="font-size:13px"><code>${esc(X.dir)}</code></b></div>
+      <div><span class="muted small">Names file</span><b style="font-size:13px"><code>${esc(X.names)}</code></b><span class="muted small">${X.names_exists ? "in use" : "none yet: sources are named from public lists only"}</span></div>
+      <div><span class="muted small">Flow logs kept</span><b>${X.retention_days} days</b></div>
+      <div><span class="muted small">Backups</span><b>${X.backups}</b><span class="muted small">${X.last_backup ? "last " + esc(when(X.last_backup)) : "none yet"} · newest ${X.backups_kept} kept</span></div></div>`;
+    await loadPrefs().catch(() => {});
+    await loadSchedule();
+    drawService();
+  }
+  $("stApplySave").addEventListener("click", (e) => act(e.target, async () => { await api("/api/settings", {strategy: $("stStrategy").value}); $("gStrategy").value = $("stStrategy").value; $("stApplyNote").textContent = "Saved."; }));
+  $("stPerfSave").addEventListener("click", (e) => act(e.target, async () => { await api("/api/settings", {procs: Number($("stProcs").value)}); await loadSettings(); $("stPerfNote").textContent += " · saved"; }));
+  $("stTwo").addEventListener("change", (e) => act(e.target, async () => { await api("/api/approvals", {on: e.target.checked}); await loadState(); }));
+  const dsnGo = (save) => async (e) => act(e.target, async () => {
+    const r = await api("/api/dsn-test", {dsn: $("stDsn").value.trim(), save});
+    $("stDsnNote").innerHTML = r.ok ? `<span style="color:var(--good)">Connected: ${esc(r.version)}.</span>${r.saved ? " Saved: restart the console (Always running off and on, or <code>python sg_console.py install</code>) to use it." : ""}` : `<span style="color:var(--bad)">Could not connect: ${esc(r.error)}</span>`;
+  });
+  $("stDsnTest").addEventListener("click", dsnGo(false));
+  $("stDsnSave").addEventListener("click", dsnGo(true));
+  $("stBackup").addEventListener("click", (e) => act(e.target, async () => { $("stBackupNote").textContent = "Backing up…"; const r = await api("/api/backup", {}); $("stBackupNote").textContent = `Saved ${r.path}`; await loadSettings(); }));
+
   // ---- scheduled reads: on by default, once a day at 08:00
   let SCHED = null;
   function schedTimeHtml(t) {
@@ -1470,6 +1547,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("schedTimes").innerHTML = SCHED.times.map(schedTimeHtml).join("");
     $("schedMax").value = SCHED.max_cost;
     $("schedDays").value = SCHED.days;
+    $("schedWake").checked = SCHED.on_wake !== false;
     const ST = {started: ["var(--good)", "started"], nothing: ["var(--muted)", "nothing new"], asking: ["var(--warn)", "waiting for you"], waiting: ["var(--warn)", "waiting"], failed: ["var(--bad)", "failed"]};
     const runs = [...(SCHED.runs || [])].reverse().slice(0, 5);
     $("schedNote").innerHTML = (SCHED.on ? `Next read: <b>${esc(SCHED.next || "—")}</b>.` : "Off: flow logs are read only when you read them.")
@@ -1481,7 +1559,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   $("schedTimes").addEventListener("click", (ev) => { const b = ev.target.closest("[data-schedrm]"); if (b) b.parentElement.remove(); });
   $("schedSave").addEventListener("click", () => act($("schedSave"), async () => {
     const times = [...$("schedTimes").querySelectorAll("input")].map((i) => i.value).filter(Boolean);
-    await api("/api/schedule", {on: $("schedOn").checked, times, max_cost: Number($("schedMax").value || 0), days: Number($("schedDays").value || 7)});
+    await api("/api/schedule", {on: $("schedOn").checked, times, max_cost: Number($("schedMax").value || 0), days: Number($("schedDays").value || 7), on_wake: $("schedWake").checked});
     flash($("schedOn").checked ? `Saved: reads by itself at ${times.join(" and ")}.` : "Saved: scheduled reads are off.");
     await loadSchedule();
   }));
@@ -1715,8 +1793,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     }));
   }));
   $("gStrategyWhy").addEventListener("click", () => { const h = $("gStrategyHelp"); h.hidden = !h.hidden; $("gStrategyWhy").setAttribute("aria-expanded", String(!h.hidden)); });
-  try { const k = localStorage.getItem("sg.applyStrategy"); if (k) $("gStrategy").value = k; } catch (e) { /* a per-viewer convenience */ }
-  $("gStrategy").addEventListener("change", () => { try { localStorage.setItem("sg.applyStrategy", $("gStrategy").value); } catch (e) { /* ignore */ } $("gApplyBox").hidden = true; });
+  $("gStrategy").addEventListener("change", () => { $("gStrategy").dataset.touched = "1"; $("gApplyBox").hidden = true; });  // one apply only: the default is on Settings
   $("gAdopt").addEventListener("click", (e) => act(e.target, async () => {
     const reason = $("pReason").value.trim();
     if (!reason) { openPropose({}); throw new Error("Write why in the Why box first, then press the button again."); }
@@ -1954,7 +2031,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("tNote").textContent += " · saved, the plan is being worked out again";
     if ($("xAcct").value) loadFixPlan().catch((e) => flash(e.message, true));
   }
-  $("tPrefsBtn").addEventListener("click", () => { const c = $("tPrefs"); c.hidden = !c.hidden; $("tPrefsBtn").setAttribute("aria-expanded", String(!c.hidden)); if (!c.hidden) loadPrefs().catch((e) => flash(e.message, true)); });
+  $("tPrefsBtn").addEventListener("click", () => show("settings").then(() => $("tPrefs").scrollIntoView({behavior: "smooth", block: "start"})));
   $("tPrefsWhy").addEventListener("click", () => { const h = $("tHelp"); h.hidden = !h.hidden; $("tPrefsWhy").setAttribute("aria-expanded", String(!h.hidden)); });
   $("tFill").addEventListener("change", () => { $("tTol").disabled = $("tFill").checked; });
   $("tSave").addEventListener("click", (ev) => act(ev.target, () => savePrefs({max_rules: Number($("tMax").value), tolerance: Number($("tTol").value) / 100, fill: $("tFill").checked, out_rules: Number($("tOut").value)})));

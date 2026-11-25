@@ -39,7 +39,10 @@ def test_a_time_is_due_once_it_passes_and_caught_up_for_a_few_hours_only():
     assert sg_console._due_slot(cfg, at("07:59")) == ""
     assert sg_console._due_slot(cfg, at("08:00")).endswith("08:00")
     assert sg_console._due_slot(cfg, at("11:30")).endswith("08:00")  # asleep at eight: read when it wakes
-    assert sg_console._due_slot(cfg, at("15:00")) == ""  # too late: wait for the next time
+    assert sg_console._due_slot(cfg, at("15:00")).endswith("08:00")  # asleep all morning: read once on waking
+    assert sg_console._due_slot(cfg, at("19:00")) == ""  # the next read is under two hours away: wait for it
+    assert sg_console._due_slot({**cfg, "on_wake": False}, at("15:00")) == ""  # catch-up off: only within 6 hours
+    assert sg_console._due_slot({"times": ["08:00"]}, at("05:00")).endswith("08:00")  # closed overnight: yesterday's
     assert sg_console._due_slot(cfg, at("21:00")).endswith("20:00")
     assert sg_console._next_slot(cfg, at("21:00")).endswith("08:00")
 
