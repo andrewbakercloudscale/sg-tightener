@@ -124,6 +124,7 @@ def plan_rule(r: dict) -> dict:
             "cut_addresses": 0 if new is None else max(0, allowed - new_addr),
             "port_count": span, "new_ports": span if new is None else new_ports,
             "cut": bool(r.get("cut")), "seen": int(r.get("here") or 0), "last_used": r.get("last_used"), "days": r.get("days"),
+            "flows": r.get("flows"),
             "mix": dict(r.get("mix") or {}), "top": [t.get("src") for t in (r.get("top") or [])][:5],
             "external": r.get("ext"), "urgent": urgent(r, action)}  # fmt: skip
 

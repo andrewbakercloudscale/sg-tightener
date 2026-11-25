@@ -107,7 +107,7 @@ def rule_limit() -> int:
 # How apply moves a group from the rules it holds to the rules wanted (the console offers all three)
 APPLY_STRATEGIES = {
     "room": "Add first, then swap: new rules go in while the group has free rules; after that one old rule is "
-            "removed for each new one, the one with least impact first",
+            "removed for each new one, the one with least impact first (fewest flows in the flow logs)",
     "bridge": "Bridge: a temporary rule per port spanning the old and new sources goes in first, the rules are "
               "swapped underneath it, then it is removed",
     "remove-first": "Remove first: every old rule goes, then the new ones are added (a gap while it runs)",
@@ -137,15 +137,25 @@ def _covered(rule, by: list) -> bool:
     return False
 
 
-def _impact(rule, want: list) -> tuple:
-    """Removal order for "room", least impact first: rules whose traffic a wanted rule still lets in, then the
-    narrowest (fewest addresses that might lose access); security groups and prefix lists last."""
+def hit_key(gid: str, rule) -> str:
+    """How flow-log hits are keyed for apply's removal order: group|protocol|from|to|source (inbound rules)."""
+    return f"{gid}|{rule[1]}|{rule[2]}|{rule[3]}|{rule[4]}"
+
+
+def _impact(rule, want: list, hit=None) -> tuple:
+    """Removal order for "room", least impact first: rules whose traffic a wanted rule still lets in; then by the
+    flow logs, fewest flows through the rule (``hit`` = (flows, last used)), longest unused first, rules with no
+    flow-log evidence after those that have it; then the narrowest (fewest addresses that might lose access),
+    security groups and prefix lists last."""
     n = _net(rule[4])
-    return (not _covered(rule, want), n.num_addresses if n is not None else 1 << 128, rule)
+    flows, last = hit if hit else (None, None)
+    return (not _covered(rule, want), flows is None, flows or 0, last or 0,
+            n.num_addresses if n is not None else 1 << 128, rule)
 
 
-def _room_order(rm: list, add: list, held: int, limit: int, want: list) -> list:
-    rm = sorted(rm, key=lambda x: _impact(x[2], want))
+def _room_order(rm: list, add: list, held: int, limit: int, want: list, hits: dict | None = None) -> list:
+    hits = hits or {}
+    rm = sorted(rm, key=lambda x: _impact(x[2], want, hits.get(hit_key(x[0], x[2])) if x[2][0] == IN else None))
     out, n = [], held
     for a in add:
         while n >= limit and rm:
@@ -410,12 +420,14 @@ class Store:
             "SELECT direction, proto, from_port, to_port, source, description FROM rules WHERE account = ? AND "
             "region = ? AND group_id = ? AND state = ?", (account, region, group_id, state))}
 
-    def pending(self, account: str, region: str, group_id: str = "", strategy: str = "room") -> list[tuple[str, str, Rule, str]]:
+    def pending(self, account: str, region: str, group_id: str = "", strategy: str = "room",
+                hits: dict | None = None) -> list[tuple[str, str, Rule, str]]:
         """What apply would do: (group, "add" or "remove", rule, description), in the order it does it.
 
         ``strategy`` (see APPLY_STRATEGIES) is how a group moves from the rules it holds to the rules wanted:
         "room" adds first while the group has free rules, then removes one old rule (least impact first) for each
-        further add; "bridge" first adds a temporary rule per port spanning the old and new sources, swaps the
+        further add (``hits``: flow-log use per inbound rule, {hit_key: (flows, last used)}, ranks that); "bridge"
+        first adds a temporary rule per port spanning the old and new sources, swaps the
         rules underneath it, then removes it; "remove-first" removes every old rule, then adds the new ones."""
         if strategy not in APPLY_STRATEGIES:
             raise Refused(f"unknown apply strategy {strategy!r}: one of {', '.join(APPLY_STRATEGIES)}")
@@ -432,7 +444,7 @@ class Store:
                 elif strategy == "bridge":
                     out += _bridge_order(gid, rm, add, held, sum(1 for r in want if r[0] == d), limit)
                 else:
-                    out += _room_order(rm, add, held, limit, [r for r in want if r[0] == d])
+                    out += _room_order(rm, add, held, limit, [r for r in want if r[0] == d], hits)
         return out
 
     def over_limit(self, account: str, region: str, group_id: str = "") -> list[str]:
@@ -923,7 +935,7 @@ def _permission_problems(result: dict) -> list[str]:
 
 
 def push(store: Store, ec2, account: str, region: str, actor: str, gid: str = "", reason: str = "",
-         ticket: str = "", strategy: str = "room") -> dict:  # fmt: skip
+         ticket: str = "", strategy: str = "room", hits: dict | None = None) -> dict:  # fmt: skip
     """Make AWS match desired. Refuses if AWS changed outside the tool since it was last read (reconcile
     first, so a person has seen it). Refuses in surveillance mode, and before any change unless a DryRun
     shows every call needed is allowed. Returns {"done": n, "failed": [...]}."""
@@ -943,7 +955,7 @@ def push(store: Store, ec2, account: str, region: str, actor: str, gid: str = ""
         raise Refused("nothing was changed: these groups would go over the rule limit, so AWS would refuse part of "
                       "the change after the rest was made:\n  " + "\n  ".join(over)
                       + "\nNarrow the plan (Remediate: Narrowing settings) or raise the quota with AWS and the limit.")
-    todo = store.pending(account, region, gid, strategy)
+    todo = store.pending(account, region, gid, strategy, hits)
     LOG.info("applying %d change(s) in %s %s, %s", len(todo), account, region, strategy)
     if todo:
         perms = check_permissions(ec2, sorted({g for g, _, _, _ in todo}))

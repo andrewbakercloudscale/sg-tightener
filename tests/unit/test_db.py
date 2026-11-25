@@ -204,6 +204,13 @@ def test_room_removes_least_impact_first(store, monkeypatch):
     # and the /16 (whose traffic the new /24 does not cover) only after the add
     assert [(op, r[4]) for _, op, r, _ in store.pending(ACCT, "eu-west-2", strategy="room")] == [
         ("remove", "10.9.9.9/32"), ("add", "10.0.5.0/24"), ("remove", "10.0.0.0/16")]
+    # with flow-log hits, the rule that carried fewer flows goes first, whatever its width
+    hits = {sg_db.hit_key("sg-2", wide): (0, None), sg_db.hit_key("sg-2", small): (500, 1.0)}
+    assert [(op, r[4]) for _, op, r, _ in store.pending(ACCT, "eu-west-2", strategy="room", hits=hits)] == [
+        ("remove", "10.0.0.0/16"), ("add", "10.0.5.0/24"), ("remove", "10.9.9.9/32")]
+    # a rule with no evidence goes after one known to carry traffic
+    hits = {sg_db.hit_key("sg-2", wide): (3, 1.0)}
+    assert [r[4] for _, op, r, _ in store.pending(ACCT, "eu-west-2", strategy="room", hits=hits)][0] == "10.0.0.0/16"
 
 
 def test_bridge_keeps_the_wide_rule_or_adds_a_span(store, monkeypatch):

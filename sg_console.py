@@ -1938,10 +1938,22 @@ class Console:
         try:
             res = sg_db.push(st, ec2, account, region, t.actor, body.get("group") or "",
                              str(body.get("reason") or "applied from the console"), str(body.get("ticket") or ""),
-                             str(body.get("strategy") or "room"))  # fmt: skip
+                             str(body.get("strategy") or "room"), self._hits(account, region))  # fmt: skip
             return res
         finally:
             st.close()
+
+    def _hits(self, account: str, region: str) -> dict:
+        """Flow-log use of each inbound rule, {sg_db.hit_key: (flows, last used)}, for apply's least-impact order.
+        Rules whose interfaces are not all logged, or whose region's reading was cut short, have no entry (their
+        use is unknown, so they go after rules known to carry little)."""
+        try:
+            rules = self.verdicts(account, region)["rules"]
+        except Exception as exc:  # noqa: BLE001 - apply still runs, ranked by addresses alone
+            LOG.warning("no flow-log hits for the apply order of %s: %s", account, exc)
+            return {}
+        return {f"{r['group']}|{r['proto']}|{r['from']}|{r['to']}|{r['source']}": (int(r.get("flows") or 0), r.get("last_used"))
+                for r in rules if r.get("status") != "not logged" and not r.get("cut") and r.get("flows") is not None}
 
     def apply_preview(self, body: dict) -> dict:
         """What Apply would change, before it does: every rule added or removed, on which groups and how many
@@ -1951,7 +1963,8 @@ class Console:
         st = self.store()
         try:
             try:
-                todo = st.pending(account, region, str(body.get("group") or ""), str(body.get("strategy") or "room"))
+                todo = st.pending(account, region, str(body.get("group") or ""), str(body.get("strategy") or "room"),
+                                  hits := self._hits(account, region))
             except sg_db.Refused as exc:
                 raise ConsoleError(400, str(exc)) from None
             over = st.over_limit(account, region, str(body.get("group") or ""))
@@ -1988,6 +2001,9 @@ class Console:
                 at_risk += bool(lost)
             if op == "add" and d == sg_db.IN:
                 c["who"] = self._who(src, proto, lo, account)
+            hit = hits.get(sg_db.hit_key(gid, rule)) if op == "remove" and d == sg_db.IN else None
+            if hit:
+                c["flows"] = hit[0]
             changes.append(c)
         enis = {a["eni"] for g in {c["group"] for c in changes} for a in on.get(g, [])}
         return {"account": account, "region": region, "mode": mode, "changes": changes, "over_limit": over,

@@ -3455,6 +3455,7 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
                        "unattributed": len(unattr - set(here)), "never": never,
                        "never_ext": sum(never_ext.values()), "never_ext_by": never_ext,
                        "last_used": max((h[1] for h in here.values()), default=None), "since": since,
+                       "flows": sum(h[0] for h in here.values()),
                        "days": round(days, 1), "suggest": [], "suggest_size": None, "note": "",
                        "pc": rule_port_class(rule)}  # fmt: skip
                 row["top"] = [{"src": s, **lab(s), "flows": h[0]}
@@ -3593,6 +3594,7 @@ def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regi
            "here": len(here), "elsewhere": max(0, len(inside) - len(here) - len(unattr - set(here))),
            "unattributed": len(unattr - set(here)), "never": max(0, allowed - len(seen_nets)),
            "last_used": max((h[1] for h in here.values()), default=None), "since": since, "days": round(days, 1),
+           "flows": sum(h[0] for h in here.values()),
            "suggest": [], "suggest_size": None, "note": "", "pc": rule_port_class(rule)}  # fmt: skip
     row["top"] = [{"src": s, **lab(s), "flows": h[0]} for s, h in sorted(here.items(), key=lambda kv: -kv[1][0])[:8]]
     row["mix"] = _mix(here, lab)

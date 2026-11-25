@@ -787,7 +787,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     </div>
     <div class="card small" id="gStrategyHelp" hidden>
       <p style="margin-top:0">A group cannot hold more than its rule limit (60 by default, set in Remediate → Narrowing settings), so replacing rules needs an order. Apply refuses any group whose final rules would be over the limit, before changing anything.</p>
-      <p><b>Add first, then swap</b> (recommended): the new rules go in while the group has free rules, so a narrow rule is in place before the wide rule it replaces goes. When the group is full, one old rule is removed for each further new rule, least impact first: first rules whose traffic a new rule still lets in, then the narrowest (fewest addresses that could lose access). Nothing is opened wider than it is now.</p>
+      <p><b>Add first, then swap</b> (recommended): the new rules go in while the group has free rules, so a narrow rule is in place before the wide rule it replaces goes. When the group is full, one old rule is removed for each further new rule, least impact first: first rules whose traffic a new rule still lets in, then by the flow logs the rules that carried the fewest flows (unused the longest first; rules with no flow-log evidence after those), then the narrowest (fewest addresses that could lose access). Nothing is opened wider than it is now.</p>
       <p><b>Bridge with a temporary rule</b>: first adds, for each port, one temporary rule spanning every old and new source there (the smallest block covering them, not the whole internet unless an old rule already was), then swaps the rules underneath it and removes it. Nothing is cut off at any moment, but for those seconds the group lets in that whole block; if the apply stops part way, the bridge stays until the next apply removes it. Needs a free rule per port; refused otherwise. When the rule being replaced already spans the new ones, it is the bridge and is simply removed last.</p>
       <p><b>Remove first, then add</b>: every old rule goes, then the new ones are added. Uses no extra rules, but traffic the new rules allow is refused until they are in (a few seconds, longer if an add fails).</p>
       <p>The preview lists the changes in the order they are made.</p></div>
@@ -1677,9 +1677,9 @@ section.nodata .card:not(.empty-state) { display: none; }
     const ev = (c) => {
       if (c.op !== "remove") return `<span class="muted">lets this in from now on</span>${c.who?.answers ? `<details${c.who.answers.some((x) => x.tone === "bad") ? " open" : ""}><summary class="small">${c.who.ip ? "Who " + esc(c.who.ip) + " is" : "What it covers"}${c.who.answers.some((x) => x.tone === "bad") ? ' <span style="color:var(--bad)">⚠ check this</span>' : ""}</summary>${qaHtml(c.who.answers)}</details>` : c.who?.group ? `<div class="muted small">security group ${esc(c.who.group)}: whatever carries it</div>` : ""}`;
       if (!c.evidence) return '<span class="muted">no flow logs read for this rule</span>';
-      const x = c.evidence;
-      if (x.lost.length) return `<span style="color:var(--bad)"><b>will be refused:</b> ${x.lost.map((s) => `<code>${esc(s)}</code>`).join(" ")}</span> <span class="muted">used it, and no rule left lets them in</span>`;
-      return x.sources ? `<span style="color:var(--good)">${x.sources.toLocaleString()} source(s) used it in ${x.days || "?"} days; the rules left still let them in</span>` : `<span style="color:var(--good)">nothing used it in ${x.days || "?"} days of flow logs</span>`;
+      const x = c.evidence, fl = c.flows != null ? ` <span class="muted">(${c.flows.toLocaleString()} flow${c.flows === 1 ? "" : "s"})</span>` : "";
+      if (x.lost.length) return `<span style="color:var(--bad)"><b>will be refused:</b> ${x.lost.map((s) => `<code>${esc(s)}</code>`).join(" ")}</span> <span class="muted">used it, and no rule left lets them in</span>${fl}`;
+      return x.sources ? `<span style="color:var(--good)">${x.sources.toLocaleString()} source(s) used it in ${x.days || "?"} days; the rules left still let them in</span>${fl}` : `<span style="color:var(--good)">nothing used it in ${x.days || "?"} days of flow logs</span>`;
     };
     const lost = P.changes.filter((c) => c.evidence?.lost.length).length;
     const overN = (P.over_limit || []).length;
