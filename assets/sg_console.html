@@ -1611,15 +1611,18 @@ section.nodata .card:not(.empty-state) { display: none; }
     const spendSub = sp.error ? `Cost Explorer: ${esc(sp.error)}` : sp.this_month != null
       ? `${usd0(sp.this_month)} so far this month${pace != null ? ` · ${Math.round(pace)}% of last month` : ""}${pace != null ? `<div class="pace"><i style="width:${pace.toFixed(1)}%"></i></div>` : ""}` : "";
     const rdsC = num("rds_clusters"), gw = num("gateway_endpoints"), svcs = num("endpoint_services"), run = num("ec2_running"), vpcs = num("vpcs");
+    const eksN = num("ec2_eks") || 0, eksRun = num("ec2_eks_running") || 0;
     const tiles = [
       tile("spend", sp.error || sp.total == null ? "—" : usd0(sp.total), `spent in ${esc(month || "last month")}`, spendSub, "feature"),
-      tile("ec2", n("ec2"), many(num("ec2"), "EC2 instance"), run != null ? `${run.toLocaleString()} running` : ""),
+      ...(t.ec2_eks && !t.ec2.missing.length ? [  // EKS worker nodes told apart from the other EC2 instances
+        tile("ec2", (num("ec2") - eksN).toLocaleString(), `${many(num("ec2") - eksN, "EC2 instance")} <span class="muted small">outside EKS</span>`, run != null ? `${(run - eksRun).toLocaleString()} running` : "")]
+        : [tile("ec2", n("ec2"), many(num("ec2"), "EC2 instance"), [run != null ? `${run.toLocaleString()} running` : "", t.ec2 ? "EKS nodes not told apart yet: Read again" : ""].filter(Boolean).join(" · "))]),
       tile("rds", n("rds"), many(num("rds"), "RDS database"), rdsC ? `${rdsC.toLocaleString()} ${many(rdsC, "Aurora cluster")}` : ""),
       tile("s3", s3.error || s3.buckets == null ? "—" : s3.buckets.toLocaleString(), many(s3.buckets, "S3 bucket"), s3.error ? esc(s3.error) : s3.bytes != null ? `${heroBytes(s3.bytes)} · ${fmtN(s3.objects || 0)} objects` : ""),
       tile("link", n("privatelink"), "PrivateLink endpoints", [gw ? `${gw} gateway` : "", svcs ? `${svcs} ${many(svcs, "service")} offered` : ""].filter(Boolean).join(" · ")),
       tile("lb", n("load_balancers"), many(num("load_balancers"), "load balancer"), ""),
       tile("lambda", n("lambda"), many(num("lambda"), "Lambda function"), ""),
-      tile("eks", n("eks"), many(num("eks"), "EKS cluster"), vpcs != null ? `${vpcs} ${many(vpcs, "VPC")}` : ""),
+      tile("eks", n("eks"), many(num("eks"), "EKS cluster"), [t.ec2_eks ? `${eksN.toLocaleString()} worker ${many(eksN, "node")} (EC2)${eksRun !== eksN ? `, ${eksRun.toLocaleString()} running` : ""}` : "", vpcs != null ? `${vpcs} ${many(vpcs, "VPC")}` : ""].filter(Boolean).join(" · ")),
       tile("msk", t.msk ? n("msk") : "—", many(num("msk"), "MSK (Kafka) cluster"), t.msk ? "" : "not read yet: Read again"),
     ];
     const top = sp.top || [];

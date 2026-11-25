@@ -96,7 +96,9 @@ def region_counts(sess, region: str, config=None) -> dict:
     def instances():
         res = _pages(ec2, "describe_instances", "Reservations")
         ins = [i for r in res for i in r.get("Instances") or [] if i.get("State", {}).get("Name") != "terminated"]
-        return {"total": len(ins), "running": sum(1 for i in ins if i.get("State", {}).get("Name") == "running")}
+        eks = [i for i in ins if _eks_node(i)]
+        return {"total": len(ins), "running": sum(1 for i in ins if i.get("State", {}).get("Name") == "running"),
+                "eks": len(eks), "eks_running": sum(1 for i in eks if i.get("State", {}).get("Name") == "running")}  # fmt: skip
 
     def endpoints():
         eps = _pages(ec2, "describe_vpc_endpoints", "VpcEndpoints")
@@ -212,6 +214,17 @@ def read(sess, account: str, regions: list[str], ce=None, config=None) -> dict:
     return prof
 
 
+def _eks_node(instance: dict) -> bool:
+    """An EC2 instance that is an EKS worker node: managed node groups, self-managed nodes and Karpenter all
+    tag it with the cluster's name."""
+    for t in instance.get("Tags") or []:
+        k = t.get("Key", "")
+        if k in ("eks:cluster-name", "aws:eks:cluster-name", "eks:nodegroup-name", "karpenter.sh/nodepool",
+                 "karpenter.sh/provisioner-name") or k.startswith("kubernetes.io/cluster/"):  # fmt: skip
+            return True
+    return False
+
+
 def totals(prof: dict) -> dict:
     """Each number summed over the regions, with the regions it could not be read in."""
     out: dict = {}
@@ -227,6 +240,9 @@ def totals(prof: dict) -> dict:
         e = r.get("ec2", {})
         add("ec2", e if "error" in e else e.get("total", 0), region)
         add("ec2_running", e if "error" in e else e.get("running", 0), region)
+        if "error" in e or "eks" in e:  # summaries read before EKS nodes were told apart have none: not zero
+            add("ec2_eks", e if "error" in e else e["eks"], region)
+            add("ec2_eks_running", e if "error" in e else e["eks_running"], region)
         d = r.get("rds", {})
         add("rds", d if "error" in d else d.get("instances", 0), region)
         add("rds_clusters", d if "error" in d else d.get("clusters", 0), region)

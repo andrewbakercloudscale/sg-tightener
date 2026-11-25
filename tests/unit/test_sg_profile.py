@@ -61,7 +61,9 @@ class _Sess:
     def client(self, svc, region_name=None, config=None):
         if svc == "ec2":
             return _Client({"describe_instances": [{"Reservations": [{"Instances": [
-                {"State": {"Name": "running"}}, {"State": {"Name": "stopped"}}, {"State": {"Name": "terminated"}}]}]}],
+                {"State": {"Name": "running"}}, {"State": {"Name": "stopped"}}, {"State": {"Name": "terminated"}},
+                {"State": {"Name": "running"}, "Tags": [{"Key": "eks:cluster-name", "Value": "apps"}]},
+                {"State": {"Name": "running"}, "Tags": [{"Key": "kubernetes.io/cluster/apps", "Value": "owned"}]}]}]}],
                 "describe_vpc_endpoints": [{"VpcEndpoints": [{"VpcEndpointType": "Interface"},
                                                              {"VpcEndpointType": "Gateway"}]}],
                 "describe_vpcs": [{"Vpcs": [{}]}]})  # fmt: skip
@@ -99,7 +101,8 @@ class _CW:
 def test_a_refused_part_is_not_known_where_refused_never_zero():
     prof = sg_profile.read(_Sess(deny_rds_in="eu-west-1"), "111122223333", ["af-south-1", "eu-west-1"], _CE())
     t = prof["totals"]
-    assert t["ec2"]["n"] == 4 and t["ec2_running"]["n"] == 2, "terminated instances are left out"
+    assert t["ec2"]["n"] == 8 and t["ec2_running"]["n"] == 6, "terminated instances are left out"
+    assert t["ec2_eks"]["n"] == 4 and t["ec2_eks_running"]["n"] == 4, "EKS worker nodes told apart by their tags"
     assert t["rds"]["n"] == 2 and t["rds"]["missing"] == ["eu-west-1: AccessDenied"]
     assert t["privatelink"]["n"] == 2 and t["gateway_endpoints"]["n"] == 2 and t["vpcs"]["n"] == 2
     s3 = prof["s3"]
@@ -135,3 +138,8 @@ def test_msk_clusters_are_counted_and_an_older_summary_has_none_rather_than_zero
     assert prof["totals"]["msk"]["n"] == 6
     old = {"regions": {"af-south-1": {"ec2": {"total": 1, "running": 1}}}}
     assert "msk" not in sg_profile.totals(old)
+
+
+def test_a_summary_read_before_eks_nodes_were_counted_does_not_say_none():
+    old = {"regions": {"af-south-1": {"ec2": {"total": 3, "running": 3}}}}
+    assert "ec2_eks" not in sg_profile.totals(old)
