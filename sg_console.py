@@ -1836,7 +1836,7 @@ def make_handler(console: Console, token: str, port: int):
                 if _database_down(exc):
                     return self._json(503, {"error": f"the database is not running: {exc}", "database": False})
                 LOG.exception("GET %s failed", url.path)
-                return self._json(500, {"error": str(exc)})
+                return self._json(500, {"error": plain_error(exc)})
 
         def do_POST(self):
             if not self._host_ok():
@@ -1877,10 +1877,32 @@ def make_handler(console: Console, token: str, port: int):
                 if _database_down(exc):
                     return self._json(503, {"error": f"the database is not running: {exc}", "database": False})
                 LOG.exception("POST %s failed", self.path)
-                return self._json(500, {"error": str(exc)})
+                return self._json(500, {"error": plain_error(exc)})
 
     return Handler
 
+
+
+def plain_error(exc: BaseException) -> str:
+    """What went wrong, in words someone can act on, for a request that failed unexpectedly."""
+    import sg_tightener
+
+    hint = sg_tightener.login_hint(exc)
+    if hint:
+        return f"Your AWS sign-in has run out or was not accepted: sign in again on the Overview. ({hint})"
+    names = {k.__name__ for k in type(exc).__mro__}
+    resp = getattr(exc, "response", None)
+    code = (resp or {}).get("Error", {}).get("Code", "") if isinstance(resp, dict) else ""
+    msg = (resp or {}).get("Error", {}).get("Message", "") if isinstance(resp, dict) else ""
+    if code in ("AccessDenied", "AccessDeniedException", "UnauthorizedOperation", "AuthorizationError"):
+        return f"The role used in this account is not allowed to do this ({code}): {msg or exc}"
+    if code in ("Throttling", "ThrottlingException", "TooManyRequestsException", "RequestLimitExceeded"):
+        return f"AWS is limiting how fast this account can be asked ({code}): wait a minute and try again."
+    if names & {"EndpointConnectionError", "ConnectTimeoutError", "ReadTimeoutError", "ConnectionClosedError"}:
+        return f"AWS could not be reached ({type(exc).__name__}): check the network or VPN, then try again."
+    if code:
+        return f"AWS refused this ({code}): {msg or exc}"
+    return f"Something went wrong here ({type(exc).__name__}: {exc}). The details are in ~/.sg-tightener/console.log."
 
 
 ACTIONABLE = sg_remediate.ACTIONABLE

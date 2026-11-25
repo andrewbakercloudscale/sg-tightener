@@ -223,3 +223,18 @@ def test_a_date_range_leaves_out_the_days_after_it(world):
     assert sg_console._date_range("2026-11-01", "2026-11-02") == (1793491200.0, 1793664000.0)  # To is included
     with pytest.raises(sg_console.ConsoleError):
         world["console"].remediation(ACCOUNT, 90, end, first)
+
+
+def test_addresses_let_in_are_split_into_internal_and_external():
+    assert rem._internal("10.0.0.0/8", 2**24) == 2**24
+    assert rem._internal("sg-0abc", 12) == 12, "another security group is inside the VPC"
+    assert rem._internal("8.8.8.0/24", 256) == 0
+    every = rem._internal("0.0.0.0/0", 2**32)
+    assert every == 2**24 + 2**20 + 2**16 + 2**22, "everyone includes all the private ranges"
+    base = {"region": "eu-west-1", "group": "sg-1", "proto": "6", "from": 443, "to": 443}
+    r = rem.plan_rule({**base, "source": "0.0.0.0/0", "status": "tighten", "allowed": 2**32,
+                       "suggest": ["10.1.0.0/24", "52.1.2.3/32"], "suggest_size": 257})
+    assert (r["internal"], r["addresses"] - r["internal"]) == (every, 2**32 - every)
+    assert (r["new_internal"], r["new_addresses"] - r["new_internal"]) == (256, 1)
+    gone = rem.plan_rule({**base, "source": "10.0.0.0/8", "status": "unused", "allowed": 2**24})
+    assert (gone["internal"], gone["new_internal"]) == (2**24, 0)

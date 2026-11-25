@@ -533,3 +533,16 @@ def test_the_cost_of_a_read_is_estimated_for_every_look_back(tmp_path, monkeypat
     assert e["by_days"]["7"] == {"cost": 10.0, "accounts": 1, "bytes": 2e12}
     assert e["by_days"]["30"]["cost"] == 40.0 and e["unknown"] == 1 and e["spent"] == 2.5
     assert e["default_days"] == 7, "a week by default: 30 days across an OU can cost hundreds of dollars"
+
+
+def test_an_unexpected_failure_is_explained_in_words_someone_can_act_on():
+    from botocore.exceptions import ClientError, EndpointConnectionError
+
+    def aws(code, msg="no"):
+        return ClientError({"Error": {"Code": code, "Message": msg}}, "Op")
+
+    assert "not allowed" in sg_console.plain_error(aws("AccessDenied", "not authorised for ce:GetCostAndUsage"))
+    assert "wait a minute" in sg_console.plain_error(aws("ThrottlingException"))
+    assert "sign in again" in sg_console.plain_error(aws("ExpiredToken"))
+    assert "network or VPN" in sg_console.plain_error(EndpointConnectionError(endpoint_url="https://ce"))
+    assert "console.log" in sg_console.plain_error(KeyError("x"))

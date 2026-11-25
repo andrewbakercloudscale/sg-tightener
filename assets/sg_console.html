@@ -435,11 +435,19 @@ section.nodata .card:not(.empty-state) { display: none; }
     section { display: none !important; }
     section.print-me { display: block !important; }
     .print-only { display: block; }
-    .card, .kpi, .hero-t, .hero-top, .ex-row, tr { break-inside: avoid; }
+    .kpi, .hero-t, .svc, .ex-row, tr, h3 { break-inside: avoid; }  /* not whole cards: one taller than a page left page one blank */
+    h3, .card-head { break-after: avoid; }
+    .card { box-shadow: none; }
     .hero-body { grid-template-columns: 1fr; }
     details > summary { list-style: none; }
     .scroll { overflow: visible !important; max-height: none !important; }
   }
+  .reread { float: right; width: min(460px, 44%); margin: 0 0 12px 20px; padding: 14px 16px; }
+  .reread .rr-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 6px 0 8px; }
+  .reread .rr-row .btn { margin-left: auto; }
+  #tab-fix > .tools { clear: both; }
+  @media (max-width: 860px) { .reread { float: none; width: auto; margin: 0 0 12px; } }
+  @media print { .reread { display: none !important; } }
   .range input[type=date] { border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 13px; padding: 4px 2px; }
 </style>
 </head>
@@ -635,6 +643,13 @@ section.nodata .card:not(.empty-state) { display: none; }
   </section>
 
   <section id="tab-fix" hidden>
+    <div class="card reread" id="xReread">
+      <div class="eyebrow">Re-read from AWS</div>
+      <div class="rr-row"><label class="small">Regions <input id="xrRegions" value="all" size="14" aria-label="Regions to re-read" title="all, or a list such as eu-west-1,us-east-1"></label>
+        <label class="small">How far back <select id="xrDays" aria-label="How far back to re-read"><option value="1">1 day</option><option value="7" selected>7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="365">1 year</option></select></label>
+        <button class="btn sm primary" type="button" id="xrGo" disabled>Re-read this account</button></div>
+      <div class="small muted" id="xrNote">The selected account's security groups, flow logs and account summary. What is already stored is kept: only hours never read are read, and the price is shown before anything is spent.</div>
+    </div>
     <h2>Remediate an account</h2>
     <p class="lede">Pick an account. Its flow logs over the look back decide what every security group should let in:
       narrower sources, fewer ports, unused rules removed, and groups that end up letting in the same traffic merged
@@ -645,6 +660,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <select id="xAcct" aria-label="Account to remediate"></select>
       <span class="range"><b>Evidence from</b><input type="date" id="xFrom" aria-label="Use flow logs from this date"><b>to</b><input type="date" id="xTo" aria-label="Use flow logs up to and including this date"><button class="btn sm quiet" type="button" id="xRangeWhy" aria-expanded="false">Explain</button></span>
       <label class="small"><input type="checkbox" id="xHide" checked> Hide accounts without flow logs</label>
+      <button class="btn sm primary" type="button" id="xPdf" style="margin-left:auto" disabled title="Opens the print dialog: choose Save as PDF">Export to PDF</button>
     </div>
     <p class="muted small" id="xRangeHelp" hidden>The plan is built only from flow logs already read, between these
       two dates (both included, UTC). Nothing is read from AWS and nothing is charged. Move <b>To</b> back to leave out
@@ -774,12 +790,29 @@ section.nodata .card:not(.empty-state) { display: none; }
     const opts = body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json", "X-SG-Token": TOKEN}, body: JSON.stringify(body)};
     if (!quiet) busy(1);
     try {
-      const r = await fetch(path, opts);
-      const j = await r.json().catch(() => ({error: `HTTP ${r.status}`}));
+      let r;
+      try { r = await fetch(path, opts); }
+      catch (e) {  // no answer at all: the console stopped or is restarting (an upgrade restarts it)
+        const back = await consoleBack();
+        if (back && body === undefined) r = await fetch(path, opts).catch(() => null);  // a read is safe to ask again
+        if (!r) throw new Error(back
+          ? "The console restarted while this was being worked out (an upgrade or a crash), so the answer was lost. It is running again: try once more."
+          : "The console is not answering: it has stopped or is still starting. Wait a moment and reload the page; if it stays down, start it again (sg_console.py install) and look in ~/.sg-tightener/console.log.");
+      }
+      const j = await r.json().catch(() => ({error: r.status >= 500
+        ? `The console hit an error working this out (HTTP ${r.status}); the details are in ~/.sg-tightener/console.log.`
+        : `HTTP ${r.status}`}));
       if (r.status === 503 && j.database === false) dbDown();
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
       return j;
     } finally { if (!quiet) busy(-1); }
+  }
+  async function consoleBack() {  // up to 30 s for a restarting console to answer again
+    for (let i = 0; i < 15; i++) {
+      try { if ((await fetch("/api/database", {cache: "no-store"})).ok) return true; } catch (e) { /* not yet */ }
+      await new Promise((ok) => setTimeout(ok, 2000));
+    }
+    return false;
   }
   // ---- the database: when it is not running, offer to start it (colima and the container)
   let dbPoll = null;
@@ -1496,7 +1529,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       else drawHero(p, true);
       heroBusy.add(a);
       try { p = await api("/api/profile", {account: a}, true); }
-      catch (e) { if (!p.totals) { if ($("xAcct").value === a) box.innerHTML = `<div class="flash err">Account summary not read: ${esc(e.message)}</div>`; return; } }
+      catch (e) { if (!p.totals) { if ($("xAcct").value === a) box.innerHTML = `<div class="flash err"><b>The account summary (spend and services) could not be read from AWS.</b> ${esc(e.message)} <button class="btn sm" id="heroRetry">Try again</button></div>`, $("heroRetry").onclick = () => loadHero(a, true).catch(() => {}); return; } }
       finally { heroBusy.delete(a); }
     }
     if ($("xAcct").value === a && p.totals) drawHero(p, false);
@@ -1547,15 +1580,15 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("xHero").innerHTML = `<div class="card hero">
       <div class="hero-head"><div><div class="eyebrow">Account at a glance</div><h2>${esc(name || p.account)}</h2>
         <div class="hero-meta">${name ? `<span class="chip mono">${esc(p.account)}</span>` : ""}<span class="chip">${regions} ${many(regions, "region")}</span><span class="chip">read ${esc(when(p.at))}${refreshing ? " · reading again…" : ""}</span></div></div>
-        <div class="hero-actions"><button class="btn sm" id="heroRead" title="Read the summary from AWS again (Cost Explorer charges about US$0.02)">Read again</button>
-        <button class="btn sm primary" id="heroPdf" title="Opens the print dialog: choose Save as PDF">Export to PDF</button></div></div>
+        <div class="hero-actions"><button class="btn sm" id="heroRead" title="Read the summary from AWS again (Cost Explorer charges about US$0.02)">Read again</button></div></div>
       <div class="hero-body">
         <div class="hero-grid">${tiles.join("")}</div>
         ${top.length ? `<div class="hero-top"><h3>Top ${top.length} services by spend · ${esc(month)}</h3>${top.map((x, i) => `<div class="svc"><span class="rk" style="--sc:${SVC_COL[i % SVC_COL.length]}">${i + 1}</span><span class="nm" title="${esc(x.service)}">${esc(x.service)}</span><span class="amt">${usd0(x.cost)}<small>${(x.share * 100).toFixed(1)}%</small></span><span class="svc-bar"><i style="--sc:${SVC_COL[i % SVC_COL.length]};width:${Math.max(1, (x.cost / max) * 100).toFixed(1)}%"></i></span></div>`).join("")}</div>` : ""}
       </div>
       ${miss.length ? `<p class="muted small">* not read everywhere: ${esc(miss.join("; "))}</p>` : ""}</div>`;
     $("heroRead").addEventListener("click", () => loadHero(p.account, true).catch((e) => flash(e.message, true)));
-    $("heroPdf").addEventListener("click", () => exportFixPdf(name || p.account, p.account));
+    $("xPdf").disabled = false;
+    $("xPdf").onclick = () => exportFixPdf(name || p.account, p.account);
   }
   function logW(v, max) { return v <= 0 || max <= 0 ? 0 : Math.max(1, Math.min(100, (Math.log10(v + 1) / Math.log10(max + 1)) * 100)).toFixed(1); }
   function printSection(id, title, before, after) {
@@ -1584,7 +1617,34 @@ section.nodata .card:not(.empty-state) { display: none; }
     const g = $("xGroups"), wasOpen = g && g.open;
     printSection("tab-fix", `Security Tightener - ${name} - ${day}`, () => { if (g) g.open = true; }, () => { if (g) g.open = wasOpen; });
   }
+  const RR_NOTE = $("xrNote") ? $("xrNote").innerHTML : "";
+  let rrTimer = 0;
+  const rrSeen = {};
+  async function watchReread(a) {
+    clearTimeout(rrTimer);
+    $("xrGo").disabled = !a;
+    if (!a || $("xAcct").value !== a) return;
+    const jobs = await api("/api/jobs", undefined, true).catch(() => []);
+    if ($("xAcct").value !== a) return;
+    const j = jobs.find((x) => x.account === a);
+    const last = j && j.lines.length ? esc(j.lines[j.lines.length - 1]) : "";
+    const busy = j && ["starting", "queued", "running"].includes(j.status);
+    $("xrGo").disabled = !!(busy || (j && j.status === "confirm"));
+    if (!j || (rrSeen[a] === undefined && !busy && j.status !== "confirm")) { $("xrNote").innerHTML = RR_NOTE; rrSeen[a] = j ? j.status : ""; return; }
+    if (busy) {
+      $("xrNote").innerHTML = `${loading(j.total ? `Reading: ${j.done.toLocaleString()} of ${j.total.toLocaleString()} slices` : "Reading the security groups and finding the flow logs…")} <button class="btn sm quiet" data-rr="stop" data-id="${j.id}">Stop</button>`;
+      rrTimer = setTimeout(() => watchReread(a), 2000);
+    } else if (j.status === "confirm") {
+      $("xrNote").innerHTML = `<b>${(j.hours || 0).toLocaleString()} hours not read yet</b> (${j.total.toLocaleString()} slices): about <b>${j.cost == null ? "an unknown amount" : money2(j.cost)}</b> of Logs Insights. <button class="btn sm primary" data-rr="confirm" data-id="${j.id}">Read for ${j.cost == null ? "the cost shown later" : money2(j.cost)}</button> <button class="btn sm quiet" data-rr="stop" data-id="${j.id}">Cancel</button>`;
+      rrTimer = setTimeout(() => watchReread(a), 5000);
+    } else {
+      $("xrNote").innerHTML = `<b>${j.status === "done" ? "Re-read" : esc(j.status)}</b>${last ? `: ${last}` : ""}`;
+      if (j.status === "done" && rrSeen[a] !== "done") loadFixPlan().catch(() => {});  // the plan from what was just read
+    }
+    rrSeen[a] = j.status;
+  }
   async function loadFixPlan() {
+    watchReread($("xAcct").value).catch(() => {});
     const a = $("xAcct").value;
     loadHero(a).catch(() => {});
     if (!a) { $("xBody").innerHTML = ""; return; }
@@ -1616,6 +1676,9 @@ section.nodata .card:not(.empty-state) { display: none; }
     const cg = new Set(chosen.map((g) => g.id));
     const after = (g) => cg.has(g.id) ? g.new_addresses : g.addresses;
     const aBefore = P.groups.reduce((n, g) => n + g.addresses, 0), aAfter = P.groups.reduce((n, g) => n + after(g), 0);
+    const iBefore = P.groups.reduce((n, g) => n + (g.internal || 0), 0);
+    const iAfter = P.groups.reduce((n, g) => n + (cg.has(g.id) ? g.new_internal || 0 : g.internal || 0), 0);
+    const eBefore = aBefore - iBefore, eAfter = aAfter - iAfter;
     const pBefore = P.groups.reduce((n, g) => n + g.ports, 0), pAfter = P.groups.reduce((n, g) => n + (cg.has(g.id) ? g.new_ports : g.ports), 0);
     const gAfter = T.groups - merges.reduce((n, m) => n + m.members.length - 1, 0);
     const nChanges = chosen.reduce((n, g) => n + g.changes, 0);
@@ -1636,12 +1699,13 @@ section.nodata .card:not(.empty-state) { display: none; }
       <span class="bars"><i style="width:${logW(g.addresses, exMax)}%;background:color-mix(in srgb, var(--bad) 55%, var(--grid))"></i><i style="width:${logW(a, exMax)}%;min-width:3px;background:var(--good)"></i></span>
       <span class="num2"><span class="ex-was">${fmtN(g.addresses)}</span><span class="ex-to">→</span><span class="ex-now">${fmtN(a)}</span>${a < g.addresses ? `<span class="ex-pct">−${(100 * (g.addresses - a) / g.addresses) >= 99.95 && a ? "99.9%+" : `${Math.round(100 * (g.addresses - a) / g.addresses)}%`}</span>` : '<span class="ex-pct same">same</span>'}</span></div>`; };
     $("xBody").innerHTML = `
-      ${short ? `<div class="flash">Only <b>${Math.round(P.have_days)} days</b> of flow logs read between these ${Math.round(P.days)} days: rules are narrowed to the sources seen in it and rules nothing used are removed. Anything that runs less often (a monthly job, a DR test) will be refused: it shows on <b>Rejected traffic</b>, where <b>Propose allowing</b> opens it again. A longer read makes that less likely. <button class="btn sm" id="xRead">Read ${Math.round(P.days)} days for this account</button></div>` : ""}
+      ${short ? `<div class="flash">Only <b>${Math.round(P.have_days)} days</b> of flow logs read between these ${Math.round(P.days)} days: rules are narrowed to the sources seen in it and rules nothing used are removed. Anything that runs less often (a monthly job, a DR test) will be refused: it shows on <b>Rejected traffic</b>, where <b>Propose allowing</b> opens it again. A longer read makes that less likely. <button class="btn sm" id="xRead">Re-read ${Math.round(P.days)} days for this account</button></div>` : ""}
       <div class="fix-top">
         <div class="card"><div class="eyebrow">The tightened account</div><h3 style="margin-top:2px">Before and after</h3>
           <div class="evidence"><span class="chip">${Math.round(P.have_days)} ${many(Math.round(P.have_days), "day")} of flow logs used</span><span class="chip">${ymd(P.from)} → ${ymd(P.to - 1)}</span>${P.stored_from != null ? `<span class="chip">read: ${ymd(P.stored_from)} → ${ymd(P.stored_to - 1)}</span>` : ""}</div>
           <div class="kpis">
-            ${kpi("Number of IPv4 addresses let in", aBefore, aAfter, fmtN)}
+            ${kpi("External (internet) IPv4 addresses let in", eBefore, eAfter, fmtN)}
+            ${kpi("Internal (private) IPv4 addresses let in", iBefore, iAfter, fmtN)}
             ${kpi("Number of ports open", pBefore, pAfter, fmtN)}
             ${kpi("Number of security groups", T.groups, gAfter, (n) => n.toLocaleString())}
             ${kpi("Number of network interfaces protected", T.interfaces, T.interfaces, (n) => n.toLocaleString())}
@@ -1662,10 +1726,12 @@ section.nodata .card:not(.empty-state) { display: none; }
     const rows = P.groups.filter((g) => g.changes || fixOpen.has("all"));
     const pg = page("fix", rows.length, drawFixRows);
     drawFixRows();
-    if (short) $("xRead").addEventListener("click", (e) => act(e.target, async () => {
-      await api("/api/read", {account: P.account, regions: "all", days: P.days});
-      flash(`Pricing a ${P.days}-day read of ${P.account}: confirm the cost on the Overview, under Each account.`);
-    }));
+    if (short) $("xRead").addEventListener("click", () => {  // the Re-read panel at the top, set to this window
+      const want = [...$("xrDays").options].map((o) => +o.value).find((d) => d >= P.days) || 365;
+      $("xrDays").value = String(want);
+      $("xReread").scrollIntoView({behavior: "smooth", block: "center"});
+      $("xrGo").click();
+    });
     $("xGroups").addEventListener("toggle", () => { $("xGroups").open ? fixOpen.add("*") : fixOpen.delete("*"); });
     $("xAll").addEventListener("change", () => { for (const g of P.groups) $("xAll").checked ? fixOff.delete(g.id) : fixOff.add(g.id); drawFix(); });
     for (const b of document.querySelectorAll("[data-xmerge]")) b.addEventListener("change", () => { b.checked ? fixMergeOff.delete(b.dataset.xmerge) : fixMergeOff.add(b.dataset.xmerge); drawFix(); });
@@ -1697,6 +1763,19 @@ section.nodata .card:not(.empty-state) { display: none; }
     for (const b of $("xRows").querySelectorAll("[data-xd]")) b.addEventListener("click", () => { const id = b.dataset.xd; fixOpen.has(id) ? fixOpen.delete(id) : fixOpen.add(id); drawFixRows(); });
   }
   $("xAcct").addEventListener("change", () => { $("xFrom").value = ""; $("xTo").value = ""; loadFixPlan().catch((e) => flash(e.message, true)); });
+  $("xrGo").addEventListener("click", (e) => act(e.target, async () => {
+    const a = $("xAcct").value;
+    if (!a) return;
+    rrSeen[a] = "";
+    await api("/api/read", {account: a, regions: $("xrRegions").value.trim() || "all", days: +$("xrDays").value});
+    loadHero(a, true).catch(() => {});  // the account summary (spend, services) is read again beside it
+    await watchReread(a);
+  }));
+  $("xrNote").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-rr]");
+    if (!b) return;
+    act(b, async () => { await api(`/api/read/${b.dataset.rr}`, {id: +b.dataset.id}); await watchReread($("xAcct").value); });
+  });
   let fixFindT = null;
   $("xFind").addEventListener("input", () => {
     if (!fixAccts) return;

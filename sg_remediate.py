@@ -57,6 +57,32 @@ def port_ranges(rule: dict, used: list) -> list | None:
     return out
 
 
+def _cidr_size(cidr: str) -> int:
+    try:
+        return ipaddress.ip_network(cidr, strict=False).num_addresses
+    except ValueError:
+        return 0
+
+
+def _internal(source: str, total: int) -> int:
+    """How many of a source's IPv4 addresses are internal (RFC 1918 and 100.64/10). Another security group is
+    internal; a prefix list or anything else that is not an address range counts as external."""
+    if source.startswith("sg-"):
+        return total
+    try:
+        net = ipaddress.ip_network(source, strict=False)
+    except ValueError:
+        return 0
+    if net.version != 4:
+        return 0
+    n = 0
+    for c in sg_review.PRIVATE_V4:
+        p = ipaddress.ip_network(c)
+        if net.overlaps(p):
+            n += min(net.num_addresses, p.num_addresses)
+    return min(n, total)
+
+
 def plan_rule(r: dict) -> dict:
     """One rule of the review's table: the old rule, the new rules (None to leave it, [] to remove it) and what
     goes."""
@@ -79,12 +105,22 @@ def plan_rule(r: dict) -> dict:
     allowed = int(r.get("allowed") or 0)
     new_addr = 0 if new == [] else int(r.get("suggest_size") or allowed) if action == "tighten" else allowed
     new_ports = 0 if new == [] else sum(b - a + 1 for a, b in ranges) if ranges else span
+    internal = _internal(r["source"], allowed)
+    if new is None:
+        new_internal = internal
+    elif new == []:
+        new_internal = 0
+    elif action == "tighten":
+        new_internal = min(new_addr, sum(_internal(c, _cidr_size(c)) for c in dict.fromkeys(cidrs)))
+    else:
+        new_internal = internal
     return {"key": f"{r['region']}|{r['group']}|{r['proto']}|{r['from']}|{r['to']}|{r['source']}",
             "region": r["region"], "group": r["group"], "gname": r.get("gname", ""), "proto": str(r["proto"]),
             "from": int(r["from"]), "to": int(r["to"]), "ports": r.get("ports", ""), "source": r["source"],
             "v6": ":" in r["source"], "desc": r.get("desc", ""), "status": status, "note": r.get("note", ""),
             "action": action, "new": new, "addresses": allowed,
             "new_addresses": allowed if new is None else new_addr,
+            "internal": internal, "new_internal": new_internal,
             "cut_addresses": 0 if new is None else max(0, allowed - new_addr),
             "port_count": span, "new_ports": span if new is None else new_ports,
             "cut": bool(r.get("cut")), "seen": int(r.get("here") or 0), "last_used": r.get("last_used"), "days": r.get("days"),
@@ -172,6 +208,7 @@ def plan(doc: dict, days: int, groups: dict, assets: dict, start: float | None =
                         "rules_in": len(g.get("in") or {}), "rules_out": len(g.get("out") or {}),
                         "rules": rs, "changes": len(acts),
                         "addresses": sum(r["addresses"] for r in v4), "new_addresses": sum(r["new_addresses"] for r in v4),
+                        "internal": sum(r["internal"] for r in v4), "new_internal": sum(r["new_internal"] for r in v4),
                         "addresses6": sum(r["addresses"] for r in rs if r["v6"]),
                         "new_addresses6": sum(r["new_addresses"] for r in rs if r["v6"]),
                         "ports": sum(r["port_count"] for r in rs), "new_ports": sum(r["new_ports"] for r in rs),
