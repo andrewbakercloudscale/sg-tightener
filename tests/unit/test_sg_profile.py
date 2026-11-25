@@ -68,6 +68,8 @@ class _Sess:
         if svc == "rds":
             return _Client({"describe_db_instances": [{"DBInstances": [{}, {}]}]},
                            fail=("describe_db_instances",) if region_name == self.deny else ())  # fmt: skip
+        if svc == "kafka":
+            return _Client({"list_clusters_v2": [{"ClusterInfoList": [{}, {}, {}]}]})
         if svc == "s3":
             return _S3()
         if svc == "cloudwatch":
@@ -125,3 +127,11 @@ def test_the_profile_is_kept_and_read_back(monkeypatch):
     assert sg_profile.cached("111122223333") is None
     sg_profile.save("111122223333", {"at": datetime(2026, 11, 25, tzinfo=timezone.utc).timestamp()})
     assert sg_profile.cached("111122223333")["at"] > 0
+
+
+def test_msk_clusters_are_counted_and_an_older_summary_has_none_rather_than_zero():
+    """Owner, 2026-11-25: the hero shows MSK (Kafka) clusters."""
+    prof = sg_profile.read(_Sess(), "111122223333", ["af-south-1", "eu-west-1"], _CE())
+    assert prof["totals"]["msk"]["n"] == 6
+    old = {"regions": {"af-south-1": {"ec2": {"total": 1, "running": 1}}}}
+    assert "msk" not in sg_profile.totals(old)

@@ -473,6 +473,37 @@ def test_a_report_answers_from_its_last_rows_while_an_account_is_being_read(tmp_
     assert c._reports("macro", "1m", {}) == {"1": {"v": 2}}
 
 
+def test_a_page_gets_the_rows_already_built_at_once_and_the_rest_are_built_in_the_background(tmp_path, monkeypatch):
+    import threading
+
+    import sg_review
+
+    read_at = {"1": time.time() - 3600, "2": time.time() - 3600}
+    monkeypatch.setattr(sg_review, "stamps", lambda: dict(read_at))
+    gate, built = threading.Event(), []
+
+    def slow(kind, a, n, r):
+        gate.wait(5)
+        built.append(a)
+        return {"v": a}
+
+    monkeypatch.setattr(sg_review, "report_row", lambda kind, a, n, r: {"v": a})
+    monkeypatch.setattr(sg_console, "REPORTS_WAIT", False)
+    monkeypatch.setattr(ipintel, "DATA_DIR", tmp_path / "data")  # its own report cache
+    c = sg_console.Console(str(tmp_path / "sg.db"), targets=FakeTargets("x"))
+    c._reports("macro", "1m", {})  # both built
+    read_at["3"] = time.time() - 3600  # a third account read since
+    monkeypatch.setattr(sg_review, "report_row", slow)
+    t = time.time()
+    rows, building = c._reports_soon("macro", "1m", {})
+    assert time.time() - t < 2, "answered without waiting for the build"
+    assert rows == {"1": {"v": "1"}, "2": {"v": "2"}} and building == 1
+    gate.set()
+    c._report_gates[("soon", "macro", "1m")].join(5)
+    assert built == ["3"], "only the missing account is built"
+    assert c._reports_soon("macro", "1m", {}) == ({"1": {"v": "1"}, "2": {"v": "2"}, "3": {"v": "3"}}, 0)
+
+
 def test_the_read_cost_estimate_is_rebuilt_hourly_as_unread_hours_build_up(tmp_path, monkeypatch):
     import sg_review
 

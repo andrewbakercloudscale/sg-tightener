@@ -123,6 +123,8 @@ def region_counts(sess, region: str, config=None) -> dict:
     part("lambda", lambda: len(_pages(lam, "list_functions", "Functions")))
     eks = sess.client("eks", region_name=region, config=config)
     part("eks", lambda: len(_pages(eks, "list_clusters", "clusters")))
+    kafka = sess.client("kafka", region_name=region, config=config)
+    part("msk", lambda: len(_pages(kafka, "list_clusters_v2", "ClusterInfoList")))
     return out
 
 
@@ -226,4 +228,6 @@ def totals(prof: dict) -> dict:
         add("gateway_endpoints", p if "error" in p else p.get("gateway", 0), region)
         for key in ("endpoint_services", "vpcs", "load_balancers", "lambda", "eks"):
             add(key, r.get(key, 0), region)
+        if "msk" in r:  # summaries read before MSK was counted have none: shown as not read, never as zero
+            add("msk", r["msk"], region)
     return out

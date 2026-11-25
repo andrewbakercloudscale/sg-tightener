@@ -57,6 +57,9 @@ AGES = {"estimate": 3600}  # reports that depend on the time as well as the read
 SETTLING = 600  # a read written to in the last ten minutes keeps its last report row (built in this window)
 REPORT_PROCS = max(1, min(8, (os.cpu_count() or 2) - 1))  # processes building report rows at once
 REPORT_CACHE_VERSION = 4
+# a page asking for a report some accounts have no row in yet gets the rows there are at once, and the rest are
+# built in the background (it asks again); tests set SG_NO_WARM and get every row before the answer
+REPORTS_WAIT = os.environ.get("SG_NO_WARM") == "1"
 WARM = (("macro", "1m"), ("refused", "24h"), ("macro", "1w"), ("macro", "3m"), ("macro", "24h"), ("macro", "6m"),
         ("macro", "1y"))  # built in the background, default views first, so a page opens from rows already built
 WARM_EVERY = 600
@@ -479,7 +482,8 @@ class Console:
         except Exception:  # noqa: BLE001 - the overview still works from the reads alone
             names = {}
         rows, unread = [], []
-        for account, got in self._reports("macro", range_key, names).items():
+        got_rows, building = self._reports_soon("macro", range_key, names)
+        for account, got in got_rows.items():
             if got is None:
                 unread.append(account)
                 continue
@@ -494,7 +498,8 @@ class Console:
         types = {k: n for k, (n, _) in sg_review.SOURCE_TYPES.items()}
         rag = {"green_max": sg_review.RAG_GREEN_MAX, "amber_max": sg_review.RAG_AMBER_MAX}
         return {"range": range_key, "accounts": rows, "kinds": kinds, "types": types, "rag": rag,
-                "owners_pending": pending, "facts_note": why, "no_flow_logs_read": len(unread)}  # fmt: skip
+                "owners_pending": pending, "facts_note": why, "no_flow_logs_read": len(unread),
+                "building": building}  # fmt: skip
 
     # ------------------------------------------------------------------ who owns each account, and what it spends
     def _owners_path(self):
@@ -557,6 +562,32 @@ class Console:
                 got = {}
             got.update({a: {**o, "at": time.time()} for a, o in found.items()})
             path.write_text(json.dumps(got))
+
+    def _reports_soon(self, kind: str, range_key: str, names: dict) -> tuple[dict, int]:
+        """(rows there are now, how many accounts are still being built). Never waits for a build: what is
+        missing is built in the background, once, and the page asks again."""
+        if REPORTS_WAIT:
+            return self._reports(kind, range_key, names), 0
+        import sg_review
+
+        with self._report_lock:
+            cache = self._report_cache()
+            out, missing = {}, 0
+            for account in sorted(sg_review.stamps()):
+                hit = cache.get(f"{kind}|{range_key}|{account}")
+                if hit:
+                    out[account] = hit["row"]
+                else:
+                    missing += 1
+            key = ("soon", kind, range_key)
+            busy = self._report_gates.get(key)
+            if missing and (busy is None or not busy.is_alive()):
+                t = threading.Thread(target=self._reports, args=(kind, range_key, names), daemon=True)
+                self._report_gates[key] = t
+                t.start()
+        if not missing:
+            return self._reports(kind, range_key, names), 0  # every row there: the usual path, stale ones refreshed
+        return out, missing
 
     def _reports(self, kind: str, range_key: str, names: dict) -> dict:
         """{account: row or None (no flow logs read)} for every account sg_review has read. Each row is kept
@@ -676,7 +707,8 @@ class Console:
         if range_key not in RANGES:
             raise ConsoleError(400, f"range must be one of {', '.join(RANGES)}")
         rows, accounts, unread = [], [], []
-        for account, got in self._reports("refused", range_key, {}).items():
+        got_rows, building = self._reports_soon("refused", range_key, {})
+        for account, got in got_rows.items():
             if got is None:
                 unread.append(account)
                 continue
@@ -684,7 +716,8 @@ class Console:
             accounts.append(got["account"])
         rows.sort(key=lambda x: (sg_review.SEV_RANK.get(x["sev"], 9), -x["flows"]))
         types = {k: n for k, (n, _) in sg_review.SOURCE_TYPES.items()}
-        return {"range": range_key, "rows": rows, "accounts": accounts, "types": types, "no_flow_logs_read": len(unread)}
+        return {"range": range_key, "rows": rows, "accounts": accounts, "types": types, "no_flow_logs_read": len(unread),
+                "building": building}
 
     # ------------------------------------------------------------------ AWS sign-in (SSO)
     def _need_sso(self):
