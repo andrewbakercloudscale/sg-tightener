@@ -297,6 +297,44 @@ def test_an_hour_read_cut_before_is_read_again_split_and_replaced_and_the_next_r
     assert sg_review.cut_tasks(doc, first_only=True) == [], "the slice length is already known"
 
 
+def test_slices_of_one_read_share_the_split_that_fits_and_report_progress_within_a_slice():
+    """A 7-day read showed '0 of 53' for minutes: every 3-hour slice re-queried itself whole, then in halves,
+    down to the size that fits (each throwaway query billed), and progress only moved when a slice finished."""
+    qs = [{"format": None, "groups": ["g"]}]
+    start = 1_790_000_000 // 3600 * 3600
+    slices = [(start + i * 4 * 3600, start + (i + 1) * 4 * 3600) for i in range(6)]
+
+    def read(hint):
+        logs, ticks = _FakeLogs(), []
+        logs.fits = 900
+        for s, e in slices:
+            sg_review.read_chunk(logs, "eu-west-1", s, e, qs, [], tick=lambda b, secs: ticks.append(secs), hint=hint)
+        return len(logs.calls), ticks
+
+    alone, _ = read(None)
+    shared, ticks = read({})
+    assert shared < alone * 0.75 and shared <= 6 * 16 * 2 + 6, (shared, alone)  # only the first slice probes
+    assert sum(ticks) == 6 * 4 * 3600 and len([t for t in ticks if t]) == 6 * 16, "progress moves per piece read"
+
+
+def test_stop_cancels_the_running_queries_and_keeps_only_whole_slices():
+    """Stop let the 8 running slices finish every split before stopping; now each query is cancelled."""
+    logs = _FakeLogs()
+    logs.fits = 900
+    start = 1_790_000_000 // 3600 * 3600
+    qs = [{"format": None, "groups": ["g"]}]
+    stop = {"n": 0}
+
+    def cancelled():
+        stop["n"] += 1
+        return stop["n"] > 6
+
+    out = sg_review.read_chunk(logs, "eu-west-1", start, start + 4 * 3600, qs, [], cancelled, hint={})
+    assert len(logs.calls) < 8, "no further queries once stopped"
+    assert all(c["st"] != "failed" for c in out), "an unfinished piece is not recorded as read or failed"
+    assert sg_review.read_chunk(logs, "eu-west-1", start, start + 3600, qs, [], lambda: True) == []
+
+
 # ------------------------------------------------------------------ port classes, attribution, extract data
 def test_port_class_names_common_ports_and_ranges():
     assert sg_review.port_class("6", 22)["cls"] == "admin" and sg_review.port_class("6", 22)["risky"]

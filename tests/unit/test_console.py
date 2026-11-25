@@ -687,3 +687,51 @@ def test_an_unconfirmed_read_is_priced_again_after_a_restart_but_never_read_with
         _time.sleep(0.05)
     _time.sleep(0.2)
     assert job["status"] == "confirm" and not ran
+
+
+def test_a_read_waiting_for_a_yes_says_so_on_the_disabled_button():
+    """The greyed-out Re-read button read as broken while the read waited for confirmation."""
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    assert '"Waiting for your yes below"' in page and "Not read yet: press the button below to start." in page
+    assert 'day${Math.round(a.days) === 1 ? "" : "s"} of flow logs' in page
+
+
+def test_one_re_read_button_on_remediate():
+    """The summary's own Read again sat beside Re-read this account, which reads the summary too."""
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    hero = page[page.index("function drawHero(p, refreshing) {"):]
+    hero = hero[:hero.index("function exportFixPdf")]
+    assert ">Read again</button>" not in hero and "Read again" not in hero
+
+
+def test_every_button_has_a_border():
+    """Borderless 'quiet' buttons (Stop, Cancel, Explain) read as plain text: every button is drawn as one."""
+    import pathlib
+    import re
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    for rule in re.findall(r"\.btn[^{]*\{[^}]*\}", page):
+        assert "border-color: transparent" not in rule and "border: 0" not in rule and "border: none" not in rule, rule
+
+
+def test_security_groups_does_not_repeat_remediate_and_shows_a_loader():
+    """It had its own copy of the flow-log plan, built in the request, which hung the tab on a large account."""
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    body = page[page.index("async function loadGroups() {"):]
+    body = body[:body.index("const PN = ")]
+    assert "/api/verdicts" not in body and "loading(`Loading the security groups" in body
+    assert "drawPlanOld" not in page
+
+
+def test_security_groups_is_part_of_remediate_not_a_second_tab():
+    """'security groups seems the same as remediate... why do we have 2 tabs?': one tab, the rules at its end."""
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    fix = page[page.index('id="tab-fix"'):]
+    fix = fix[:fix.index("</section>")]
+    assert 'id="fixRules"' in fix and 'id="groupList"' in fix and 'id="proposeBox"' in fix
+    assert 'id="tab-groups"' not in page and 'data-tab="groups"' not in page
+    assert page.count('id="modeNote"') == 1
+    assert 'if (t === "groups")' in page or "show(\"groups\")" in page or 'show("groups")' in page

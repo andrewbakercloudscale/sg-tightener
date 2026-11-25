@@ -190,7 +190,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: 16
 .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--control-line)); }
 .btn.danger:hover { background: color-mix(in srgb, var(--bad) 9%, var(--surface)); border-color: var(--bad); }
-.btn.quiet { border-color: transparent; background: transparent; color: var(--ink-2); }
+.btn.quiet { color: var(--ink-2); }  /* still a bordered button: a borderless one reads as a label */
 .btn.quiet:hover { background: var(--surface-2); color: var(--ink); }
 .btn[disabled], .btn[disabled]:hover { opacity: .5; cursor: not-allowed; transform: none; background: var(--surface); }
 .btn.primary[disabled] { background: var(--accent); }
@@ -433,6 +433,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     header, .tools, #xNote, #xRangeHelp, .btn, button, #tab-fix > h2, #tab-fix > p.lede, input[type=checkbox],
     .grp th:first-child, .grp td:first-child, .seg { display: none !important; }
     section { display: none !important; }
+    #fixRules { display: none !important; }
     section.print-me { display: block !important; }
     .print-only { display: block; }
     .kpi, .hero-t, .svc, .ex-row, tr, h3 { break-inside: avoid; }  /* not whole cards: one taller than a page left page one blank */
@@ -446,6 +447,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   .reread .rr-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 6px 0 8px; }
   .reread .rr-row .btn { margin-left: auto; }
   #tab-fix > .tools { clear: both; }
+  .fix-rules { margin-top: 36px; padding-top: 22px; border-top: 1px solid var(--grid); }
   @media (max-width: 860px) { .reread { float: none; width: auto; margin: 0 0 12px; } }
   @media print { .reread { display: none !important; } }
   #auditDlg { width: min(1280px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
@@ -493,7 +495,6 @@ section.nodata .card:not(.empty-state) { display: none; }
     <button role="tab" data-tab="macro" aria-selected="false">Risk overview</button>
     <button role="tab" data-tab="over" aria-selected="false">Over-provisioning</button>
     <button role="tab" data-tab="fix" aria-selected="false">Remediate</button>
-    <button role="tab" data-tab="groups" aria-selected="false">Security groups</button>
     <button role="tab" data-tab="requests" aria-selected="false">Change requests<span class="count" id="pendingCount" hidden></span></button>
     <button role="tab" data-tab="audit" aria-selected="false">Audit trail</button>
     <button role="tab" data-tab="refused" aria-selected="false">Rejected traffic</button>
@@ -579,46 +580,6 @@ section.nodata .card:not(.empty-state) { display: none; }
     </div>
     <div class="grid" id="stats"></div>
     <div class="card scroll"><table><thead><tr><th>Account</th><th>Mode</th><th>Region</th><th>Groups</th><th>Rules</th><th>Assets</th><th title="Rules where AWS differs from what is saved here, usually changed in AWS outside this tool. Open the region to keep what AWS holds, or apply to put it back.">Changed outside tool</th><th>Can apply here?</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table><p class="muted small" id="regionsEmpty" hidden style="margin:10px 0 0"></p></div>
-  </section>
-
-  <section id="tab-groups" hidden>
-    <h2>Security groups</h2>
-    <p class="lede">The rules themselves, one account and region at a time. Look at any group's rules, propose a rule
-      by hand, keep a change someone made in AWS, and <b>Apply approved changes</b> to make them in AWS.
-      <b>Remediate</b> is where the flow logs suggest the changes for a whole account; this is where you check
-      and apply them.</p>
-    <div class="tools">
-      <select id="gWhere" aria-label="Account and region"></select>
-      <input id="gFilter" type="search" placeholder="Filter groups and rules…" aria-label="Filter groups">
-      <label class="small"><input type="checkbox" id="gUnused"> Show groups on no interface <span id="gUnusedN" class="muted"></span></label>
-      <span class="spacer"></span>
-      <button class="btn" id="gReconcile" title="Read the groups, rules and interfaces from AWS again; anything changed outside this tool is recorded in the Audit trail">Refresh from AWS</button>
-      <button class="btn primary" id="gApply">Apply approved changes</button>
-    </div>
-    <div class="card plan" id="gPlan"></div>
-    <div class="flash" id="modeNote" hidden></div>
-    <div class="card"><div class="scroll"><table class="grp"><thead><tr><th>Group</th><th class="num">Interfaces</th><th class="num">Rules</th><th>What the flow logs say</th><th class="num">IP addresses taken away</th><th class="act"></th></tr></thead><tbody id="groupList"></tbody></table></div></div>
-    <div class="card" id="proposeCard">
-      <details id="proposeBox"><summary>Propose a change by hand</summary>
-        <div class="form" style="margin-top:10px">
-          <label>Group<select id="pGroup"></select></label>
-          <label>Change<select id="pOp"><option value="add">Add rule</option><option value="remove">Remove rule</option></select></label>
-          <label>Direction<select id="pDir"><option value="in">Inbound</option><option value="out">Outbound</option></select></label>
-          <label>Protocol<select id="pProto"><option>tcp</option><option>udp</option><option>icmp</option><option value="-1">all</option></select></label>
-          <label>Ports<input id="pPort" placeholder="443 or 8000-8100"></label>
-          <label>Source or destination<input id="pSource" placeholder="10.20.0.0/24, sg-…, pl-…"></label>
-          <label class="wide">Description (kept on the rule)<input id="pDesc"></label>
-          <label class="wide">Why (required, kept in the audit trail)<textarea id="pReason"></textarea></label>
-          <label>Ticket<input id="pTicket" placeholder="CHG-1234"></label>
-          <div><button class="btn primary" id="pSend">Propose</button></div>
-        </div>
-        <div class="tools" style="margin-top:12px"><button class="btn" id="gAdopt">Propose keeping what AWS holds</button><span class="muted small">Records the rules as they are in AWS as the wanted state, after review.</span></div>
-      </details>
-    </div>
-    <div class="flash" id="modeNote" hidden></div>
-    <h3>Assets (network interfaces) and their groups</h3>
-    <p class="lede">Every interface, what it is attached to and the groups it carries; every change to them is in the audit trail. To tighten one asset on its own, <code>sg_db.py asset-plan --eni … --approved approved.json</code> gives it a group of its own from its own flows; propose it with <code>sg_db.py asset-propose</code>, and it is approved and applied here. Auto scaling, EKS, ECS and AWS-managed interfaces inherit their groups: tighten the groups instead.</p>
-    <div class="card scroll"><table><thead><tr><th>Interface</th><th>Attached to</th><th>IP addresses</th><th>Groups</th><th>Own group?</th><th></th></tr></thead><tbody id="assetRows"></tbody></table></div>
   </section>
 
   <section id="tab-requests" hidden>
@@ -716,6 +677,43 @@ section.nodata .card:not(.empty-state) { display: none; }
     <div class="print-only" id="xPrintHead"></div>
     <div id="xHero"></div>
     <div id="xBody"></div>
+  <div id="fixRules" class="fix-rules">
+    <div class="eyebrow">Security groups</div><h2 style="margin-top:2px">Rules and interfaces, region by region</h2>
+    <p class="lede">Every group's rules as they stand, with anything waiting to be applied. Open a group to change a rule
+      by hand, keep a change someone made in AWS, and <b>Apply approved changes</b> to make them in AWS.</p>
+    <div class="tools">
+      <select id="gWhere" aria-label="Region"></select>
+      <input id="gFilter" type="search" placeholder="Filter groups and rules…" aria-label="Filter groups">
+      <label class="small"><input type="checkbox" id="gUnused"> Show groups on no interface <span id="gUnusedN" class="muted"></span></label>
+      <span class="spacer"></span>
+      <button class="btn" id="gReconcile" title="Read the groups, rules and interfaces from AWS again; anything changed outside this tool is recorded in the Audit trail">Refresh from AWS</button>
+      <button class="btn primary" id="gApply">Apply approved changes</button>
+    </div>
+    <div class="card plan" id="gPlan"></div>
+    <div class="flash" id="modeNote" hidden></div>
+    <div class="card"><div class="scroll"><table class="grp"><thead><tr><th>Group</th><th class="num">Interfaces</th><th class="num">Rules</th><th class="act"></th></tr></thead><tbody id="groupList"></tbody></table></div></div>
+    <div class="card" id="proposeCard">
+      <details id="proposeBox"><summary>Propose a change by hand</summary>
+        <div class="form" style="margin-top:10px">
+          <label>Group<select id="pGroup"></select></label>
+          <label>Change<select id="pOp"><option value="add">Add rule</option><option value="remove">Remove rule</option></select></label>
+          <label>Direction<select id="pDir"><option value="in">Inbound</option><option value="out">Outbound</option></select></label>
+          <label>Protocol<select id="pProto"><option>tcp</option><option>udp</option><option>icmp</option><option value="-1">all</option></select></label>
+          <label>Ports<input id="pPort" placeholder="443 or 8000-8100"></label>
+          <label>Source or destination<input id="pSource" placeholder="10.20.0.0/24, sg-…, pl-…"></label>
+          <label class="wide">Description (kept on the rule)<input id="pDesc"></label>
+          <label class="wide">Why (required, kept in the audit trail)<textarea id="pReason"></textarea></label>
+          <label>Ticket<input id="pTicket" placeholder="CHG-1234"></label>
+          <div><button class="btn primary" id="pSend">Propose</button></div>
+        </div>
+        <div class="tools" style="margin-top:12px"><button class="btn" id="gAdopt">Propose keeping what AWS holds</button><span class="muted small">Records the rules as they are in AWS as the wanted state, after review.</span></div>
+      </details>
+    </div>
+    <h3>Assets (network interfaces) and their groups</h3>
+    <p class="lede">Every interface, what it is attached to and the groups it carries; every change to them is in the audit trail. To tighten one asset on its own, <code>sg_db.py asset-plan --eni … --approved approved.json</code> gives it a group of its own from its own flows; propose it with <code>sg_db.py asset-propose</code>, and it is approved and applied here. Auto scaling, EKS, ECS and AWS-managed interfaces inherit their groups: tighten the groups instead.</p>
+    <div class="card scroll"><table><thead><tr><th>Interface</th><th>Attached to</th><th>IP addresses</th><th>Groups</th><th>Own group?</th><th></th></tr></thead><tbody id="assetRows"></tbody></table></div>
+  </div>
+
   </section>
 
   <section id="tab-over" hidden>
@@ -900,6 +898,12 @@ section.nodata .card:not(.empty-state) { display: none; }
   // ---- tabs
   for (const b of document.querySelectorAll("nav button")) b.addEventListener("click", () => show(b.dataset.tab));
   function show(tab) {
+    if (tab === "groups") {  // Security groups is part of Remediate now: open it there, on the region chosen
+      const w = where();
+      if (w.account && $("xAcct").value !== w.account) { $("xAcct").dataset.want = w.account; $("xAcct").value = ""; $("xHide").checked = false; }
+      show("fix");
+      return loadGroups().then(() => $("fixRules").scrollIntoView({behavior: "smooth", block: "start"})).catch((e) => flash(e.message, true));
+    }
     for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
     for (const s of document.querySelectorAll("main > section")) s.hidden = s.id !== "tab-" + tab;
     return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, macro: loadMacro, over: loadOver, fix: loadFix, overview: loadState})[tab]?.())
@@ -978,6 +982,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const sel = $("gWhere"), keep = sel.value;
     sel.innerHTML = regions.map((r) => `<option value="${esc(r.account)}|${esc(r.region)}">${esc(r.name || r.account)} · ${esc(r.region)}</option>`).join("");
     if (keep) sel.value = keep;
+    if ($("xAcct").value) for (const o of sel.options) o.hidden = !o.value.startsWith($("xAcct").value + "|");
     const fa = $("fAcct"), fk = fa.value;
     fa.innerHTML = '<option value="">Every account</option>' + S.accounts.map((a) => `<option value="${esc(a.account)}">${esc(a.name || a.account)}</option>`).join("");
     fa.value = fk;
@@ -1318,10 +1323,11 @@ section.nodata .card:not(.empty-state) { display: none; }
     if (!S) await loadState();
     const w = where();
     if (!w.account) { $("groupList").innerHTML = '<tr><td colspan="6" class="muted">No account in the database yet.</td></tr>'; $("gPlan").innerHTML = ""; return; }
-    [groupsCache, planCache] = await Promise.all([
-      api(`/api/groups?account=${encodeURIComponent(w.account)}&region=${encodeURIComponent(w.region)}`),
-      api(`/api/verdicts?account=${encodeURIComponent(w.account)}&region=${encodeURIComponent(w.region)}`).catch(() => ({read: false, rules: [], groups: {}})),
-    ]);
+    $("groupList").innerHTML = `<tr><td colspan="4">${loading(`Loading the security groups of ${esc(w.account)} in ${esc(w.region)} from the database…`)}</td></tr>`;
+    $("gPlan").innerHTML = "";
+    groupsFor = `${w.account}|${w.region}`;
+    groupsCache = await api(`/api/groups?account=${encodeURIComponent(w.account)}&region=${encodeURIComponent(w.region)}`);
+    planCache = {read: false, rules: [], groups: {}};
     openGroups.clear();
     const acct = S.accounts.find((a) => a.account === w.account) || {};
     const surv = acct.mode !== "enforce";
@@ -1365,29 +1371,17 @@ section.nodata .card:not(.empty-state) { display: none; }
       <td class="act">${isAct(r) ? `<button class="btn sm primary" data-tkey="${esc(r.key)}">Propose</button>` : ""}</td></tr>`).join("");
   }
   const PLAN_HEAD = '<thead><tr><th>Rule now</th><th>The flow logs say</th><th>New rule</th><th>Taken away</th><th class="act"></th></tr></thead>';
-  function drawPlan() {
-    const w = where(), P = planCache, acts = P.rules.filter(isAct);
-    if (!P.read) {
-      $("gPlan").innerHTML = `<h3>Tighten this account</h3><p class="muted">No flow logs read for ${esc(w.account)} yet, so there is no plan. Read the account on the <b>Overview</b> (Read your accounts): the plan comes from who actually connected.</p>`;
-      return;
+  function drawPlan() { $("gPlan").hidden = true; }
+  let groupsFor = "";
+  function syncRules(a) {  // the rules below follow the account chosen at the top
+    const sel = $("gWhere");
+    for (const o of sel.options) o.hidden = !o.value.startsWith(a + "|");
+    if (!sel.value.startsWith(a + "|")) {
+      const o = [...sel.options].find((x) => !x.hidden);
+      if (!o) { groupsFor = ""; $("groupList").innerHTML = '<tr><td colspan="4" class="muted">This account\'s security groups are not in the database yet: Re-read this account at the top.</td></tr>'; $("assetRows").innerHTML = ""; return; }
+      sel.value = o.value;
     }
-    const cutA = acts.reduce((n, r) => n + (r.addresses - r.new_addresses), 0), allA = acts.reduce((n, r) => n + r.addresses, 0);
-    const k = (a) => P.rules.filter((r) => r.action === a).length;
-    $("gPlan").innerHTML = `<div class="plan-head"><div><h3>Tighten this account</h3>
-      <p class="muted small">From ${P.days ? `${Math.round(P.days)} days` : "the"} of VPC flow logs in ${esc(w.region)}. Every source seen is kept, with headroom; nothing is applied until a second person approves.</p></div>
-      ${acts.length ? `<button class="btn primary" id="tAll">Propose the whole plan (${acts.length} rule${acts.length === 1 ? "" : "s"})</button>` : ""}</div>
-      <div class="plan-tiles"><div><b>${k("tighten") + k("ports")}</b><span>rules to narrow</span></div><div><b>${k("remove")}</b><span>unused rules to remove</span></div>
-      <div><b>${fmtN(cutA)}</b><span>IP addresses taken away${allA ? ` (${cutPct(allA, allA - cutA)})` : ""}</span></div><div><b>${k("keep")}</b><span>in use: keep</span></div>
-      <div><b>${k("open") + k("wait")}</b><span>to decide, or not enough evidence</span></div></div>
-      ${acts.length ? `<details class="plan-list" open><summary>Every change in the plan (${acts.length})</summary><div class="scroll"><table class="plan-t">${PLAN_HEAD}<tbody id="planRows"></tbody></table></div></details>`
-        : '<p class="muted">Nothing to tighten: the flow logs support every rule as it is.</p>'}`;
-    if (acts.length) {
-      const pg = page("plan", acts.length, drawPlan);
-      $("planRows").innerHTML = planRows(acts.slice(pg.a, pg.b), true);
-      pagerAfter($("planRows"), pg.bar);
-      $("tAll").addEventListener("click", (e) => propose(e.target, {}, `${acts.length} rule(s)`));
-    }
-    wirePlan($("gPlan"));
+    if (groupsFor !== sel.value) loadGroups().catch((e) => flash(e.message, true));
   }
   function wirePlan(root) {
     for (const b of root.querySelectorAll("[data-tkey]")) b.addEventListener("click", () => propose(b, {keys: [b.dataset.tkey]}, "this rule"));
@@ -1420,13 +1414,13 @@ section.nodata .card:not(.empty-state) { display: none; }
            !acts.length && !n("open") ? '<span class="pill" style="--p:var(--good)">fine as it is</span>' : ""].join(" ");
       const pend = g.rules.filter((r) => r.state !== "both").length;
       const isOpen = openGroups.has(g.id);
+      void say; void cut;
       return `<tr class="grow${isOpen ? " is-open" : ""}"><td><b>${esc(g.name)}</b> <code class="muted small">${esc(g.id)}</code>${pend ? ` <span class="pill" style="--p:var(--warn)">${pend} pending</span>` : ""}
           <div class="muted small">${esc(g.vpc)}${g.description ? " · " + esc(g.description) : ""}${g.enis === 0 ? " · <b>on no interface</b>: protects nothing" : ""}</div></td>
-        <td class="num">${g.enis == null ? "?" : g.enis}</td><td class="num">${g.rules.length}</td><td>${say}</td>
-        <td class="num">${cut ? `<b>${fmtN(cut)}</b>` : '<span class="muted">—</span>'}</td>
-        <td class="act">${acts.length ? `<button class="btn sm primary" data-tgroup="${esc(g.id)}">Propose ${acts.length}</button> ` : ""}<button class="btn sm" data-details="${esc(g.id)}" aria-expanded="${isOpen}">${isOpen ? "Hide details" : "Details"}</button></td></tr>
-        ${isOpen ? `<tr class="gdetail"><td colspan="6">${groupDetail(g)}</td></tr>` : ""}`;
-    }).join("") || '<tr><td colspan="6" class="muted">No group matches.</td></tr>';
+        <td class="num">${g.enis == null ? "?" : g.enis}</td><td class="num">${g.rules.length}</td>
+        <td class="act"><button class="btn sm" data-details="${esc(g.id)}" aria-expanded="${isOpen}">${isOpen ? "Hide details" : "Details"}</button></td></tr>
+        ${isOpen ? `<tr class="gdetail"><td colspan="4">${groupDetail(g)}</td></tr>` : ""}`;
+    }).join("") || '<tr><td colspan="4" class="muted">No group matches.</td></tr>';
     pagerAfter($("groupList"), pg.bar);
     for (const b of $("groupList").querySelectorAll("[data-details]")) b.addEventListener("click", () => {
       const id = b.dataset.details; openGroups.has(id) ? openGroups.delete(id) : openGroups.add(id); drawGroups();
@@ -1555,7 +1549,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const ok = fixAccts.filter((a) => a.status === "read"), noLogs = fixAccts.filter((a) => a.status === "no-flow-logs"), notRead = fixAccts.filter((a) => a.status !== "read" && a.status !== "no-flow-logs");
     const q = $("xFind").value.trim().toLowerCase();
     const shown = (hide ? ok : fixAccts).filter((a) => !q || `${a.name} ${a.account}`.toLowerCase().includes(q));
-    const label = (a) => `${a.name || a.account} (${a.account}) · ${a.status === "read" ? `${Math.round(a.days)} days of flow logs` : a.status === "no-flow-logs" ? "no flow logs" : "flow logs not read"}`;
+    const label = (a) => `${a.name || a.account} (${a.account}) · ${a.status === "read" ? `${Math.round(a.days)} day${Math.round(a.days) === 1 ? "" : "s"} of flow logs` : a.status === "no-flow-logs" ? "no flow logs" : "flow logs not read"}`;
     $("xAcct").innerHTML = shown.map((a) => `<option value="${esc(a.account)}"${a.account === cur ? " selected" : ""}>${esc(label(a))}</option>`).join("") || `<option value="">${q ? "No account matches" : "No account with flow logs read"}</option>`;
     const msg = [];
     if (noLogs.length) msg.push(`<b>${noLogs.length} account${noLogs.length === 1 ? " has" : "s have"} no VPC flow logs</b> in CloudWatch Logs${hide ? " (hidden)" : ""}: turn them on for every VPC, to CloudWatch Logs, with a format that has the interface, source, destination, port and action (the default format does), then read the account.`);
@@ -1616,14 +1610,14 @@ section.nodata .card:not(.empty-state) { display: none; }
       tile("spend", sp.error || sp.total == null ? "—" : usd0(sp.total), `spent in ${esc(month || "last month")}`, spendSub, "feature"),
       ...(t.ec2_eks && !t.ec2.missing.length ? [  // EKS worker nodes told apart from the other EC2 instances
         tile("ec2", (num("ec2") - eksN).toLocaleString(), `${many(num("ec2") - eksN, "EC2 instance")} <span class="muted small">outside EKS</span>`, run != null ? `${(run - eksRun).toLocaleString()} running` : "")]
-        : [tile("ec2", n("ec2"), many(num("ec2"), "EC2 instance"), [run != null ? `${run.toLocaleString()} running` : "", t.ec2 ? "EKS nodes not told apart yet: Read again" : ""].filter(Boolean).join(" · "))]),
+        : [tile("ec2", n("ec2"), many(num("ec2"), "EC2 instance"), [run != null ? `${run.toLocaleString()} running` : "", t.ec2 ? "EKS nodes not told apart yet: Re-read this account" : ""].filter(Boolean).join(" · "))]),
       tile("rds", n("rds"), many(num("rds"), "RDS database"), rdsC ? `${rdsC.toLocaleString()} ${many(rdsC, "Aurora cluster")}` : ""),
       tile("s3", s3.error || s3.buckets == null ? "—" : s3.buckets.toLocaleString(), many(s3.buckets, "S3 bucket"), s3.error ? esc(s3.error) : s3.bytes != null ? `${heroBytes(s3.bytes)} · ${fmtN(s3.objects || 0)} objects` : ""),
       tile("link", n("privatelink"), "PrivateLink endpoints", [gw ? `${gw} gateway` : "", svcs ? `${svcs} ${many(svcs, "service")} offered` : ""].filter(Boolean).join(" · ")),
       tile("lb", n("load_balancers"), many(num("load_balancers"), "load balancer"), ""),
       tile("lambda", n("lambda"), many(num("lambda"), "Lambda function"), ""),
       tile("eks", n("eks"), many(num("eks"), "EKS cluster"), [t.ec2_eks ? `${eksN.toLocaleString()} worker ${many(eksN, "node")} (EC2)${eksRun !== eksN ? `, ${eksRun.toLocaleString()} running` : ""}` : "", vpcs != null ? `${vpcs} ${many(vpcs, "VPC")}` : ""].filter(Boolean).join(" · ")),
-      tile("msk", t.msk ? n("msk") : "—", many(num("msk"), "MSK (Kafka) cluster"), t.msk ? "" : "not read yet: Read again"),
+      tile("msk", t.msk ? n("msk") : "—", many(num("msk"), "MSK (Kafka) cluster"), t.msk ? "" : "not read yet: Re-read this account"),
     ];
     const top = sp.top || [];
     const max = top.length ? top[0].cost : 1;
@@ -1635,13 +1629,12 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("xHero").innerHTML = `<div class="card hero">
       <div class="hero-head"><div><div class="eyebrow">Account at a glance</div><h2>${esc(name || p.account)}</h2>
         <div class="hero-meta">${name ? `<span class="chip mono">${esc(p.account)}</span>` : ""}<span class="chip">${regions} ${many(regions, "region")}</span><span class="chip">read ${esc(when(p.at))}${refreshing ? " · reading again…" : ""}</span></div></div>
-        <div class="hero-actions"><button class="btn sm" id="heroRead" title="Read the summary from AWS again (Cost Explorer charges about US$0.02)">Read again</button></div></div>
+        </div>
       <div class="hero-body">
         <div class="hero-grid">${tiles.join("")}</div>
         ${top.length ? `<div class="hero-top"><h3>Top ${top.length} services by spend · ${esc(month)}</h3>${top.map((x, i) => `<div class="svc"><span class="rk" style="--sc:${SVC_COL[i % SVC_COL.length]}">${i + 1}</span><span class="nm" title="${esc(x.service)}">${esc(x.service)}</span><span class="amt">${usd0(x.cost)}<small>${(x.share * 100).toFixed(1)}%</small></span><span class="svc-bar"><i style="--sc:${SVC_COL[i % SVC_COL.length]};width:${Math.max(1, (x.cost / max) * 100).toFixed(1)}%"></i></span></div>`).join("")}</div>` : ""}
       </div>
       ${miss.length ? `<p class="muted small">* not read everywhere: ${esc(miss.join("; "))}</p>` : ""}</div>`;
-    $("heroRead").addEventListener("click", () => loadHero(p.account, true).catch((e) => flash(e.message, true)));
     $("xPdf").disabled = false;
     $("xPdf").onclick = () => exportFixPdf(name || p.account, p.account);
   }
@@ -1674,7 +1667,16 @@ section.nodata .card:not(.empty-state) { display: none; }
   }
   const RR_NOTE = $("xrNote") ? $("xrNote").innerHTML : "";
   let rrTimer = 0;
-  const rrSeen = {}, rrLost = {};
+  const rrSeen = {}, rrLost = {}, rrPace = {};
+  function rrProgress(j) {  // hours covered (updates as each query returns, not only per slice), GB, cost, time left
+    const tot = j.hours_total || 0, got = (j.secs || 0) / 3600, now = Date.now();
+    const p = rrPace[j.id] || (rrPace[j.id] = { t: now, h: got });
+    const rate = (got - p.h) / ((now - p.t) / 1000);  // hours read per second since this page started watching
+    const left = tot && rate > 0 && now - p.t > 15000 ? (tot - got) / rate : null;
+    const eta = left == null ? "working out the time left…" : left < 90 ? "under 2 minutes left" : `about ${Math.round(left / 60)} minutes left`;
+    const pct = tot ? Math.min(100, Math.round((100 * got) / tot)) : Math.round((100 * j.done) / j.total);
+    return `${loading(`Reading: ${pct}% · ${tot ? `${got.toFixed(1)} of ${tot.toLocaleString()} hours` : `${j.done} of ${j.total} slices`} · ${(j.bytes / 1e9).toFixed(2)} GB scanned, about ${money2((j.bytes / 1e9) * (EST ? EST.per_gb : 0.005))} so far · ${eta}`)}<div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>`;
+  }
   async function watchReread(a) {
     clearTimeout(rrTimer);
     $("xrGo").disabled = !a;
@@ -1685,6 +1687,8 @@ section.nodata .card:not(.empty-state) { display: none; }
     const last = j && j.lines.length ? esc(j.lines[j.lines.length - 1]) : "";
     const busy = j && ["starting", "queued", "running"].includes(j.status);
     $("xrGo").disabled = !!(busy || (j && j.status === "confirm"));
+    $("xrGo").textContent = busy ? "Reading…" : j && j.status === "confirm" ? "Waiting for your yes below" : "Re-read this account";
+    $("xrGo").title = j && j.status === "confirm" ? "Nothing is read until you press Read for … below (or Cancel to start again)" : "";
     if (!j && ["starting", "queued", "running"].includes(rrSeen[a]) && (rrLost[a] = (rrLost[a] || 0) + 1) <= 30) {  // the console restarted under it
       $("xrNote").innerHTML = `<b>The console restarted during this read.</b> It carries on by itself within a minute (anything already read is kept, and an unconfirmed read is priced again). <span class="muted small">Waiting…</span>`;
       rrTimer = setTimeout(() => watchReread(a), 4000);
@@ -1694,10 +1698,10 @@ section.nodata .card:not(.empty-state) { display: none; }
     if (j) rrLost[a] = 0;
     if (!j || (rrSeen[a] === undefined && !busy && j.status !== "confirm")) { $("xrNote").innerHTML = RR_NOTE; rrSeen[a] = j ? j.status : ""; return; }
     if (busy) {
-      $("xrNote").innerHTML = `${loading(j.total ? `Reading: ${j.done.toLocaleString()} of ${j.total.toLocaleString()} slices` : "Reading the security groups and finding the flow logs…")} <button class="btn sm quiet" data-rr="stop" data-id="${j.id}">Stop</button>`;
+      $("xrNote").innerHTML = j.stopping ? loading("Stopping: cancelling the queries running now. What was read so far is kept…") : `${j.total ? rrProgress(j) : loading("Reading the security groups and finding the flow logs…")} <button class="btn sm" data-rr="stop" data-id="${j.id}">Stop</button>`;
       rrTimer = setTimeout(() => watchReread(a), 2000);
     } else if (j.status === "confirm") {
-      $("xrNote").innerHTML = `<b>${(j.hours || 0).toLocaleString()} hours not read yet</b> (${j.total.toLocaleString()} slices): about <b>${j.cost == null ? "an unknown amount" : money2(j.cost)}</b> of Logs Insights. <button class="btn sm primary" data-rr="confirm" data-id="${j.id}">Read for ${j.cost == null ? "the cost shown later" : money2(j.cost)}</button> <button class="btn sm quiet" data-rr="stop" data-id="${j.id}">Cancel</button>`;
+      $("xrNote").innerHTML = `<div class="flash" style="margin:0 0 6px"><b>Not read yet: press the button below to start.</b> The account stays at what was read before until you do.</div><b>${(j.hours || 0).toLocaleString()} hours not read yet</b> (${j.total.toLocaleString()} slices): about <b>${j.cost == null ? "an unknown amount" : money2(j.cost)}</b> of Logs Insights. <button class="btn sm primary" data-rr="confirm" data-id="${j.id}">Read for ${j.cost == null ? "the cost shown later" : money2(j.cost)}</button> <button class="btn sm quiet" data-rr="stop" data-id="${j.id}">Cancel</button>`;
       rrTimer = setTimeout(() => watchReread(a), 5000);
     } else {
       $("xrNote").innerHTML = `<b>${j.status === "done" ? "Re-read" : esc(j.status)}</b>${last ? `: ${last}` : ""}`;
@@ -1709,6 +1713,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     watchReread($("xAcct").value).catch(() => {});
     const a = $("xAcct").value;
     loadHero(a).catch(() => {});
+    if (a) syncRules(a);
     if (!a) { $("xBody").innerHTML = ""; return; }
     const t0 = Date.now();
     const wait = () => { const s = Math.round((Date.now() - t0) / 1000);

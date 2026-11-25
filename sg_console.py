@@ -1021,7 +1021,8 @@ class Console:
             job.update(status="confirm", total=len(tasks), cost=None if cost is None else round(cost, 2), hours=round(hours),
                        logs_in=with_logs)  # fmt: skip
             # not the doc: an OU's worth of read caches kept while waiting for confirmation took over 16 GB
-            self._job_extra[job["id"]] = {"sess": sess, "tasks": tasks, "now": now, "stop": threading.Event()}
+            self._job_extra[job["id"]] = {"sess": sess, "tasks": tasks, "now": now, "stop": threading.Event(),
+                                          "hours_total": round(hours, 1)}  # fmt: skip
             del doc
             self._say(job, f"flow logs in {', '.join(with_logs)}: {len(tasks)} slice(s), {round(hours)} hours to read, "
                            + (f"about US${cost:.2f}" if cost is not None else "cost not known until a first 1-day read"))  # fmt: skip
@@ -1046,8 +1047,8 @@ class Console:
 
         d0, b0 = first
 
-        def progress(done, total, nbytes):
-            job.update(done=d0 + done, total=d0 + total, bytes=b0 + nbytes)
+        def progress(done, total, nbytes, secs=0):
+            job.update(done=d0 + done, total=d0 + total, bytes=b0 + nbytes, secs=secs, hours_total=x.get("hours_total"))
 
         try:
             doc = sg_review.load(job["account"]) or sg_review.new_doc(job["account"], job.get("name", ""))
@@ -1077,6 +1078,8 @@ class Console:
             self._say(job, "not read")
         elif extra:
             extra["stop"].set()
+            job["stopping"] = True
+            self._say(job, "stopping: cancelling the queries running now")
         return dict(job)
 
     # ------------------------------------------------------------------ reading many accounts at once (an OU)
@@ -1213,7 +1216,7 @@ class Console:
             try:
                 doc = sg_review.load(j["account"]) or sg_review.new_doc(j["account"], j.get("name", ""))
                 got = sg_review.run_read(x["sess"], doc, new, j["days"], now, x["stop"].is_set,
-                                         lambda d, t, n: j.update(done=d, total=len(tasks), bytes=n))  # fmt: skip
+                                         lambda d, t, n, *_: j.update(done=d, total=len(tasks), bytes=n))  # fmt: skip
                 del doc  # loaded for this pass only: holding every account's at once filled the memory
                 first[j["id"]] = (got["done"], got["bytes"])
             except Exception:  # the second pass reads it again and reports the failure

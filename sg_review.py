@@ -1037,8 +1037,19 @@ def _stamp(t: float) -> str:
 
 
 def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cancelled=lambda: False,
-               egress: bool = False) -> list[dict]:
-    """One slice read (split in halves, down to a few minutes, while the detail query hits the row limit)."""
+               egress: bool = False, tick=None, hint: dict | None = None) -> list[dict]:
+    """One slice read (split in halves, down to a few minutes, while the detail query hits the row limit).
+
+    ``hint`` (shared by the slices of one read) holds, per region, the longest span known to hit the row limit:
+    a slice longer than it is split at once instead of being queried whole first (each of those queries is
+    billed and thrown away). ``tick(nbytes, seconds)`` is called as each piece is read, for live progress.
+    A read stopped part way returns no chunk for what it did not finish."""
+    if cancelled():
+        return []
+    if hint is not None and hint.get(region) and e - s >= hint[region] and e - s > MIN_SPLIT:
+        mid = s + _floor((e - s) // 2, HOUR) if e - s >= 2 * HOUR else (s + e) // 2
+        return [*read_chunk(logs, region, mid, e, qsets, vpcs, cancelled, egress, tick, hint),
+                *read_chunk(logs, region, s, mid, qsets, vpcs, cancelled, egress, tick, hint)]  # fmt: skip
     rows, pub, egr, nbytes, cut, pub_cut, errors = [], [], [], 0, False, False, []
     for q in qsets:
         rs, b, status = None, 0, ""
@@ -1049,16 +1060,25 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
             if rs is not None or status in ("Cancelled", "Timeout"):
                 break
         if rs is None:
+            if cancelled():
+                if tick:
+                    tick(nbytes, 0)
+                return []
             errors.append(f"detail query {status}")
             continue
         if len(rs) >= ROWS:
             if e - s > MIN_SPLIT:
+                if hint is not None:
+                    hint[region] = min(hint.get(region) or e - s, e - s)
                 mid = s + _floor((e - s) // 2, HOUR) if e - s >= 2 * HOUR else (s + e) // 2
+                if tick:
+                    tick(nbytes, 0)
                 parts = [
-                    *read_chunk(logs, region, mid, e, qsets, vpcs, cancelled, egress),
-                    *read_chunk(logs, region, s, mid, qsets, vpcs, cancelled, egress),
+                    *read_chunk(logs, region, mid, e, qsets, vpcs, cancelled, egress, tick, hint),
+                    *read_chunk(logs, region, s, mid, qsets, vpcs, cancelled, egress, tick, hint),
                 ]
-                parts[0]["b"] += nbytes  # the full slice's query was billed too
+                if parts:
+                    parts[0]["b"] += nbytes  # the full slice's query was billed too
                 return parts  # fmt: skip
             cut = True
         rows += [[r.get("src"), r.get("dst"), r.get("eni"), r.get("proto"), _int(r.get("dport")), r.get("action"),
@@ -1081,6 +1101,12 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
             else:
                 egr += [[r.get("src"), r.get("dst"), r.get("eni"), r.get("proto"), _int(r.get("dport")),
                          _int(r.get("flows"))] for r in es]  # fmt: skip
+    if cancelled() and errors:  # stopped part way: not recorded, so the next read asks for these hours again
+        if tick:
+            tick(nbytes, 0)
+        return []
+    if tick:
+        tick(nbytes, e - s)
     st = "failed" if errors and not rows and not pub else ("cut" if cut else "ok")
     out = {"r": region, "s": s, "e": e, "st": st, "b": nbytes, "rows": rows, "pub": pub, "pc": pub_cut,
            "err": "; ".join(errors)}
@@ -3673,7 +3699,16 @@ def run_read(sess, doc: dict, tasks: list[tuple], days: int, now: float, cancell
     True is a tail slice: its chunks are marked so the hourly read replaces them."""
     lock = threading.Lock()
     clients: dict = {}
-    state = {"done": 0, "bytes": 0}
+    state = {"done": 0, "bytes": 0, "secs": 0, "queries": 0}
+    hint: dict = {}  # region: the shortest span seen to hit the row limit in this read
+
+    def tick(nbytes, secs):
+        with lock:
+            state["bytes"] += nbytes
+            state["secs"] += secs
+            state["queries"] += 1
+            if progress:
+                progress(state["done"], len(tasks), state["bytes"], state["secs"])
 
     def one(task):
         region, s, e, qsets, vpcs, *rest = task
@@ -3685,7 +3720,7 @@ def run_read(sess, doc: dict, tasks: list[tuple], days: int, now: float, cancell
                 region, sess.client("logs", region_name=region, config=BOTO_CONFIG)
             )
         try:
-            got = read_chunk(logs, region, s, e, qsets, vpcs, cancelled, bool(doc.get("egress")))
+            got = read_chunk(logs, region, s, e, qsets, vpcs, cancelled, bool(doc.get("egress")), tick, hint)
         except (ClientError, BotoCoreError) as exc:  # one slice out of reach must not stop the account's read
             got = [{"r": region, "s": s, "e": e, "st": "failed", "b": 0, "rows": [], "pub": [], "pc": False,
                     "err": describe_error(exc)[:300]}]  # fmt: skip
@@ -3702,14 +3737,17 @@ def run_read(sess, doc: dict, tasks: list[tuple], days: int, now: float, cancell
                 chunk["tail"] = True
             with lock:
                 doc["chunks"].append(chunk)
-                state["bytes"] += chunk["b"]
+                if chunk["st"] == "failed":  # a failed slice is not ticked: its bytes count here
+                    state["bytes"] += chunk["b"]
+        if cancelled() and sum(c["e"] - c["s"] for c in got) < e - s:  # stopped part way: not counted as read
+            return
         with lock:
             state["done"] += 1
             done = state["done"]
             if done % 12 == 0:
                 save(doc)
             if progress:
-                progress(done, len(tasks), state["bytes"])
+                progress(done, len(tasks), state["bytes"], state["secs"])
         print(f"\r  {done} of {len(tasks)} slices · {_gb(state['bytes'])} scanned, "
               f"{_cost(state['bytes'] / 1e9 * INSIGHTS_PER_GB)}   ", end="", file=sys.stderr, flush=True)  # fmt: skip
 
