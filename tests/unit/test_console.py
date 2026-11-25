@@ -565,3 +565,11 @@ def test_explain_buttons_look_like_buttons():
     page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
     for tag in re.findall(r"<button[^>]*>Explain</button>", page):
         assert "quiet" not in tag, tag
+
+
+def test_audit_exports_to_pdf_printing_only_the_audit():
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    assert 'id="auditPdf"' in page and ">Export to PDF</button>" in page
+    assert "body.print-audit > *:not(#auditPrint) { display: none !important; }" in page
+    assert '$("auditPdf").addEventListener("click", auditPdf)' in page

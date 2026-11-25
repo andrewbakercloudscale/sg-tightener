@@ -469,6 +469,14 @@ section.nodata .card:not(.empty-state) { display: none; }
   .au-act.remove { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
   .au-act.keep, .au-act.open, .au-act.wait, .au-act.off { background: var(--surface-2); color: var(--muted); }
   .au-ext { color: var(--bad); font-weight: 600; }
+  #auditPrint { display: none; }
+  @media print {
+    body.print-audit > *:not(#auditPrint) { display: none !important; }
+    body.print-audit #auditPrint { display: block !important; }
+    #auditPrint .au-t tr, #auditPrint .au-grp h4 { break-inside: avoid; }
+    #auditPrint .au-grp h4 { break-after: avoid; }
+    #auditPrint .au-t thead { display: table-header-group; }
+  }
   .range input[type=date] { border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 13px; padding: 4px 2px; }
 </style>
 </head>
@@ -691,7 +699,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     <dialog id="auditDlg" aria-labelledby="auditTitle">
       <div class="au-head"><div><div class="eyebrow">Audit</div><h2 id="auditTitle" style="margin:2px 0 4px">Before and after, rule by rule</h2>
         <p class="muted small" id="auditSub"></p></div>
-        <div class="au-tools"><button class="btn sm" type="button" id="auditCsv">Download CSV</button><button class="btn sm primary" type="button" id="auditClose">Close</button></div></div>
+        <div class="au-tools"><button class="btn sm" type="button" id="auditPdf" title="Opens the print dialog: choose Save as PDF. Prints the rules the filters show">Export to PDF</button><button class="btn sm" type="button" id="auditCsv">Download CSV</button><button class="btn sm primary" type="button" id="auditClose">Close</button></div></div>
       <div class="au-filters">
         <select id="auditAct" aria-label="Which changes"><option value="">Every change</option><option value="tighten">Narrowed sources</option><option value="ports">Fewer ports</option><option value="remove">Removed as unused</option><option value="kept">Left as they are</option></select>
         <label class="small"><input type="checkbox" id="auditExt"> Only rules letting in internet addresses</label>
@@ -1780,6 +1788,22 @@ section.nodata .card:not(.empty-state) { display: none; }
   }
   $("auditClose").addEventListener("click", () => $("auditDlg").close());
   $("auditCsv").addEventListener("click", auditCsv);
+  function auditPdf() {
+    // The modal sits inside the Remediate section, so print a copy as the body's only visible child
+    const P = fixPlan, day = new Date().toISOString().slice(0, 10), t = document.title;
+    const f = [$("auditAct").value ? $("auditAct").selectedOptions[0].textContent : "", $("auditExt").checked ? "only rules letting in internet addresses" : "",
+      $("auditFind").value.trim() ? `matching "${$("auditFind").value.trim()}"` : ""].filter(Boolean).join(" · ");
+    let box = $("auditPrint");
+    if (!box) { box = document.createElement("div"); box.id = "auditPrint"; document.body.appendChild(box); }
+    box.innerHTML = `<div class="eyebrow">Security Tightener · audit</div><h2 style="margin:2px 0 4px">Before and after, rule by rule</h2>
+      <p class="muted small">Exported ${day} · ${$("auditSub").innerHTML}</p><p class="muted small">${esc($("auditCount").textContent)}${f ? ` · ${esc(f)}` : ""}</p>${$("auditBody").innerHTML}`;
+    document.body.classList.add("print-audit");
+    document.title = `Security Tightener - audit - ${P.name || P.account} - ${day}`;
+    const done = () => { document.title = t; document.body.classList.remove("print-audit"); box.innerHTML = ""; window.removeEventListener("afterprint", done); };
+    window.addEventListener("afterprint", done);
+    window.print();
+  }
+  $("auditPdf").addEventListener("click", auditPdf);
   for (const id of ["auditAct", "auditExt"]) $(id).addEventListener("change", drawAudit);
   $("auditFind").addEventListener("input", drawAudit);
   function fixChosen() {
