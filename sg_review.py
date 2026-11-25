@@ -4682,6 +4682,35 @@ def private_ip(ip: str) -> bool:
 _ULA = ipaddress.ip_network("fc00::/7")
 
 
+def _refused_trend(doc: dict) -> dict | None:
+    """The last day's refused traffic against the day before, from the week's six-hour bins: the sum over the last
+    four bins of the distinct addresses refused in each, and the same for the four before. ``prev`` is None when the
+    flow logs read do not reach back that far."""
+    try:
+        rep = build(doc, "1w")
+    except Exception:  # noqa: BLE001 - the trend is a nicety; the day's rows are shown without it
+        return None
+    by = ((rep.get("series") or {}).get("by_group") or {}).get("refused") or {}
+    n = len(rep.get("bins") or [])
+    per = [sum((v[i] if i < len(v) else 0) for v in by.values()) for i in range(n)]
+    if len(per) < 4:
+        return None
+    first = _evidence(doc)[0]
+    reaches = bool(first) and len(per) >= 8 and first <= rep["bins"][-8]
+    return {"now": sum(per[-4:]), "prev": sum(per[-8:-4]) if reaches else None}
+
+
+def report_row_safe(args: tuple) -> tuple:
+    """(row, error or None, seconds) for one ``report_row(*args)``: a failing account reports its error instead of
+    ending the whole parallel build."""
+    t = time.time()
+    try:
+        return report_row(*args), None, time.time() - t
+    except Exception as exc:  # noqa: BLE001 - reported per account by the console
+        LOG.exception("report %s for %s failed", args[0], args[1])
+        return None, f"{type(exc).__name__}: {exc}", time.time() - t
+
+
 def report_row(kind: str, account: str, name: str, range_key: str):
     """One account's row for a console report ("macro" or "refused"), or None if none of its flow logs were read.
     A top-level function so the console can build many in parallel processes. "flow" is whether its flow
@@ -4709,7 +4738,8 @@ def report_row(kind: str, account: str, name: str, range_key: str):
     rep = build(doc, range_key)
     name = doc.get("name", "")
     cov = rep.get("covered") or [1.0]
-    return {"rows": refused_rows(account, name, rep, limit=1000),
+    trend = _refused_trend(doc) if range_key == "24h" else None
+    return {"rows": refused_rows(account, name, rep, limit=1000), "trend": trend,
             "account": {"account": account, "name": name, "refused": rep["summary"]["refused"],
                         "attention": rep["summary"]["attention"], "end": rep.get("end"),
                         "first": _evidence(doc)[0],

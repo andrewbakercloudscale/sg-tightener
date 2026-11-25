@@ -555,9 +555,9 @@ section.nodata .card:not(.empty-state) { display: none; }
     <button role="tab" data-tab="macro" aria-selected="false">Risk overview</button>
     <button role="tab" data-tab="over" aria-selected="false">Over-provisioning</button>
     <button role="tab" data-tab="fix" aria-selected="false">Remediate</button>
+    <button role="tab" data-tab="refused" aria-selected="false">Rejected traffic</button>
     <button role="tab" data-tab="requests" aria-selected="false">Change requests<span class="count" id="pendingCount" hidden></span></button>
     <button role="tab" data-tab="audit" aria-selected="false">Audit trail</button>
-    <button role="tab" data-tab="refused" aria-selected="false">Rejected traffic</button>
   </nav>
 </header>
 <main>
@@ -637,6 +637,19 @@ section.nodata .card:not(.empty-state) { display: none; }
     <div class="card" id="svcCard" hidden>
       <label class="switch"><input type="checkbox" id="svcOn" role="switch"> Always running</label>
       <p class="muted small" id="svcText" style="margin:6px 0 0"></p>
+    </div>
+    <div class="card" id="schedCard">
+      <div class="card-head"><h3 style="margin:0">Scheduled flow-log reads</h3><button class="btn sm" type="button" id="schedWhy" aria-expanded="false">Explain</button></div>
+      <p class="small" id="schedHelp" hidden style="margin:6px 0">While the console runs it reads every chosen account's new flow logs by itself at these times (your computer's clock), so Rejected traffic and the other tabs are up to date when you look. Each read is priced first: within the limit it starts without asking; over it, it waits on this page for you to confirm, as a read you start does. It only reads hours not already read, back as far as <b>Fill back</b>. A time missed while the computer slept or you were signed out of AWS is read once you are back, within 6 hours; later than that it waits for the next time. Signing in to AWS stays your job: the SSO session usually lasts 8 to 12 hours.</p>
+      <div class="acts" style="margin-top:8px;align-items:center">
+        <label class="switch"><input type="checkbox" id="schedOn" role="switch"> Read by itself every day at</label>
+        <span id="schedTimes" style="display:inline-flex;gap:6px;flex-wrap:wrap"></span>
+        <button class="btn sm" type="button" id="schedAdd">Add a time</button>
+        <label class="small">Spend up to US$ <input id="schedMax" type="number" min="0" step="1" style="width:80px"> without asking</label>
+        <label class="small">Fill back <input id="schedDays" type="number" min="1" max="90" style="width:64px"> days</label>
+        <button class="btn primary sm" type="button" id="schedSave">Save</button>
+      </div>
+      <p class="muted small" id="schedNote" style="margin:8px 0 0"></p>
     </div>
     <div class="grid" id="stats"></div>
     <div class="card scroll"><table><thead><tr><th>Account</th><th>Mode</th><th>Region</th><th>Groups</th><th>Rules</th><th>Assets</th><th title="Rules where AWS differs from what is saved here, usually changed in AWS outside this tool. Open the region to keep what AWS holds, or apply to put it back.">Changed outside tool</th><th>Can apply here?</th><th>Last read from AWS</th><th></th></tr></thead><tbody id="regions"></tbody></table><p class="muted small" id="regionsEmpty" hidden style="margin:10px 0 0"></p></div>
@@ -813,8 +826,10 @@ section.nodata .card:not(.empty-state) { display: none; }
       <select id="fRange" aria-label="Time window"><option value="24h">Last 24 hours</option><option value="1w">Last week</option><option value="1m">Last month</option><option value="3m">Last 3 months</option><option value="6m">Last 6 months</option><option value="1y">Last year</option></select>
       <div class="combo" id="fCombo"><input id="fQ" type="search" placeholder="Search: account, source, destination, port, verdict…" aria-label="Filter rejected traffic" role="combobox" aria-expanded="false" aria-controls="fQList" autocomplete="off">
         <div class="combo-list" id="fQList" role="listbox" hidden></div></div>
+      <select id="fAcct" aria-label="Account" hidden><option value="">Every account</option></select>
+      <div class="combo" id="fAcctCombo"><input id="fAcctQ" type="search" placeholder="Every account: type to filter" aria-label="Account: type to filter, pick from the list" role="combobox" aria-expanded="false" aria-controls="fAcctList" autocomplete="off">
+        <div class="combo-list" id="fAcctList" role="listbox" hidden></div></div>
       <select id="fSev" aria-label="Severity"><option value="">Every severity</option><option>critical</option><option>high</option><option>medium</option><option>low</option><option>info</option></select>
-      <select id="fAcct" aria-label="Account"><option value="">Every account</option></select>
       <label class="small"><input id="fRisky" type="checkbox"> risky ports only</label>
       <label class="small"><input id="fNew" type="checkbox"> new IP addresses only</label>
       <select id="fWhere" aria-label="Where from"><option value="">Internal and external</option><option value="ext">External only</option><option value="int">Internal only</option><option value="v6">IPv6 only</option><option value="scan">Scanning only</option><option value="bad">Known malicious or Tor</option></select>
@@ -822,10 +837,6 @@ section.nodata .card:not(.empty-state) { display: none; }
     </div>
     <p id="fGap" class="small" hidden style="margin:8px 0;padding:8px 12px;border-left:4px solid var(--muted);border-radius:8px;background:color-mix(in srgb, var(--muted) 12%, transparent)"></p>
     <div class="grid" id="fAccounts"></div>
-    <div class="card" id="ipCard"><div class="card-head"><h3 style="margin:0">Look up an IP address</h3><span class="muted small">the estate's address book</span></div>
-      <p class="muted small">Who owns it (one of our accounts, an AWS service, or an AS number and its owner), threat lists and Tor, the operating system when it is one of our instances, every account that let it in or refused it and on which ports, whether it scanned, and when it was first and last seen. Nothing is sent to the address.</p>
-      <div class="acts"><input id="ipQ" type="search" placeholder="IP address, e.g. 10.1.2.3" aria-label="IP address" style="width:220px"><input id="ipPort" type="search" placeholder="Port (optional)" aria-label="Port" style="width:130px"><button class="btn" id="ipGo">Look up</button></div>
-      <div id="ipOut"></div></div>
     <div class="card" id="fChartCard"><div class="card-head"><h3 style="margin:0">Rejected IP addresses over time</h3><span class="muted small" id="fChartNote"></span></div>
       <p class="muted small">Distinct source IP addresses refused in each period, one line per kind of source. Follows the account and time filters above.</p>
       <div id="fChart"></div></div>
@@ -833,6 +844,15 @@ section.nodata .card:not(.empty-state) { display: none; }
       <p class="muted small">The rejected traffic below, sliced every way: by source and destination IP address, kind of source, port and kind of port, verdict, and what refused it. Bars are refused flows. Click a line to filter by it.</p>
       <div class="insights" id="fInsights"></div></div>
     <div class="card scroll"><table><thead><tr><th>Severity</th><th>Account</th><th>Source</th><th>Refused on</th><th>Flows</th><th>Last seen</th><th>Verdict</th><th></th></tr></thead><tbody id="refusedRows"></tbody></table></div>
+    <div class="card" id="ipCard"><div class="card-head"><h3 style="margin:0">Look up an IP address</h3><span class="muted small">the estate's address book</span></div>
+      <p class="muted small">Who owns it (one of our accounts, an AWS service, or an AS number and its owner), threat lists and Tor, the operating system when it is one of our instances, every account that let it in or refused it and on which ports, whether it scanned, and when it was first and last seen. Nothing is sent to the address.</p>
+      <div class="acts"><input id="ipQ" type="search" placeholder="IP address, e.g. 10.1.2.3" aria-label="IP address" style="width:220px"><input id="ipPort" type="search" placeholder="Port (optional)" aria-label="Port" style="width:130px"><button class="btn" id="ipGo">Look up</button></div>
+      <div id="ipOut"></div></div>
+    <div class="card" id="fAttention"><div class="card-head"><h3 style="margin:0">Accounts that need attention</h3>
+      <label class="small">Sort by <select id="fSort" aria-label="Sort the accounts"><option value="most">Most rejections</option><option value="change">Changed most in the last day</option><option value="sev">Worst verdicts</option></select></label></div>
+      <p class="muted small" style="margin:6px 0">An account needs attention when something it refused is critical or high, a host inside it is scanning, sources it had never seen were refused in the last day, or its refused addresses rose by half or more on the day before. <b>Resolve</b> shows its rejections over time, where they come from and go to, and a fix for each.</p>
+      <div class="scroll"><table class="small"><thead><tr><th>Account</th><th class="num">Refused sources</th><th class="num">Refused flows</th><th class="num" title="Refused addresses in the last day against the day before (each six hours' distinct addresses, added up)">Last day vs day before</th><th class="num" title="Sources first seen in the last day, never in the flow logs read before">New sources</th><th class="num">Critical · high</th><th>Why</th><th></th></tr></thead><tbody id="fAttRows"></tbody></table></div>
+      <div id="fAttMore"></div></div>
     <dialog id="fixDlg" aria-labelledby="fixTitle">
       <div class="au-head"><div><div class="eyebrow">Rejected traffic</div><h2 id="fixTitle" style="margin:2px 0 4px">Fix</h2>
         <div class="muted small" id="fixSub"></div></div>
@@ -1059,6 +1079,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       const r = regions[+b.dataset.open]; $("gWhere").value = `${r.account}|${r.region}`; show("groups");
     });
     drawService();
+    loadSchedule();
     if (S.sso) await loadSso();
     const sel = $("gWhere"), keep = sel.value;
     sel.innerHTML = regions.map((r) => `<option value="${esc(r.account)}|${esc(r.region)}">${esc(r.name || r.account)} · ${esc(r.region)}</option>`).join("");
@@ -1394,6 +1415,33 @@ section.nodata .card:not(.empty-state) { display: none; }
     flash(on ? "Always running is on: the console starts when you log in." : "Always running is off.");
     await loadState();
   }));
+  // ---- scheduled reads: on by default, once a day at 08:00
+  let SCHED = null;
+  function schedTimeHtml(t) {
+    return `<span class="cellrow"><input type="time" value="${esc(t)}" aria-label="Read at"><button class="btn sm" type="button" data-schedrm title="Remove this time">Remove</button></span>`;
+  }
+  async function loadSchedule() {
+    try { SCHED = await api("/api/schedule"); } catch (e) { $("schedNote").textContent = e.message; return; }
+    $("schedOn").checked = SCHED.on;
+    $("schedTimes").innerHTML = SCHED.times.map(schedTimeHtml).join("");
+    $("schedMax").value = SCHED.max_cost;
+    $("schedDays").value = SCHED.days;
+    const ST = {started: ["var(--good)", "started"], nothing: ["var(--muted)", "nothing new"], asking: ["var(--warn)", "waiting for you"], waiting: ["var(--warn)", "waiting"], failed: ["var(--bad)", "failed"]};
+    const runs = [...(SCHED.runs || [])].reverse().slice(0, 5);
+    $("schedNote").innerHTML = (SCHED.on ? `Next read: <b>${esc(SCHED.next || "—")}</b>.` : "Off: flow logs are read only when you read them.")
+      + (SCHED.waiting === "sign-in" ? ' <span style="color:var(--warn)">A read is due: sign in to AWS and it starts.</span>' : SCHED.waiting ? ` <span class="muted">${esc(SCHED.waiting)}</span>` : "")
+      + (runs.length ? `<br>${runs.map((r) => `${esc(r.slot)}: <span class="pill" style="--p:${(ST[r.status] || ST.nothing)[0]}">${esc((ST[r.status] || [0, r.status])[1])}</span>${r.cost != null ? ` ${usd(r.cost)}` : ""}${r.accounts ? `, ${r.accounts} accounts` : ""}${r.why ? ` <span class="muted">${esc(r.why)}</span>` : ""}`).join("<br>")}` : "");
+  }
+  $("schedWhy").addEventListener("click", () => { const h = $("schedHelp"); h.hidden = !h.hidden; $("schedWhy").setAttribute("aria-expanded", String(!h.hidden)); });
+  $("schedAdd").addEventListener("click", () => { $("schedTimes").insertAdjacentHTML("beforeend", schedTimeHtml("20:00")); });
+  $("schedTimes").addEventListener("click", (ev) => { const b = ev.target.closest("[data-schedrm]"); if (b) b.parentElement.remove(); });
+  $("schedSave").addEventListener("click", () => act($("schedSave"), async () => {
+    const times = [...$("schedTimes").querySelectorAll("input")].map((i) => i.value).filter(Boolean);
+    await api("/api/schedule", {on: $("schedOn").checked, times, max_cost: Number($("schedMax").value || 0), days: Number($("schedDays").value || 7)});
+    flash($("schedOn").checked ? `Saved: reads by itself at ${times.join(" and ")}.` : "Saved: scheduled reads are off.");
+    await loadSchedule();
+  }));
+  $("schedOn").addEventListener("change", () => $("schedSave").click());
   async function waitBack() {
     try { await api("/api/state", undefined, true); location.reload(); } catch (e) { setTimeout(waitBack, 2000); }
   }
@@ -2205,41 +2253,99 @@ section.nodata .card:not(.empty-state) { display: none; }
     // Every account with refused traffic, worst first: "Its traffic" narrows the list below to it, "Fix this account"
     // opens it on Remediate. While the rows are still being worked out (after a restart or an upgrade) say so and ask
     // again, rather than claiming nothing has been read.
-    const range = $("fRange").value, building = refusedData.building || 0;
-    const sv = {};  // severities of the refused sources themselves: an account's attention also counts findings that are not refusals
-    for (const r of refusedData.rows) { const o = (sv[r.account] ??= {critical: 0, high: 0}); if (r.sev in o) o[r.sev]++; }
-    const accts = refusedData.accounts.map((a) => ({...a, attention: sv[a.account] || {critical: 0, high: 0}})).sort((x, y) => y.attention.critical - x.attention.critical || y.attention.high - x.attention.high || y.refused - x.refused);
-    $("fAccounts").innerHTML = (building ? `<div class="card empty-state" style="grid-column:1/-1">${loading(`${accts.length.toLocaleString()} account${accts.length === 1 ? "" : "s"} shown · ${building.toLocaleString()} more being worked out from the flow logs read, the page fills in by itself`)}</div>` : "")
-      + accts.filter((a) => a.refused).map((a) => `<div class="card stat${a.account === $("fAcct").value ? " on" : ""}"><b>${a.refused.toLocaleString()}</b><span>refused sources in ${esc(a.name || a.account)}${a.attention.critical ? ` · <span style="color:var(--bad)">${a.attention.critical} critical</span>` : ""}${a.attention.high ? ` · ${a.attention.high} high` : ""}</span>
-        <div style="margin-top:8px"><button class="btn primary" data-resolve="${esc(a.account)}" title="Its rejections over time, where they come from and go to, and a fix for each">Resolve</button></div></div>`).join("")
-      || (building ? "" : noFlowLogs(refusedData.no_flow_logs_read || 0));
-    $("fAccounts").onclick = (ev) => {
-      const b = ev.target.closest("[data-resolve]");
-      if (b) openResolve(b.dataset.resolve);
-    };
+    const range = $("fRange").value, building = refusedData.building || 0, B = refusedData.build, old = refusedData.old || 0;
+    const prog = B && B.running ? ` · ${B.done.toLocaleString()} of ${B.todo.toLocaleString()} built so far, ${Math.round((Date.now() / 1000 - B.started) / 60)} min in` : "";
+    const failed = B && B.failed ? `<div class="card" style="grid-column:1/-1;border-color:var(--bad)"><strong>${B.failed.toLocaleString()} account${B.failed === 1 ? "" : "s"} could not be worked out${B.running ? " so far" : ""}</strong> and ${B.failed === 1 ? "is" : "are"} left out: ${(B.errors || []).map((e) => `<div class="small"><code>${esc(e.account)}</code> ${esc(e.error)}</div>`).join("")}<p class="small muted">The full error is in the console's log (<code>~/.sg-tightener/console.log</code>). <button class="btn" id="fRetry" type="button">Try again</button></p></div>` : "";
+    $("fAccounts").innerHTML = (building ? `<div class="card empty-state" style="grid-column:1/-1">${loading(`${refusedData.accounts.length.toLocaleString()} account${refusedData.accounts.length === 1 ? "" : "s"} shown · ${building.toLocaleString()} more being worked out from the flow logs read${prog}, the page fills in by itself`)}</div>`
+      : old ? `<div class="card empty-state" style="grid-column:1/-1">${loading(`Showing the last figures for ${old.toLocaleString()} account${old === 1 ? "" : "s"} while an upgrade rebuilds them${prog}; the page updates by itself`)}</div>` : "")
+      + failed || (refusedData.accounts.length ? "" : noFlowLogs(refusedData.no_flow_logs_read || 0));
+    $("fRetry")?.addEventListener("click", async (ev) => {
+      ev.target.disabled = true;
+      try { await api("/api/reports/retry", {kind: "refused", range}); } catch (e) { flash(e.message, true); }
+      loadRefused().catch(() => {});
+    });
+    drawAttention();
     $("tab-refused").classList.toggle("nodata", !refusedData.accounts.length && !building);
     drawRefused();
     clearTimeout(refusedAgain);
-    if (building) refusedAgain = setTimeout(() => { if ($("fRange").value === range && !$("tab-refused").hidden) loadRefused().catch(() => {}); }, 4000);
+    if (building || old || B?.running) refusedAgain = setTimeout(() => { if ($("fRange").value === range && !$("tab-refused").hidden) loadRefused().catch(() => {}); }, 4000);
   }
-  let refusedAgain = 0;
+  let refusedAgain = 0, attAll = false;
+  // Accounts that need attention, worst first by the order chosen; the others behind a button
+  function accountStats() {
+    // "New" needs flow logs from before the last day: when they start inside it, every source looks new and is not
+    const by = new Map(refusedData.accounts.map((a) => [a.account, {...a, flows: 0, crit: 0, high: 0, fresh: 0, inside: 0, listed: 0,
+      history: !!(a.first && a.end && a.first < a.end - 2 * 86400)}]));
+    for (const r of refusedData.rows) {
+      const s = by.get(r.account);
+      if (!s) continue;
+      s.listed++;
+      s.flows += Number(r.flows || 0);
+      if (r.sev === "critical") s.crit++;
+      if (r.sev === "high") s.high++;
+      if (s.history && r.first_ever && r.first_ever >= s.end - 86400 && !r.seen_before) s.fresh++;
+      if (r.internal && r.scan) s.inside++;
+    }
+    for (const s of by.values()) {
+      const t = s.trend || {};
+      s.change = t.prev == null ? null : (t.now || 0) - t.prev;
+      s.pct = t.prev ? s.change / t.prev : t.prev === 0 && t.now ? Infinity : null;
+      s.why = [s.crit && `${s.crit} critical`, s.high && `${s.high} high`, s.inside && `${s.inside} inside scanning`, s.fresh && `${s.fresh} new source${s.fresh === 1 ? "" : "s"}`,
+        s.pct != null && s.pct >= 0.5 && s.change >= 5 && (s.pct === Infinity ? "refusing from nothing the day before" : `refused addresses up ${Math.round(s.pct * 100)}%`)].filter(Boolean);
+    }
+    return [...by.values()].filter((s) => s.refused);
+  }
+  function drawAttention() {
+    const xs = accountStats(), how = $("fSort").value;
+    const order = {most: (a, b) => b.refused - a.refused || b.flows - a.flows,
+      change: (a, b) => (b.change ?? -Infinity) - (a.change ?? -Infinity) || b.fresh - a.fresh || b.refused - a.refused,
+      sev: (a, b) => b.crit - a.crit || b.high - a.high || b.inside - a.inside || b.refused - a.refused}[how];
+    const need = xs.filter((s) => s.why.length).sort(order), rest = xs.filter((s) => !s.why.length).sort(order);
+    const trend = (s) => s.change == null ? '<span class="muted" title="The flow logs read do not reach back two days">—</span>'
+      : `<span style="color:${s.change > 0 ? "var(--bad)" : s.change < 0 ? "var(--good)" : "var(--ink-2)"}">${s.change > 0 ? "▲ +" : s.change < 0 ? "▼ " : ""}${s.change.toLocaleString()}</span>${s.pct != null && s.pct !== Infinity && s.change ? ` <span class="muted">(${s.pct > 0 ? "+" : ""}${Math.round(s.pct * 100)}%)</span>` : ""}`;
+    const row = (s) => `<tr><td><b>${esc(s.name || s.account)}</b><div class="muted"><code>${esc(s.account)}</code></div></td><td class="num">${s.refused.toLocaleString()}</td><td class="num">${big(s.flows)}</td>
+      <td class="num">${trend(s)}</td><td class="num">${!s.history ? '<span class="muted" title="The flow logs read for this account start inside the last two days, so every source would look new: read further back on the Overview">—</span>' : s.fresh ? `<b style="color:var(--bad)">${s.fresh.toLocaleString()}${s.listed < s.refused ? "+" : ""}</b>` : "0"}</td><td class="num"><span style="color:${s.crit ? "var(--bad)" : "inherit"}">${s.crit}</span> · ${s.high}</td>
+      <td>${s.why.length ? s.why.map(esc).join(" · ") : '<span class="muted">nothing stands out</span>'}</td><td><button class="btn primary sm" data-resolve="${esc(s.account)}">Resolve</button></td></tr>`;
+    $("fAttRows").innerHTML = need.map(row).join("") + (attAll ? rest.map(row).join("") : "")
+      || `<tr><td colspan="8" class="muted">No account stands out: ${xs.length.toLocaleString()} refused something, all of it low.</td></tr>`;
+    $("fAttMore").innerHTML = rest.length ? `<p class="small" style="margin:8px 0 0"><button class="btn sm" id="fAttAll">${attAll ? "Only those that need attention" : `Show the other ${rest.length.toLocaleString()} account${rest.length === 1 ? "" : "s"}`}</button></p>` : "";
+    $("fAttAll")?.addEventListener("click", () => { attAll = !attAll; drawAttention(); });
+  }
+  $("fSort").addEventListener("change", drawAttention);
+  $("fAttRows").addEventListener("click", (ev) => { const b = ev.target.closest("[data-resolve]"); if (b) openResolve(b.dataset.resolve); });
   function drawRefusedChart(acct) {
     const A = refusedData.accounts.filter((a) => (!acct || a.account === acct) && (a.bins || []).length);
     const NAMES = refusedData.types || {};
     const keys = Object.keys(NAMES).filter((k) => A.some((a) => (a.by_type[k] || []).some(Boolean)));
     const o = aligned(A, (a, i) => Object.fromEntries(keys.map((k) => [k, (a.by_type[k] || [])[i] || 0])));
     $("fChartNote").textContent = acct ? (A[0]?.name || acct) : `${A.length} account${A.length === 1 ? "" : "s"}`;
-    $("fChart").innerHTML = keys.length ? svgLines(o.ts, o.rows, keys, TCOL, NAMES) : '<p class="muted">Nothing refused in this window.</p>';
+    const win = chartWindow(A);
+    $("fChartNote").textContent += win ? ` · ${when(win.from)} to ${when(win.to)}` : "";
+    $("fChart").innerHTML = keys.length ? svgLines(o.ts, o.rows, keys, TCOL, NAMES, 240, win) : '<p class="muted">Nothing refused in this window.</p>';
+  }
+  // The chart's rolling window: the length chosen above, ending at the newest flow log read (not at "now", so nothing
+  // empty on the right; an account read less recently simply has no points at the right-hand end)
+  const SPAN = {"24h": 86400, "1w": 7 * 86400, "1m": 30 * 86400, "3m": 91 * 86400, "6m": 182 * 86400, "1y": 365 * 86400};
+  function chartWindow(A) {
+    const to = Math.max(0, ...A.map((a) => a.end || 0));
+    return to ? {from: to - (SPAN[refusedData?.range || $("fRange").value] || 86400), to} : null;
   }
   // A line per key over time, with its total now in the legend and a dot on its last point.
-  function svgLines(ts, rows, keys, COL, NAMES, h = 240) {
+  // With ``win`` ({from, to}, seconds) points sit at their time inside that window and the axis is labelled in time.
+  function svgLines(ts, rows, keys, COL, NAMES, h = 240, win = null) {
+    if (win) { const keep = ts.map((t, i) => t >= win.from && t <= win.to ? i : -1).filter((i) => i >= 0); ts = keep.map((i) => ts[i]); rows = keep.map((i) => rows[i]); }
     if (!ts.length) return '<p class="muted">No data in this window.</p>';
     const W = 1000, P = {l: 56, r: 14, t: 12, b: 26}, iw = W - P.l - P.r, ih = h - P.t - P.b;
     const max = Math.max(1, ...rows.flatMap((r) => keys.map((k) => r[k] || 0)));
-    const x = (i) => P.l + (ts.length === 1 ? iw / 2 : (i / (ts.length - 1)) * iw), y = (v) => P.t + ih - (v / max) * ih;
+    const step = ts.length > 1 ? ts[1] - ts[0] : 3600, lo = win ? win.from : ts[0], hi = win ? win.to - step : ts[ts.length - 1];
+    const x = (i) => P.l + (hi <= lo ? iw / 2 : ((ts[i] - lo) / (hi - lo)) * iw), y = (v) => P.t + ih - (v / max) * ih;
+    const xt = (t) => P.l + (hi <= lo ? iw / 2 : ((t - lo) / (hi - lo)) * iw);
+    const short = hi - lo <= 2 * 86400, MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const lab = (t) => { const z = new Date(t * 1000); return short ? `${two(z.getHours())}:00` + (z.getHours() < 3 ? ` ${z.getDate()} ${MON[z.getMonth()]}` : "") : `${z.getDate()} ${MON[z.getMonth()]}`; };
+    const ticks = Array.from({length: 7}, (_, j) => lo + (j / 6) * (hi - lo));
     const d = (t) => localDay(new Date(t * 1000));
     const grid = [0.25, 0.5, 0.75, 1].map((f) => `<line x1="${P.l}" x2="${W - P.r}" y1="${y(max * f).toFixed(1)}" y2="${y(max * f).toFixed(1)}" style="stroke:var(--grid)" stroke-dasharray="3 4"/>`).join("");
-    const axis = `<line x1="${P.l}" y1="${P.t + ih}" x2="${W - P.r}" y2="${P.t + ih}" style="stroke:var(--grid)"/><text x="${P.l - 6}" y="${P.t + 10}" text-anchor="end">${big(max)}</text><text x="${P.l - 6}" y="${P.t + ih}" text-anchor="end">0</text><text x="${P.l}" y="${h - 6}">${d(ts[0])}</text><text x="${W - P.r}" y="${h - 6}" text-anchor="end">${d(ts[ts.length - 1])}</text>`;
+    const axis = `<line x1="${P.l}" y1="${P.t + ih}" x2="${W - P.r}" y2="${P.t + ih}" style="stroke:var(--grid)"/><text x="${P.l - 6}" y="${P.t + 10}" text-anchor="end">${big(max)}</text><text x="${P.l - 6}" y="${P.t + ih}" text-anchor="end">0</text>${win ? ticks.map((t, j) => `<line x1="${xt(t).toFixed(1)}" x2="${xt(t).toFixed(1)}" y1="${P.t + ih}" y2="${P.t + ih + 4}" style="stroke:var(--grid)"/><text x="${xt(t).toFixed(1)}" y="${h - 6}" text-anchor="${j === 0 ? "start" : j === 6 ? "end" : "middle"}">${lab(t)}</text>`).join("") : `<text x="${P.l}" y="${h - 6}">${d(ts[0])}</text><text x="${W - P.r}" y="${h - 6}" text-anchor="end">${d(ts[ts.length - 1])}</text>`}`;
     const order = [...keys].sort((p, q) => Math.max(...rows.map((r) => r[q] || 0)) - Math.max(...rows.map((r) => r[p] || 0)));
     const lines = order.map((k) => {
       const pts = rows.map((r, i) => `${x(i).toFixed(1)},${y(r[k] || 0).toFixed(1)}`).join(" ");
@@ -2252,6 +2358,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   }
   function drawRefused() {
     if (!refusedData) return;
+    syncAcctQ();
     const q = $("fQ").value.toLowerCase().trim(), sev = $("fSev").value, acct = $("fAcct").value, risky = $("fRisky").checked, nw = $("fNew").checked, wh = $("fWhere").value;
     const whereOk = (r) => !wh || (wh === "ext" ? !r.internal : wh === "int" ? r.internal : wh === "v6" ? r.v6 : wh === "bad" ? r.threat || r.tor : r.scan);
     const shown = refusedData.rows.filter((r) => (!sev || r.sev === sev) && (!acct || r.account === acct) && (!risky || r.risky) && (!nw || r.new) && whereOk(r) && (!q ||
@@ -2381,7 +2488,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const NAMES = refusedData.types || {};
     const keys = Object.keys(NAMES).filter((k) => A.some((a) => (a.by_type[k] || []).some(Boolean)));
     const o = aligned(A, (a, i) => Object.fromEntries(keys.map((k) => [k, (a.by_type[k] || [])[i] || 0])));
-    return keys.length ? svgLines(o.ts, o.rows, keys, TCOL, NAMES) : '<p class="muted">Nothing refused in this window.</p>';
+    return keys.length ? svgLines(o.ts, o.rows, keys, TCOL, NAMES, 240, chartWindow(A)) : '<p class="muted">Nothing refused in this window.</p>';
   }
 
   // ---- Resolve: one account's rejections (or any set of them): over time, where from and to, what to do, a fix each
@@ -2484,7 +2591,49 @@ section.nodata .card:not(.empty-state) { display: none; }
     }
   });
   $("fQList").addEventListener("mousedown", (ev) => { ev.preventDefault(); pickCombo(ev.target.closest(".co")); });
-  document.addEventListener("click", (ev) => { if (!ev.target.closest("#fCombo")) closeCombo(); });
+  document.addEventListener("click", (ev) => { if (!ev.target.closest("#fCombo")) closeCombo(); if (!ev.target.closest("#fAcctCombo")) closeAcct(); });
+
+  // The account filter: a text box; what is typed lists the matching accounts (name or number), busiest first, and
+  // picking one narrows the page to it. The hidden #fAcct select keeps the value every other control reads and sets.
+  let acctAt = -1;
+  function acctLabel(id) { const a = (refusedData?.accounts || []).find((x) => x.account === id); return id ? (a?.name ? `${a.name} (${id})` : id) : ""; }
+  function syncAcctQ() { if (document.activeElement !== $("fAcctQ")) $("fAcctQ").value = acctLabel($("fAcct").value); }
+  function drawAcct() {
+    const q = $("fAcctQ").value.toLowerCase().trim(), cur = acctLabel($("fAcct").value).toLowerCase();
+    const n = {};
+    for (const r of refusedData?.rows || []) n[r.account] = (n[r.account] || 0) + 1;
+    const all = (refusedData?.accounts || []).map((a) => ({id: a.account, name: a.name || "", n: a.refused || n[a.account] || 0}));
+    const hit = (q && q !== cur ? all.filter((a) => (a.name + " " + a.id).toLowerCase().includes(q)) : all).sort((x, y) => y.n - x.n || x.name.localeCompare(y.name));
+    acctAt = hit.length && q && q !== cur ? 0 : -1;
+    $("fAcctList").innerHTML = `<div class="co" role="option" data-v=""><span>Every account</span><span class="n">${all.length.toLocaleString()}</span></div>`
+      + (hit.length ? `<div class="cg">${q && q !== cur ? `${hit.length} matching` : "Accounts, most refused sources first"}</div>` : `<div class="cg">No account matches "${esc(q)}"</div>`)
+      + hit.slice(0, 200).map((a, j) => `<div class="co${j === acctAt ? " act" : ""}" role="option" data-v="${esc(a.id)}"><span>${esc(a.name || a.id)} <span class="muted small">${esc(a.id)}</span></span><span class="n">${a.n.toLocaleString()} src</span></div>`).join("");
+    $("fAcctList").hidden = false;
+    $("fAcctQ").setAttribute("aria-expanded", "true");
+  }
+  function closeAcct() { if ($("fAcctList").hidden) return; $("fAcctList").hidden = true; $("fAcctQ").setAttribute("aria-expanded", "false"); syncAcctQ(); }
+  function pickAcct(el) {
+    if (!el?.classList.contains("co")) return;
+    $("fAcct").value = el.dataset.v;
+    $("fAcctList").hidden = true; $("fAcctQ").setAttribute("aria-expanded", "false");
+    $("fAcctQ").value = acctLabel(el.dataset.v);
+    $("fAcctQ").blur();
+    drawRefused();
+  }
+  $("fAcctQ").addEventListener("focus", () => { $("fAcctQ").select(); drawAcct(); });
+  $("fAcctQ").addEventListener("input", () => { if (!$("fAcctQ").value) { $("fAcct").value = ""; drawRefused(); } drawAcct(); });
+  $("fAcctQ").addEventListener("keydown", (ev) => {
+    const os = [...$("fAcctList").querySelectorAll(".co[data-v]")].slice(1);
+    if (ev.key === "Escape") { closeAcct(); $("fAcctQ").blur(); return; }
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if ($("fAcctList").hidden) drawAcct();
+      acctAt = Math.max(-1, Math.min(os.length - 1, acctAt + (ev.key === "ArrowDown" ? 1 : -1)));
+      os.forEach((o, j) => o.classList.toggle("act", j === acctAt));
+      os[acctAt]?.scrollIntoView({block: "nearest"});
+    } else if (ev.key === "Enter") { ev.preventDefault(); pickAcct(acctAt >= 0 ? os[acctAt] : $("fAcctList").querySelector(".co")); }
+  });
+  $("fAcctList").addEventListener("mousedown", (ev) => { ev.preventDefault(); pickAcct(ev.target.closest(".co")); });
 
   // ---- Fix one refused source: who it is, what it tried, why, and where a rule letting it in belongs
   let fixRow = null;

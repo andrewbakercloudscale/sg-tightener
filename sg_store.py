@@ -488,15 +488,18 @@ def prune(schema: str | None = None, now: float | None = None) -> dict:
 
 # ------------------------------------------------------------------------------------------- report rows
 def report_rows(version: int, schema: str | None = None) -> dict:
-    """{"kind|range|account": {"mtime", "at", "row"}} for the rows built by this version of the reports."""
-    return {f"{k}|{r}|{a}": {"mtime": st, "at": at, "row": row} for k, r, a, st, at, row in db(schema).execute(
-        "SELECT kind, range_key, account, stamp, at, row FROM report_rows WHERE version = ?", (version,))}
+    """{"kind|range|account": {"mtime", "at", "row"}}. A row an earlier version of the reports built is kept, marked
+    ``old`` with no stamp, so it is shown until this version rebuilds it rather than the page going empty after an
+    upgrade."""
+    return {f"{k}|{r}|{a}": ({"mtime": st, "at": at, "row": row} if v == version else
+                             {"mtime": None, "at": at, "row": row, "old": True})
+            for k, r, a, v, st, at, row in db(schema).execute(
+                "SELECT kind, range_key, account, version, stamp, at, row FROM report_rows")}
 
 
 def save_report_rows(version: int, rows: dict, schema: str | None = None) -> None:
     d = db(schema)
     with d.transaction():
-        d.execute("DELETE FROM report_rows WHERE version <> ?", (version,))
         d.executemany("INSERT INTO report_rows (kind, range_key, account, version, stamp, at, row) VALUES "
                       "(?, ?, ?, ?, ?, ?, ?) ON CONFLICT (kind, range_key, account) DO UPDATE SET version = excluded.version, "
                       "stamp = excluded.stamp, at = excluded.at, row = excluded.row",

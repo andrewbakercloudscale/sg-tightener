@@ -512,6 +512,20 @@ class Store:
         return [{**dict(zip(cols, r)), "ok": bool(r[4]), "result": json.loads(r[5])} for r in self.db.execute(q, args)]
 
     # ---------------------------------------------------------------- change requests
+    def meta_get(self, key: str, default=None):
+        """A console setting kept as JSON in the meta table (the read schedule, its last runs)."""
+        row = self.db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        if not row:
+            return default
+        try:
+            return json.loads(row[0])
+        except ValueError:
+            return default
+
+    def meta_set(self, key: str, value) -> None:
+        self.db.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                        (key, json.dumps(value)))  # fmt: skip
+
     def approvals(self) -> bool:
         row = self.db.execute("SELECT value FROM meta WHERE key = 'approvals'").fetchone()
         return (row[0] if row else "two-person") != "off"

@@ -35,6 +35,7 @@ import logging
 import os
 import platform
 import plistlib
+import re
 import secrets
 import subprocess
 import sys
@@ -56,13 +57,41 @@ MIN_SPEND = 100.0  # US$ in the last 30 days: reading an OU skips accounts spend
 AGES = {"estimate": 3600}  # reports that depend on the time as well as the read: rebuilt (in the background) this often
 SETTLING = 600  # a read written to in the last ten minutes keeps its last report row (built in this window)
 REPORT_PROCS = max(1, min(8, (os.cpu_count() or 2) - 1))  # processes building report rows at once
-REPORT_CACHE_VERSION = 7  # 5: refused rows carry every target and the verdict; 6, 7: one service is not a scan
+SHOW_OLD = ("refused", "macro")  # reports whose rows from an earlier version are shown while being rebuilt
+REPORT_CACHE_VERSION = 8  # 5: refused rows carry every target and the verdict; 6, 7: one service is not a scan; 8: the day before
 # a page asking for a report some accounts have no row in yet gets the rows there are at once, and the rest are
 # built in the background (it asks again); tests set SG_NO_WARM and get every row before the answer
 REPORTS_WAIT = os.environ.get("SG_NO_WARM") == "1"
 WARM = (("macro", "1m"), ("refused", "24h"), ("seen", "all"), ("macro", "1w"), ("macro", "3m"), ("macro", "24h"), ("macro", "6m"),
         ("macro", "1y"))  # built in the background, default views first, so a page opens from rows already built
 WARM_EVERY = 600
+# The console reads every chosen account's new flow logs by itself at these local times (on by default, once a day
+# at 08:00; changed or turned off on the Overview). A time missed while asleep or signed out is caught up within
+# SCHEDULE_CATCHUP; later than that it waits for the next one. Over max_cost (US$) it is priced and left for a yes.
+SCHEDULE_DEFAULT = {"on": True, "times": ["08:00"], "max_cost": 25.0, "days": 7}  # days: how far back it fills hours never read
+SCHEDULE_POLL = 60
+SCHEDULE_CATCHUP = 6 * 3600
+
+
+def _slots(cfg: dict, t: float, day_offset: int = 0) -> list[tuple[float, str]]:
+    """(epoch, "YYYY-MM-DD HH:MM") of each scheduled time on the local day ``day_offset`` days from ``t``."""
+    lt = time.localtime(t + day_offset * 86400)
+    out = []
+    for hm in cfg.get("times") or []:
+        h, m = (int(x) for x in hm.split(":"))
+        at = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, h, m, 0, 0, 0, -1))
+        out.append((at, time.strftime("%Y-%m-%d %H:%M", time.localtime(at))))
+    return sorted(out)
+
+
+def _due_slot(cfg: dict, t: float) -> str:
+    """The latest scheduled time already passed today, if it passed within SCHEDULE_CATCHUP; else ""."""
+    past = [s for at, s in _slots(cfg, t) if at <= t < at + SCHEDULE_CATCHUP]
+    return past[-1] if past else ""
+
+
+def _next_slot(cfg: dict, t: float) -> str:
+    return next((s for at, s in _slots(cfg, t) + _slots(cfg, t, 1) if at > t), "")
 DEFAULT_DAYS = 7  # a read's default look back: 30 days across an OU can cost hundreds of dollars in Logs Insights
 FIRST_PASS = 86400  # an OU read does the last day of every account first, then goes further back
 BATCH_WORKERS = 24  # accounts read at once when reading an OU: each runs its own Logs Insights queries (its own quota)
@@ -137,6 +166,8 @@ class Console:
         self._plan_pool = None  # processes that build plans: the console stays responsive while a big one builds
         self._owner_failed, self._owner_why = 0.0, ""
         self._reports_mem: dict | None = None
+        self._sched_wait = ""  # why a scheduled read due now has not started
+        self._builds: dict = {}  # "kind|range" -> progress of the latest report build, for the page and the log
         self.sso = sso
         self.keys = keys  # sg_keys.Keys: signing in with a profile or keys on this computer instead of SSO
         self.batch: dict | None = None  # reading many accounts at once (an OU)
@@ -579,6 +610,9 @@ class Console:
             return self._reports(kind, range_key, names), 0
         import sg_review
 
+        last = self._builds.get(f"{kind}|{range_key}") or {}
+        # an account whose build just failed is not tried again on every page load: its error is shown instead
+        failed = last.get("failed_accounts", set()) if time.time() - (last.get("finished") or 0) < 600 else set()
         with self._report_lock:
             cache = self._report_cache()
             out, missing = {}, 0
@@ -586,7 +620,7 @@ class Console:
                 hit = cache.get(f"{kind}|{range_key}|{account}")
                 if hit:
                     out[account] = hit["row"]
-                else:
+                elif account not in failed:
                     missing += 1
             key = ("soon", kind, range_key)
             busy = self._report_gates.get(key)
@@ -640,30 +674,197 @@ class Console:
                     todo.append((account, mtime))
         if todo:
             got = self._build_reports(kind, range_key, [(a, names.get(a, "")) for a, _ in todo])
+            failed = self._builds.get(f"{kind}|{range_key}", {}).get("failed_accounts", set())
             with self._report_lock:
                 cache = self._report_cache()
                 for (account, mtime), row in zip(todo, got):
+                    if account in failed:  # not kept: an error is not "no flow logs", and the next build tries again
+                        continue
                     out[account] = row
                     cache[f"{kind}|{range_key}|{account}"] = {"mtime": mtime, "at": now, "row": row}
-                self._save_report_cache([f"{kind}|{range_key}|{a}" for a, _ in todo])
+                self._save_report_cache([f"{kind}|{range_key}|{a}" for a, _ in todo if a not in failed])
         return out, stale
 
     def _build_reports(self, kind: str, range_key: str, items: list[tuple[str, str]]) -> list:
+        """Build each account's row, counting progress in ``self._builds`` for the page and the log. An account whose
+        build fails gets no row (None) and its error is kept: one bad account never stops the others."""
         import sg_review
 
-        if len(items) < 8 or REPORT_PROCS < 2:
-            return [sg_review.report_row(kind, a, n, range_key) for a, n in items]
-        import multiprocessing
+        st = {"todo": len(items), "done": 0, "failed": 0, "errors": [], "started": time.time(), "finished": None,
+              "failed_accounts": set()}
+        self._builds[f"{kind}|{range_key}"] = st
+        LOG.info("building %s %s for %d account(s)", kind, range_key, len(items))
+        out = []
 
+        def took(account, got):
+            row, err, secs = got
+            st["done"] += 1
+            if err:
+                st["failed"] += 1
+                st["failed_accounts"].add(account)
+                st["errors"] = (st["errors"] + [{"account": account, "error": err, "at": time.time()}])[-5:]
+                LOG.warning("report %s %s for %s failed after %.1f s: %s", kind, range_key, account, secs, err)
+            elif secs > 30:
+                LOG.info("report %s %s for %s took %.0f s", kind, range_key, account, secs)
+            out.append(row)
+
+        args = [(kind, a, n, range_key) for a, n in items]
         try:
-            # a process is replaced after a few accounts: one large account leaves gigabytes behind in the process
-            # that built it, and a long-lived one would keep them for every account after
-            with multiprocessing.get_context("spawn").Pool(min(REPORT_PROCS, len(items)), maxtasksperchild=4,
-                                                           **_child_data_dir()) as pool:  # fmt: skip
-                return pool.starmap(sg_review.report_row, [(kind, a, n, range_key) for a, n in items], chunksize=1)
-        except Exception:  # processes not available here: build them one by one
-            LOG.exception("building reports in parallel failed; building them one by one")
-            return [sg_review.report_row(kind, a, n, range_key) for a, n in items]
+            if len(items) < 8 or REPORT_PROCS < 2:
+                for x in args:
+                    took(x[1], sg_review.report_row_safe(x))
+            else:
+                import multiprocessing
+
+                try:
+                    # a process is replaced after a few accounts: one large account leaves gigabytes behind in the
+                    # process that built it, and a long-lived one would keep them for every account after
+                    with multiprocessing.get_context("spawn").Pool(min(REPORT_PROCS, len(items)), maxtasksperchild=4,
+                                                                   **_child_data_dir()) as pool:  # fmt: skip
+                        for (_, a, _, _), got in zip(args, pool.imap(sg_review.report_row_safe, args, chunksize=1)):
+                            took(a, got)
+                except Exception:  # processes not available here: build the rest one by one
+                    LOG.exception("building %s reports in parallel failed after %d; building the rest one by one",
+                                  kind, len(out))
+                    for x in args[len(out):]:
+                        took(x[1], sg_review.report_row_safe(x))
+        finally:
+            st["finished"] = time.time()
+            LOG.info("built %s %s: %d of %d account(s) in %.0f s, %d failed", kind, range_key, st["done"],
+                     st["todo"], st["finished"] - st["started"], st["failed"])
+        return out
+
+    def reports_retry(self, body: dict) -> dict:
+        """Forget which accounts failed the last build of a report and build what is missing again, now."""
+        kind, range_key = body.get("kind", "refused"), body.get("range", "24h")
+        if kind not in ("refused", "macro") or range_key not in RANGES:
+            raise ConsoleError(400, "kind must be refused or macro, range one of " + ", ".join(RANGES))
+        st = self._builds.get(f"{kind}|{range_key}")
+        if st and st["finished"] is None:
+            return {"started": False, "why": "a build is already running", "build": self.build_status(kind, range_key)}
+        if st:
+            st["failed_accounts"], st["finished"] = set(), 0.0
+        LOG.info("building %s %s again, asked from the page", kind, range_key)
+        _, building = self._reports_soon(kind, range_key, {})
+        return {"started": True, "building": building}
+
+    def build_status(self, kind: str, range_key: str) -> dict | None:
+        """How the latest build of one report went, for the page: counts, the last errors, whether it still runs."""
+        st = self._builds.get(f"{kind}|{range_key}")
+        if not st:
+            return None
+        return {**st, "errors": list(st["errors"]), "failed_accounts": sorted(st["failed_accounts"]),
+                "running": st["finished"] is None}
+
+    # ------------------------------------------------------------------ scheduled reads
+    def schedule(self) -> dict:
+        """When the console reads every chosen account's new flow logs by itself, the most it may spend each time
+        without asking, and how the last runs went."""
+        st = self.store()
+        try:
+            cfg = {**SCHEDULE_DEFAULT, **(st.meta_get("schedule", {}) or {})}
+            runs = st.meta_get("schedule_runs", []) or []
+        finally:
+            st.close()
+        nxt = _next_slot(cfg, time.time()) if cfg["on"] else None
+        return {**cfg, "runs": runs[-10:], "next": nxt, "waiting": self._sched_wait}
+
+    def set_schedule(self, body: dict) -> dict:
+        times = sorted({str(t).strip() for t in body.get("times") or [] if str(t).strip()})
+        for t in times:
+            if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", t):
+                raise ConsoleError(400, f"{t!r} is not a time of day like 08:00")
+        if body.get("on") and not times:
+            raise ConsoleError(400, "give at least one time of day, or turn the schedule off")
+        if len(times) > 6:
+            raise ConsoleError(400, "at most six reads a day")
+        try:
+            max_cost = max(0.0, float(body.get("max_cost", SCHEDULE_DEFAULT["max_cost"])))
+            days = int(body.get("days", SCHEDULE_DEFAULT["days"]))
+        except (TypeError, ValueError):
+            raise ConsoleError(400, "max_cost is US dollars and days a whole number")
+        if not 1 <= days <= 90:
+            raise ConsoleError(400, "days is from 1 to 90")
+        cfg = {"on": bool(body.get("on")), "times": times or SCHEDULE_DEFAULT["times"], "max_cost": max_cost, "days": days}
+        st = self.store()
+        try:
+            with st:
+                st.meta_set("schedule", cfg)
+        finally:
+            st.close()
+        return self.schedule()
+
+    def _sched_log(self, entry: dict) -> None:
+        st = self.store()
+        try:
+            with st:
+                runs = (st.meta_get("schedule_runs", []) or [])[-29:]
+                st.meta_set("schedule_runs", runs + [{"at": time.time(), **entry}])
+        finally:
+            st.close()
+
+    def scheduler(self, stop: threading.Event | None = None, now=time.time) -> None:
+        """Each scheduled time of day, read every chosen account's flow logs since they were last read: priced
+        first, and started without asking when the price is within the limit set on the page. A time missed
+        (asleep, or not signed in) is caught up later that day, once; the next day starts afresh."""
+        stop = stop or threading.Event()
+        while not stop.is_set():
+            try:
+                self.schedule_tick(now())
+            except Exception:  # noqa: BLE001 - tried again next minute
+                LOG.exception("scheduled read failed")
+            stop.wait(SCHEDULE_POLL)
+
+    def schedule_tick(self, t: float) -> str:
+        """One look at the clock: what was done ("" for nothing)."""
+        st = self.store()
+        try:
+            cfg = {**SCHEDULE_DEFAULT, **(st.meta_get("schedule", {}) or {})}
+            done = st.meta_get("schedule_done", "") or ""
+        finally:
+            st.close()
+        if not cfg["on"]:
+            return ""
+        slot = _due_slot(cfg, t)
+        if not slot or slot <= done:
+            return ""
+        if self.batch and self.batch["status"] in ("pricing", "running", "confirm"):
+            self._sched_wait = "another read of many accounts is under way: it starts when that one ends"
+            return ""
+        if not self._sso_ready():
+            if self._sched_wait != "sign-in":
+                self._sched_log({"slot": slot, "status": "waiting", "why": "not signed in to AWS: it runs once you sign in"})
+            self._sched_wait = "sign-in"
+            return ""
+        self._sched_wait = ""
+        st = self.store()
+        try:
+            with st:
+                st.meta_set("schedule_done", slot)  # before starting: a failure is not retried every minute
+        finally:
+            st.close()
+        threading.Thread(target=self._scheduled_read, args=(slot, cfg), daemon=True, name="scheduled-read").start()
+        return slot
+
+    def _scheduled_read(self, slot: str, cfg: dict) -> None:
+        try:
+            self.read_all({"days": cfg["days"], "min_spend": MIN_SPEND})
+        except ConsoleError as exc:
+            return self._sched_log({"slot": slot, "status": "failed", "why": str(exc)})
+        b = self.batch
+        while b["status"] == "pricing":
+            time.sleep(5)
+        s = self.batch_status() or {}
+        if b["status"] != "confirm":
+            return self._sched_log({"slot": slot, "status": "nothing", "why": "nothing new to read", "accounts": s.get("accounts", 0)})
+        cost = float(s.get("cost") or 0)
+        if cost > cfg["max_cost"] or s.get("cost_unknown"):
+            why = (f"about US${cost:.2f} is over the US${cfg['max_cost']:.2f} limit" if cost > cfg["max_cost"] else
+                   f"{s['cost_unknown']} account(s) could not be priced")  # fmt: skip
+            return self._sched_log({"slot": slot, "status": "asking", "cost": cost, "accounts": s.get("to_read", 0),
+                                    "why": why + ": waiting on the Overview for you to confirm it"})  # fmt: skip
+        self.read_all_confirm({})
+        self._sched_log({"slot": slot, "status": "started", "cost": cost, "accounts": s.get("to_read", 0)})
 
     def warm(self, stop: threading.Event | None = None) -> None:
         """Keep every report view built in the background: at start, then every WARM_EVERY seconds for accounts
@@ -693,7 +894,12 @@ class Console:
             import sg_store
 
             try:
-                self._reports_mem = sg_store.report_rows(REPORT_CACHE_VERSION)
+                got = sg_store.report_rows(REPORT_CACHE_VERSION)
+                # an earlier version's row is shown until rebuilt only where the page reads it (it may lack new fields)
+                self._reports_mem = {k: v for k, v in got.items() if not v.get("old") or k.split("|", 1)[0] in SHOW_OLD}
+                old = sum(1 for v in self._reports_mem.values() if v.get("old"))
+                if old:
+                    LOG.info("%d report row(s) from an earlier version shown until rebuilt", old)
             except Exception as exc:  # noqa: BLE001 - rebuilt from the reads
                 LOG.warning("report rows not loaded: %s", exc)
                 self._reports_mem = {}
@@ -705,7 +911,8 @@ class Console:
 
         rows = self._reports_mem or {}
         try:
-            sg_store.save_report_rows(REPORT_CACHE_VERSION, {k: rows[k] for k in (rows if keys is None else keys) if k in rows})
+            sg_store.save_report_rows(REPORT_CACHE_VERSION, {k: rows[k] for k in (rows if keys is None else keys)
+                                                             if k in rows and not rows[k].get("old")})
         except Exception as exc:  # noqa: BLE001 - rebuilt from the reads
             LOG.warning("report rows not saved: %s", exc)
 
@@ -722,11 +929,14 @@ class Console:
                 unread.append(account)
                 continue
             rows += got["rows"]
-            accounts.append(got["account"])
+            accounts.append({**got["account"], "trend": got.get("trend")})
         rows.sort(key=lambda x: (sg_review.SEV_RANK.get(x["sev"], 9), -x["flows"]))
         types = {k: n for k, (n, _) in sg_review.SOURCE_TYPES.items()}
+        with self._report_lock:
+            cache = self._report_cache()
+            old = sum(1 for a in got_rows if (cache.get(f"refused|{range_key}|{a}") or {}).get("old"))
         return {"range": range_key, "rows": rows, "accounts": accounts, "types": types, "no_flow_logs_read": len(unread),
-                "building": building}
+                "building": building, "old": old, "build": self.build_status("refused", range_key)}
 
     # ------------------------------------------------------------------ the estate's address book
     def _ip_index(self) -> tuple[dict, int]:
@@ -2190,6 +2400,8 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.sso_ous(q.get("role", ""), q.get("fresh") == "1"))
                 if url.path == "/api/batch":
                     return self._json(200, console.batch_status())
+                if url.path == "/api/schedule":
+                    return self._json(200, console.schedule())
                 if url.path == "/api/jobs":
                     return self._json(200, console.job_list())
                 return self._json(404, {"error": "not found"})
@@ -2224,7 +2436,8 @@ def make_handler(console: Console, token: str, port: int):
                      "/api/sso/start": console.sso_start, "/api/sso/choose": console.sso_choose,
                      "/api/sso/signout": console.sso_sign_out, "/api/read": console.read_start,
                      "/api/read/confirm": console.read_confirm, "/api/read/stop": console.read_stop,
-                     "/api/read/all": console.read_all, "/api/read/all/confirm": console.read_all_confirm,
+                     "/api/read/all": console.read_all, "/api/read/all/confirm": console.read_all_confirm, "/api/schedule": console.set_schedule,
+                     "/api/reports/retry": console.reports_retry,
                      "/api/read/all/stop": console.read_all_stop, "/api/keys/use": console.keys_use,
                      "/api/autostart": console.autostart,
                      "/api/database/start": console.database_start}.get(urlparse(self.path).path)  # fmt: skip
@@ -2570,6 +2783,8 @@ def serve(console: Console, port: int = 8765, token: str | None = None) -> tuple
     httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(console, token, port))
     if os.environ.get("SG_NO_WARM") != "1":
         threading.Thread(target=console.warm, daemon=True, name="warm-reports").start()
+    if os.environ.get("SG_NO_SCHEDULE") != "1" and os.environ.get("SG_NO_WARM") != "1":
+        threading.Thread(target=console.scheduler, daemon=True, name="scheduled-reads").start()
     httpd.daemon_threads = True
     return httpd, token
 
