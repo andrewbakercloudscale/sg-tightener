@@ -538,7 +538,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   .trail-t details summary { cursor: pointer; color: var(--accent); font-size: 12px; margin-top: 4px; }
   @media print {
     body.print-audit > *:not(#auditPrint) { display: none !important; }
-    body.print-ins #tab-refused > :not(#fPrintHead):not(#fChartCard):not(#fInsightCard),
+    body.print-ins #tab-refused > :not(#fPrintHead):not(#fChartCard):not(#fScanCard):not(#fInsightCard),
     body.print-att #tab-refused > :not(#fPrintHead):not(#fAttention) { display: none !important; }
     body.print-audit #auditPrint { display: block !important; }
     body.print-fix > *:not(#fixPrint) { display: none !important; }
@@ -878,6 +878,11 @@ section.nodata .card:not(.empty-state) { display: none; }
     <div class="card" id="fChartCard"><div class="card-head"><h3 style="margin:0">Rejected IP addresses over time</h3><span class="muted small" id="fChartNote"></span></div>
       <p class="muted small">Distinct source IP addresses refused in each period, one line per kind of source. Follows the account and time filters above. It ends at <b>Last scanned</b>, the newest flow logs read: later traffic shows after the next read (scheduled on the Overview, or <b>Read</b> there now).</p>
       <div id="fChart"></div></div>
+    <div class="card" id="fScanCard"><div class="card-head"><h3 style="margin:0">IPs of Interest: Scanning Assets</h3><span class="muted small" id="fScanNote"></span></div>
+      <div class="acts" style="margin:0 0 6px"><label class="small">Show <select id="fScanN" aria-label="How many source IP addresses to show"><option value="50" selected>top 50</option><option value="100">top 100</option><option value="250">top 250</option><option value="500">top 500</option><option value="1000">top 1,000</option></select> source IP addresses</label>
+        <button class="btn sm" type="button" id="fScanWhy" aria-expanded="false">Explain</button></div>
+      <p class="muted small" id="fScanHelp" hidden>The source IP addresses refused on the most ports, then at the most of our IP addresses, then with the most refused flows: what a host looking for its next way in does. Counted across every account the filters above keep: flows are added up; ports and IP addresses are the distinct ones named, or the most in any one account where the read only counted them; the account column says in how many accounts it was refused. Internal sources come first in importance: a scanning host inside your network may be compromised. <b>Show</b> chooses how many to list (50 to 1,000), 50 to a page. Click an address to filter the page by it, or <b>Fix…</b> to see everything known about it.</p>
+      <div class="scroll"><table class="small"><thead><tr><th>#</th><th>Source</th><th class="num" title="Distinct ports it was refused on (at least the most in any one account)">Ports tried</th><th class="num" title="Distinct IP addresses of ours it was refused at (at least the most in any one account)">IP addresses tried</th><th class="num">Refused flows</th><th class="num">Accounts</th><th>Busiest ports</th><th>Last refused</th><th></th></tr></thead><tbody id="fScanRows"></tbody></table></div></div>
     <div class="card" id="fInsightCard"><div class="card-head"><h3 style="margin:0">Where the rejections come from and go to</h3><span class="muted small" id="fInsightNote"></span></div>
       <p class="muted small">The rejected traffic below, sliced every way: by source and destination IP address, kind of source, port and kind of port, verdict, and what refused it. Bars are refused flows. Click a line to filter by it.</p>
       <div class="insights" id="fInsights"></div></div>
@@ -2465,6 +2470,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     drawRefusedChart(acct);
     $("fInsightNote").textContent = `${shown.length.toLocaleString()} refused source${shown.length === 1 ? "" : "s"}${acct ? "" : ` in ${new Set(shown.map((r) => r.account)).size.toLocaleString()} accounts`}`;
     $("fInsights").innerHTML = insightsHtml(shown, {accounts: !acct, click: true});
+    drawScanners(shown);
     const fp = page("refused", shown.length, drawRefused);
     $("refusedRows").innerHTML = shown.slice(fp.a, fp.b).map((r, i) => `<tr><td><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span></td>
       <td>${esc(r.account_name || r.account)}<div class="muted small"><code style="white-space:nowrap">${esc(r.account)}</code></div></td>
@@ -2479,6 +2485,34 @@ section.nodata .card:not(.empty-state) { display: none; }
     pagerAfter($("refusedRows"), fp.bar);
     for (const b of $("refusedRows").querySelectorAll("[data-rfix]")) b.addEventListener("click", () => openFix(shown[+b.dataset.rfix]));
   }
+  // IPs of Interest: the sources refused on the most ports and addresses, added up across the accounts shown
+  function drawScanners(shown) {
+    const by = new Map();
+    for (const r of shown) {
+      let x = by.get(r.src);
+      if (!x) by.set(r.src, x = {src: r.src, rows: [], ports: new Set(), dsts: new Set(), pmax: 0, dmax: 0, flows: 0, accts: new Set(), last: 0, pf: new Map()});
+      x.rows.push(r); x.accts.add(r.account); x.flows += Number(r.flows) || 0; x.last = Math.max(x.last, r.last || 0);
+      x.pmax = Math.max(x.pmax, Number(r.ports || 1)); x.dmax = Math.max(x.dmax, Number(r.dsts || 1));
+      for (const t of targetsOf(r)) { const k = portOf(t); x.ports.add(k); x.dsts.add(t.dst); x.pf.set(k, (x.pf.get(k) || 0) + (Number(t.flows) || 0)); }
+    }
+    const list = [...by.values()].map((x) => ({...x, np: Math.max(x.ports.size, x.pmax), nd: Math.max(x.dsts.size, x.dmax)}))
+      .sort((a, b) => b.np - a.np || b.nd - a.nd || b.flows - a.flows).slice(0, Number($("fScanN").value) || 50);
+    $("fScanNote").textContent = `${list.length.toLocaleString()} of ${by.size.toLocaleString()} source IP addresses`;
+    const fp = page("scan", list.length, () => drawScanners(shown));
+    $("fScanRows").innerHTML = list.slice(fp.a, fp.b).map((x, i) => { const r = x.rows.reduce((m, y) => (Number(y.flows) > Number(m.flows) ? y : m), x.rows[0]);
+      return `<tr><td class="num">${fp.a + i + 1}</td><td><button class="btn sm" data-scanq="${esc(x.src)}" title="Filter the page by this address"><code>${esc(x.src)}</code></button> <span class="pill" style="--p:${r.internal ? "var(--good)" : "var(--warn)"}">${r.internal ? "internal" : "external"}</span>${x.rows.some((y) => y.scan) ? ' <span class="pill" style="--p:var(--high)">scanning</span>' : ""}${x.rows.some((y) => y.threat) ? ' <span class="pill" style="--p:var(--bad)">known malicious</span>' : ""}${x.rows.some((y) => y.tor) ? ' <span class="pill" style="--p:var(--bad)">Tor</span>' : ""}<div class="muted">${esc(r.name && r.name !== r.src ? r.name : "")}${r.type ? " · " + esc(r.type) : ""}</div></td>
+        <td class="num"><b>${x.np.toLocaleString()}</b></td><td class="num">${x.nd.toLocaleString()}</td><td class="num">${x.flows.toLocaleString()}</td>
+        <td class="num" title="${esc([...x.accts].map((a) => acctLabel(a)).join(", "))}">${x.accts.size}</td>
+        <td>${[...x.pf.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k]) => `<code>${esc(k)}</code>`).join(" ")}</td><td>${esc(when(x.last))}</td>
+        <td><button class="btn sm" data-scanfix="${esc(x.src)}" title="Who it is, everything it tried, why it was refused">Fix…</button></td></tr>`; }).join("")
+      || '<tr><td colspan="9" class="muted">Nothing matches.</td></tr>';
+    pagerAfter($("fScanRows"), fp.bar);
+    for (const b of $("fScanRows").querySelectorAll("[data-scanq]")) b.addEventListener("click", () => { $("fQ").value = b.dataset.scanq; drawRefused(); });
+    for (const b of $("fScanRows").querySelectorAll("[data-scanfix]")) b.addEventListener("click", () => {
+      const x = by.get(b.dataset.scanfix); openFix(x.rows.reduce((m, y) => (Number(y.flows) > Number(m.flows) ? y : m), x.rows[0])); });
+  }
+  $("fScanN").addEventListener("change", drawRefused);
+  $("fScanWhy").addEventListener("click", () => { const h = $("fScanHelp"); h.hidden = !h.hidden; $("fScanWhy").setAttribute("aria-expanded", String(!h.hidden)); });
   // ---- the estate's address book: everything known about one IP address
   const qaHtml = (answers) => `<table class="small qa"><tbody>${answers.map((x) => `<tr><td>${esc(x.q)}</td><td class="${esc(x.tone)}">${esc(x.a)}</td></tr>`).join("")}</tbody></table>`;
   function ipHtml(P) {
@@ -2757,14 +2791,19 @@ section.nodata .card:not(.empty-state) { display: none; }
   function srcHtml(r, P) {
     const nm = (a, n) => n ? `${esc(n)} (${esc(a)})` : esc(a);
     const o = P.ours.find((x) => x.account === r.account) || P.ours[0], I = P.intel || {};
-    const others = P.seen.filter((x) => x.account !== r.account), scans = P.seen.filter((x) => x.scan);
+    // the address book and the refused rows together (the address book lists only the busiest internet addresses)
+    const rr = (refusedData?.rows || []).filter((x) => x.src === r.src), acc = new Map();
+    for (const x of P.seen) acc.set(x.account, {account: x.account, account_name: x.account_name, scan: x.scan, ports_refused: x.ports_refused, addresses: x.addresses});
+    for (const x of rr) { const y = acc.get(x.account); if (!y) acc.set(x.account, {account: x.account, account_name: x.account_name, scan: x.scan, ports_refused: Number(x.ports || 1), addresses: Number(x.dsts || 1)});
+      else if (x.scan && !y.scan) Object.assign(y, {scan: true, ports_refused: Math.max(y.ports_refused, Number(x.ports || 1)), addresses: Math.max(y.addresses, Number(x.dsts || 1))}); }
+    const others = [...acc.values()].filter((x) => x.account !== r.account), scans = [...acc.values()].filter((x) => x.scan).sort((a, b) => b.ports_refused - a.ports_refused);
     const cell = (k, v, sub) => `<div><span class="muted small">${k}</span><b style="font-size:14px">${v}</b>${sub ? `<span class="muted small">${sub}</span>` : ""}</div>`;
     const owner = o ? `${nm(o.account, o.account_name)}` : P.private ? "Not found in any account read" : I.kind === "aws" ? esc(I.name || "AWS") : esc([I.asn && "AS" + I.asn, I.owner].filter(Boolean).join(" ") || "Unknown");
     const ownerSub = o ? `${esc(o.region)}${o.vpc ? " · " + esc(o.vpc) : ""}` : P.private ? "private address: on premises, a peered network or an unread account" : [I.country, I.block].filter(Boolean).map(esc).join(" · ");
     const host = o ? `${o.instance ? `<code>${esc(o.instance)}</code>` : `<code>${esc(o.eni)}</code>`}${o.name ? " " + esc(o.name) : ""}` : "—";
     const hostSub = o ? esc([o.kind, o.desc, o.type].filter(Boolean).join(" · ")) : "";
     const sameAcct = o ? (o.account === r.account ? '<span style="color:var(--good)">Yes</span>' : '<span style="color:var(--warn)">No</span>') : P.private ? '<span style="color:var(--warn)">Not found</span>' : "No (internet)";
-    const scanTxt = scans.length ? `<span style="color:var(--bad)">Yes, in ${scans.length} account${scans.length === 1 ? "" : "s"}</span>` : P.seen.length ? '<span style="color:var(--good)">No</span>' : "—";
+    const scanTxt = scans.length ? `<span style="color:var(--bad)">Yes, in ${scans.length} account${scans.length === 1 ? "" : "s"}</span>` : acc.size ? '<span style="color:var(--good)">No</span>' : "—";
     const scanSub = scans.length ? scans.slice(0, 3).map((x) => `${esc(x.account_name || x.account)}: ${x.ports_refused} ports on ${x.addresses} addresses`).join("<br>") : `this source: ${Number(r.ports || 1)} ports on ${Number(r.dsts || 1)} addresses here`;
     return `<div class="facts">${cell(o ? "Account" : "Owner", owner, ownerSub)}${cell("In this account?", sameAcct, o && o.account !== r.account ? "same private address may exist in several VPCs" : "")}${cell("Host", host, hostSub)}
       ${cell("Operating system", esc(o?.os || (o ? "not an EC2 instance" : "unknown")), o?.image ? "image " + esc(o.image) : "")}${cell("Created", o?.launched ? esc(when(o.launched)) : "—", o?.launched ? "" : o?.instance ? "read the account again for launch times" : "EC2 instances only")}

@@ -1078,7 +1078,7 @@ class Console:
             except (TypeError, ValueError):
                 raise ConsoleError(400, "port is a number")
         return {"ip": ip, "private": private, "intel": intel, "ours": ours, "seen": seen, "port": port_info,
-                "answers": _ip_answers(ip, private, intel, ours, seen, port_info, account, names),
+                "answers": _ip_answers(ip, private, intel, ours, seen, port_info, account, names, building),
                 "accounts_indexed": idx["indexed"], "building": building}  # fmt: skip
 
     # ------------------------------------------------------------------ AWS sign-in (SSO)
@@ -2639,7 +2639,7 @@ def _port_text(p: dict) -> str:
     return f"{p['port']}" if p["proto"] in ("tcp", "udp") else p["proto"]
 
 
-def _ip_answers(ip, private, intel, ours, seen, port, account, names) -> list[dict]:
+def _ip_answers(ip, private, intel, ours, seen, port, account, names, building: int = 0) -> list[dict]:
     """The questions asked before letting an address in, answered from what the estate knows: [{q, a, tone}], tone
     good | warn | bad | info."""
     out = []
@@ -2716,7 +2716,8 @@ def _ip_answers(ip, private, intel, ours, seen, port, account, names) -> list[di
         most = max(r["ports_refused"] for r in seen)
         say("Has it scanned?", f"No: at most {most} port(s) refused in any account." if most else "No: nothing refused in any account.", "good")
     if not seen:
-        say("Have we seen it before?", "Never: in no account's flow logs read so far.", "warn")
+        say("Have we seen it before?", f"Not known yet: {building} account(s) are still being added to the address book; "
+            "look again in a few minutes." if building else "Never: in no account's flow logs read so far.", "warn")
     else:
         first, last = min(r["first"] for r in seen), max(r["last"] for r in seen)
         say("Have we seen it before?", f"Yes, in {len(seen)} account(s): first {_when(first)}, last {_when(last)}.", "info")
