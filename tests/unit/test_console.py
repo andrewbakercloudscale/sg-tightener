@@ -573,3 +573,10 @@ def test_audit_exports_to_pdf_printing_only_the_audit():
     assert 'id="auditPdf"' in page and ">Export to PDF</button>" in page
     assert "body.print-audit > *:not(#auditPrint) { display: none !important; }" in page
     assert '$("auditPdf").addEventListener("click", auditPdf)' in page
+
+
+def test_remediate_can_propose_a_single_group():
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    assert 'data-xp="${esc(g.id)}"' in page and ">Propose this group</button>" in page
+    assert "proposeFix(b, [b.dataset.xp], [])" in page

@@ -1881,13 +1881,16 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("xGroups").addEventListener("toggle", () => { $("xGroups").open ? fixOpen.add("*") : fixOpen.delete("*"); });
     $("xAll").addEventListener("change", () => { for (const g of P.groups) $("xAll").checked ? fixOff.delete(g.id) : fixOff.add(g.id); drawFix(); });
     for (const b of document.querySelectorAll("[data-xmerge]")) b.addEventListener("change", () => { b.checked ? fixMergeOff.delete(b.dataset.xmerge) : fixMergeOff.add(b.dataset.xmerge); drawFix(); });
-    $("xGo").addEventListener("click", (e) => act(e.target, async () => {
-      const c = fixChosen();
-      const res = await api("/api/remediate", {account: P.account, days: P.days, from: $("xFrom").value, to: $("xTo").value, groups: c.groups.map((g) => g.id), merges: c.merges.map((m) => m.id)});
-      flash(`Proposed ${res.requests.map((r) => `#${r.id} (${r.kind === "merge" ? `merge, ${r.enis} interface(s)` : `${r.changes} rule change(s) in ${r.region}`})`).join(", ")}. A second person approves them under Change requests; apply the rule changes, then the merges.`);
-      await loadState();
-    }));
+    $("xGo").addEventListener("click", (e) => { const c = fixChosen(); proposeFix(e.target, c.groups.map((g) => g.id), c.merges.map((m) => m.id)); });
     void pg;
+  }
+  function proposeFix(btn, groups, merges) {
+    const P = fixPlan;
+    return act(btn, async () => {
+      const res = await api("/api/remediate", {account: P.account, days: P.days, from: $("xFrom").value, to: $("xTo").value, groups, merges});
+      flash(`Proposed ${res.requests.map((r) => `#${r.id} (${r.kind === "merge" ? `merge, ${r.enis} interface(s)` : `${r.changes} rule change(s) in ${r.region}`})`).join(", ")}. A second person approves them under Change requests${merges.length ? "; apply the rule changes, then the merges" : ""}.`);
+      await loadState();
+    });
   }
   function drawFixRows() {
     const P = fixPlan, rows = P.groups.filter((g) => g.changes);
@@ -1900,12 +1903,13 @@ section.nodata .card:not(.empty-state) { display: none; }
         <td><b>${esc(g.name)}</b> <code class="muted small">${esc(g.id)}</code><div class="muted small">${esc(g.region)} · ${g.changes} rule change(s)${merged[g.id] ? ` · merges into <b>${esc(merged[g.id])}</b>` : ""}${g.open ? ` · ${g.open} open to everyone (yours to decide)` : ""}</div></td>
         <td class="num">${g.enis}</td><td class="num">${fmtN(g.addresses)}</td><td class="num"><b>${fmtN(g.new_addresses)}</b></td><td class="num"><span class="cut">${cutPct(g.addresses, g.new_addresses)}</span></td>
         <td>${mixBar(g.mix)}<div class="muted small">${esc(topCat(g.mix))}</div></td>
-        <td class="act"><button class="btn sm" data-xd="${esc(g.id)}">${open ? "Hide" : "Old and new rules"}</button></td></tr>
+        <td class="act"><button class="btn sm primary" data-xp="${esc(g.id)}" title="Propose only this group's ${g.changes} rule change(s), whatever is ticked. Merges are proposed with the whole remediation">Propose this group</button> <button class="btn sm" data-xd="${esc(g.id)}">${open ? "Hide" : "Old and new rules"}</button></td></tr>
         ${open ? `<tr class="gdetail"><td colspan="8"><table class="plan-t"><thead><tr><th>Rule now</th><th>The flow logs say</th><th>New rule</th><th>Taken away</th><th>Traffic from</th></tr></thead><tbody>${g.rules.map((r) => `<tr><td><code>${esc(portTxt(r.proto, r.from, r.to))}</code> from <code>${esc(r.source)}</code>${r.desc ? `<div class="muted small">${esc(r.desc)}</div>` : ""}</td>
           <td>${actPill(r.action)}<div class="muted small">${esc(r.note || "")}${r.seen ? ` · ${r.seen.toLocaleString()} source(s) seen` : ""}</div></td><td>${newRule(r)}</td><td class="small">${cutCell(r)}</td><td>${mixBar(r.mix)}</td></tr>`).join("")}</tbody></table></td></tr>` : ""}`;
     }).join("") || '<tr><td colspan="8" class="muted">Nothing to change: the flow logs support every rule as it is.</td></tr>';
     pagerAfter($("xRows"), pg.bar);
     for (const b of $("xRows").querySelectorAll("[data-xg]")) b.addEventListener("change", () => { b.checked ? fixOff.delete(b.dataset.xg) : fixOff.add(b.dataset.xg); drawFix(); });
+    for (const b of $("xRows").querySelectorAll("[data-xp]")) b.addEventListener("click", () => proposeFix(b, [b.dataset.xp], []));
     for (const b of $("xRows").querySelectorAll("[data-xd]")) b.addEventListener("click", () => { const id = b.dataset.xd; fixOpen.has(id) ? fixOpen.delete(id) : fixOpen.add(id); drawFixRows(); });
   }
   $("xAcct").addEventListener("change", () => { $("xFrom").value = ""; $("xTo").value = ""; loadFixPlan().catch((e) => flash(e.message, true)); });

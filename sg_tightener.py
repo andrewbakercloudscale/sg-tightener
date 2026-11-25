@@ -42,7 +42,7 @@ Usage:
 
 from __future__ import annotations
 
-__version__ = "5.34.0"
+__version__ = "5.35.0"
 
 import argparse
 import bisect
