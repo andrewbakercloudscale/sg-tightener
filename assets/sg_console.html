@@ -89,6 +89,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); } 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 0%, transparent); filter: brightness(1.12); } }
 .btn.pulse { animation: pulse 1.1s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .btn.pulse { animation: none; outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; } }
+.pill.crit { background: var(--bad); color: #fff; font-weight: 700; letter-spacing: .02em; }
+.card.urgent { border-left: 4px solid var(--bad); background: color-mix(in srgb, var(--bad) 7%, var(--surface)); }
+.mix-key .none { color: var(--muted); } .mix-key .none b { font-weight: 600; }
+.mix-say { margin: 12px 0 0; font-size: 14px; } .mix-say.good { color: var(--good); }
 .acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
 /* a button left in running text keeps clear of the lines above and below it */
 :is(p, li, .small, .muted, .flash, .cost-box, .note) > .btn { margin-block: 4px; }
@@ -298,8 +302,8 @@ table.ba td.num b { font-size: 15px; }
 label.merge { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--grid); font-size: 13.5px; }
 label.merge input { margin-top: 3px; }
 tr.off > td { opacity: .5; }
-.fix-go { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; box-shadow: 0 -4px 16px rgba(0,0,0,.06); margin-top: 8px; }
+.fix-go { position: static; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; box-shadow: var(--shadow); margin: 8px 0 14px; }
 .card-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
 .trend-now { font-size: 14px; margin: 4px 0 8px; } .trend-now b { font-size: 22px; margin-right: 6px; }
 
@@ -1378,7 +1382,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   }
   function planRows(rules, withGroup) {
     return rules.map((r) => `<tr><td>${withGroup ? `<b>${esc(r.gname)}</b> ` : ""}<code>${esc(portTxt(r.proto, r.from, r.to))}</code> from <code>${esc(r.source)}</code>${r.desc ? `<div class="muted small">${esc(r.desc)}</div>` : ""}</td>
-      <td>${actPill(r.action)}<div class="muted small">${esc(r.note || "")}${r.seen ? ` · ${r.seen.toLocaleString()} source${r.seen === 1 ? "" : "s"} seen` : ""}</div></td>
+      <td>${r.urgent ? '<span class="pill crit">Critical</span> ' : ""}${actPill(r.action)}${r.urgent ? `<div class="small"><b>Open to the whole internet, and no internet address used it.</b>${r.cut ? " (From the busiest connections read: the flow logs hit the row limit. If something outside was missed, Rejected traffic shows it.)" : ""}</div>` : ""}<div class="muted small">${esc(r.note || "")}${r.seen ? ` · ${r.seen.toLocaleString()} source${r.seen === 1 ? "" : "s"} seen` : ""}</div></td>
       <td>${newRule(r)}</td><td class="small">${cutCell(r)}</td>
       <td class="act">${isAct(r) ? `<button class="btn sm primary" data-tkey="${esc(r.key)}">Propose</button>` : ""}</td></tr>`).join("");
   }
@@ -1540,14 +1544,20 @@ section.nodata .card:not(.empty-state) { display: none; }
 
   // ---- remediate an account
   const CATC = {internal: "var(--accent)", datacentre: "#8b6fd6", aws: "var(--warn)", saas: "var(--good)", internet: "var(--bad)"};
-  const CATN = {internal: "Internal (your VPCs)", datacentre: "Data centre / on-prem", aws: "AWS", saas: "SaaS and partners", internet: "Other internet"};
+  const CATN = {internal: "Internal (your VPCs)", datacentre: "Data centre / on-prem", aws: "AWS (other accounts and services)", saas: "SaaS and partners", internet: "Other internet"};
+  const OUTSIDE = ["aws", "saas", "internet"];  // sources outside your network
   let fixAccts = null, fixPlan = null, fixOff = new Set(), fixMergeOff = new Set(), fixOpen = new Set();
   function mixBar(mix, wide) {
     const tot = Object.values(mix || {}).reduce((a, b) => a + b, 0);
     if (!tot) return '<span class="muted small">no traffic seen</span>';
     const parts = Object.keys(CATN).filter((k) => mix[k]).map((k) => [k, mix[k] / tot]);
     return `<div class="mix${wide ? " wide" : ""}" role="img" aria-label="${esc(parts.map(([k, f]) => `${CATN[k]} ${Math.round(f * 100)}%`).join(", "))}">${parts.map(([k, f]) => `<span style="width:${(f * 100).toFixed(2)}%;background:${CATC[k]}" title="${esc(CATN[k])}: ${Math.round(f * 100)}%"></span>`).join("")}</div>`
-      + (wide ? `<div class="mix-key">${parts.map(([k, f]) => `<span><i style="background:${CATC[k]}"></i>${esc(CATN[k])} <b>${f < 0.01 ? "<1" : Math.round(f * 100)}%</b></span>`).join("")}</div>` : "");
+      + (wide ? `<div class="mix-key">${Object.keys(CATN).map((k) => mix[k] ? `<span><i style="background:${CATC[k]}"></i>${esc(CATN[k])} <b>${mix[k] / tot < 0.01 ? "<1" : Math.round((mix[k] / tot) * 100)}%</b></span>` : `<span class="none"><i style="background:var(--grid)"></i>${esc(CATN[k])} <b>none</b></span>`).join("")}</div>${mixSay(mix)}` : "");
+  }
+  function mixSay(mix) {  // say it in words: which kinds of source sent nothing at all
+    const none = OUTSIDE.filter((k) => !mix[k]);
+    if (none.length === OUTSIDE.length) return '<p class="mix-say good"><b>No traffic from outside your network:</b> nothing from the internet, SaaS and partners, or AWS outside your VPCs (other accounts and AWS services).</p>';
+    return none.length ? `<p class="mix-say"><b>None from:</b> ${none.map((k) => esc(CATN[k])).join(", ")}.</p>` : "";
   }
   const topCat = (mix) => { const e = Object.entries(mix || {}).sort((a, b) => b[1] - a[1])[0]; const t = Object.values(mix || {}).reduce((a, b) => a + b, 0); return e ? `${CATN[e[0]]} ${Math.round(100 * e[1] / t)}%` : ""; };
   async function loadFix() {
@@ -1903,6 +1913,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       ${P.merges.length ? `<div class="card"><h3>Groups to merge</h3><p class="muted small">Once tightened, these let in nearly the same traffic: each takes on at most a few more private IP addresses (256 in all), or one more port from sources it already lets in. Never a public IP address, a risky port or everyone. Their interfaces move onto one group; the emptied groups stay, on no interface, to delete later.</p>
         ${P.merges.map((m) => `<label class="merge"><input type="checkbox" data-xmerge="${esc(m.id)}"${fixMergeOff.has(m.id) || m.members.some((x) => fixOff.has(x.id)) ? "" : " checked"}${m.members.some((x) => fixOff.has(x.id)) ? " disabled" : ""}>
           <span>Merge ${m.members.map((x) => `<b>${esc(x.name)}</b>${x.extra.length ? ` <span class="muted small">(gains ${[...x.gain_ports.map((r) => esc(portTxt(r.proto, r.from, r.to))), x.gain_addresses ? `${x.gain_addresses.toLocaleString()} private IP address${x.gain_addresses === 1 ? "" : "es"}` : "", x.gain_v6 ? `${x.gain_v6} IPv6 /64${x.gain_v6 === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ")})</span>` : ""}`).join(" + ")} into <b>${esc(m.target_name)}</b> <span class="muted small">${esc(m.region)} · ${m.enis} interface(s) · ${m.rules} rule(s) after</span></span></label>`).join("")}</div>` : ""}
+      ${T.urgent ? `<div class="card urgent"><span class="pill crit">Critical</span> <b>${T.urgent} rule${T.urgent === 1 ? "" : "s"} open to the whole internet (0.0.0.0/0) with no internet traffic through ${T.urgent === 1 ? "it" : "them"}</b> between the two dates. Nothing outside uses ${T.urgent === 1 ? "it" : "them"}, so narrowing ${T.urgent === 1 ? "it" : "them"} closes the exposure without touching traffic in use. ${T.urgent === 1 ? "Its group is" : "Their groups are"} listed first below.<div class="acts">${P.groups.filter((g) => g.urgent).map((g) => `<span><b>${esc(g.name)}</b> <code class="muted small">${esc(g.id)}</code></span><button class="btn sm primary" data-xcrit="${esc(g.id)}">Propose this group</button>`).join("")}</div></div>` : ""}
       <div class="card"><details id="xGroups"${fixOpen.has("*") ? " open" : ""}><summary>The ${P.groups.filter((g) => g.changes).length} groups this changes, of ${P.groups.length} (untick any that are sensitive)</summary>
         <div class="scroll"><table class="grp"><thead><tr><th><input type="checkbox" id="xAll" aria-label="Every group"${P.groups.every((g) => !g.changes || !fixOff.has(g.id)) ? " checked" : ""}></th><th>Group</th><th class="num">Interfaces</th><th class="num">IPv4 before</th><th class="num">After</th><th class="num">Change</th><th>Traffic from</th><th class="act"></th></tr></thead><tbody id="xRows"></tbody></table></div></details></div>
       <div class="fix-go"><div><b>${chosen.length}</b> group(s), <b>${nChanges}</b> rule change(s)${merges.length ? `, <b>${merges.length}</b> merge(s)` : ""} · IPv4 let in ${fmtN(aBefore)} → <b>${fmtN(aAfter)}</b> <span class="cut">${cutPct(aBefore, aAfter)}</span></div>
@@ -1917,6 +1928,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       $("xrGo").click();
     });
     $("xAudit").addEventListener("click", openAudit);
+    for (const b of document.querySelectorAll("[data-xcrit]")) b.addEventListener("click", () => proposeFix(b, [b.dataset.xcrit], []));
     $("xGroups").addEventListener("toggle", () => { $("xGroups").open ? fixOpen.add("*") : fixOpen.delete("*"); });
     $("xAll").addEventListener("change", () => { for (const g of P.groups) $("xAll").checked ? fixOff.delete(g.id) : fixOff.add(g.id); drawFix(); });
     for (const b of document.querySelectorAll("[data-xmerge]")) b.addEventListener("change", () => { b.checked ? fixMergeOff.delete(b.dataset.xmerge) : fixMergeOff.add(b.dataset.xmerge); drawFix(); });
@@ -1932,19 +1944,19 @@ section.nodata .card:not(.empty-state) { display: none; }
     });
   }
   function drawFixRows() {
-    const P = fixPlan, rows = P.groups.filter((g) => g.changes);
+    const P = fixPlan, rows = P.groups.filter((g) => g.changes).sort((a, b) => (b.urgent || 0) - (a.urgent || 0));
     const pg = page("fix", rows.length, drawFixRows);
     const merged = {};
     for (const m of P.merges) for (const x of m.members) if (x.id !== m.target) merged[x.id] = m.target_name;
     $("xRows").innerHTML = rows.slice(pg.a, pg.b).map((g) => {
       const on = !fixOff.has(g.id), open = fixOpen.has(g.id);
       return `<tr class="grow${open ? " is-open" : ""}${on ? "" : " off"}"><td><input type="checkbox" data-xg="${esc(g.id)}"${on ? " checked" : ""} aria-label="Remediate ${esc(g.name)}"></td>
-        <td><b>${esc(g.name)}</b> <code class="muted small">${esc(g.id)}</code><div class="muted small">${esc(g.region)} · ${g.changes} rule change(s)${merged[g.id] ? ` · merges into <b>${esc(merged[g.id])}</b>` : ""}${g.open ? ` · ${g.open} open to everyone (yours to decide)` : ""}</div></td>
+        <td>${g.urgent ? `<span class="pill crit" title="Open to the whole internet (0.0.0.0/0), yet no internet address was seen in the flow logs">Critical: ${g.urgent} open to all, unused from outside</span> ` : ""}<b>${esc(g.name)}</b> <code class="muted small">${esc(g.id)}</code><div class="muted small">${esc(g.region)} · ${g.changes} rule change(s)${merged[g.id] ? ` · merges into <b>${esc(merged[g.id])}</b>` : ""}${g.open ? ` · ${g.open} open to everyone (yours to decide)` : ""}</div></td>
         <td class="num">${g.enis}</td><td class="num">${fmtN(g.addresses)}</td><td class="num"><b>${fmtN(g.new_addresses)}</b></td><td class="num"><span class="cut">${cutPct(g.addresses, g.new_addresses)}</span></td>
         <td>${mixBar(g.mix)}<div class="muted small">${esc(topCat(g.mix))}</div></td>
         <td class="act"><button class="btn sm primary" data-xp="${esc(g.id)}" title="Propose only this group's ${g.changes} rule change(s), whatever is ticked. Merges are proposed with the whole remediation">Propose this group</button> <button class="btn sm" data-xd="${esc(g.id)}">${open ? "Hide" : "Old and new rules"}</button></td></tr>
         ${open ? `<tr class="gdetail"><td colspan="8"><table class="plan-t"><thead><tr><th>Rule now</th><th>The flow logs say</th><th>New rule</th><th>Taken away</th><th>Traffic from</th></tr></thead><tbody>${g.rules.map((r) => `<tr><td><code>${esc(portTxt(r.proto, r.from, r.to))}</code> from <code>${esc(r.source)}</code>${r.desc ? `<div class="muted small">${esc(r.desc)}</div>` : ""}</td>
-          <td>${actPill(r.action)}<div class="muted small">${esc(r.note || "")}${r.seen ? ` · ${r.seen.toLocaleString()} source(s) seen` : ""}</div></td><td>${newRule(r)}</td><td class="small">${cutCell(r)}</td><td>${mixBar(r.mix)}</td></tr>`).join("")}</tbody></table></td></tr>` : ""}`;
+          <td>${r.urgent ? '<span class="pill crit">Critical</span> ' : ""}${actPill(r.action)}${r.urgent ? `<div class="small"><b>Open to the whole internet, and no internet address used it.</b>${r.cut ? " (From the busiest connections read: the flow logs hit the row limit. If something outside was missed, Rejected traffic shows it.)" : ""}</div>` : ""}<div class="muted small">${esc(r.note || "")}${r.seen ? ` · ${r.seen.toLocaleString()} source(s) seen` : ""}</div></td><td>${newRule(r)}</td><td class="small">${cutCell(r)}</td><td>${mixBar(r.mix)}</td></tr>`).join("")}</tbody></table></td></tr>` : ""}`;
     }).join("") || '<tr><td colspan="8" class="muted">Nothing to change: the flow logs support every rule as it is.</td></tr>';
     pagerAfter($("xRows"), pg.bar);
     for (const b of $("xRows").querySelectorAll("[data-xg]")) b.addEventListener("change", () => { b.checked ? fixOff.delete(b.dataset.xg) : fixOff.add(b.dataset.xg); drawFix(); });

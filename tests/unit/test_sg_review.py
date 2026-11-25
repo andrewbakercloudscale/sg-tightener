@@ -218,6 +218,14 @@ def test_estimate_from_earlier_reads():
     assert empty["rate"] is None and empty["ranges"][0]["missing_hours"] > 0
 
 
+class _Sess:
+    def __init__(self, logs):
+        self.logs = logs
+
+    def client(self, *_a, **_k):
+        return self.logs
+
+
 class _FakeLogs:
     """Logs Insights stand-in: a slice longer than an hour fills the row limit; an hour does not."""
 
@@ -333,6 +341,41 @@ def test_stop_cancels_the_running_queries_and_keeps_only_whole_slices():
     assert len(logs.calls) < 8, "no further queries once stopped"
     assert all(c["st"] != "failed" for c in out), "an unfinished piece is not recorded as read or failed"
     assert sg_review.read_chunk(logs, "eu-west-1", start, start + 3600, qs, [], lambda: True) == []
+
+
+def test_a_region_too_busy_for_any_split_is_read_in_whole_slices_after_the_first():
+    """plsapp af-south-1 overflowed 10,000 rows even per minute: the read split every slice to 11,517 one-minute
+    queries, about 14 hours and US$195 (each minute query scans ~4x the bytes per hour), and was still cut."""
+    logs = _FakeLogs()
+    logs.fits = 10  # nothing fits
+    start = 1_790_000_000 // 3600 * 3600
+    qs = [{"format": None, "groups": ["g"]}]
+    doc = sg_review.new_doc("111122223333", "")
+    doc["regions"]["eu-west-1"] = {"query_sets": qs}
+    tasks = [("eu-west-1", start + i * 4 * 3600, start + (i + 1) * 4 * 3600, qs, []) for i in range(32)]
+    orig = sg_review.save
+    sg_review.save = lambda d: None
+    try:
+        sg_review.run_read(_Sess(logs), doc, tasks, 1, start + 40 * 3600)
+    finally:
+        sg_review.save = orig
+    whole = [c for c in doc["chunks"] if c["e"] - c["s"] == 4 * 3600]
+    assert len(whole) >= 24 and all(c["st"] == "cut" and c.get("top") for c in whole), "later slices are not split"
+    assert len(logs.calls) < 32 * 2 + 8 * 40, len(logs.calls)  # at most the slices already running split once
+    entry = doc["regions"]["eu-west-1"]
+    assert entry.get("whole") and "slice" not in entry
+    assert sg_review.cut_tasks(doc) == [], "the busiest rows of each slice are kept, not read again finer"
+    assert all("sort flows desc" in sg_review.detail_query(None, [], fold=f) for f in (True, False))
+
+
+def test_a_minute_slice_learned_before_is_dropped_and_the_estimate_prices_long_slices():
+    start = 1_790_000_000 // 3600 * 3600
+    entry = {"slice": 56}
+    assert sg_review._whole(entry) and entry == {"whole": 1}
+    doc = sg_review.new_doc("111122223333", "")
+    doc["chunks"] = [{"r": "x", "s": start, "e": start + 3600, "st": "cut", "b": 47e9, "rows": [], "pub": []},
+                     {"r": "x", "s": start + 3600, "e": start + 3656, "st": "cut", "b": 3.2e9, "rows": [], "pub": []}]
+    assert round(sg_review.estimate(doc, "111122223333")["rate"] * 3600 / 1e9) == 47
 
 
 # ------------------------------------------------------------------ port classes, attribution, extract data

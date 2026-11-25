@@ -283,3 +283,21 @@ def test_a_plan_is_built_in_another_process_and_a_second_request_waits_for_the_s
         t.join(10)
     assert len(calls) == 1, "one build for both requests"
     assert len(got) == 2 and got[0]["totals"] == got[1]["totals"]
+
+
+def test_open_to_all_with_no_internet_traffic_is_critical():
+    """'if someone has a 0.0.0.0 rule (external) and there is no traffic coming from external make this a
+    critical change'."""
+    import sg_review
+    base = {"region": "eu-west-1", "group": "sg-1", "proto": "6", "from": 22, "to": 22, "allowed": 2**32}
+    inside = rem.plan_rule({**base, "source": "0.0.0.0/0", "status": "tighten", "suggest": ["10.1.0.0/24"],
+                            "suggest_size": 256, "ext": 0})
+    assert inside["urgent"] and inside["external"] == 0
+    assert not rem.plan_rule({**base, "source": "0.0.0.0/0", "status": "tighten", "suggest": ["10.1.0.0/24"],
+                              "suggest_size": 256, "ext": 5})["urgent"], "the internet uses it"
+    assert rem.plan_rule({**base, "source": "0.0.0.0/0", "status": "tighten", "suggest": ["10.1.0.0/24"],
+                          "suggest_size": 256, "ext": 0, "cut": True})["urgent"], "the user acts on what was seen"
+    assert not rem.plan_rule({**base, "source": "0.0.0.0/0", "status": "open", "ext": 0})["urgent"], "kept: web on a public LB"
+    assert not rem.plan_rule({**base, "source": "10.0.0.0/8", "status": "unused", "ext": 0})["urgent"]
+    assert rem.plan_rule({**base, "source": "::/0", "status": "unused", "ext": 0})["urgent"]
+    assert sg_review._external({"10.0.0.5": [3, 0], "100.64.1.1": [2, 0], "8.8.8.8": [4, 0], "fd00::1": [1, 0]}) == 4

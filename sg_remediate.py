@@ -124,7 +124,16 @@ def plan_rule(r: dict) -> dict:
             "cut_addresses": 0 if new is None else max(0, allowed - new_addr),
             "port_count": span, "new_ports": span if new is None else new_ports,
             "cut": bool(r.get("cut")), "seen": int(r.get("here") or 0), "last_used": r.get("last_used"), "days": r.get("days"),
-            "mix": dict(r.get("mix") or {}), "top": [t.get("src") for t in (r.get("top") or [])][:5]}  # fmt: skip
+            "mix": dict(r.get("mix") or {}), "top": [t.get("src") for t in (r.get("top") or [])][:5],
+            "external": r.get("ext"), "urgent": urgent(r, action)}  # fmt: skip
+
+
+def urgent(r: dict, action: str) -> bool:
+    """Critical: a rule open to the whole internet (0.0.0.0/0 or ::/0) through which no internet address was seen
+    in the flow logs read. Everything it lets in from outside is exposure nothing uses, so narrowing or removing
+    it comes first. Also on evidence cut at the row limit (the busiest connections were read): acting on what was
+    seen is the user's call, and Rejected traffic opens a rule again if something outside was missed."""
+    return r.get("source") in ("0.0.0.0/0", "::/0") and action in ("tighten", "ports", "remove") and r.get("ext") == 0
 
 
 def _tup(direction: str, proto, frm, to, source: str) -> tuple:
@@ -206,7 +215,7 @@ def plan(doc: dict, days: int, groups: dict, assets: dict, start: float | None =
                         "description": g.get("description", ""), "enis": len(on.get(gid, [])),
                         "movable": bool(on.get(gid)) and all(not sg_assets.why_not_alone(a) for a in on[gid]),
                         "rules_in": len(g.get("in") or {}), "rules_out": len(g.get("out") or {}),
-                        "rules": rs, "changes": len(acts),
+                        "rules": rs, "changes": len(acts), "urgent": sum(1 for r in acts if r.get("urgent")),
                         "addresses": sum(r["addresses"] for r in v4), "new_addresses": sum(r["new_addresses"] for r in v4),
                         "internal": sum(r["internal"] for r in v4), "new_internal": sum(r["new_internal"] for r in v4),
                         "addresses6": sum(r["addresses"] for r in rs if r["v6"]),
@@ -357,6 +366,7 @@ def totals(plan_groups: list[dict], merges: list[dict], groups: dict) -> dict:
             "groups_changed": sum(1 for g in plan_groups if g["changes"]),
             "rules": sum(g["rules_in"] + g["rules_out"] for g in plan_groups), "rules_after": rules_after,
             "changes": sum(g["changes"] for g in plan_groups),
+            "urgent": sum(g["urgent"] for g in plan_groups),
             "addresses": sum(g["addresses"] for g in plan_groups), "new_addresses": sum(g["new_addresses"] for g in plan_groups),
             "addresses6": sum(g["addresses6"] for g in plan_groups), "new_addresses6": sum(g["new_addresses6"] for g in plan_groups),
             "ports": sum(g["ports"] for g in plan_groups), "new_ports": sum(g["new_ports"] for g in plan_groups),

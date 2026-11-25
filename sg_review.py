@@ -387,7 +387,7 @@ def detail_query(log_format: str | None, vpc_ranges: list[str], fold: bool | str
         f'{head} and (f_action = "ACCEPT" or {_private(src)})'
         f" | fields {port} as dport"
         f" | stats count(*) as flows, sum(f_bytes) as bytes by {src} as src, {dst} as dst,"
-        f" f_interface_id as eni, f_protocol as proto, dport, f_action as action | limit {ROWS}"
+        f" f_interface_id as eni, f_protocol as proto, dport, f_action as action | sort flows desc | limit {ROWS}"
     )
 
 
@@ -1046,7 +1046,8 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
     A read stopped part way returns no chunk for what it did not finish."""
     if cancelled():
         return []
-    if hint is not None and hint.get(region) and e - s >= hint[region] and e - s > MIN_SPLIT:
+    whole = hint is not None and region in hint.get("_whole", ())
+    if not whole and hint is not None and hint.get(region) and e - s >= hint[region] and e - s > MIN_SPLIT:
         mid = s + _floor((e - s) // 2, HOUR) if e - s >= 2 * HOUR else (s + e) // 2
         return [*read_chunk(logs, region, mid, e, qsets, vpcs, cancelled, egress, tick, hint),
                 *read_chunk(logs, region, s, mid, qsets, vpcs, cancelled, egress, tick, hint)]  # fmt: skip
@@ -1067,7 +1068,9 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
             errors.append(f"detail query {status}")
             continue
         if len(rs) >= ROWS:
-            if e - s > MIN_SPLIT:
+            if e - s <= MIN_SPLIT and hint is not None:  # a minute still overflows: splitting cannot fit this region
+                hint.setdefault("_whole", set()).add(region)
+            if e - s > MIN_SPLIT and not whole and region not in (hint or {}).get("_whole", ()):
                 if hint is not None:
                     hint[region] = min(hint.get(region) or e - s, e - s)
                 mid = s + _floor((e - s) // 2, HOUR) if e - s >= 2 * HOUR else (s + e) // 2
@@ -1108,8 +1111,11 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
     if tick:
         tick(nbytes, e - s)
     st = "failed" if errors and not rows and not pub else ("cut" if cut else "ok")
+    top = cut and hint is not None and region in hint.get("_whole", ())
     out = {"r": region, "s": s, "e": e, "st": st, "b": nbytes, "rows": rows, "pub": pub, "pc": pub_cut,
            "err": "; ".join(errors)}
+    if top:
+        out["top"] = 1  # the busiest 10,000 rows of a slice no split can fit: not read again finer
     if egress:
         out["egr"] = egr
     return [out]
@@ -1128,7 +1134,11 @@ def estimate(doc: dict | None, account: str, regions: list[str] = (), now: float
     doc = doc or new_doc(account, "")
     secs = sum(c["e"] - c["s"] for c in doc["chunks"] if c["st"] in ("ok", "cut"))
     nbytes = sum(c["b"] for c in doc["chunks"])
-    rate = nbytes / secs if secs else None
+    # minute-long pieces (a busy region split as far as it goes) scan several times the bytes per hour that
+    # longer slices do, and busy regions are no longer read that way: price from the longer slices when known
+    big = [c for c in doc["chunks"] if c["e"] - c["s"] > MIN_SPLIT]
+    big_secs = sum(c["e"] - c["s"] for c in big if c["st"] in ("ok", "cut"))
+    rate = (sum(c["b"] for c in big) / big_secs if big_secs >= HOUR else nbytes / secs) if secs else None
     if rate is not None and doc.get("egress") and not any("egr" in c for c in doc["chunks"]):
         rate *= 1.5  # measured without the outbound query, which scans the same log again
     out = []
@@ -3206,6 +3216,18 @@ def _suggest(rej: dict, enis: dict, groups: dict, snaps: dict, lab) -> list[dict
     return out
 
 
+def _external(here: dict) -> int:
+    """Connections through a rule from public (internet) addresses: not RFC 1918, 100.64/10, ULA or the like."""
+    n = 0
+    for src, h in here.items():
+        try:
+            if ipaddress.ip_address(src).is_global:
+                n += h[0]
+        except ValueError:
+            continue
+    return n
+
+
 def _mix(here: dict, lab) -> dict:
     """Connections through a rule by where they came from (internal, data centre, AWS, SaaS, internet)."""
     out: dict = {}
@@ -3294,6 +3316,7 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
                 row["top"] = [{"src": s, **lab(s), "flows": h[0]}
                               for s, h in sorted(here.items(), key=lambda kv: -kv[1][0])[:8]]  # fmt: skip
                 row["mix"] = _mix(here, lab)
+                row["ext"] = _external(here)
                 row["ports_used"] = sorted(dports)[:200]  # (protocol, port) seen through the rule: narrows a port range
                 row["status"], row["note"] = _status(row, rule, entry, logged, g, cut_regions, days, lb_public)
                 _mark_cut(row, g, cut_regions)
@@ -3437,6 +3460,7 @@ def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regi
            "suggest": [], "suggest_size": None, "note": "", "pc": rule_port_class(rule)}  # fmt: skip
     row["top"] = [{"src": s, **lab(s), "flows": h[0]} for s, h in sorted(here.items(), key=lambda kv: -kv[1][0])[:8]]
     row["mix"] = _mix(here, lab)
+    row["ext"] = _external(here)
     private = net.subnet_of(sg_tightener.ULA) or any(_net6(o) and net.subnet_of(_net6(o)) for o in own6)
     if entry.endswith("::/0") and net.prefixlen == 0 and lb_public and serves_web(rule):
         row["status"], row["note"] = "open", OPEN_WEB_NOTE
@@ -3635,7 +3659,7 @@ def plan_read(sess, doc: dict, regions: Sequence[str], days: int, now: float, sa
         have = [(c["s"], c["e"]) for c in doc["chunks"] if c["r"] == region and c["st"] in ("ok", "cut")
                 and not c.get("tail") and not coarse_cut(c)]  # fmt: skip
         vpcs = _vpc_ranges(entry["snapshot"])
-        span = entry.get("slice")  # how short this region's slices had to be to stay under the row limit
+        span = None if _whole(entry) else entry.get("slice")  # how short slices had to be to fit the row limit
         tasks += [(region, a, b, qsets, vpcs) for s, e in plan(now, days, have) for a, b in _pieces(s, e, span)]
     return tasks
 
@@ -3648,6 +3672,8 @@ def cut_tasks(doc: dict, first_only: bool = False) -> list[tuple]:
         qsets = entry.get("query_sets")
         if not qsets:
             continue
+        if _whole(entry):
+            continue
         vpcs = _vpc_ranges(entry.get("snapshot") or {})
         cut = sorted((c["s"], c["e"]) for c in doc["chunks"] if c["r"] == region and coarse_cut(c))
         if first_only:
@@ -3659,7 +3685,17 @@ def cut_tasks(doc: dict, first_only: bool = False) -> list[tuple]:
 def coarse_cut(c: dict) -> bool:
     """A slice that hit the row limit while it could still have been split (read before slices went below an
     hour): read again, split finer, and replaced."""
-    return c["st"] == "cut" and c["e"] - c["s"] > MIN_SPLIT
+    return c["st"] == "cut" and c["e"] - c["s"] > MIN_SPLIT and not c.get("top")
+
+
+def _whole(entry: dict) -> bool:
+    """A region so busy that even a minute of its flow log overflows the row limit: it is read in whole slices
+    (the busiest rows of each), since splitting only multiplies the queries and the bytes billed (a minute-long
+    query scans about 4 times the bytes per hour of an hour-long one)."""
+    if entry.get("slice") and entry["slice"] <= MIN_SPLIT:  # learned before this was known
+        entry.pop("slice")
+        entry["whole"] = 1
+    return bool(entry.get("whole"))
 
 
 def _pieces(s: int, e: int, span) -> list[tuple[int, int]]:
@@ -3700,7 +3736,7 @@ def run_read(sess, doc: dict, tasks: list[tuple], days: int, now: float, cancell
     lock = threading.Lock()
     clients: dict = {}
     state = {"done": 0, "bytes": 0, "secs": 0, "queries": 0}
-    hint: dict = {}  # region: the shortest span seen to hit the row limit in this read
+    hint: dict = {"_whole": {r for r, x in (doc.get("regions") or {}).items() if _whole(x)}}  # region: shortest span seen to overflow
 
     def tick(nbytes, secs):
         with lock:
@@ -3728,7 +3764,10 @@ def run_read(sess, doc: dict, tasks: list[tuple], days: int, now: float, cancell
             if any(c["st"] != "failed" for c in got):  # replaces an earlier read of these hours that hit the row limit
                 doc["chunks"] = [c for c in doc["chunks"]
                                  if not (c["r"] == region and coarse_cut(c) and c["s"] < e and c["e"] > s)]  # fmt: skip
-            if len(got) > 1 and region in doc["regions"]:  # split to stay under the row limit: start there next time
+            if region in hint["_whole"] and region in doc["regions"]:
+                doc["regions"][region]["whole"] = 1
+                doc["regions"][region].pop("slice", None)
+            elif len(got) > 1 and region in doc["regions"]:  # split to stay under the row limit: start there next time
                 span = min(c["e"] - c["s"] for c in got)
                 entry = doc["regions"][region]
                 entry["slice"] = min(entry.get("slice") or span, span)

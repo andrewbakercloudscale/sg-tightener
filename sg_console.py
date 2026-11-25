@@ -108,6 +108,9 @@ def _date_range(frm, to) -> tuple[float | None, float | None]:
     return start, (end + 86400 if end is not None else None)
 
 
+PLAN_FORMAT = 3  # raised when a plan gains fields, so plans kept on disk are built again (2: critical rules)
+
+
 class ConsoleError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
@@ -1373,7 +1376,8 @@ class Console:
             return {"status": "unknown", "days": days, "have_days": 0, "groups": [], "merges": [], "totals": {}}
         groups, assets = self._account_groups(account)
         # kept until the account's read or its groups change: building a plan takes seconds, opening it again none
-        key = (account, int(days), start, end, mtime, hashlib.sha1(repr((groups, assets)).encode()).hexdigest())
+        key = (account, int(days), start, end, mtime, hashlib.sha1(repr((groups, assets)).encode()).hexdigest(),
+               PLAN_FORMAT)  # fmt: skip
         with self._report_lock:
             hit = self._plans.get(key)
         if hit is not None:

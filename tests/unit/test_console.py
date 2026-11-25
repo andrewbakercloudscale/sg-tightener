@@ -754,3 +754,22 @@ def test_the_read_waiting_for_a_yes_flashes_its_button_and_buttons_sit_clear_of_
     assert 'class="btn sm primary pulse" data-rr="confirm"' in page and ".btn.pulse { animation: pulse" in page
     assert '<div class="acts"><button class="btn sm primary pulse" data-rr="confirm"' in page
     assert '<div class="acts"><button class="btn sm" data-rr="stop"' in page
+
+
+def test_critical_rules_and_explicit_no_outside_traffic_are_shown():
+    """Critical open-to-all rules come first; the evidence says outright when nothing came from outside."""
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    assert "T.urgent ?" in page and 'class="pill crit"' in page and "(b.urgent || 0) - (a.urgent || 0)" in page
+    assert "No traffic from outside your network:" in page and 'const OUTSIDE = ["aws", "saas", "internet"]' in page
+    assert "<b>none</b>" in page
+    assert 'data-xcrit="${esc(g.id)}">Propose this group' in page, "the critical group is named and proposable"
+
+
+def test_the_propose_bar_does_not_float_over_the_page():
+    """A sticky bar sat on top of the asset tiles mid-page (and in the PDF)."""
+    import pathlib
+    import re
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    rule = re.search(r"\.fix-go \{[^}]*\}", page).group(0)
+    assert "sticky" not in rule and "fixed" not in rule
