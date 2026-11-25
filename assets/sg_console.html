@@ -3303,7 +3303,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   const fworst = (a) => Math.max(0, ...fdims().map((d) => d[2](a)));
   const LCOL = ["var(--good)", "var(--warn)", "var(--high)", "var(--bad)"];
   const money = (n) => n >= 1e6 ? `$${(n / 1e6).toFixed(1)}m` : n >= 1e3 ? `$${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1)}k` : `$${Math.round(n)}`;
-  // The owner is whichever Organizations tag is picked; by default the one naming an owner, else the tag that splits
+  // The owner is whichever Organizations tag is picked; by default Product Head, else the one naming an owner, else the tag that splits
   // the accounts into the most groups while still a readable chart (40 or fewer).
   function tagKeys(A) {
     const seen = new Map();
@@ -3314,9 +3314,9 @@ section.nodata .card:not(.empty-state) { display: none; }
     const keys = tagKeys(A);
     if (OWN.tag && keys.some((x) => x.k === OWN.tag)) return OWN.tag;
     let saved = null;
-    try { saved = localStorage.getItem("sg-owner-tag"); } catch (e) { /* storage off: the default is used */ }
+    try { saved = localStorage.getItem("sg-owner-tag-v2"); } catch (e) { /* storage off: the default is used */ }
     if (saved && keys.some((x) => x.k === saved)) return saved;
-    const named = keys.find((x) => /owner/i.test(x.k));
+    const named = keys.find((x) => x.k === "Product Head") || keys.find((x) => /owner/i.test(x.k));  // Product Head by default
     const fit = keys.filter((x) => x.n > 1 && x.n <= 40).sort((p, q) => q.on - p.on || q.n - p.n);
     return (named || fit[0] || keys[0] || {}).k || null;
   }
@@ -3536,7 +3536,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   }
   $("mRange").addEventListener("change", () => act(null, loadMacro));
   for (const F of [FOCUS, OWN]) $(F.id + "Lens").addEventListener("click", (e) => { const b = e.target.closest("[data-lens]"); if (!b || !M) return; F.lens = b.dataset.lens; F.pick = null; drawFocus(M.accounts, F); });
-  $("mOwnTag").addEventListener("change", () => { OWN.tag = $("mOwnTag").value; OWN.pick = null; try { localStorage.setItem("sg-owner-tag", OWN.tag); } catch (e) { /* remembered for this page only */ } drawFocus(M.accounts, OWN); });
+  $("mOwnTag").addEventListener("change", () => { OWN.tag = $("mOwnTag").value; OWN.pick = null; try { localStorage.setItem("sg-owner-tag-v2", OWN.tag); } catch (e) { /* remembered for this page only */ } drawFocus(M.accounts, OWN); });
   $("mBy").addEventListener("click", (e) => { const b = e.target.closest("[data-by]"); if (!b || !M) return; mv.by = b.dataset.by; for (const x of $("mBy").children) x.setAttribute("aria-pressed", String(x === b)); drawOwner(M.accounts); });
   $("mScale").addEventListener("click", (e) => { const b = e.target.closest("[data-scale]"); if (!b || !M) return; mv.scale = b.dataset.scale; for (const x of $("mScale").children) x.setAttribute("aria-pressed", String(x === b)); drawOwner(M.accounts); });
   for (const id of ["fQ", "fSev", "fAcct", "fRisky", "fNew", "fWhere"]) $(id).addEventListener("input", drawRefused);
