@@ -137,7 +137,7 @@ def _date_range(frm, to) -> tuple[float | None, float | None]:
     return start, (end + 86400 if end is not None else None)
 
 
-PLAN_FORMAT = 4  # raised when a plan gains fields, so plans kept on disk are built again (2: critical rules)
+PLAN_FORMAT = 5  # 5: suggestions share the group's rule budget, as plan does; raised when a plan gains fields, so plans kept on disk are built again (2: critical rules)
 
 
 class ConsoleError(Exception):
@@ -748,6 +748,22 @@ class Console:
         _, building = self._reports_soon(kind, range_key, {})
         return {"started": True, "building": building}
 
+    def tighten_prefs(self) -> dict:
+        import sg_review
+
+        return {**sg_review.tighten_prefs(), "defaults": dict(sg_review.TIGHTEN)}
+
+    def set_tighten_prefs(self, body: dict) -> dict:
+        """Save how rules are narrowed. Plans are kept per settings, so the next Remediate view is built again."""
+        import sg_review
+
+        try:
+            got = sg_review.save_tighten_prefs(body)
+        except (ValueError, TypeError) as exc:
+            raise ConsoleError(400, str(exc)) from None
+        LOG.info("tightening settings now %s", got)
+        return {**got, "defaults": dict(sg_review.TIGHTEN)}
+
     def build_status(self, kind: str, range_key: str) -> dict | None:
         """How the latest build of one report went, for the page: counts, the last errors, whether it still runs."""
         st = self._builds.get(f"{kind}|{range_key}")
@@ -936,7 +952,31 @@ class Console:
             cache = self._report_cache()
             old = sum(1 for a in got_rows if (cache.get(f"refused|{range_key}|{a}") or {}).get("old"))
         return {"range": range_key, "rows": rows, "accounts": accounts, "types": types, "no_flow_logs_read": len(unread),
-                "building": building, "old": old, "build": self.build_status("refused", range_key)}
+                "building": building, "old": old, "build": self.build_status("refused", range_key),
+                "gnames": self._group_names({a["account"] for a in accounts})}
+
+    def _group_names(self, accounts: set) -> dict:
+        """{group id: name} for these accounts' security groups, from the database; kept ten minutes."""
+        now = time.time()
+        got = getattr(self, "_gnames", None)
+        if got and now - got[0] < 600 and accounts <= got[1]:
+            return got[2]
+        names: dict = {}
+        try:
+            st = self.store()
+            try:
+                for account in accounts:
+                    for _, region in st.regions(account):
+                        for gid, g in st.groups(account, region).items():
+                            if g.get("name"):
+                                names[gid] = g["name"]
+            finally:
+                st.close()
+        except Exception as exc:  # noqa: BLE001 - names are a nicety: ids are shown without them
+            LOG.warning("security group names not read: %s", exc)
+            return {}
+        self._gnames = (now, set(accounts), names)
+        return names
 
     # ------------------------------------------------------------------ the estate's address book
     def _ip_index(self) -> tuple[dict, int]:
@@ -1690,7 +1730,7 @@ class Console:
         groups, assets = self._account_groups(account)
         # kept until the account's read or its groups change: building a plan takes seconds, opening it again none
         key = (account, int(days), start, end, mtime, hashlib.sha1(repr((groups, assets)).encode()).hexdigest(),
-               PLAN_FORMAT)  # fmt: skip
+               PLAN_FORMAT, json.dumps(sg_review.tighten_prefs(), sort_keys=True))  # fmt: skip
         with self._report_lock:
             hit = self._plans.get(key)
         if hit is not None:
@@ -2402,6 +2442,8 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.batch_status())
                 if url.path == "/api/schedule":
                     return self._json(200, console.schedule())
+                if url.path == "/api/tighten":
+                    return self._json(200, console.tighten_prefs())
                 if url.path == "/api/jobs":
                     return self._json(200, console.job_list())
                 return self._json(404, {"error": "not found"})
@@ -2437,7 +2479,7 @@ def make_handler(console: Console, token: str, port: int):
                      "/api/sso/signout": console.sso_sign_out, "/api/read": console.read_start,
                      "/api/read/confirm": console.read_confirm, "/api/read/stop": console.read_stop,
                      "/api/read/all": console.read_all, "/api/read/all/confirm": console.read_all_confirm, "/api/schedule": console.set_schedule,
-                     "/api/reports/retry": console.reports_retry,
+                     "/api/reports/retry": console.reports_retry, "/api/tighten": console.set_tighten_prefs,
                      "/api/read/all/stop": console.read_all_stop, "/api/keys/use": console.keys_use,
                      "/api/autostart": console.autostart,
                      "/api/database/start": console.database_start}.get(urlparse(self.path).path)  # fmt: skip

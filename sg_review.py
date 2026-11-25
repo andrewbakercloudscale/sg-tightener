@@ -3190,7 +3190,8 @@ def _egress_items(region, gid, g, mine, enis, groups, egress_seen, lab) -> list[
         v4 = sorted(d for d in dsts if _ip(d) is not None)
         if not v4:
             continue
-        cidrs = sg_tightener.collapse_ips_to_cidrs(v4, 10, sg_tightener.DEFAULT_TOLERANCE)
+        pf = tighten_prefs()
+        cidrs = sg_tightener.collapse_ips_to_cidrs(v4, pf["out_rules"], pf["tolerance"])
         rules.append((proto, port, cidrs, f"{len(dsts)} destination(s)"))
     if not rules:
         return out
@@ -3279,6 +3280,106 @@ def _mix(here: dict, lab) -> dict:
     return out
 
 
+# How suggestions are fitted: the same settings and maths as sg_tightener.py plan. The console's Remediate tab
+# changes them (kept in tighten.json in the data directory, read by every process that builds a plan).
+TIGHTEN = {"max_rules": sg_tightener.DEFAULT_MAX_RULES, "tolerance": sg_tightener.DEFAULT_TOLERANCE,
+           "fill": False, "out_rules": 10}
+_prefs_seen: tuple = (None, {})
+
+
+def _prefs_file():
+    return sg_ipintel.DATA_DIR / "tighten.json"
+
+
+def check_tighten_prefs(body: dict) -> dict:
+    """The settings in ``body`` checked and typed; ValueError names the first one out of range."""
+    out = {}
+    for k, v in (body or {}).items():
+        if k == "tolerance":
+            v = float(v)
+            if not 0 <= v <= 0.9:
+                raise ValueError("tolerance must be between 0 and 0.9 (0 to 90% of a block never seen)")
+        elif k == "max_rules":
+            v = int(v)
+            if not 1 <= v <= 1000:
+                raise ValueError("rules per security group must be 1 to 1000 (AWS's default quota is 60)")
+        elif k == "out_rules":
+            v = int(v)
+            if not 1 <= v <= 60:
+                raise ValueError("outbound rules per port must be 1 to 60")
+        elif k == "fill":
+            v = bool(v)
+        else:
+            continue
+        out[k] = v
+    return out
+
+
+def tighten_prefs() -> dict:
+    """The settings suggestions and plans are fitted with: the defaults, overlaid with what was saved."""
+    global _prefs_seen
+    try:
+        m = _prefs_file().stat().st_mtime
+    except OSError:
+        return dict(TIGHTEN)
+    if _prefs_seen[0] != m:
+        try:
+            got = check_tighten_prefs(json.loads(_prefs_file().read_text()))
+        except (OSError, ValueError, TypeError) as exc:
+            LOG.warning("tighten.json ignored: %s", exc)
+            got = {}
+        _prefs_seen = (m, got)
+    return {**TIGHTEN, **_prefs_seen[1]}
+
+
+def save_tighten_prefs(body: dict) -> dict:
+    got = {**tighten_prefs(), **check_tighten_prefs(body)}
+    got = {k: got[k] for k in TIGHTEN}
+    f = _prefs_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(json.dumps(got, indent=1))
+    tmp.replace(f)
+    return got
+
+
+def group_rule_count(g: dict) -> int:
+    """Inbound rules a security group holds as AWS counts them against its quota (each CIDR, prefix list and
+    referenced group one; IPv4 and IPv6 together, the stricter reading)."""
+    return sum(len(r.get("cidrs") or []) + len(r.get("cidrs6") or []) + len(r.get("pls") or []) + len(r.get("refs") or [])
+               for r in g.get("rules") or [])  # fmt: skip
+
+
+def _suggest_group(g: dict, pending: list) -> None:
+    """Narrow every IPv4 rule of one group to be tightened at once, as ``plan`` does: the rules left alone keep
+    their places, the rest of the group's budget is shared between the rules being narrowed so the group as a
+    whole lets in the fewest addresses nobody was seen using (an exact split), and no suggestion ever leaves the
+    rule it replaces. A rule the cover would not narrow is called in use across its range."""
+    if not pending:
+        return
+    prefs = tighten_prefs()
+    budget = max(1, prefs["max_rules"] - (group_rule_count(g) - len(pending)))
+    # "fill": start from the exact sources, so the budget alone decides (every free rule spent on letting in fewer
+    # never-seen addresses: the fewest possible for that many rules). Otherwise each source first grows while at most
+    # ``tolerance`` of its block is unseen, leaving room for hosts that come and go.
+    tol = 0.0 if prefs["fill"] else prefs["tolerance"]
+    covers = []
+    for _row, keep, within, _allowed in pending:
+        xs = sorted({int(a) for a in sg_tightener._normalise_ips(keep)})
+        covers.append(sg_tightener._Cover(sg_tightener._tolerance_blocks(xs, tol, within=within), budget) if xs else None)
+    live = [c for c in covers if c is not None]
+    shares = iter(sg_tightener._split_budget([c.cost for c in live], [len(c.curve) - 1 for c in live], budget))
+    for (row, _keep, _within, allowed), cover in zip(pending, covers):
+        if cover is None:
+            continue
+        cidrs = [str(n) for n in ipaddress.collapse_addresses(cover.blocks(next(shares)))]
+        row["suggest"], row["suggest_size"] = cidrs, sg_ipintel.size(_iv(cidrs))
+        row["budget"] = budget
+        if row["suggest_size"] >= allowed:
+            row["status"], row["note"] = "used", "In use across the range: nothing to take away"
+            row["suggest"], row["suggest_size"] = [], None
+
+
 def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_first, cut_regions, end) -> list[dict]:
     by_eni: dict[str, list] = {}
     deleted: list = []
@@ -3310,6 +3411,7 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
             by_port.setdefault((proto, dport), []).append((_ip(src), src, flows, c["e"]))
         own6 = next((v.get("cidrs6") or [] for v in snap.get("vpcs") or [] if v["id"] == g["vpc"]), [])
         lb_public = public_lb(g, snap)
+        pending: list = []  # IPv4 rules to narrow: suggested together, sharing the group's rule budget
         for rule in g["rules"]:
             for entry in rule.get("cidrs6") or []:
                 row = _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regions, since, days,
@@ -3366,18 +3468,10 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
                     row["keep_src"] = [[s, h[1]] for s, h in here.items()] + [[s, None] for s in sorted(unattr - set(here))]
                     row["fit_ok"] = logged and g["region"] not in cut_regions and days >= EVIDENCE_DAYS
                 if row["status"] == "tighten":
-                    keep = sorted(set(here) | unattr)
                     within = ipaddress.IPv4Network(entry, strict=False) if not entry.startswith("pl-") else None
-                    cidrs = sg_tightener.collapse_ips_to_cidrs(keep, sg_tightener.DEFAULT_MAX_RULES, sg_tightener.DEFAULT_TOLERANCE)
-                    if within is not None:
-                        cidrs = [c if ipaddress.IPv4Network(c).subnet_of(within) else str(within) for c in cidrs]
-                        cidrs = [str(n) for n in ipaddress.collapse_addresses(map(ipaddress.IPv4Network, cidrs))]
-                    row["suggest"] = cidrs
-                    row["suggest_size"] = sg_ipintel.size(_iv(cidrs))
-                    if row["suggest_size"] >= allowed:
-                        row["status"], row["note"] = "used", "In use across the range: nothing to take away"
-                        row["suggest"], row["suggest_size"] = [], None
+                    pending.append((row, sorted(set(here) | unattr), within, allowed))
                 out.append(row)
+        _suggest_group(g, pending)
     rank = {"tighten": 0, "unused": 1, "open": 2, "watch": 3, "not logged": 5, "used": 6}
     out.sort(key=lambda r: (rank.get(r["status"], 9), -r["never"]))
     return out
@@ -3521,8 +3615,9 @@ def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regi
         row["status"] = "used"
     _mark_cut(row, g, cut_regions)
     if row["status"] == "tighten":
-        cidrs = sg_tightener.collapse_ipv6_to_cidrs(sorted(set(here) | unattr), sg_tightener.DEFAULT_MAX_RULES,
-                                                    sg_tightener.DEFAULT_TOLERANCE, within=entry)  # fmt: skip
+        pf = tighten_prefs()
+        cidrs = sg_tightener.collapse_ipv6_to_cidrs(sorted(set(here) | unattr), pf["max_rules"],
+                                                    0.0 if pf["fill"] else pf["tolerance"], within=entry)  # fmt: skip
         size = sum(1 << max(0, sg_tightener.V6_SUBNET - _net6(c).prefixlen) for c in cidrs)
         if size >= allowed or not cidrs:
             row["status"], row["note"] = "used", "In use across the range: nothing to take away"
