@@ -863,7 +863,7 @@ WORKERS = 8  # slices of one account read at once: well inside the Logs Insights
 REGION_WORKERS = 8  # regions read at once in one account: each region has its own API limits
 EVIDENCE_DAYS = 0  # fewer days of flow logs than this and no rule is called unused or ready to tighten. Owner's
 # decision (2026-11-24): act on whatever was read; what runs less often than the read (monthly jobs, DR tests)
-# shows on Rejected traffic, where Propose allowing opens it again. It was 30.
+# shows on Rejected traffic, where Fix… lets it in again. It was 30.
 NEW_DAYS = 7  # a source first seen this recently is new...
 NEW_HISTORY_DAYS = 14  # ...when at least this many days of flow logs before it were read without it
 INSIGHTS_PER_GB = 0.005
@@ -1909,7 +1909,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
                             "desc": e.get("desc", ""), "public": e.get("public", ""), "pc": port_class(proto, port),
                             "by": _refused_by(src, e, groups, snaps, proto, port)})  # fmt: skip
         row.update(targets=targets, ports=_n_ports(r), dsts=_n_dsts(r))
-        row["sweep"] = _sweeps(r)
+        row["sweep"] = _sweeps(r, enis)
         row["verdict"] = verdicts[src]
         refused.append(row)
     suggestions = _suggest(rej, enis, groups, snaps, lab)
@@ -2270,8 +2270,27 @@ def _n_dsts(r: dict) -> int:
     return r.get("dsts", len({t[3] for t in r["targets"]}))
 
 
-def _sweeps(r: dict) -> bool:
-    return _n_ports(r) >= 10 or _n_dsts(r) >= 5
+def _sweeps(r: dict, enis: dict | None = None) -> bool:
+    """Many ports, or many IP addresses. One port on several interfaces that all carry the same security groups is
+    a client of one service spread over them (a cache or database behind endpoints, a fleet behind a load
+    balancer), not a scan."""
+    if _n_ports(r) >= 10:
+        return True
+    if _n_dsts(r) < 5:
+        return False
+    if enis is not None and _n_ports(r) == 1 and isinstance(r.get("targets"), dict):
+        es = [enis.get(t[0]) or {} for t in r["targets"]]
+        sets = {tuple(sorted(e.get("groups") or [])) for e in es}
+        if len(sets) == 1 and () not in sets:
+            return False
+        if all(str(e.get("kind", "")) in SERVICE_FRONTS for e in es):  # a service's endpoints in every zone
+            return False
+    return True
+
+
+# Interfaces in front of one AWS service: a client reaches several of them (one per zone, or per node) on one port.
+SERVICE_FRONTS = frozenset({"vpc endpoint", "load balancer", "gateway load balancer endpoint", "gateway load balancer",
+                            "network load balancer", "RDS database"})
 
 
 # ---------------------------------------------------------------------------------------------- verdicts
@@ -2363,7 +2382,7 @@ def refused_verdict(ctx, src: str, r: dict) -> dict:
     periods, flows = len(r["bins"]), r["flows"]
     since = f"{_day(r['first'])}" + (f" to {_day(r['last'])}" if r["last"] - r["first"] > DAY else "")
     retries = f"{flows:,} flows in {periods} period{'s' if periods != 1 else ''}, {since}"
-    if _sweeps(r):
+    if _sweeps(r, ctx.enis):
         if cat in ("internal", "datacentre"):
             return {"key": "internal-scan", "sev": "critical", "label": "Internal scan",
                     "title": "A host inside your network is scanning",
@@ -2533,7 +2552,7 @@ def active_verdict(ctx, src: str, a: dict) -> dict | None:
     port that is not the public web, or a source that swept refused ports and found one let in."""
     lb = ctx.lab(src)
     group, name = lb.get("group", lb["cat"]), lb["name"]
-    swept = src in ctx.rej and _sweeps(ctx.rej[src])
+    swept = src in ctx.rej and _sweeps(ctx.rej[src], ctx.enis)
     if not (group in ("scanner", "anon", "threat") or swept or (group == "hosting" and lb["cat"] == "internet")):
         return None
     worst = None
@@ -4524,7 +4543,19 @@ def refused_rows(account: str, name: str, rep: dict, limit: int = ORG_REFUSED) -
                     "seen_before": bool(r.get("seen_before")), "new": bool(r.get("new")),
                     "v6": bool(r.get("v6")), "internal": r.get("cat") in ("internal", "datacentre"),
                     "scan": bool(r.get("sweep")), "threat": r.get("group") == "threat",
-                    "tor": r.get("group") == "anon"})  # fmt: skip
+                    "tor": r.get("group") == "anon",
+                    # everything the Fix dialog shows: who the source is, every place it tried, and why it was refused
+                    "provider": r.get("provider", ""), "what": r.get("what", ""), "range": r.get("range", ""),
+                    "service": r.get("service", ""), "src_vpc": r.get("vpc", ""), "by": t.get("by", ""),
+                    "title": v.get("title", ""), "action": v.get("action", ""), "wanted": bool(v.get("wanted")),
+                    "key": v.get("key", ""), "event": v.get("event"), "restore": v.get("restore"),
+                    "moved_from": v.get("moved_from", ""), "periods": len(r.get("bins") or []),
+                    "targets": [{"eni": x.get("eni", ""), "dst": x.get("dst", ""), "proto": x.get("proto", ""),
+                                 "port": x.get("port"), "flows": x.get("flows", 0), "kind": x.get("kind", ""),
+                                 "groups": x.get("groups", []), "region": x.get("region", ""), "vpc": x.get("vpc", ""),
+                                 "subnet": x.get("subnet", ""), "desc": x.get("desc", ""), "public": x.get("public", ""),
+                                 "port_class": (x.get("pc") or {}).get("name", ""), "risky": bool((x.get("pc") or {}).get("risky")),
+                                 "by": x.get("by", "")} for x in r.get("targets") or []]})  # fmt: skip
     return out
 
 

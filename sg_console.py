@@ -56,7 +56,7 @@ MIN_SPEND = 100.0  # US$ in the last 30 days: reading an OU skips accounts spend
 AGES = {"estimate": 3600}  # reports that depend on the time as well as the read: rebuilt (in the background) this often
 SETTLING = 600  # a read written to in the last ten minutes keeps its last report row (built in this window)
 REPORT_PROCS = max(1, min(8, (os.cpu_count() or 2) - 1))  # processes building report rows at once
-REPORT_CACHE_VERSION = 4
+REPORT_CACHE_VERSION = 7  # 5: refused rows carry every target and the verdict; 6, 7: one service is not a scan
 # a page asking for a report some accounts have no row in yet gets the rows there are at once, and the rest are
 # built in the background (it asks again); tests set SG_NO_WARM and get every row before the answer
 REPORTS_WAIT = os.environ.get("SG_NO_WARM") == "1"
@@ -1590,6 +1590,109 @@ class Console:
         finally:
             st.close()
 
+    def apply_preview(self, body: dict) -> dict:
+        """What Apply would change, before it does: every rule added or removed, on which groups and how many
+        interfaces, the change request it came from, and what the flow logs say about each rule removed (who
+        used it, and whether the rules left still let those sources in). Nothing is sent to AWS."""
+        account, region = _need(body, "account"), _need(body, "region")
+        st = self.store()
+        try:
+            todo = st.pending(account, region, str(body.get("group") or ""))
+            names = {g: v["name"] for g, v in st.groups(account, region).items()}
+            assets = _assets_quiet(st, account, region)
+            on: dict[str, list] = {}
+            for a in assets:
+                for g in a["groups"]:
+                    on.setdefault(g, []).append(a)
+            asked = st.requests("approved", account, region)
+            wanted = {g: st.rules(account, region, g, "desired") for g in {c[0] for c in todo}}
+            mode = st.mode(account)
+        finally:
+            st.close()
+        try:
+            plan = {r["key"]: r for r in self.verdicts(account, region)["rules"]}
+        except Exception as exc:  # noqa: BLE001 - the preview still lists the changes without the evidence
+            LOG.warning("no flow-log evidence for the apply preview of %s: %s", account, exc)
+            plan = {}
+        changes, at_risk = [], 0
+        for gid, op, rule, desc in todo:
+            d, proto, lo, hi, src = rule
+            c = {"group": gid, "name": names.get(gid, ""), "op": op, "rule": sg_db._rule_json(rule, desc),
+                 "text": sg_db.rule_text(rule), "interfaces": len(on.get(gid, [])),
+                 "instances": sorted({a["instance"] or a["eni"] for a in on.get(gid, [])})[:8],
+                 "requests": [{"id": q["id"], "reason": q["reason"], "ticket": q.get("ticket") or ""} for q in asked
+                              if _asks(q, gid, op, rule)]}  # fmt: skip
+            ev = plan.get(f"{region}|{gid}|{proto}|{lo}|{hi}|{src}") if op == "remove" and d == sg_db.IN else None
+            if ev:
+                left = wanted.get(gid) or {}
+                lost = [x for x in ev.get("top") or [] if x and not any(_covers(r, x, proto, lo, hi) for r in left)]
+                c["evidence"] = {"days": ev.get("days"), "sources": ev.get("seen", 0), "last_used": ev.get("last_used"),
+                                 "action": ev.get("action"), "lost": lost}  # fmt: skip
+                at_risk += bool(lost)
+            changes.append(c)
+        enis = {a["eni"] for g in {c["group"] for c in changes} for a in on.get(g, [])}
+        return {"account": account, "region": region, "mode": mode, "changes": changes,
+                "summary": {"add": sum(c["op"] == "add" for c in changes), "remove": sum(c["op"] == "remove" for c in changes),
+                            "groups": len({c["group"] for c in changes}), "interfaces": len(enis),
+                            "known": bool(assets), "at_risk": at_risk}}  # fmt: skip
+
+    def fix_refused(self, body: dict) -> dict:
+        """For one refused source on one interface and port: everything known about it, and where a rule letting
+        it in belongs. An existing group that already serves this port on that interface; a group on that interface
+        alone; or, when every group there is shared and none serves the port, a group of its own (so the others are
+        not opened too). Scans, threat lists and Tor exits are recommended to stay refused; a network ACL refusal is
+        not a security group's to fix."""
+        account, region = _need(body, "account"), _need(body, "region")
+        eni, src = _need(body, "eni"), _need(body, "src")
+        proto = PROTO_NAMES.get(str(body.get("proto")), str(body.get("proto") or ""))
+        try:
+            port = int(body.get("port"))
+        except (TypeError, ValueError):
+            raise ConsoleError(400, "port is a number")
+        flags = {k: bool(body.get(k)) for k in ("scan", "threat", "tor", "internal")}
+        by = str(body.get("by") or "")
+        st = self.store()
+        try:
+            if not st.imported(account, region):
+                raise ConsoleError(409, f"{account} {region} is not in the database yet: read it on the Overview first")
+            groups = st.groups(account, region)
+            assets = _assets_quiet(st, account, region)
+            asset = next((a for a in assets if a["eni"] == eni), None)
+            used: dict[str, int] = {}
+            for a in assets:
+                for g in a["groups"]:
+                    used[g] = used.get(g, 0) + 1
+            gids = (asset or {}).get("groups") or [g for g in body.get("groups") or [] if g in groups]
+            info = []
+            for g in gids:
+                have = st.rules(account, region, g, "synced")
+                serving = sorted({r[4] for r in have if r[0] == sg_db.IN and _port_in(r, proto, port)})
+                info.append({"id": g, "name": (groups.get(g) or {}).get("name", ""), "vpc": (groups.get(g) or {}).get("vpc", ""),
+                             "description": (groups.get(g) or {}).get("description", ""), "interfaces": used.get(g, 0),
+                             "serves_port": bool(serving), "sources": serving[:12],
+                             "lets_in": any(_covers(r, src, proto, port, port) for r in have)})  # fmt: skip
+            broke = _broken_by(st, account, region, gids, src, proto, port)
+            mine = next((a for a in assets if src.split("/")[0] in (a.get("ips") or [])), None)
+            waiting = [q["id"] for q in st.requests("pending", account, region) + st.requests("approved", account, region)
+                       if any(_asks(q, g, "add", None, src=src, proto=proto, port=port) for g in gids)]  # fmt: skip
+        finally:
+            st.close()
+        same_vpc = mine and asset and mine.get("vpc_id") == asset.get("vpc_id") and mine.get("groups")
+        if same_vpc:
+            source, source_why = mine["groups"][0], (f"{src} is {mine['instance'] or mine['eni']}, in the same VPC: allowing its "
+                                                     f"security group follows it if its IP address changes")  # fmt: skip
+        else:
+            source = src if "/" in src else src + ("/128" if ":" in src else "/32")
+            source_why = f"just {src}, not its whole network"
+        rule = {"direction": "in", "proto": proto, "from": port, "to": port, "source": source,
+                "description": str(body.get("name") or src)[:200]}  # fmt: skip
+        alts = [{"group": g["id"], "name": g["name"], "interfaces": g["interfaces"], "serves_port": g["serves_port"]}
+                for g in sorted(info, key=lambda g: (not g["serves_port"], g["interfaces"]))]  # fmt: skip
+        rec = _recommend(info, flags, by, broke, waiting, asset, proto, port, eni)
+        return {"account": account, "region": region, "eni": eni, "src": src, "proto": proto, "port": port,
+                "asset": asset, "groups": info, "broken_by": broke, "source_interface": mine, "rule": rule,
+                "source_why": source_why, "recommend": rec, "alternatives": alts, "waiting": waiting}  # fmt: skip
+
     def check(self, body: dict) -> dict:
         """DryRun every call apply needs on every group in this region (and an asset swap): nothing changes."""
         import sg_assets
@@ -2007,7 +2110,7 @@ def make_handler(console: Console, token: str, port: int):
                 return self._json(400, {"error": f"bad JSON: {exc}"})
             if not isinstance(body, dict):
                 return self._json(400, {"error": "bad JSON: an object is expected"})
-            route = {"/api/propose": console.propose, "/api/tighten": console.tighten, "/api/remediate": console.remediate, "/api/merge-apply": console.merge_apply, "/api/decide": console.decide, "/api/approvals": console.set_approvals, "/api/apply": console.apply,
+            route = {"/api/propose": console.propose, "/api/tighten": console.tighten, "/api/remediate": console.remediate, "/api/merge-apply": console.merge_apply, "/api/decide": console.decide, "/api/approvals": console.set_approvals, "/api/apply": console.apply, "/api/apply-preview": console.apply_preview, "/api/refused-fix": console.fix_refused,
                      "/api/reconcile": console.reconcile, "/api/adopt": console.adopt, "/api/check": console.check,
                      "/api/profile": lambda body: console.profile(_need(body, "account"), read=True),
                      "/api/asset-apply": console.asset_apply, "/api/asset-revert": console.asset_revert,
@@ -2138,6 +2241,135 @@ def plain_error(exc: BaseException) -> str:
 ACTIONABLE = sg_remediate.ACTIONABLE
 _port_ranges = sg_remediate.port_ranges
 _plan_rule = sg_remediate.plan_rule
+
+PROTO_NAMES = {"6": "tcp", "17": "udp", "1": "icmp", "58": "icmpv6", "-1": "-1", "tcp": "tcp", "udp": "udp"}
+
+
+def _assets_quiet(st, account: str, region: str) -> list[dict]:
+    import sg_assets
+
+    try:
+        return sg_assets.list_assets(st, account, region)
+    except Exception as exc:  # noqa: BLE001 - shown without the interfaces rather than not at all
+        LOG.warning("interfaces of %s %s not read: %s", account, region, exc)
+        return []
+
+
+def _port_in(rule, proto: str, port: int) -> bool:
+    _d, p, lo, hi, _s = rule
+    return p == "-1" or (p == proto and (lo == -1 or lo <= port <= hi))
+
+
+def _covers(rule, src: str, proto: str, lo: int, hi: int) -> bool:
+    """Does an inbound ``rule`` let ``src`` (an address or CIDR) in on every port from lo to hi? A rule naming a
+    security group or prefix list cannot be checked from an address, so it is not counted as covering."""
+    import ipaddress
+
+    d, p, rlo, rhi, source = rule
+    if d != sg_db.IN or not (p == "-1" or (p == proto and (rlo == -1 or (rlo <= lo and hi <= rhi)))):
+        return False
+    try:
+        net, ip = ipaddress.ip_network(source, strict=False), ipaddress.ip_network(src, strict=False)
+    except ValueError:
+        return False
+    return net.version == ip.version and ip.subnet_of(net)
+
+
+def _asks(q: dict, gid: str, op: str, rule, src: str = "", proto: str = "", port: int = 0) -> bool:
+    """Does change request ``q`` ask for ``op`` of ``rule`` on ``gid`` (or, with ``src``, add a rule letting src in
+    on proto/port there)?"""
+    if not isinstance(q.get("changes"), list):
+        return False
+    for c in q["changes"]:
+        if c.get("group") != gid or c.get("op") != op:
+            continue
+        r = c.get("rule") or {}
+        try:
+            t = sg_db._rule_tuple(r)
+        except KeyError:
+            continue
+        if rule is not None and t == rule:
+            return True
+        if rule is None and src and (_covers(t, src, proto, port, port) or t[4] == src):
+            return True
+    return False
+
+
+def _broken_by(st, account: str, region: str, gids: list[str], src: str, proto: str, port: int) -> list[dict]:
+    """Changes in the audit trail that took away a rule letting ``src`` in on this port, on these groups:
+    applied by this tool or made in AWS outside it. Newest first."""
+    out, done = [], st.requests("applied", account, region)
+    for g in gids:
+        for e in st.log(account, region, g, limit=200):
+            if e["action"] not in ("applied", "rules-changed") or e["origin"] not in ("apply", "external"):
+                continue
+            gone = [r for r in (e["detail"] or {}).get("removed") or []
+                    if _covers(sg_db._rule_tuple(r), src, proto, port, port)]
+            if gone:
+                asked = [{"id": q["id"], "reason": q["reason"], "ticket": q.get("ticket") or "", "proposer": q.get("proposer", "")}
+                         for q in done if any(_asks(q, g, "remove", sg_db._rule_tuple(r)) for r in gone)]  # the request behind it
+                out.append({"at": e["at"], "group": g, "origin": e["origin"], "actor": e["actor"], "reason": e["reason"],
+                            "ticket": e["ticket"], "requests": asked,
+                            "removed": [sg_db.rule_text(sg_db._rule_tuple(r)) for r in gone]})  # fmt: skip
+    return sorted(out, key=lambda x: x["at"], reverse=True)[:5]
+
+
+def _recommend(info, flags, by, broke, waiting, asset, proto, port, eni) -> dict:
+    """Where a rule letting this source in belongs, in words: ``kind`` is keep (leave it refused), nacl, done,
+    waiting, add (to ``group``) or own (a group of its own for the interface)."""
+    if flags["threat"] or flags["tor"]:
+        return {"kind": "keep", "why": "It is on a threat list or a Tor exit: keep refusing it. Nothing should open a "
+                                       "port to it."}  # fmt: skip
+    if flags["scan"]:
+        return {"kind": "keep", "why": "It swept many ports or addresses: that is a scan, and refusing it is the "
+                                       "security group doing its job." + (" A scan from inside your network is worth "
+                                       "finding out about." if flags["internal"] else "")}  # fmt: skip
+    if by.startswith("Network ACL"):
+        return {"kind": "nacl", "why": f"{by} refuses it, before any security group sees it: a security group rule "
+                                       "would not let it in. Change the network ACL if it is wanted."}  # fmt: skip
+    if any(g["lets_in"] for g in info):
+        g = next(g for g in info if g["lets_in"])
+        return {"kind": "done", "group": g["id"], "why": f"{g['name'] or g['id']} lets it in now: a rule was added "
+                                                         "since it was refused. Nothing to do."}  # fmt: skip
+    if waiting:
+        return {"kind": "waiting", "why": f"Change request {', '.join('#' + str(i) for i in waiting)} already lets it in, "
+                                          "once approved and applied."}  # fmt: skip
+    if not info:
+        return {"kind": "unknown", "why": f"{eni} is not among the interfaces read for this account: refresh it from "
+                                          "AWS, then look again."}  # fmt: skip
+    if broke:
+        b = next((g for g in info if g["id"] == broke[0]["group"]), None)
+        if b:
+            return {"kind": "add", "group": b["id"], "why": f"It was let in until {broke[0]['removed'][0]} was removed "
+                                                            f"from {b['name'] or b['id']}: put it back there, for this "
+                                                            "source only."}  # fmt: skip
+    serving = sorted((g for g in info if g["serves_port"]), key=lambda g: g["interfaces"])
+    if serving:
+        g = serving[0]
+        return {"kind": "add", "group": g["id"], "why": f"{g['name'] or g['id']} already lets others in on {proto} {port}"
+                                                        f" to this interface: it is the group for that service"
+                                                        + (f" (on {g['interfaces']} interfaces, which all serve it)" if g["interfaces"] > 1 else "")
+                                                        + "."}  # fmt: skip
+    alone = sorted((g for g in info if g["interfaces"] <= 1), key=lambda g: g["name"] == "default")
+    if alone:
+        g = alone[0]
+        return {"kind": "add", "group": g["id"], "why": f"{g['name'] or g['id']} is on this interface only, so the new "
+                                                        "rule opens nothing else."}  # fmt: skip
+    fewest = min(info, key=lambda g: g["interfaces"])
+    import sg_assets
+
+    managed = sg_assets.why_not_alone(asset) if asset else ""
+    if managed:
+        return {"kind": "add", "group": fewest["id"], "why": f"This interface cannot get a group of its own ({managed}): "
+                                                             f"{fewest['name'] or fewest['id']} is shared by "
+                                                             f"{fewest['interfaces']} interfaces, which all get the rule."}  # fmt: skip
+    return {"kind": "own", "group": fewest["id"],
+            "why": f"Every group on this interface is shared (the least by {fewest['interfaces']} interfaces) and none lets "
+                   f"anything in on {proto} {port}: adding it to one would open {proto} {port} on all of them. Give this "
+                   f"interface a group of its own for it.",
+            "command": f"python sg_db.py asset-plan --eni {eni} --approved approved.json, then asset-propose; once it is "
+                       f"applied, add this rule to its new group (sgt-{eni}-…)"}
+
 
 
 def serve(console: Console, port: int = 8765, token: str | None = None) -> tuple[ThreadingHTTPServer, str]:

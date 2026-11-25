@@ -332,3 +332,20 @@ def test_alert_text_carries_the_privatelink_fix(week):
     text = sg_review.alert_text("123456789012", "", [it for it in rep["attention"] if it["key"] == "pl-service-anyone"],
                                 markdown=False)  # fmt: skip
     assert "Fix: aws ec2 modify-vpc-endpoint-service-permissions" in text and "Sources:" not in text
+
+
+def test_one_port_on_one_services_interfaces_is_a_client_not_a_scan():
+    """A cache client refused on 6380 at eight VPC endpoint interfaces of the same service was called an internal
+    scan (critical). Eight addresses carrying the same groups on one port is one service, not a sweep."""
+    enis = {f"eni-{i}": {"groups": ["sg-cache"]} for i in range(8)}
+    enis.update({f"eni-x{i}": {"groups": [f"sg-{i}"]} for i in range(8)})
+    one_service = {"targets": {(f"eni-{i}", "6", 6380, f"10.0.0.{i}"): 10 for i in range(8)}}
+    subnet_sweep = {"targets": {(f"eni-x{i}", "6", 22, f"10.0.1.{i}"): 1 for i in range(8)}}
+    many_ports = {"targets": {("eni-0", "6", p, "10.0.0.0"): 1 for p in range(20, 32)}}
+    assert not sg_review._sweeps(one_service, enis)
+    assert sg_review._sweeps(subnet_sweep, enis), "one port across hosts of different groups is still a sweep"
+    assert sg_review._sweeps(many_ports, enis)
+    assert sg_review._sweeps(one_service), "without the interfaces it cannot tell, and stays cautious"
+    endpoints = {f"eni-e{i}": {"groups": [f"sg-e{i % 2}"], "kind": "vpc endpoint"} for i in range(8)}
+    to_endpoints = {"targets": {(f"eni-e{i}", "6", 6380, f"10.0.2.{i}"): 5 for i in range(8)}}
+    assert not sg_review._sweeps(to_endpoints, endpoints), "two endpoints' groups, one port: still one service's client"

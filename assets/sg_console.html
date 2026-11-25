@@ -54,6 +54,7 @@ h3 { font-size: 15px; margin: 18px 0 6px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .stat b { display: block; font-size: 24px; }
 .stat span { color: var(--ink-2); font-size: 12.5px; }
+.stat.on { outline: 2px solid var(--accent, #3b6fd8); }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--grid); }
 th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); }
@@ -468,7 +469,23 @@ section.nodata .card:not(.empty-state) { display: none; }
   @media print { .reread { display: none !important; } }
   #auditDlg { width: min(1280px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
               background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
-  #auditDlg::backdrop { background: rgba(10,12,20,.45); }
+  #auditDlg::backdrop, #fixDlg::backdrop { background: rgba(10,12,20,.45); }
+  #fixDlg { width: min(1100px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
+            background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
+  #fixDlg .au-head { display: flex; gap: 16px; align-items: flex-start; padding: 18px 22px 10px; border-bottom: 1px solid var(--grid); }
+  #fixDlg .au-tools { margin-left: auto; display: flex; gap: 8px; }
+  #fixDlg .au-body { overflow: auto; max-height: calc(92vh - 110px); padding: 6px 22px 20px; }
+  #fixDlg h3 { margin: 18px 0 6px; font-size: 15px; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 10px 0; }
+  .facts > div { border: 1px solid var(--grid); border-radius: 10px; padding: 8px 12px; }
+  .facts b { display: block; font-size: 18px; }
+  .rec { border: 2px solid var(--accent); border-radius: 12px; padding: 12px 16px; margin: 12px 0;
+         background: color-mix(in srgb, var(--accent) 7%, transparent); }
+  .rec.keep { border-color: var(--good); background: color-mix(in srgb, var(--good) 8%, transparent); }
+  .rec.warn { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, transparent); }
+  .impact { border-left: 4px solid var(--warn); padding: 8px 12px; border-radius: 8px; margin: 8px 0;
+            background: color-mix(in srgb, var(--warn) 10%, transparent); }
+  .impact.ok { border-left-color: var(--good); background: color-mix(in srgb, var(--good) 9%, transparent); }
   #auditDlg .au-head { display: flex; gap: 16px; align-items: flex-start; padding: 18px 22px 8px; border-bottom: 1px solid var(--grid); }
   #auditDlg .au-tools { margin-left: auto; display: flex; gap: 8px; }
   #auditDlg .au-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 22px; border-bottom: 1px solid var(--grid); }
@@ -666,7 +683,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     <p class="lede">Pick an account. Its flow logs over the look back decide what every security group should let in:
       narrower sources, fewer ports, unused rules removed, and groups that end up letting in the same traffic merged
       into one. Untick anything sensitive, then propose. The approver only approves. If something breaks after it is
-      applied, it shows on <b>Rejected traffic</b>, where <b>Propose allowing</b> opens it up again.</p>
+      applied, it shows on <b>Rejected traffic</b>, where <b>Fix…</b> lets it in again.</p>
     <div class="tools">
       <input id="xFind" type="search" placeholder="Find an account (name or number)…" aria-label="Find an account to remediate">
       <select id="xAcct" aria-label="Account to remediate"></select>
@@ -706,6 +723,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <button class="btn primary" id="gApply">Apply approved changes</button>
     </div>
     <div class="card plan" id="gPlan"></div>
+    <div class="card" id="gApplyBox" hidden></div>
     <div class="flash" id="modeNote" hidden></div>
     <div class="card"><div class="scroll"><table class="grp"><thead><tr><th>Group</th><th class="num">Interfaces</th><th class="num">Rules</th><th class="act"></th></tr></thead><tbody id="groupList"></tbody></table></div></div>
     <div class="card" id="proposeCard">
@@ -780,6 +798,12 @@ section.nodata .card:not(.empty-state) { display: none; }
       <p class="muted small">Distinct source IP addresses refused in each period, one line per kind of source. Follows the account and time filters above.</p>
       <div id="fChart"></div></div>
     <div class="card scroll"><table><thead><tr><th>Severity</th><th>Account</th><th>Source</th><th>Refused on</th><th>Flows</th><th>Last seen</th><th>Verdict</th><th></th></tr></thead><tbody id="refusedRows"></tbody></table></div>
+    <dialog id="fixDlg" aria-labelledby="fixTitle">
+      <div class="au-head"><div><div class="eyebrow">Rejected traffic</div><h2 id="fixTitle" style="margin:2px 0 4px">Fix</h2>
+        <div class="muted small" id="fixSub"></div></div>
+        <div class="au-tools"><button class="btn sm primary" type="button" id="fixClose">Close</button></div></div>
+      <div class="au-body" id="fixBody"></div>
+    </dialog>
   </section>
 </main>
 <script nonce="{{NONCE}}">
@@ -1347,7 +1371,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     openGroups.clear();
     const acct = S.accounts.find((a) => a.account === w.account) || {};
     const surv = acct.mode !== "enforce";
-    $("gApply").disabled = surv;
+    $("gApply").textContent = surv ? "Preview approved changes" : "Apply approved changes";  // surveillance: see the impact, apply nothing
     $("modeNote").hidden = !surv;
     $("modeNote").innerHTML = `${esc(w.account)} is in <b>surveillance</b> mode: what to change is shown and proposed, nothing is applied. When the organisation is ready: Check permissions on the Overview, then <code>sg_db.py mode enforce --account ${esc(w.account)} --reason "…"</code>.`;
     loadAssets(w);
@@ -1498,7 +1522,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("proposeCard").scrollIntoView({behavior: "smooth"});
     $("pReason").focus();
   }
-  $("gWhere").addEventListener("change", loadGroups);
+  $("gWhere").addEventListener("change", () => { $("gApplyBox").hidden = true; return loadGroups(); });
   $("gFilter").addEventListener("input", drawGroups);
   $("gUnused").addEventListener("change", drawGroups);
   $("pSend").addEventListener("click", (e) => act(e.target, async () => {
@@ -1519,12 +1543,42 @@ section.nodata .card:not(.empty-state) { display: none; }
     flash(res.changes.length ? `${res.changes.length} group(s) changed outside sg-tightener: recorded in the audit trail. Apply puts them back; "Propose keeping what AWS holds" keeps them.` : `AWS matches what was last read.${res.pending ? ` ${res.pending} change(s) to apply.` : ""}`);
     await loadState(); await loadGroups();
   }));
+  // Apply shows what it will change first: every rule, the groups and interfaces it touches, the request it came
+  // from, and what the flow logs say about each rule removed. Only then does a second button make the changes.
   $("gApply").addEventListener("click", (e) => act(e.target, async () => {
-    const w = where();
-    if (!confirmInline(e.target)) return;
-    const res = await api("/api/apply", w);
-    flash(`${res.done} change(s) made in AWS${res.failed.length ? `, ${res.failed.length} failed: ${res.failed.join("; ")}` : ""}${res.settled?.length ? `. Request(s) applied: ${res.settled.map((i) => "#" + i).join(", ")}` : ""}.`, res.failed.length > 0);
-    await loadState(); await loadGroups();
+    const w = where(), P = await api("/api/apply-preview", w), S2 = P.summary;
+    const box = $("gApplyBox");
+    box.hidden = false;
+    if (!P.changes.length) { box.innerHTML = '<p class="muted" style="margin:0">Nothing to apply in this region: AWS already holds every approved change.</p>'; return; }
+    const rt = (c) => `${esc(c.rule.proto === "-1" ? "all traffic" : `${c.rule.proto} ${c.rule.from === c.rule.to ? c.rule.from : c.rule.from + "-" + c.rule.to}`)} ${c.rule.direction === "in" ? "from" : "to"} <code>${esc(c.rule.source)}</code>`;
+    const ev = (c) => {
+      if (c.op !== "remove") return '<span class="muted">lets this in from now on</span>';
+      if (!c.evidence) return '<span class="muted">no flow logs read for this rule</span>';
+      const x = c.evidence;
+      if (x.lost.length) return `<span style="color:var(--bad)"><b>will be refused:</b> ${x.lost.map((s) => `<code>${esc(s)}</code>`).join(" ")}</span> <span class="muted">used it, and no rule left lets them in</span>`;
+      return x.sources ? `<span style="color:var(--good)">${x.sources.toLocaleString()} source(s) used it in ${x.days || "?"} days; the rules left still let them in</span>` : `<span style="color:var(--good)">nothing used it in ${x.days || "?"} days of flow logs</span>`;
+    };
+    const lost = P.changes.filter((c) => c.evidence?.lost.length).length;
+    box.innerHTML = `<h3 style="margin:0 0 4px">What Apply will change in AWS</h3>
+      <p style="margin:0 0 8px"><b>${S2.remove}</b> rule(s) removed and <b>${S2.add}</b> added, on <b>${S2.groups}</b> group(s)${S2.known ? ` protecting <b>${S2.interfaces}</b> network interface(s)` : ""}, in ${esc(w.account)} ${esc(w.region)}.</p>
+      <div class="impact ${lost ? "" : "ok"}">${lost ? `<b>${lost} removal(s) cut off traffic the flow logs saw.</b> Those sources will be refused from the moment it is applied: they show on <b>Rejected traffic</b>, where <b>Fix…</b> lets them in again.` : "<b>Nothing the flow logs saw is cut off.</b> Anything rarer than the flow logs read (a monthly job) would be refused: it shows on <b>Rejected traffic</b> after the next read, where <b>Fix…</b> lets it in again."}</div>
+      <div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Change</th><th>Impact</th><th>Asked for by</th></tr></thead><tbody>${P.changes.map((c) => `<tr><td><b>${esc(c.name)}</b> <code>${esc(c.group)}</code><div class="muted">${c.interfaces} interface(s)${c.instances.length ? ": " + c.instances.map(esc).join(", ") : ""}</div></td>
+        <td><span class="pill" style="--p:${c.op === "add" ? "var(--good)" : "var(--bad)"}">${c.op}</span> ${c.rule.direction === "in" ? "inbound" : "outbound"} ${rt(c)}</td><td>${ev(c)}</td>
+        <td>${c.requests.map((q) => `#${q.id} ${esc(q.reason)}${q.ticket ? " " + esc(q.ticket) : ""}`).join("<br>") || '<span class="muted">a change made by hand or kept from AWS</span>'}</td></tr>`).join("")}</tbody></table></div>
+      ${P.mode === "enforce" ? `<div class="acts"><button class="btn primary" id="gApplyGo">Apply these ${P.changes.length} change(s)</button><button class="btn" id="gApplyNo">Cancel</button></div>`
+        : `<p class="small"><b>${esc(w.account)} is in surveillance mode:</b> this is what would change; nothing can be applied until it is switched to enforce.</p><div class="acts"><button class="btn" id="gApplyNo">Close</button></div>`}`;
+    box.scrollIntoView({behavior: "smooth", block: "start"});
+    $("gApplyNo").addEventListener("click", () => { box.hidden = true; box.innerHTML = ""; });
+    $("gApplyGo")?.addEventListener("click", (ev2) => act(ev2.target, async () => {
+      const res = await api("/api/apply", w);
+      box.innerHTML = `<h3 style="margin:0 0 4px">${res.failed.length ? "Applied, with failures" : "Applied"}</h3>
+        <p style="margin:0 0 8px"><b>${res.done}</b> change(s) made in AWS${res.settled?.length ? `; request(s) ${res.settled.map((i) => "#" + i).join(", ")} now applied` : ""}.</p>
+        ${res.failed.length ? `<div class="impact"><b>${res.failed.length} failed:</b><br>${res.failed.map(esc).join("<br>")}</div>` : ""}
+        <div class="impact ok">Watch <b>Rejected traffic</b> for ${esc(w.account)} after the next read: anything these changes cut off shows there, with <b>Fix…</b> to let it in again.</div>
+        <div class="acts"><button class="btn" id="gWatch">Open Rejected traffic for this account</button></div>`;
+      $("gWatch").addEventListener("click", async () => { await show("refused"); $("fAcct").value = w.account; drawRefused(); });
+      await loadState(); await loadGroups(); box.hidden = false;
+    }));
   }));
   $("gAdopt").addEventListener("click", (e) => act(e.target, async () => {
     const reason = $("pReason").value.trim();
@@ -1893,7 +1947,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <span class="bars"><i style="width:${logW(g.addresses, exMax)}%;background:color-mix(in srgb, var(--bad) 55%, var(--grid))"></i><i style="width:${logW(a, exMax)}%;min-width:3px;background:var(--good)"></i></span>
       <span class="num2"><span class="ex-was">${fmtN(g.addresses)}</span><span class="ex-to">→</span><span class="ex-now">${fmtN(a)}</span>${a < g.addresses ? `<span class="ex-pct">−${(100 * (g.addresses - a) / g.addresses) >= 99.95 && a ? "99.9%+" : `${Math.round(100 * (g.addresses - a) / g.addresses)}%`}</span>` : '<span class="ex-pct same">same</span>'}</span></div>`; };
     $("xBody").innerHTML = `
-      ${short ? `<div class="flash">Only <b>${Math.round(P.have_days)} days</b> of flow logs read between these ${Math.round(P.days)} days: rules are narrowed to the sources seen in it and rules nothing used are removed. Anything that runs less often (a monthly job, a DR test) will be refused: it shows on <b>Rejected traffic</b>, where <b>Propose allowing</b> opens it again. A longer read makes that less likely. <button class="btn sm" id="xRead">Re-read ${Math.round(P.days)} days for this account</button></div>` : ""}
+      ${short ? `<div class="flash">Only <b>${Math.round(P.have_days)} days</b> of flow logs read between these ${Math.round(P.days)} days: rules are narrowed to the sources seen in it and rules nothing used are removed. Anything that runs less often (a monthly job, a DR test) will be refused: it shows on <b>Rejected traffic</b>, where <b>Fix…</b> lets it in again. A longer read makes that less likely. <button class="btn sm" id="xRead">Re-read ${Math.round(P.days)} days for this account</button></div>` : ""}
       <div class="fix-top">
         <div class="card"><div class="eyebrow">The tightened account</div><h3 style="margin-top:2px;display:flex;align-items:center;gap:10px">Before and after <button class="btn sm" type="button" id="xAudit" title="Every rule: what it was, what it becomes, and why">Explain</button></h3>
           <div class="evidence"><span class="chip">${Math.round(P.have_days)} ${many(Math.round(P.have_days), "day")} of flow logs used</span><span class="chip">${ymd(P.from)} → ${ymd(P.to - 1)}</span>${P.stored_from != null ? `<span class="chip">read: ${ymd(P.stored_from)} → ${ymd(P.stored_to - 1)}</span>` : ""}</div>
@@ -2107,11 +2161,29 @@ section.nodata .card:not(.empty-state) { display: none; }
     const short = refusedData.accounts.filter((a) => a.covered < 0.9).sort((x, y) => x.covered - y.covered), win = $("fRange").selectedOptions[0].textContent.toLowerCase();
     $("fGap").hidden = !short.length;
     $("fGap").innerHTML = short.length ? `<strong>${short.length.toLocaleString()} account${short.length === 1 ? "" : "s"} ha${short.length === 1 ? "s" : "ve"} flow logs for only part of the ${esc(win)}</strong> (lowest ${Math.round(Math.max(0, short[0].covered) * 100)}%): rejected traffic outside that part is not counted. <details><summary>Which accounts</summary>${short.map((a) => a.covered <= 0 || !a.first ? `${esc(a.name || a.account)}: no flow logs read for it` : `${esc(a.name || a.account)}: only from ${esc(new Date(a.first * 1000).toLocaleDateString("en-GB", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric" }))} (${Math.round(a.covered * 100)}% of the window)`).join("; ")}.</details> Nothing listed for them there means not read, not quiet: read further back on the <b>Overview</b>.` : "";
-    $("fAccounts").innerHTML = refusedData.accounts.map((a) => `<div class="card stat"><b>${a.refused.toLocaleString()}</b><span>refused sources in ${esc(a.name || a.account)}${a.attention.critical ? ` · <span style="color:var(--bad)">${a.attention.critical} critical</span>` : ""}${a.attention.high ? ` · ${a.attention.high} high` : ""}</span></div>`).join("")
-      || noFlowLogs(refusedData.no_flow_logs_read || 0);
-    $("tab-refused").classList.toggle("nodata", !refusedData.accounts.length);
+    // Every account with refused traffic, worst first: "Its traffic" narrows the list below to it, "Fix this account"
+    // opens it on Remediate. While the rows are still being worked out (after a restart or an upgrade) say so and ask
+    // again, rather than claiming nothing has been read.
+    const range = $("fRange").value, building = refusedData.building || 0;
+    const accts = [...refusedData.accounts].sort((x, y) => (y.attention.critical || 0) - (x.attention.critical || 0) || (y.attention.high || 0) - (x.attention.high || 0) || y.refused - x.refused);
+    $("fAccounts").innerHTML = (building ? `<div class="card empty-state" style="grid-column:1/-1">${loading(`${accts.length.toLocaleString()} account${accts.length === 1 ? "" : "s"} shown · ${building.toLocaleString()} more being worked out from the flow logs read, the page fills in by itself`)}</div>` : "")
+      + accts.filter((a) => a.refused).map((a) => `<div class="card stat${a.account === $("fAcct").value ? " on" : ""}"><b>${a.refused.toLocaleString()}</b><span>refused sources in ${esc(a.name || a.account)}${a.attention.critical ? ` · <span style="color:var(--bad)">${a.attention.critical} critical</span>` : ""}${a.attention.high ? ` · ${a.attention.high} high` : ""}</span>
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap"><button class="btn" data-facct="${esc(a.account)}">Its traffic</button><button class="btn primary" data-fix="${esc(a.account)}">Fix this account</button></div></div>`).join("")
+      || (building ? "" : noFlowLogs(refusedData.no_flow_logs_read || 0));
+    $("fAccounts").onclick = (ev) => {
+      const b = ev.target.closest("[data-facct]");
+      if (!b) return;
+      $("fAcct").value = $("fAcct").value === b.dataset.facct ? "" : b.dataset.facct;
+      for (const c of $("fAccounts").querySelectorAll(".stat")) c.classList.toggle("on", !!c.querySelector(`[data-facct="${CSS.escape($("fAcct").value)}"]`) && !!$("fAcct").value);
+      drawRefused();
+      $("refusedRows").scrollIntoView({behavior: "smooth", block: "start"});
+    };
+    $("tab-refused").classList.toggle("nodata", !refusedData.accounts.length && !building);
     drawRefused();
+    clearTimeout(refusedAgain);
+    if (building) refusedAgain = setTimeout(() => { if ($("fRange").value === range && !$("tab-refused").hidden) loadRefused().catch(() => {}); }, 4000);
   }
+  let refusedAgain = 0;
   function drawRefusedChart(acct) {
     const A = refusedData.accounts.filter((a) => (!acct || a.account === acct) && (a.bins || []).length);
     const NAMES = refusedData.types || {};
@@ -2156,22 +2228,87 @@ section.nodata .card:not(.empty-state) { display: none; }
         <div class="muted small">${esc(r.kind)} ${esc(r.dst)} · ${esc(r.region)}${r.ports > 1 ? ` · ${r.ports} ports` : ""}</div></td>
       <td>${Number(r.flows).toLocaleString()}</td><td class="small">${esc(when(r.last))}</td>
       <td>${esc(r.verdict)}<div class="muted small">${esc(r.reason)}</div></td>
-      <td>${r.groups?.length && ["6", "17"].includes(String(r.proto)) ? `<button class="btn" data-allow="${shown.indexOf(r)}">Propose allowing</button>` : ""}</td></tr>`).join("")
+      <td><button class="btn" data-rfix="${shown.indexOf(r)}" title="Who it is, everything it tried, why it was refused, and where a rule letting it in belongs">Fix…</button></td></tr>`).join("")
       || '<tr><td colspan="8" class="muted">Nothing matches.</td></tr>';
     pagerAfter($("refusedRows"), fp.bar);
-    for (const b of document.querySelectorAll("[data-allow]")) b.addEventListener("click", () => {
-      const r = shown[+b.dataset.allow];
-      const target = `${r.account}|${r.region}`;
-      if (![...$("gWhere").options].some((o) => o.value === target)) { flash(`${r.account} ${r.region} is not in the database: sg_db.py import --regions ${r.region} --accounts ${r.account} --org`, true); return; }
-      $("gWhere").value = target;
-      show("groups").then(() => {
-        const gid = r.groups.find((g) => groupsCache.some((x) => x.id === g));
-        openPropose({group: gid, op: "add", rule: {direction: "in", proto: PROTO[r.proto] || r.proto, from: r.port, to: r.port, source: r.src.includes("/") ? r.src : r.src + (r.src.includes(":") ? "/128" : "/32"), description: `${r.name || r.src}`.slice(0, 200)},
-          reason: `Refused ${Number(r.flows).toLocaleString()} flows from ${r.name || r.src} on ${PROTO[r.proto] || r.proto} ${r.port} (${r.verdict}).`});
-        if (!gid) flash(`None of the target's groups (${r.groups.join(", ")}) is in the database: reconcile ${r.region}, or pick the group.`, true);
-      });
-    });
+    for (const b of $("refusedRows").querySelectorAll("[data-rfix]")) b.addEventListener("click", () => openFix(shown[+b.dataset.rfix]));
   }
+  // ---- Fix one refused source: who it is, what it tried, why, and where a rule letting it in belongs
+  let fixRow = null;
+  async function openFix(r) {
+    fixRow = r;
+    $("fixTitle").textContent = `${r.name && r.name !== r.src ? r.name + " · " : ""}${r.src}`;
+    $("fixSub").textContent = `${r.account_name || r.account} (${r.account}) · ${r.region}`;
+    $("fixBody").innerHTML = loading("Looking at the interface, its groups and the audit trail…");
+    $("fixDlg").showModal();
+    let f = null;
+    try {
+      f = await api("/api/refused-fix", {account: r.account, region: r.region, eni: r.eni, src: r.src, proto: r.proto, port: r.port,
+        scan: r.scan, threat: r.threat, tor: r.tor, internal: r.internal, by: r.by, name: r.name, groups: r.groups});
+    } catch (e) { f = {error: e.message}; }
+    if (fixRow === r) $("fixBody").innerHTML = fixHtml(r, f);
+    wireFix(r, f);
+  }
+  const pills = (r) => `<span class="pill" style="--p:${r.internal ? "var(--good)" : "var(--warn)"}">${r.internal ? "internal" : "external"}</span>${r.v6 ? ' <span class="pill" style="--p:var(--accent)">IPv6</span>' : ""}${r.scan ? ' <span class="pill" style="--p:var(--high)">port scanning</span>' : ""}${r.new ? ' <span class="pill" style="--p:var(--bad)">new</span>' : ""}${r.threat ? ' <span class="pill" style="--p:var(--bad)">known malicious</span>' : ""}${r.tor ? ' <span class="pill" style="--p:var(--bad)">Tor</span>' : ""}`;
+  function fixHtml(r, f) {
+    const ruleTxt = (x) => `${esc(x.proto === "-1" ? "all traffic" : `${x.proto} ${x.from === x.to ? x.from : x.from + "-" + x.to}`)} from ${esc(x.source)}`;
+    const who = [r.type && !["internal", "external"].includes(String(r.type).toLowerCase()) && `<b>${esc(r.type)}</b>`, r.provider && `provider ${esc(r.provider)}`, r.what && esc(r.what), r.service && `AWS service ${esc(r.service)}`, r.range && `in ${esc(r.range)}`, r.src_vpc && `VPC ${esc(r.src_vpc)}`].filter(Boolean).join(" · ");
+    const facts = `<div class="facts">
+      <div><span class="muted small">Refused flows</span><b>${Number(r.flows).toLocaleString()}</b></div>
+      <div><span class="muted small">Ports tried</span><b>${Number(r.ports || 1).toLocaleString()}</b></div>
+      <div><span class="muted small">IP addresses tried</span><b>${Number(r.dsts || 1).toLocaleString()}</b></div>
+      <div><span class="muted small">First refused</span><b style="font-size:14px">${esc(when(r.first))}</b></div>
+      <div><span class="muted small">Last refused</span><b style="font-size:14px">${esc(when(r.last))}</b></div>
+      <div><span class="muted small">First ever seen</span><b style="font-size:14px">${r.first_ever ? esc(when(r.first_ever)) : "—"}</b>${r.new ? '<span class="small" style="color:var(--bad)">new this week</span>' : r.seen_before ? '<span class="muted small">seen before this window</span>' : ""}</div></div>`;
+    const tg = (r.targets || []).length ? r.targets : [{eni: r.eni, dst: r.dst, proto: r.proto, port: r.port, flows: r.flows, kind: r.kind, groups: r.groups, port_class: r.port_class, risky: r.risky, by: r.by}];
+    const tried = `<h3>What it tried to reach</h3><div class="scroll"><table class="small"><thead><tr><th>Interface</th><th>IP address</th><th>Port</th><th class="num">Flows</th><th>Refused by</th></tr></thead><tbody>${tg.map((t) => `<tr><td><code>${esc(t.eni)}</code><div class="muted">${esc(t.kind)}${t.desc ? " · " + esc(t.desc) : ""}${t.public ? ` · public ${esc(t.public)}` : ""}</div></td><td><code>${esc(t.dst)}</code></td><td><code>${esc(PROTO[t.proto] || t.proto)} ${esc(t.port)}</code>${t.risky ? " ⚠" : ""} <span class="muted">${esc(t.port_class)}</span></td><td class="num">${Number(t.flows).toLocaleString()}</td><td>${esc(t.by || "Security group")}</td></tr>`).join("")}</tbody></table></div>${(r.ports || 1) > tg.length ? `<p class="muted small">The ${tg.length} busiest shown; it tried ${Number(r.ports).toLocaleString()} ports on ${Number(r.dsts || 1).toLocaleString()} IP addresses in all.</p>` : ""}`;
+    const verdict = `<h3>Why it was refused</h3><p><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span> <b>${esc(r.title || r.verdict)}</b></p><p class="small">${esc(r.reason)}</p>${r.action && r.action !== "None." ? `<p class="small"><b>Suggested:</b> ${esc(r.action)}</p>` : ""}`;
+    if (!f || f.error) return `${facts}${tried}${verdict}<div class="rec warn"><b>Where a rule belongs could not be worked out.</b> <span class="small">${esc(f?.error || "")}</span></div>`;
+    const a = f.asset;
+    const asset = a ? `<p class="small">Interface <code>${esc(a.eni)}</code>${a.instance ? ` on instance <code>${esc(a.instance)}</code>` : ""}${a.asg ? ` in auto scaling group <code>${esc(a.asg)}</code>` : ""} · ${esc(a.kind)}${a.description ? " · " + esc(a.description) : ""} · VPC <code>${esc(a.vpc_id)}</code></p>` : "";
+    const groups = f.groups.length ? `<h3>Security groups on that interface</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th class="num">Interfaces</th><th>Lets in on ${esc(f.proto)} ${esc(f.port)}</th></tr></thead><tbody>${f.groups.map((g) => `<tr><td><b>${esc(g.name)}</b> <code>${esc(g.id)}</code><div class="muted">${esc(g.description)}</div></td><td class="num">${g.interfaces}</td><td>${g.lets_in ? '<span class="pill" style="--p:var(--good)">this source</span>' : g.serves_port ? g.sources.map((x) => `<code>${esc(x)}</code>`).join(" ") : '<span class="muted">nothing on this port</span>'}</td></tr>`).join("")}</tbody></table></div>` : "";
+    const broke = f.broken_by.length ? `<div class="impact"><b>It was let in until a rule was removed.</b> ${f.broken_by.map((b) => `${esc(when(b.at))}: ${b.removed.map(esc).join("; ")} from <code>${esc(b.group)}</code>, ${b.origin === "external" ? "changed in AWS outside this tool" : "applied by this tool"} by ${esc(b.actor)}${(b.requests || []).length ? `, for request ${b.requests.map((q) => `#${q.id} “${esc(q.reason)}”${q.ticket ? " " + esc(q.ticket) : ""}`).join(", ")}` : b.reason ? ` (“${esc(b.reason)}”${b.ticket ? " " + esc(b.ticket) : ""})` : ""}`).join("<br>")}</div>` : "";
+    const rec = f.recommend, g = f.groups.find((x) => x.id === rec.group);
+    const head = {keep: "Recommended: keep refusing it", nacl: "Not a security group change", done: "Nothing to do", waiting: "Already asked for", unknown: "Refresh first",
+      add: `Recommended: add it to ${esc(g?.name || rec.group)}`, own: "Recommended: a group of its own for this interface"}[rec.kind];
+    const can = ["add", "own"].includes(rec.kind) || (rec.kind === "keep" && f.groups.length);
+    const recBox = `<div class="rec ${["keep", "done", "waiting"].includes(rec.kind) ? "keep" : ["nacl", "unknown", "own"].includes(rec.kind) ? "warn" : ""}"><b>${head}</b><p class="small" style="margin:6px 0">${esc(rec.why)}</p>
+      ${rec.kind === "add" ? `<p class="small" style="margin:6px 0">The rule: inbound <code>${ruleTxt(f.rule)}</code> on <code>${esc(rec.group)}</code>. Source: ${esc(f.source_why)}.${g && g.interfaces > 1 ? ` It reaches all <b>${g.interfaces}</b> interfaces in that group.` : ""}</p>` : ""}
+      ${rec.kind === "own" ? `<p class="small" style="margin:6px 0"><code>${esc(rec.command)}</code></p>` : ""}
+      ${can ? `<div class="acts" style="margin-top:8px"><input id="fixWhy" placeholder="Why it should be let in (required)" style="flex:1;min-width:240px" value="${rec.kind === "keep" ? "" : esc(`Refused ${Number(r.flows).toLocaleString()} flows from ${r.name || r.src} on ${PROTO[r.proto] || r.proto} ${r.port} (${r.verdict}).`)}"><input id="fixTicket" placeholder="Ticket (optional)" style="width:150px">
+        <select id="fixGroup" aria-label="Group to add it to">${f.alternatives.map((x) => `<option value="${esc(x.group)}" ${x.group === rec.group ? "selected" : ""}>${esc(x.name || x.group)} · ${x.interfaces} interface${x.interfaces === 1 ? "" : "s"}${x.serves_port ? ` · already serves ${esc(f.port)}` : ""}${x.group === rec.group && rec.kind === "add" ? " (recommended)" : ""}</option>`).join("")}</select>
+        ${alsoHtml(r, f)}<button class="btn ${rec.kind === "add" ? "primary" : ""}" id="fixGo">${rec.kind === "add" ? "Propose this rule" : "Propose anyway"}</button></div>
+        <p class="muted small" id="fixMsg" style="margin:6px 0 0">A change request: nothing changes in AWS until a second person approves it and it is applied.</p>` : ""}</div>`;
+    return `<p>${pills(r)} <span class="small">${who}</span></p>${facts}${verdict}${broke}${recBox}${tried}${asset}${groups}`;
+  }
+  // The other interfaces it was refused on, on the same port, whose groups the chosen one does not cover: one group
+  // each (only when that interface carries a single group, so the choice is not a guess).
+  function alsoGroups(r, f, chosen) {
+    const out = new Map();
+    for (const t of r.targets || []) {
+      if (String(t.port) !== String(r.port) || String(t.proto) !== String(r.proto) || (t.groups || []).includes(chosen)) continue;
+      if ((t.groups || []).length === 1) out.set(t.groups[0], (out.get(t.groups[0]) || 0) + 1);
+    }
+    return [...out.keys()];
+  }
+  function alsoHtml(r, f) {
+    const xs = alsoGroups(r, f, f.recommend.group || "");
+    return xs.length ? `<label class="small" style="flex-basis:100%"><input type="checkbox" id="fixAlso" checked data-g="${esc(xs.join(","))}"> Also add it to ${xs.map((g) => `<code>${esc(g)}</code>`).join(", ")}: the group${xs.length === 1 ? "" : "s"} on the other interfaces it was refused on, on the same port</label>` : "";
+  }
+  function wireFix(r, f) {
+    const go = $("fixGo");
+    if (!go || !f || f.error) return;
+    go.addEventListener("click", () => act(go, async () => {
+      const why = $("fixWhy").value.trim();
+      if (!why) { $("fixMsg").textContent = "Say why it should be let in: it goes in the audit trail."; $("fixWhy").focus(); return; }
+      const gs = [$("fixGroup").value, ...($("fixAlso")?.checked ? $("fixAlso").dataset.g.split(",") : [])];
+      const res = await api("/api/propose", {account: f.account, region: f.region, reason: why, ticket: $("fixTicket").value,
+        changes: [...new Set(gs)].map((g) => ({group: g, op: "add", rule: f.rule}))});
+      $("fixMsg").innerHTML = `<b>Change request #${res.id}: ${esc(res.status)}.</b> ${res.status === "pending" ? "A second person approves it on Change requests." : "Apply it on Remediate › Security groups."}`;
+      go.replaceWith(Object.assign(document.createElement("span"), {className: "pill", textContent: "Proposed"}));
+    }));
+  }
+  $("fixClose").addEventListener("click", () => $("fixDlg").close());
   $("fRange").addEventListener("change", loadRefused);
 
   // ---- Risk overview: every account at once
