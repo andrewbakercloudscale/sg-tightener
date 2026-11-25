@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.54.0 - 2026-11-25
+
+- **Faster pages**: reports answer at once from the rows kept and are refreshed behind the page; the Accounts
+  tab no longer waits for a rebuild after the console restarts (27 s to about 1 s).
+- **Rules that let in internet addresses** (Accounts): each shows the sources it let in and when last used,
+  the sources refused at the same group and port in the last 24 hours, and its never-seen internet addresses.
+- **Never-seen addresses show their share of the rule**, e.g. 16.8M (100%).
+
 ## 5.53.0 - 2026-11-25
 
 - **Rejected traffic: Read the last 24 hours now**: reads the newest flow logs for the account filtered (or every
