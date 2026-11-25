@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.52.0 - 2026-11-25
+
+- **Fix from the Accounts tab, in place**: "Fix these now" and each rule's "Narrow it…" / "Rule not needed:
+  remove it…" open a window listing every rule, what it becomes and the evidence. Untick any to keep, propose
+  with a reason, then (two-person approval off) preview and apply to AWS without leaving the page. It warns
+  when fewer than 7 days of flow logs were read.
+- **Plain words** for what to do with each rule, one button per rule.
+
 ## 5.51.0 - 2026-11-25
 
 - **Accounts search**: one search box fills two dropdowns, the matching accounts and the matching owners; choose
