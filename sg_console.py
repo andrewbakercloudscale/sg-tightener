@@ -58,7 +58,7 @@ AGES = {"estimate": 3600}  # reports that depend on the time as well as the read
 SETTLING = 600  # a read written to in the last ten minutes keeps its last report row (built in this window)
 REPORT_PROCS = max(1, min(8, (os.cpu_count() or 2) - 1))  # processes building report rows at once
 SHOW_OLD = ("refused", "macro")  # reports whose rows from an earlier version are shown while being rebuilt
-REPORT_CACHE_VERSION = 8  # 5: refused rows carry every target and the verdict; 6, 7: one service is not a scan; 8: the day before
+REPORT_CACHE_VERSION = 9  # 9: own interfaces carry launch time, image and VPC; 5: refused rows carry every target and the verdict; 6, 7: one service is not a scan; 8: the day before
 # a page asking for a report some accounts have no row in yet gets the rows there are at once, and the rest are
 # built in the background (it asks again); tests set SG_NO_WARM and get every row before the answer
 REPORTS_WAIT = os.environ.get("SG_NO_WARM") == "1"
@@ -1051,7 +1051,9 @@ class Console:
         private = sg_review.private_ip(ip)
         intel = {} if private else sg_ipintel.get().label(ip)
         ours = [{"account": a, "account_name": names.get(a, ""), "eni": eid, "kind": e[0], "instance": e[1], "name": e[2],
-                 "os": e[3], "type": e[4], "groups": e[5], "region": e[6], "desc": e[7]}
+                 "os": e[3], "type": e[4], "groups": e[5], "region": e[6], "desc": e[7],
+                 "launched": e[9] if len(e) > 9 else None, "image": e[10] if len(e) > 10 else "",
+                 "vpc": e[11] if len(e) > 11 else ""}
                 for a, eid, e in idx["own"].get(ip, [])]  # fmt: skip
         seen = []
         for a, x in idx["seen"].get(ip, []):
@@ -2656,8 +2658,9 @@ def _ip_answers(ip, private, intel, ours, seen, port, account, names) -> list[di
             + (f" (and {len(ours) - 1} more interface(s) with this address in other accounts or VPCs)" if len(ours) > 1 else ""),
             "good")  # fmt: skip
     elif private:
-        say("Whose is it?", "A private address that is none of the interfaces read in any account: on premises, another "
-            "network over Direct Connect, VPN or transit gateway, or an interface in an account not read yet.", "warn")
+        say("Whose is it?", "A private address inside our networks (not the internet, so no AS number or company), "
+            "but none of the interfaces read in any account: on premises, another network over Direct Connect, VPN or "
+            "transit gateway, an interface in an account not read yet, or one since deleted.", "warn")
     elif intel.get("kind") == "aws":
         say("Whose is it?", f"{intel.get('name')} (AWS publishes {intel.get('prefix', '')} for {intel.get('service', '')}). "
             "Not one of our accounts' interfaces: another AWS customer's, or an AWS service.", "info")
@@ -2669,19 +2672,46 @@ def _ip_answers(ip, private, intel, ours, seen, port, account, names) -> list[di
         say("Is it on a threat list or Tor?", intel.get("what") or intel.get("threat") or "Yes", "bad")
     elif not private:
         say("Is it on a threat list or Tor?", "No: not on the threat lists or the Tor exit list read.", "good")
+    if account and (ours or private):
+        mine = [o for o in ours if o["account"] == account]
+        if mine:
+            say("Is it in this account?", f"Yes: {acct(account)}, {mine[0]['region']}"
+                + (f", VPC {mine[0]['vpc']}" if mine[0].get("vpc") else "") + ".", "info")
+        elif ours:
+            say("Is it in this account?", "No: it is in " + ", ".join(sorted({acct(o["account"]) for o in ours}))
+                + ". The same private address can exist in several VPCs, so check the routes between them.", "warn")
+        else:
+            say("Is it in this account?", f"Not found in {acct(account)} or any other account read.", "warn")
     os_ = sorted({o["os"] for o in ours if o["os"]})
     say("What operating system?", ", ".join(os_) + f" ({ours[0].get('type') or 'instance'})" if os_ else
-        "Unknown: only our own EC2 instances report one. Nothing is probed or scanned: this tool only reads.",
+        ("Not an EC2 instance: " + (ours[0]["kind"] or "a network interface") + (f" ({ours[0]['desc']})" if ours[0]["desc"] else "")
+         + ". Only EC2 instances report an operating system." if ours else
+         "Unknown: only our own EC2 instances report one. Nothing is probed or scanned: this tool only reads."),
         "info")  # fmt: skip
+    made = [o for o in ours if o.get("launched")]
+    if made:
+        o = min(made, key=lambda o: o["launched"])
+        say("When was it created?", f"Instance {o['instance']} launched {_when(o['launched'])}"
+            + (f" from image {o['image']}" if o.get("image") else "") + ".", "info")
+    elif ours:
+        say("When was it created?", "Not known: the account was read before launch times were kept (read it again)."
+            if any(o["instance"] for o in ours) else "Not known: AWS gives a launch time for EC2 instances only, and this "
+            "interface is not one.", "info")
     if port:
         say("What port is it asking for?", f"{port['port']}/{port['proto']}: {port['svc']} ({port['name']})"
             + (". A database port: only its own application tier and admin hosts should reach it." if port["database"]
-               else ". " + port["why"] if port.get("why") else ""), "bad" if port["risky"] else "info")  # fmt: skip
+               else ". " + port["why"] if port.get("why") and not (private and "internet" in port["why"]) else
+               ". The source is a private address inside our networks, not the internet." if private else ""),
+            "bad" if port["risky"] else "info")  # fmt: skip
     scans = [r for r in seen if r["scan"]]
     if scans:
         r = max(scans, key=lambda r: r["ports_refused"])
+        others = [x for x in scans if x["account"] != r["account"]]
         say("Has it scanned?", f"Yes: {r['ports_refused']} ports refused on {r['addresses']} addresses in "
-            f"{acct(r['account'])}" + (f", and scanned {len(scans) - 1} more account(s)" if len(scans) > 1 else "") + ".", "bad")
+            f"{acct(r['account'])}" + (": also " + "; ".join(f"{x['ports_refused']} ports on {x['addresses']} addresses in "
+                                                              f"{acct(x['account'])}" for x in others[:3])
+                                        + (f" and {len(others) - 3} more account(s)" if len(others) > 3 else "")
+                                        if others else ", and no other account") + ".", "bad")  # fmt: skip
     elif seen:
         most = max(r["ports_refused"] for r in seen)
         say("Has it scanned?", f"No: at most {most} port(s) refused in any account." if most else "No: nothing refused in any account.", "good")

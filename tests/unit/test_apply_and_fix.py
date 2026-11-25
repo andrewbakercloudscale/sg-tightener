@@ -212,7 +212,7 @@ def test_rejected_traffic_has_a_fix_button_with_everything_known_about_the_sourc
     page = open(sg_console.Path(sg_console.__file__).parent / "assets" / "sg_console.html").read()
     assert 'data-rfix="' in page and "data-allow" not in page and 'id="fixDlg"' in page
     assert '$("refusedRows").querySelectorAll("[data-rfix]")' in page, "never the Remediate buttons (data-fix) elsewhere"
-    for words in ("What it tried to reach", "Why it was refused", "Security groups on that interface",
+    for words in ("What it tried to reach", "Why it was refused", "Security groups on the destination", "The destination that refused it", "The source: ",
                   "port scanning", "internal", "external", "IP addresses tried", "First ever seen",
                   "a group of its own for this interface", "It was let in until a rule was removed"):
         assert words in page, words

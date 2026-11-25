@@ -713,7 +713,7 @@ def test_hosts_name_each_address_down_to_the_instance_and_its_os():
     doc = demo_sg.build_doc(ACCT, time.time(), 3)
     h = sg_review.hosts_model(doc)
     eni = h["by_ip"]["10.20.6.50"]
-    kind, inst, name, os_, _typ, groups, region, _desc = h["enis"][eni]
+    kind, inst, name, os_, _typ, groups, region, _desc, *_rest = h["enis"][eni]
     assert (eni, kind, name, os_, region) == ("eni-0bat1", "EC2 instance", "batch-worker-1", "Red Hat Enterprise Linux", demo_sg.REGION)
     assert inst.startswith("i-") and "batch-workers" in groups
     assert h["by_ip"]["198.51.100.9"] == "eni-0leg1" and h["enis"]["eni-0leg1"][3] == "Windows"  # by public address too

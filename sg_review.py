@@ -568,7 +568,8 @@ def hosts_model(doc: dict) -> dict:
             inst = insts.get(e.get("instance") or "") or {}
             enis[eid] = [e.get("kind", ""), e.get("instance", ""), inst.get("name", ""), inst.get("os", ""),
                          inst.get("type", ""), [groups.get(g, {}).get("name") or g for g in e.get("groups") or []],
-                         region, e.get("desc", "")]  # fmt: skip
+                         region, e.get("desc", ""), inst.get("launched"), inst.get("image", ""),
+                         e.get("vpc", "")]  # fmt: skip
             for ip in (e.get("ips") or []) + (e.get("ipv6") or []) + ([e["public"]] if e.get("public") else []):
                 by_ip.setdefault(ip, eid)
     return {"by_ip": by_ip, "enis": enis}
@@ -4759,7 +4760,8 @@ def sightings(doc: dict) -> dict:
     ips: dict[str, list] = {}
     for ip, eid in hosts["by_ip"].items():
         ips.setdefault(eid, []).append(ip)
-    own = {eid: [*e, ips.get(eid, [])] for eid, e in hosts["enis"].items() if ips.get(eid)}
+    # ips stay at [8] (older rows end there); launch time, image and VPC follow
+    own = {eid: [*e[:8], ips.get(eid, []), *e[8:]] for eid, e in hosts["enis"].items() if ips.get(eid)}
     return {"seen": seen, "own": own, "name": doc.get("name", "")}
 
 

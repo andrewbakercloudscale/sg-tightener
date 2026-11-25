@@ -531,7 +531,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   .au-act.remove { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
   .au-act.keep, .au-act.open, .au-act.wait, .au-act.off { background: var(--surface-2); color: var(--muted); }
   .au-ext { color: var(--bad); font-weight: 600; }
-  #auditPrint { display: none; }
+  #auditPrint, #fixPrint { display: none; }
   .trail-t { table-layout: fixed; width: 100%; min-width: 900px; }
   .trail-t td { vertical-align: top; overflow-wrap: anywhere; }
   .trail-t code { white-space: normal; }
@@ -541,6 +541,10 @@ section.nodata .card:not(.empty-state) { display: none; }
     body.print-ins #tab-refused > :not(#fPrintHead):not(#fChartCard):not(#fInsightCard),
     body.print-att #tab-refused > :not(#fPrintHead):not(#fAttention) { display: none !important; }
     body.print-audit #auditPrint { display: block !important; }
+    body.print-fix > *:not(#fixPrint) { display: none !important; }
+    body.print-fix #fixPrint { display: block !important; }
+    #fixPrint table tr, #fixPrint .facts > div { break-inside: avoid; }
+    #fixPrint .scroll { overflow: visible !important; max-height: none !important; }
     #auditPrint .au-t tr, #auditPrint .au-grp h4 { break-inside: avoid; }
     #auditPrint .au-grp h4 { break-after: avoid; }
     #auditPrint .au-t thead { display: table-header-group; }
@@ -890,7 +894,8 @@ section.nodata .card:not(.empty-state) { display: none; }
     <dialog id="fixDlg" aria-labelledby="fixTitle">
       <div class="au-head"><div><div class="eyebrow">Rejected traffic</div><h2 id="fixTitle" style="margin:2px 0 4px">Fix</h2>
         <div class="muted small" id="fixSub"></div></div>
-        <div class="au-tools"><button class="btn sm primary" type="button" id="fixClose">Close</button></div></div>
+        <div class="au-tools"><button class="btn sm" type="button" id="fixPdf">Export PDF</button><button class="btn sm" type="button" id="fixPdfWhy" aria-expanded="false">Explain</button><button class="btn sm primary" type="button" id="fixClose">Close</button></div></div>
+      <p class="small muted" id="fixPdfHelp" hidden style="margin:0;padding:8px 22px;border-bottom:1px solid var(--grid)"><b>Export PDF</b> opens the print dialog with only this source's page: who the source is, why it was refused, what it tried to reach and the recommendation. Choose “Save as PDF” as the printer; the file is named after the source and today's date. Forms and buttons are left out.</p>
       <div class="au-body" id="fixBody"></div>
     </dialog>
     <dialog id="resolveDlg" aria-labelledby="resolveTitle">
@@ -2746,6 +2751,46 @@ section.nodata .card:not(.empty-state) { display: none; }
     wireFix(r, f);
     const P = await who;
     if (fixRow === r && $("fixWho")) $("fixWho").innerHTML = P.error ? `<p class="muted small">${esc(P.error)}</p>` : ipHtml(P);
+    if (fixRow === r && $("fixSrc")) $("fixSrc").innerHTML = P.error ? `<p class="muted small">${esc(P.error)}</p>` : srcHtml(r, P);
+  }
+  // The source in one glance: whose it is, which host, its operating system, when it was made, and where else it went
+  function srcHtml(r, P) {
+    const nm = (a, n) => n ? `${esc(n)} (${esc(a)})` : esc(a);
+    const o = P.ours.find((x) => x.account === r.account) || P.ours[0], I = P.intel || {};
+    const others = P.seen.filter((x) => x.account !== r.account), scans = P.seen.filter((x) => x.scan);
+    const cell = (k, v, sub) => `<div><span class="muted small">${k}</span><b style="font-size:14px">${v}</b>${sub ? `<span class="muted small">${sub}</span>` : ""}</div>`;
+    const owner = o ? `${nm(o.account, o.account_name)}` : P.private ? "Not found in any account read" : I.kind === "aws" ? esc(I.name || "AWS") : esc([I.asn && "AS" + I.asn, I.owner].filter(Boolean).join(" ") || "Unknown");
+    const ownerSub = o ? `${esc(o.region)}${o.vpc ? " · " + esc(o.vpc) : ""}` : P.private ? "private address: on premises, a peered network or an unread account" : [I.country, I.block].filter(Boolean).map(esc).join(" · ");
+    const host = o ? `${o.instance ? `<code>${esc(o.instance)}</code>` : `<code>${esc(o.eni)}</code>`}${o.name ? " " + esc(o.name) : ""}` : "—";
+    const hostSub = o ? esc([o.kind, o.desc, o.type].filter(Boolean).join(" · ")) : "";
+    const sameAcct = o ? (o.account === r.account ? '<span style="color:var(--good)">Yes</span>' : '<span style="color:var(--warn)">No</span>') : P.private ? '<span style="color:var(--warn)">Not found</span>' : "No (internet)";
+    const scanTxt = scans.length ? `<span style="color:var(--bad)">Yes, in ${scans.length} account${scans.length === 1 ? "" : "s"}</span>` : P.seen.length ? '<span style="color:var(--good)">No</span>' : "—";
+    const scanSub = scans.length ? scans.slice(0, 3).map((x) => `${esc(x.account_name || x.account)}: ${x.ports_refused} ports on ${x.addresses} addresses`).join("<br>") : `this source: ${Number(r.ports || 1)} ports on ${Number(r.dsts || 1)} addresses here`;
+    return `<div class="facts">${cell(o ? "Account" : "Owner", owner, ownerSub)}${cell("In this account?", sameAcct, o && o.account !== r.account ? "same private address may exist in several VPCs" : "")}${cell("Host", host, hostSub)}
+      ${cell("Operating system", esc(o?.os || (o ? "not an EC2 instance" : "unknown")), o?.image ? "image " + esc(o.image) : "")}${cell("Created", o?.launched ? esc(when(o.launched)) : "—", o?.launched ? "" : o?.instance ? "read the account again for launch times" : "EC2 instances only")}
+      ${cell("Seen in other accounts", others.length ? `${others.length}` : "None", others.slice(0, 3).map((x) => esc(x.account_name || x.account)).join(", ") + (others.length > 3 ? ` +${others.length - 3}` : ""))}${cell("Scanned other assets?", scanTxt, scanSub)}</div>
+      ${P.ours.length > 1 ? `<p class="muted small">${P.ours.length} interfaces in the estate hold this address (private addresses repeat across VPCs): see the table below.</p>` : ""}`;
+  }
+  function exportFixPdf() {
+    const r = fixRow;
+    if (!r) return;
+    const day = new Date().toISOString().slice(0, 10);
+    let box = $("fixPrint");
+    if (!box) { box = document.createElement("div"); box.id = "fixPrint"; document.body.appendChild(box); }
+    const body = $("fixBody").cloneNode(true);
+    body.querySelectorAll("button, input, select, label, #fixMsg, .acts").forEach((x) => x.remove());
+    body.querySelectorAll("details").forEach((x) => x.setAttribute("open", ""));
+    body.querySelectorAll("[id]").forEach((x) => x.removeAttribute("id"));
+    box.innerHTML = `<div class="eyebrow">Security Tightener · rejected traffic</div><h2 style="margin:2px 0 4px">${esc($("fixTitle").textContent)}</h2>
+      <p class="muted small">${esc($("fixSub").textContent)} · exported ${esc(when(Date.now() / 1000))}</p>${body.innerHTML}`;
+    const t = document.title;
+    document.title = `Security Tightener - rejected ${r.src} - ${day}`;
+    const done = () => { document.title = t; document.body.classList.remove("print-fix"); box.innerHTML = ""; window.removeEventListener("afterprint", done); };
+    window.addEventListener("afterprint", done);
+    document.body.classList.add("print-fix");
+    $("fixDlg").close();
+    window.print();
+    $("fixDlg").showModal();
   }
   const pills = (r) => `<span class="pill" style="--p:${r.internal ? "var(--good)" : "var(--warn)"}">${r.internal ? "internal" : "external"}</span>${r.v6 ? ' <span class="pill" style="--p:var(--accent)">IPv6</span>' : ""}${r.scan ? ' <span class="pill" style="--p:var(--high)">port scanning</span>' : ""}${r.new ? ' <span class="pill" style="--p:var(--bad)">new</span>' : ""}${r.threat ? ' <span class="pill" style="--p:var(--bad)">known malicious</span>' : ""}${r.tor ? ' <span class="pill" style="--p:var(--bad)">Tor</span>' : ""}`;
   function fixHtml(r, f) {
@@ -2761,11 +2806,12 @@ section.nodata .card:not(.empty-state) { display: none; }
     const tg = (r.targets || []).length ? r.targets : [{eni: r.eni, dst: r.dst, proto: r.proto, port: r.port, flows: r.flows, kind: r.kind, groups: r.groups, port_class: r.port_class, risky: r.risky, by: r.by}];
     const tried = `<h3>What it tried to reach</h3><div class="scroll"><table class="small"><thead><tr><th>Interface</th><th>IP address</th><th>Port</th><th class="num">Flows</th><th>Refused by</th></tr></thead><tbody>${tg.map((t) => `<tr><td><code>${esc(t.eni)}</code><div class="muted">${esc(t.kind)}${t.desc ? " · " + esc(t.desc) : ""}${t.public ? ` · public ${esc(t.public)}` : ""}</div></td><td><code>${esc(t.dst)}</code></td><td><code>${esc(PROTO[t.proto] || t.proto)} ${esc(t.port)}</code>${t.risky ? " ⚠" : ""} <span class="muted">${esc(t.port_class)}</span></td><td class="num">${Number(t.flows).toLocaleString()}</td><td>${esc(t.by || "Security group")}</td></tr>`).join("")}</tbody></table></div>${(r.ports || 1) > tg.length ? `<p class="muted small">The ${tg.length} busiest shown; it tried ${Number(r.ports).toLocaleString()} ports on ${Number(r.dsts || 1).toLocaleString()} IP addresses in all.</p>` : ""}`;
     const verdict = `<h3>Why it was refused</h3><p><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span> <b>${esc(r.title || r.verdict)}</b></p><p class="small">${esc(r.reason)}</p>${r.action && r.action !== "None." ? `<p class="small"><b>Suggested:</b> ${esc(r.action)}</p>` : ""}`;
+    const srcBox = `<h3>The source: ${esc(r.src)}</h3><div id="fixSrc">${loading("Finding the host behind it…")}</div>`;
     const whoBox = `<h3>Before you let it in: what the estate knows about ${esc(r.src)}</h3><div id="fixWho">${loading("Looking it up across every account…")}</div>`;
-    if (!f || f.error) return `${facts}${verdict}${whoBox}${tried}<div class="rec warn"><b>Where a rule belongs could not be worked out.</b> <span class="small">${esc(f?.error || "")}</span></div>`;
+    if (!f || f.error) return `${facts}${srcBox}${verdict}${whoBox}${tried}<div class="rec warn"><b>Where a rule belongs could not be worked out.</b> <span class="small">${esc(f?.error || "")}</span></div>`;
     const a = f.asset;
-    const asset = a ? `<p class="small">Interface <code>${esc(a.eni)}</code>${a.instance ? ` on instance <code>${esc(a.instance)}</code>` : ""}${a.asg ? ` in auto scaling group <code>${esc(a.asg)}</code>` : ""} · ${esc(a.kind)}${a.description ? " · " + esc(a.description) : ""} · VPC <code>${esc(a.vpc_id)}</code></p>` : "";
-    const groups = f.groups.length ? `<h3>Security groups on that interface</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th class="num">Interfaces</th><th>Lets in on ${esc(f.proto)} ${esc(f.port)}</th></tr></thead><tbody>${f.groups.map((g) => `<tr><td><b>${esc(g.name)}</b> <code>${esc(g.id)}</code><div class="muted">${esc(g.description)}</div></td><td class="num">${g.interfaces}</td><td>${g.lets_in ? '<span class="pill" style="--p:var(--good)">this source</span>' : g.serves_port ? g.sources.map((x) => `<code>${esc(x)}</code>`).join(" ") : '<span class="muted">nothing on this port</span>'}</td></tr>`).join("")}</tbody></table></div>` : "";
+    const asset = a ? `<h3>The destination that refused it</h3><p class="small">${esc(r.src)} was refused by network interface <code>${esc(a.eni)}</code>${a.instance ? ` of instance <code>${esc(a.instance)}</code>` : ""}${a.asg ? ` in auto scaling group <code>${esc(a.asg)}</code>` : ""} · ${esc(a.kind)}${a.description ? " · " + esc(a.description) : ""} · VPC <code>${esc(a.vpc_id)}</code>${r.dst ? ` · address <code>${esc(r.dst)}</code>` : ""}. This is the target, not the source.</p>` : "";
+    const groups = f.groups.length ? `<h3>Security groups on the destination ${a ? `<code>${esc(a.eni)}</code>` : "interface"} (the ones that refused it)</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th class="num">Interfaces</th><th>Lets in on ${esc(f.proto)} ${esc(f.port)}</th></tr></thead><tbody>${f.groups.map((g) => `<tr><td><b>${esc(g.name)}</b> <code>${esc(g.id)}</code><div class="muted">${esc(g.description)}</div></td><td class="num">${g.interfaces}</td><td>${g.lets_in ? '<span class="pill" style="--p:var(--good)">this source</span>' : g.serves_port ? g.sources.map((x) => `<code>${esc(x)}</code>`).join(" ") : '<span class="muted">nothing on this port</span>'}</td></tr>`).join("")}</tbody></table></div>` : "";
     const broke = f.broken_by.length ? `<div class="impact"><b>It was let in until a rule was removed.</b> ${f.broken_by.map((b) => `${esc(when(b.at))}: ${b.removed.map(esc).join("; ")} from <code>${esc(b.group)}</code>, ${b.origin === "external" ? "changed in AWS outside this tool" : "applied by this tool"} by ${esc(b.actor)}${(b.requests || []).length ? `, for request ${b.requests.map((q) => `#${q.id} “${esc(q.reason)}”${q.ticket ? " " + esc(q.ticket) : ""}`).join(", ")}` : b.reason ? ` (“${esc(b.reason)}”${b.ticket ? " " + esc(b.ticket) : ""})` : ""}`).join("<br>")}</div>` : "";
     const rec = f.recommend, g = f.groups.find((x) => x.id === rec.group);
     const head = {keep: "Recommended: keep refusing it", nacl: "Not a security group change", done: "Nothing to do", waiting: "Already asked for", unknown: "Refresh first",
@@ -2778,7 +2824,7 @@ section.nodata .card:not(.empty-state) { display: none; }
         <select id="fixGroup" aria-label="Group to add it to">${f.alternatives.map((x) => `<option value="${esc(x.group)}" ${x.group === rec.group ? "selected" : ""}>${esc(x.name || x.group)} · ${x.interfaces} interface${x.interfaces === 1 ? "" : "s"}${x.serves_port ? ` · already serves ${esc(f.port)}` : ""}${x.group === rec.group && rec.kind === "add" ? " (recommended)" : ""}</option>`).join("")}</select>
         ${alsoHtml(r, f)}<button class="btn ${rec.kind === "add" ? "primary" : ""}" id="fixGo">${rec.kind === "add" ? "Propose this rule" : "Propose anyway"}</button></div>
         <p class="muted small" id="fixMsg" style="margin:6px 0 0">A change request: nothing changes in AWS until a second person approves it and it is applied.</p>` : ""}</div>`;
-    return `<p>${pills(r)} <span class="small">${who}</span></p>${facts}${verdict}${broke}${recBox}${whoBox}${tried}${asset}${groups}`;
+    return `<p>${pills(r)} <span class="small">${who}</span></p>${facts}${srcBox}${verdict}${broke}${recBox}${whoBox}${tried}${asset}${groups}`;
   }
   // The other interfaces it was refused on, on the same port, whose groups the chosen one does not cover: one group
   // each (only when that interface carries a single group, so the choice is not a guess).
@@ -2808,6 +2854,8 @@ section.nodata .card:not(.empty-state) { display: none; }
     }));
   }
   $("fixClose").addEventListener("click", () => $("fixDlg").close());
+  $("fixPdf").addEventListener("click", exportFixPdf);
+  $("fixPdfWhy").addEventListener("click", () => { const h = $("fixPdfHelp"); h.hidden = !h.hidden; $("fixPdfWhy").setAttribute("aria-expanded", String(!h.hidden)); });
   $("fRange").addEventListener("change", loadRefused);
 
   // ---- Risk overview: every account at once
