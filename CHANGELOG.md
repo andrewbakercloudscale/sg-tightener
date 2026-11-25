@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.49.0 - 2026-11-25
+
+- **Scheduled reads**: the console reads every chosen account's new flow logs by itself, by default once a day
+  at 08:00 (up to six times a day, editable or off on the Overview), without asking when it costs at most the
+  limit set. It waits for a valid AWS sign-in and catches up within six hours.
+- **Rejected traffic: accounts that need attention**, sorted by most rejections, change on the day before, or
+  worst verdicts, with a Resolve button each; the account filter is a type-to-filter list beside Search;
+  the chart is a rolling window with time labels; export the insights and graphs, or the accounts, to PDF.
+  Rejected traffic now sits after Remediate.
+- **No empty page after an upgrade**: report rows from the previous version are shown while they are rebuilt.
+  The page shows build progress and any account that failed, with its error and Try again; the log records
+  each build, failure and slow account.
+
 ## 5.23.0 - 2026-11-24
 
 - **Rules are tightened on whatever was read; you decide when to act.** A rule was not narrowed or called
