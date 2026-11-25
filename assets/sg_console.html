@@ -2736,7 +2736,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const list = ips.map((d) => `<code>${esc(d)}</code>`).join("<br>");
     if (ips.length <= 5) return `<b>${x.nd.toLocaleString()}</b>${ips.length ? `<div class="small" style="text-align:left">${list}</div>` : ""}${more}`;
     const top5 = ips.slice(0, 5).map((d) => `<code>${esc(d)}</code>`).join("<br>");
-    return `<b>${x.nd.toLocaleString()}</b><details class="small screen-only" style="text-align:left"><summary class="btn sm" style="display:inline-block;margin-top:4px">View ${ips.length.toLocaleString()} IPs</summary><div style="max-height:240px;overflow:auto;margin-top:4px">${list}</div></details><div class="small print-only" style="text-align:left">${top5}<div class="muted">+${(x.nd - 5).toLocaleString()} more</div></div>`;
+    return `<b>${x.nd.toLocaleString()}</b><details class="small screen-only" style="text-align:left"><summary class="btn sm" style="margin:4px 0 0">View ${ips.length.toLocaleString()} IPs</summary><div style="max-height:240px;overflow:auto;margin-top:4px">${list}</div></details><div class="small print-only" style="text-align:left">${top5}<div class="muted">+${(x.nd - 5).toLocaleString()} more</div></div>`;
   }
   function drawScanners(shown) {
     const by = new Map();
