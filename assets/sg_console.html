@@ -538,6 +538,8 @@ section.nodata .card:not(.empty-state) { display: none; }
   .trail-t details summary { cursor: pointer; color: var(--accent); font-size: 12px; margin-top: 4px; }
   @media print {
     body.print-audit > *:not(#auditPrint) { display: none !important; }
+    body.print-ins #tab-refused > :not(#fPrintHead):not(#fChartCard):not(#fInsightCard),
+    body.print-att #tab-refused > :not(#fPrintHead):not(#fAttention) { display: none !important; }
     body.print-audit #auditPrint { display: block !important; }
     #auditPrint .au-t tr, #auditPrint .au-grp h4 { break-inside: avoid; }
     #auditPrint .au-grp h4 { break-after: avoid; }
@@ -835,6 +837,11 @@ section.nodata .card:not(.empty-state) { display: none; }
       <select id="fWhere" aria-label="Where from"><option value="">Internal and external</option><option value="ext">External only</option><option value="int">Internal only</option><option value="v6">IPv6 only</option><option value="scan">Scanning only</option><option value="bad">Known malicious or Tor</option></select>
       <span class="muted small" id="fN"></span>
     </div>
+    <div class="acts" style="margin:4px 0 8px"><button class="btn sm" type="button" id="fPdfIns">Export insights and graphs to PDF</button>
+      <button class="btn sm" type="button" id="fPdfAtt">Export accounts that need attention to PDF</button>
+      <button class="btn sm" type="button" id="fPdfWhy" aria-expanded="false">Explain</button></div>
+    <p class="muted small" id="fPdfHelp" hidden style="margin:0 0 8px">Each button opens the browser's print window with only that part of the page, headed with the time window, filters and date: choose <b>Save as PDF</b> there. <b>Insights and graphs</b> is the chart of rejected IP addresses over time and every insights panel, as filtered above. <b>Accounts that need attention</b> is the whole table (every account, not only those shown), in the order chosen in its Sort by.</p>
+    <div class="print-only" id="fPrintHead"></div>
     <p id="fGap" class="small" hidden style="margin:8px 0;padding:8px 12px;border-left:4px solid var(--muted);border-radius:8px;background:color-mix(in srgb, var(--muted) 12%, transparent)"></p>
     <div class="grid" id="fAccounts"></div>
     <div class="card" id="fChartCard"><div class="card-head"><h3 style="margin:0">Rejected IP addresses over time</h3><span class="muted small" id="fChartNote"></span></div>
@@ -1815,6 +1822,22 @@ section.nodata .card:not(.empty-state) { display: none; }
     if (before) before();
     window.print();
   }
+  // Rejected traffic: one part of the tab to a PDF, headed with what it shows
+  function exportRefusedPdf(part) {
+    const day = new Date().toISOString().slice(0, 10), att = part === "att", keepAll = attAll;
+    const filters = [$("fRange").selectedOptions[0].textContent, $("fAcct").value ? `account ${acctLabel($("fAcct").value)}` : "every account",
+      $("fSev").value && `severity ${$("fSev").value}`, $("fQ").value && `search "${$("fQ").value}"`, $("fRisky").checked && "risky ports only",
+      $("fNew").checked && "new IP addresses only", $("fWhere").value && $("fWhere").selectedOptions[0].textContent].filter(Boolean);
+    const title = att ? "Accounts that need attention" : "Rejected traffic: insights and graphs";
+    $("fPrintHead").innerHTML = `<div class="eyebrow">Security Tightener · rejected traffic</div><h2 style="margin:2px 0 4px">${esc(title)}</h2>
+      <p class="muted small">Exported ${esc(when(Date.now() / 1000))} · ${esc(att ? `${$("fRange").selectedOptions[0].textContent} · sorted by ${$("fSort").selectedOptions[0].textContent.toLowerCase()}` : filters.join(" · "))}</p>`;
+    printSection("tab-refused", `Security Tightener - ${title} - ${day}`,
+      () => { document.body.classList.add(att ? "print-att" : "print-ins"); if (att && !attAll) { attAll = true; drawAttention(); } },
+      () => { document.body.classList.remove("print-att", "print-ins"); if (att && attAll !== keepAll) { attAll = keepAll; drawAttention(); } });
+  }
+  $("fPdfIns").addEventListener("click", () => exportRefusedPdf("ins"));
+  $("fPdfAtt").addEventListener("click", () => exportRefusedPdf("att"));
+  $("fPdfWhy").addEventListener("click", () => { const h = $("fPdfHelp"); h.hidden = !h.hidden; $("fPdfWhy").setAttribute("aria-expanded", String(!h.hidden)); });
   function exportOverPdf() {
     const day = new Date().toISOString().slice(0, 10);
     $("oPrintHead").innerHTML = `<div class="eyebrow">Security Tightener · over-provisioning report</div><h2 style="margin:2px 0 4px">Over-provisioning: every account, every asset</h2>
