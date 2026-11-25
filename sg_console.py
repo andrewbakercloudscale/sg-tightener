@@ -175,7 +175,7 @@ def _date_range(frm, to) -> tuple[float | None, float | None]:
     return start, (end + 86400 if end is not None else None)
 
 
-PLAN_FORMAT = 5  # 5: suggestions share the group's rule budget, as plan does; raised when a plan gains fields, so plans kept on disk are built again (2: critical rules)
+PLAN_FORMAT = 6  # 6: totals count every group, those on no interface too; 5: suggestions share the group's rule budget, as plan does; raised when a plan gains fields, so plans kept on disk are built again (2: critical rules)
 
 
 class ConsoleError(Exception):

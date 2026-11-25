@@ -364,6 +364,8 @@ def totals(plan_groups: list[dict], merges: list[dict], groups: dict) -> dict:
     rules_after += sum(m["rules"] + next(g["rules_out"] for g in plan_groups if g["id"] == m["target"] and g["region"] == m["region"])
                        for m in merges)  # fmt: skip
     return {"groups": len(plan_groups), "groups_after": len(plan_groups) - merged_away,
+            # every group in the account, those on no interface too (they protect nothing; left out of the plan)
+            "groups_all": sum(len(v) for v in groups.values()),
             "groups_changed": sum(1 for g in plan_groups if g["changes"]),
             "rules": sum(g["rules_in"] + g["rules_out"] for g in plan_groups), "rules_after": rules_after,
             "changes": sum(g["changes"] for g in plan_groups),

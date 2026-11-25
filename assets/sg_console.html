@@ -50,6 +50,10 @@ main { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; }
 h2 { font-size: 19px; margin: 0 0 6px; }
 h3 { font-size: 15px; margin: 18px 0 6px; }
 .lede { color: var(--ink-2); margin: 0 0 14px; max-width: 90ch; }
+.card.has-pdf { position: relative; }
+.card.has-pdf > .card-pdf { position: absolute; top: 12px; right: 14px; }
+.card-pdf { padding: 2px 10px !important; font-size: 12px !important; }
+#cardPrint { display: none; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow); margin-bottom: 14px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .stat b { display: block; font-size: 24px; }
@@ -550,6 +554,10 @@ section.nodata .card:not(.empty-state) { display: none; }
     .screen-only { display: none !important; }
     body.print-scan #fScanCard .acts, body.print-scan #fScanCard [data-scanfix], body.print-scan #fScanCard summary { display: none !important; }
     body.print-audit #auditPrint { display: block !important; }
+    body.print-card > *:not(#cardPrint) { display: none !important; }
+    body.print-card #cardPrint { display: block !important; }
+    #cardPrint .scroll { overflow: visible !important; max-height: none !important; }
+    #cardPrint tr { break-inside: avoid; }
     body.print-fix > *:not(#fixPrint) { display: none !important; }
     body.print-fix #fixPrint { display: block !important; }
     #fixPrint table tr, #fixPrint .facts > div { break-inside: avoid; }
@@ -1115,6 +1123,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     }
     for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
     for (const s of document.querySelectorAll("main > section")) s.hidden = s.id !== "tab-" + tab;
+    if (location.hash.slice(1).split("/")[0] !== tab) history.pushState(null, "", "#" + tab);  // a bookmark opens this tab
     return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, macro: loadMacro, over: loadOver, fix: loadFix, overview: loadState, settings: loadSettings, accounts: loadAccounts})[tab]?.())
       .catch((e) => flash(e.message, true));
   }
@@ -1547,12 +1556,14 @@ section.nodata .card:not(.empty-state) { display: none; }
     const owners = new Map();
     for (const a of A) for (const [k, v] of Object.entries(a.tags || {})) {
       if (!PERSON_TAG.test(k) || !v || !hit(v)) continue;
-      const key = k + "\u0001" + v, x = owners.get(key) || {k: "owner", v, tag: k, n: 0};
-      x.n++; owners.set(key, x);
+      const key = k + "\u0001" + v, x = owners.get(key) || {k: "owner", v, tag: k, n: 0, spend: 0};
+      x.n++; x.spend += a.spend || 0; owners.set(key, x);
     }
-    const own = [...owners.values()].sort((x, y) => y.n - x.n || x.v.localeCompare(y.v)).map((x) => ({...x, label: x.v, sub: `${x.tag} · ${x.n} account${x.n === 1 ? "" : "s"}`}));
-    const acc = [...A].filter((a) => hit(`${a.name} ${a.account}`)).sort((x, y) => points(y) - points(x))
-      .map((a) => ({k: "account", v: a.account, label: a.name || a.account, sub: `${a.account} · ${points(a).toLocaleString()} pts`}));
+    // biggest spend first, so the accounts that matter most are at the top
+    const mo = (n) => n == null ? "spend not known" : `${money(n)} a month`;
+    const own = [...owners.values()].sort((x, y) => y.spend - x.spend || y.n - x.n || x.v.localeCompare(y.v)).map((x) => ({...x, label: x.v, sub: `${mo(x.spend)} · ${x.tag} · ${x.n} account${x.n === 1 ? "" : "s"}`}));
+    const acc = [...A].filter((a) => hit(`${a.name} ${a.account}`)).sort((x, y) => (y.spend || 0) - (x.spend || 0) || points(y) - points(x))
+      .map((a) => ({k: "account", v: a.account, label: a.name || a.account, sub: `${mo(a.spend)} · ${points(a).toLocaleString()} pts · ${a.account}`}));
     return {acc, own};
   }
   // One search box fills two dropdowns: the matching accounts, and the matching owners; choosing from either
@@ -1657,6 +1668,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   function drawAccountView() {
     const A = M?.accounts || [];
     $("aPdf").disabled = !AV.pick;
+    if (AV.pick?.k === "account" && !$("tab-accounts").hidden) history.replaceState(null, "", "#accounts/" + AV.pick.v);  // bookmark one account
     if (!AV.pick) return;
     const tag = aTagNow();
     if (AV.pick.k === "account") {
@@ -1679,7 +1691,7 @@ section.nodata .card:not(.empty-state) { display: none; }
           <div><span class="muted small">Never-seen addresses allowed</span><b>${big(me.over)}</b></div></div>
         <h3>Against their peers</h3><table class="small"><tbody>${peers.map((x) => `<tr${x.o === owner ? ' style="font-weight:700"' : ""}><td style="width:30%">${esc(x.o)}${x.o === owner ? " ◀" : ""}</td><td style="width:50%"><div class="bar-track" style="margin:0"><div class="bar-fill" style="width:${(100 * x.pts / maxp).toFixed(1)}%;background:${x.o === owner ? "var(--accent)" : "var(--muted)"}"></div></div></td><td class="num">${x.pts.toLocaleString()} pts · ${x.n} acct</td></tr>`).join("")}${peers.some((x) => x.o === owner) ? "" : `<tr style="font-weight:700"><td>${esc(owner)} ◀</td><td></td><td class="num">${me.pts.toLocaleString()} pts · rank ${r}</td></tr>`}</tbody></table>
         <h3>Where to focus first</h3>${acts.length ? `<ol class="small">${acts.map(([a, sv, what, how]) => `<li style="margin:6px 0"><span class="pill" style="--p:${SEVCOL[sv]}">${sv}</span> <b>${esc(a.name || a.account)}</b>: ${what}. ${esc(how)}.</li>`).join("")}</ol>` : '<p class="small" style="color:var(--good)">Nothing urgent across these accounts.</p>'}
-        <h3>Their accounts, most risk first</h3><div class="scroll"><table class="small"><thead><tr><th>Account</th><th class="num">Risk points</th><th class="num">Critical · high</th><th class="num">Open (risky)</th><th class="num">Never-seen allowed</th><th class="num">Rules to tighten</th><th></th></tr></thead><tbody>${mine.map((a) => `<tr><td><b>${esc(a.name || a.account)}</b> <code>${esc(a.account)}</code></td><td class="num">${points(a).toLocaleString()}</td><td class="num">${a.attention?.critical || 0} · ${a.attention?.high || 0}</td><td class="num">${a.open || 0} (${a.open_risky || 0})</td><td class="num">${big(a.over_now || 0)}</td><td class="num">${(a.tighten || 0) + (a.unused || 0)}</td><td><button class="btn sm" data-aacct="${esc(a.account)}">Open</button></td></tr>`).join("")}</tbody></table></div></div>`;
+        <h3>Their accounts, most risk first</h3><div class="scroll"><table class="small"><thead><tr><th>Account</th><th class="num">Spend a month</th><th class="num">Risk points</th><th class="num">Critical · high</th><th class="num">Open (risky)</th><th class="num">Never-seen allowed</th><th class="num">Rules to tighten</th><th></th></tr></thead><tbody>${mine.map((a) => `<tr><td><b>${esc(a.name || a.account)}</b> <code>${esc(a.account)}</code></td><td class="num">${a.spend == null ? "—" : money(a.spend)}</td><td class="num">${points(a).toLocaleString()}</td><td class="num">${a.attention?.critical || 0} · ${a.attention?.high || 0}</td><td class="num">${a.open || 0} (${a.open_risky || 0})</td><td class="num">${big(a.over_now || 0)}</td><td class="num">${(a.tighten || 0) + (a.unused || 0)}</td><td><button class="btn sm" data-aacct="${esc(a.account)}">Open</button></td></tr>`).join("")}</tbody></table></div></div>`;
     }
     for (const b of $("aBody").querySelectorAll("[data-aacct]")) b.addEventListener("click", () => { AV.pick = {k: "account", v: b.dataset.aacct}; $("acAcct").value = b.dataset.aacct; $("acOwner").value = ""; drawAccountView(); window.scrollTo({top: 0, behavior: "smooth"}); });
     for (const b of $("aBody").querySelectorAll("[data-arule]")) b.addEventListener("click", () => { const x = JSON.parse(b.dataset.arule); openAct(AV.pick.v, (r) => r.gname === x.g && r.region === x.r && r.source === x.s && r.ports === x.p, "this rule"); });
@@ -2480,7 +2492,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const exMax = exposed.length ? exposed[0].addresses : 1;
     const exRow = (g) => { const a = after(g); return `<div class="ex-row"><span class="nm" title="${esc(g.name)}">${esc(g.name)}<small>${esc(g.region)} · ${g.enis} interface(s)</small></span>
       <span class="bars"><i style="width:${logW(g.addresses, exMax)}%;background:color-mix(in srgb, var(--bad) 55%, var(--grid))"></i><i style="width:${logW(a, exMax)}%;min-width:3px;background:var(--good)"></i></span>
-      <span class="num2"><span class="ex-was">${fmtN(g.addresses)}</span><span class="ex-to">→</span><span class="ex-now">${fmtN(a)}</span>${a < g.addresses ? `<span class="ex-pct">−${(100 * (g.addresses - a) / g.addresses) >= 99.95 && a ? "99.9%+" : `${Math.round(100 * (g.addresses - a) / g.addresses)}%`}</span>` : '<span class="ex-pct same">same</span>'}</span></div>`; };
+      <span class="num2"><span class="ex-was">${fmtN(g.addresses)}</span><span class="ex-to">→</span><span class="ex-now">${a === 0 ? "not needed" : fmtN(a)}</span>${a === 0 ? '<span class="ex-pct">rules removed</span>' : a < g.addresses ? `<span class="ex-pct">−${(100 * (g.addresses - a) / g.addresses) >= 99.95 && a ? "99.9%+" : `${Math.round(100 * (g.addresses - a) / g.addresses)}%`}</span>` : '<span class="ex-pct same">same</span>'}</span></div>`; };
     $("xBody").innerHTML = `
       ${short ? `<div class="flash">Only <b>${Math.round(P.have_days)} days</b> of flow logs read between these ${Math.round(P.days)} days: rules are narrowed to the sources seen in it and rules nothing used are removed. Anything that runs less often (a monthly job, a DR test) will be refused: it shows on <b>Rejected traffic</b>, where <b>Fix…</b> lets it in again. A longer read makes that less likely. <button class="btn sm" id="xRead">Re-read ${Math.round(P.days)} days for this account</button></div>` : ""}
       <div class="fix-top">
@@ -2490,7 +2502,7 @@ section.nodata .card:not(.empty-state) { display: none; }
             ${kpi("External (internet) IPv4 addresses let in", eBefore, eAfter, fmtN)}
             ${kpi("Internal (private) IPv4 addresses let in", iBefore, iAfter, fmtN)}
             ${kpi("Number of ports open", pBefore, pAfter, fmtN)}
-            ${kpi("Number of security groups", T.groups, gAfter, (n) => n.toLocaleString())}
+            ${kpi("Security groups in use (on an interface)", T.groups, gAfter, (n) => n.toLocaleString()).replace(/<\/div>$/, T.groups_all > T.groups ? `<div class="small muted" style="margin-top:6px">${T.groups_all.toLocaleString()} in the account: ${(T.groups_all - T.groups).toLocaleString()} more on no interface protect nothing and are left out (they could be deleted).</div></div>` : "</div>")}
             ${kpi("Number of network interfaces protected", T.interfaces, T.interfaces, (n) => n.toLocaleString())}
           </div>
           <p class="small muted">${T.narrowed} rule(s) narrowed, ${T.removed} removed as unused, ${P.merges.length} merge(s).${T.open ? ` <b>${T.open} open to everyone on an internet-facing load balancer's web ports</b>: kept, since its users cannot be listed (not counted above).` : ""}${T.wait > 0 ? ` ${T.wait} with too little evidence: left as they are.` : ""}${T.incomplete ? ` <b>${T.incomplete} of these were narrowed on hours cut at 10,000 rows</b>: a source only in the missing rows is not kept; if one is refused it shows on <b>Rejected traffic</b>. Reading the account again fills those hours in (only the cut hours are charged again).` : ""}</p></div>
@@ -3755,7 +3767,52 @@ section.nodata .card:not(.empty-state) { display: none; }
   $("oQ").addEventListener("input", () => O && drawAssets(O.accounts));
   $("oRag").addEventListener("click", (e) => { const b = e.target.closest("[data-r]"); if (!b || !O) return; b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true")); drawAssets(O.accounts); });
 
-  loadState().catch((e) => flash(e.message, true));
+  // The address names the tab (#refused, #accounts/123456789012 …): open it, and follow Back and Forward
+  const TABS = [...document.querySelectorAll("nav button")].map((b) => b.dataset.tab);
+  function fromHash() {
+    const [tab, arg] = decodeURIComponent(location.hash.slice(1)).split("/");
+    if (!TABS.includes(tab)) return false;
+    if (tab === "accounts" && arg) AV.pick = {k: "account", v: arg};
+    show(tab);
+    return true;
+  }
+  window.addEventListener("popstate", fromHash);
+  loadState().catch((e) => flash(e.message, true)).then(() => { if (location.hash.length > 1) fromHash(); });
+
+  // Every panel exports on its own: a PDF button on each card with a heading prints that card alone
+  function exportCard(card) {
+    const title = (card.querySelector("h3")?.textContent || "Panel").trim();
+    const tab = document.querySelector('nav button[aria-selected="true"]')?.textContent.trim() || "";
+    let box = $("cardPrint");
+    if (!box) { box = document.createElement("div"); box.id = "cardPrint"; document.body.appendChild(box); }
+    const c = card.cloneNode(true);
+    c.querySelectorAll("button").forEach((b) => (b.querySelector("code") && !b.classList.contains("card-pdf") ? b.replaceWith(...b.childNodes) : b.remove()));  // an address on a button keeps its text
+    c.querySelectorAll("input, select, .pager-slot, .pager, b.print-only").forEach((x) => x.remove());
+    c.querySelectorAll("details").forEach((d) => d.setAttribute("open", ""));
+    c.querySelectorAll("[id]").forEach((x) => x.removeAttribute("id"));
+    c.querySelectorAll("[hidden]").forEach((x) => { if (!x.matches("p.small, .small[hidden]")) x.removeAttribute("hidden"); });
+    box.innerHTML = `<div class="eyebrow">Security Tightener · ${esc(tab)}</div><p class="muted small">Exported ${esc(when(Date.now() / 1000))}</p>`;
+    box.appendChild(c);
+    const t = document.title, day = new Date().toISOString().slice(0, 10);
+    document.title = `Security Tightener - ${title} - ${day}`;
+    const done = () => { document.title = t; document.body.classList.remove("print-card"); box.innerHTML = ""; window.removeEventListener("afterprint", done); };
+    window.addEventListener("afterprint", done);
+    document.body.classList.add("print-card");
+    window.print();
+  }
+  function addCardPdf() {
+    for (const card of document.querySelectorAll("main .card")) {
+      if (card.querySelector(":scope > .card-pdf, :scope > .card-head > .card-pdf") || !card.querySelector("h3") || card.closest("dialog")) continue;
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "btn sm card-pdf"; b.textContent = "PDF";
+      b.title = "Export this panel alone to PDF: opens the print dialog with only this panel; choose Save as PDF";
+      b.addEventListener("click", () => exportCard(card));
+      const head = card.querySelector(":scope > .card-head");
+      if (head) head.appendChild(b); else { card.classList.add("has-pdf"); card.prepend(b); }
+    }
+  }
+  new MutationObserver(() => { clearTimeout(addCardPdf.t); addCardPdf.t = setTimeout(addCardPdf, 150); }).observe(document.querySelector("main"), {childList: true, subtree: true});
+  addCardPdf();
 })();
 </script>
 </body>

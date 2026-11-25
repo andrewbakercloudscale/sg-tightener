@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.55.0 - 2026-11-25
+
+- **Spend in search**: the Accounts search lists accounts and owners with their monthly spend, biggest first; an owner's accounts table shows spend a month.
+- **Bookmarkable tabs**: each tab sets the address (`#refused`, `#accounts/<id>`), so tabs and accounts can be bookmarked and the back button works.
+- **PDF per panel**: every panel has a PDF button that prints just that panel.
+- **Fix before and after**: counts security groups in use (on an interface) and says how many more are in the account on no interface; exposure rows that drop to zero say "not needed".
+
 ## 5.54.0 - 2026-11-25
 
 - **Faster pages**: reports answer at once from the rows kept and are refreshed behind the page; the Accounts
