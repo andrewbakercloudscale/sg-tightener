@@ -924,6 +924,8 @@ section.nodata .card:not(.empty-state) { display: none; }
       <select id="fWhere" aria-label="Where from"><option value="">Internal and external</option><option value="ext">External only</option><option value="int">Internal only</option><option value="v6">IPv6 only</option><option value="scan">Scanning only</option><option value="bad">Known malicious or Tor</option></select>
       <span class="muted small" id="fN"></span>
     </div>
+    <div class="acts" style="margin:4px 0 4px"><button class="btn primary sm" type="button" id="fReadNow">Read the last 24 hours now</button><button class="btn sm" type="button" id="fReadWhy" aria-expanded="false">Explain</button><span class="small" id="fReadNote"></span></div>
+    <p class="small" id="fReadHelp" hidden style="margin:0 0 6px"><b>Read the last 24 hours now</b> reads the flow logs of the last day that have not been read yet, for the account chosen in the filter (or every chosen account, skipping those spending under US$100 a month), then refreshes this page. Only hours never read before are read and charged. It is priced first: you see the AWS cost and press <b>Read</b> before anything is spent. The same as <b>Read all</b> on the Overview with 1 day.</p>
     <div class="acts" style="margin:4px 0 8px"><button class="btn sm" type="button" id="fPdfIns">Export insights and graphs to PDF</button>
       <button class="btn sm" type="button" id="fPdfAtt">Export accounts that need attention to PDF</button>
       <button class="btn sm" type="button" id="fPdfWhy" aria-expanded="false">Explain</button></div>
@@ -2663,7 +2665,41 @@ section.nodata .card:not(.empty-state) { display: none; }
   $("aOrigin").addEventListener("change", loadAudit);
 
   // ---- rejected traffic
+  // Read the newest flow logs from here: priced first, read on a yes, then this page refreshes
+  let readPoll = null;
+  async function drawReadNow() {
+    let b = null;
+    try { b = await api("/api/batch", undefined, true); } catch (e) { return; }
+    const c = (b && b.count) || {}, note = $("fReadNote");
+    clearTimeout(readPoll);
+    if (!b || ["done", "stopped"].includes(b.status)) {
+      $("fReadNow").disabled = false;
+      if (b && $("fReadNow").dataset.mine === String(b.id)) {
+        delete $("fReadNow").dataset.mine;
+        note.innerHTML = b.status === "done" ? `<span style="color:var(--good)">Read ${c.done || 0} account(s)${c.failed ? `, ${c.failed} failed` : ""}. Refreshing…</span>` : '<span class="muted">Stopped: nothing more is read.</span>';
+        if (b.status === "done") { refusedData = null; setTimeout(() => loadRefused().then(() => { note.innerHTML = '<span style="color:var(--good)">Up to date.</span>'; }).catch(() => {}), 4000); }
+      }
+      return;
+    }
+    $("fReadNow").disabled = true;
+    const stop = '<button class="btn sm" type="button" id="fReadStop">Stop</button>';
+    if (b.status === "pricing") note.innerHTML = `${loading(`Pricing: ${b.accounts - (c.starting || 0)} of ${b.accounts} accounts`)} ${stop}`;
+    else if (b.status === "confirm") note.innerHTML = `<b>${b.to_read} account(s), about US$${Number(b.cost).toFixed(2)}</b>${b.cost_unknown ? ` plus ${b.cost_unknown} not yet priced` : ""} <button class="btn primary sm" type="button" id="fReadGo">Read</button> ${stop}`;
+    else note.innerHTML = `${loading(`Reading: ${b.read || 0} of ${b.to_read} accounts done${b.eta ? `, about ${Math.ceil(b.eta / 60)} min left` : ""}`)} ${stop}`;
+    $("fReadGo")?.addEventListener("click", (e) => act(e.target, async () => { await api("/api/read/all/confirm", {}); drawReadNow(); }));
+    $("fReadStop")?.addEventListener("click", (e) => act(e.target, async () => { await api("/api/read/all/stop", {}); drawReadNow(); }));
+    readPoll = setTimeout(drawReadNow, 3000);
+  }
+  $("fReadNow").addEventListener("click", (e) => act(e.target, async () => {
+    const acct = $("fAcct").value;
+    const b = await api("/api/read/all", {regions: "all", days: 1, min_spend: acct ? 0 : minSpend, ...(acct ? {accounts: [acct]} : {})});
+    $("fReadNow").dataset.mine = String(b.id);
+    drawReadNow();
+  }));
+  $("fReadWhy").addEventListener("click", () => { const h = $("fReadHelp"); h.hidden = !h.hidden; $("fReadWhy").setAttribute("aria-expanded", String(!h.hidden)); });
+
   async function loadRefused() {
+    drawReadNow();
     if (!S) await loadState();
     $("refusedRows").innerHTML = `<tr><td colspan="8" class="muted">${loading("Reading…")}</td></tr>`;
     refusedData = await api(`/api/refused?range=${encodeURIComponent($("fRange").value)}`);
