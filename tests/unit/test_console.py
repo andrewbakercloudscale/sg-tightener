@@ -617,3 +617,73 @@ def test_switching_account_never_leaves_the_last_accounts_summary_showing():
     body = body[:body.index("const HERO_ICON")]
     assert "box.dataset.acct !== a" in body and "Loading the account summary" in body
     assert "No account summary (spend and services) has been read" in body
+
+
+def test_a_read_survives_a_console_restart(console, monkeypatch):
+    """A restart (an upgrade, a reboot) dropped a running read: the account stayed at 1 day of flow logs."""
+    import time as _time
+
+    c = sg_console.Console(str(console["db"]), targets=console["targets"])
+    monkeypatch.setattr(sg_console.Console, "_prepare", lambda self, job: None)  # no AWS here
+    jid = c.read_start({"account": ACCOUNT, "days": 7, "regions": "all"})["id"]
+    assert c._reads()[ACCOUNT]["confirmed"] is False
+    job = c.jobs[jid]
+    job["status"] = "confirm"
+    c._job_extra[job["id"]] = {"sess": None, "tasks": [], "now": 0, "stop": threading.Event()}
+    monkeypatch.setattr(sg_console.Console, "_run", lambda self, job, x, first=(0, 0): None)
+    c.read_confirm({"id": job["id"]})
+    assert c._reads()[ACCOUNT] == {**c._reads()[ACCOUNT], "days": 7, "confirmed": True}
+
+    after = sg_console.Console(str(console["db"]), targets=console["targets"])  # the restart
+    ran = []
+
+    def prepare(self, job):
+        job["status"] = "confirm"
+        self._job_extra[job["id"]] = {"sess": None, "tasks": [1], "now": 0, "stop": threading.Event()}
+
+    def run(self, job, x, first=(0, 0)):
+        ran.append(job["account"])
+        job["status"] = "done"
+        self._read_settled(job)
+
+    monkeypatch.setattr(sg_console.Console, "_prepare", prepare)
+    monkeypatch.setattr(sg_console.Console, "_run", run)
+    monkeypatch.setattr(sg_console.Console, "warm_reports", lambda self: None)
+    monkeypatch.setattr(sg_console, "_keep_awake", lambda: None)
+    (resumed,) = after.resume_reads()
+    for _ in range(100):
+        if ran:
+            break
+        _time.sleep(0.05)
+    assert ran == [ACCOUNT] and "restarted" in resumed["lines"][0]
+    for _ in range(100):
+        if not after._reads():
+            break
+        _time.sleep(0.05)
+    assert after._reads() == {}  # read in full: nothing left to carry on with
+
+
+def test_an_unconfirmed_read_is_priced_again_after_a_restart_but_never_read_without_a_yes(console, monkeypatch):
+    import time as _time
+
+    c = sg_console.Console(str(console["db"]), targets=console["targets"])
+    monkeypatch.setattr(sg_console.Console, "_prepare", lambda self, job: None)
+    c.read_start({"account": ACCOUNT, "days": 7, "regions": "all"})
+    after = sg_console.Console(str(console["db"]), targets=console["targets"])
+    ran = []
+
+    def prepare(self, job):
+        job["status"] = "confirm"
+        self._job_extra[job["id"]] = {"sess": None, "tasks": [1], "now": 0, "stop": threading.Event()}
+
+    monkeypatch.setattr(sg_console.Console, "_prepare", prepare)
+    monkeypatch.setattr(sg_console.Console, "_run", lambda self, job, x, first=(0, 0): ran.append(1))
+    monkeypatch.setattr(sg_console.Console, "warm_reports", lambda self: None)
+    monkeypatch.setattr(sg_console, "_keep_awake", lambda: None)
+    (job,) = after.resume_reads()
+    for _ in range(40):
+        if job["status"] == "confirm":
+            break
+        _time.sleep(0.05)
+    _time.sleep(0.2)
+    assert job["status"] == "confirm" and not ran

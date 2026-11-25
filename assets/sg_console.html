@@ -1671,7 +1671,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   }
   const RR_NOTE = $("xrNote") ? $("xrNote").innerHTML : "";
   let rrTimer = 0;
-  const rrSeen = {};
+  const rrSeen = {}, rrLost = {};
   async function watchReread(a) {
     clearTimeout(rrTimer);
     $("xrGo").disabled = !a;
@@ -1682,6 +1682,13 @@ section.nodata .card:not(.empty-state) { display: none; }
     const last = j && j.lines.length ? esc(j.lines[j.lines.length - 1]) : "";
     const busy = j && ["starting", "queued", "running"].includes(j.status);
     $("xrGo").disabled = !!(busy || (j && j.status === "confirm"));
+    if (!j && ["starting", "queued", "running"].includes(rrSeen[a]) && (rrLost[a] = (rrLost[a] || 0) + 1) <= 30) {  // the console restarted under it
+      $("xrNote").innerHTML = `<b>The console restarted during this read.</b> It carries on by itself within a minute (anything already read is kept, and an unconfirmed read is priced again). <span class="muted small">Waiting…</span>`;
+      rrTimer = setTimeout(() => watchReread(a), 4000);
+      return;
+    }
+    if (!j && rrLost[a] > 30) { $("xrNote").innerHTML = `<b>The read did not carry on after the console restarted.</b> Press <b>Re-read this account</b> again: what was already read is kept.`; rrSeen[a] = ""; rrLost[a] = 0; return; }
+    if (j) rrLost[a] = 0;
     if (!j || (rrSeen[a] === undefined && !busy && j.status !== "confirm")) { $("xrNote").innerHTML = RR_NOTE; rrSeen[a] = j ? j.status : ""; return; }
     if (busy) {
       $("xrNote").innerHTML = `${loading(j.total ? `Reading: ${j.done.toLocaleString()} of ${j.total.toLocaleString()} slices` : "Reading the security groups and finding the flow logs…")} <button class="btn sm quiet" data-rr="stop" data-id="${j.id}">Stop</button>`;

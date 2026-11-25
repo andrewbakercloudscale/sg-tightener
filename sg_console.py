@@ -76,6 +76,9 @@ PASS_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy"
             "SG_TIGHTENER_PG_DSN", "SG_TIGHTENER_PG_SCHEMA")
 
 
+RESUME_FOR = 3 * 86400  # a read interrupted longer ago than this is not carried on
+
+
 def _keep_awake():
     """On macOS, stop the machine sleeping while a long read runs (sleep drops every query and the SSO
     session runs out meanwhile). Returns the process to terminate afterwards, or None."""
@@ -803,6 +806,94 @@ class Console:
             latest.setdefault(j["account"], j)
         return [{**j, "lines": j["lines"][-12:]} for j in list(latest.values())[:JOBS_SHOWN]]
 
+    # A read asked for is written down, so a console restart (an upgrade, a reboot) carries on with it instead
+    # of dropping it. Confirmed reads carry on reading; unconfirmed ones are priced again and wait for a yes.
+    _reads_lock = threading.Lock()
+
+    @staticmethod
+    def _reads_file():
+        import sg_ipintel
+        import sg_store
+
+        return sg_store.File(sg_ipintel.DATA_DIR / "reads-asked.json")
+
+    def _reads(self) -> dict:
+        try:
+            got = json.loads(self._reads_file().read_text())
+            return got if isinstance(got, dict) else {}
+        except FileNotFoundError:
+            return {}
+        except Exception:  # noqa: BLE001 - unreadable: nothing to carry on with
+            LOG.exception("reading the reads asked for")
+            return {}
+
+    def _read_asked(self, job: dict, confirmed: bool) -> None:
+        try:
+            with self._reads_lock:
+                got = self._reads()
+                got[job["account"]] = {"days": job["days"], "regions": job["regions"], "name": job.get("name", ""),
+                                       "confirmed": confirmed, "at": time.time()}  # fmt: skip
+                self._reads_file().write_text(json.dumps(got))
+        except Exception:  # noqa: BLE001 - the read itself goes on
+            LOG.exception("writing down the read of %s", job["account"])
+
+    def _read_settled(self, job: dict) -> None:
+        try:
+            with self._reads_lock:
+                got = self._reads()
+                if got.pop(job["account"], None) is not None:
+                    self._reads_file().write_text(json.dumps(got))
+        except Exception:  # noqa: BLE001
+            LOG.exception("settling the read of %s", job["account"])
+
+    def resume_reads(self) -> list[dict]:
+        """Carry on with the reads a restart interrupted. A confirmed one reads its hours still unread (never
+        more than was agreed: what was read meanwhile is kept); an unconfirmed one is priced again."""
+        asked = self._reads()
+        jobs = []
+        for account, a in asked.items():
+            if time.time() - float(a.get("at") or 0) > RESUME_FOR:  # too old to be wanted still
+                self._read_settled({"account": account})
+                continue
+            if any(j["account"] == account and j["status"] in ("starting", "running", "confirm", "queued") for j in self.jobs.values()):
+                continue
+            try:
+                job = self.read_start({"account": account, "days": a.get("days"), "regions": a.get("regions") or "all"}, start=False)
+            except ConsoleError as exc:
+                LOG.warning("not carrying on with the read of %s: %s", account, exc)
+                continue
+            job["name"] = job["name"] or a.get("name", "")
+            job["resume"] = bool(a.get("confirmed"))
+            self._say(job, "carried on after the console restarted" + ("" if job["resume"] else ": priced again, waiting for a yes"))
+            jobs.append(job)
+        if not jobs:
+            return []
+        LOG.info("carrying on with %d read(s) the restart interrupted: %s", len(jobs), ", ".join(j["account"] for j in jobs))
+
+        def one(job):
+            self._prepare(job)
+            if job["status"] == "confirm" and job["resume"]:
+                job["status"] = "running"
+                self._read_asked(job, True)
+                self._run(job, self._job_extra[job["id"]])
+            elif job["status"] not in ("confirm", "starting", "failed"):  # nothing left to read
+                self._read_settled(job)
+
+        def go():
+            from concurrent.futures import ThreadPoolExecutor
+
+            awake = _keep_awake()
+            try:
+                with ThreadPoolExecutor(max_workers=BATCH_WORKERS) as pool:
+                    list(pool.map(one, jobs))
+            finally:
+                if awake:
+                    awake.terminate()
+            self.warm_reports()
+
+        threading.Thread(target=go, daemon=True, name="resume-reads").start()
+        return jobs
+
     def _job(self, body: dict) -> dict:
         try:
             job = self.jobs[int(body.get("id"))]
@@ -832,6 +923,7 @@ class Console:
                "lines": [], "done": 0, "total": 0, "bytes": 0, "cost": None, "started": time.time()}  # fmt: skip
         self.jobs[jid] = job
         if start:
+            self._read_asked(job, False)
             threading.Thread(target=self._prepare, args=(job,), daemon=True).start()
         return job if not start else dict(job)
 
@@ -852,6 +944,7 @@ class Console:
             self._say(job, f"spent US${spend:,.2f} in the last {sg_review.SPEND_DAYS} days")
             return False
         job["status"] = "skipped"
+        self._read_settled(job)
         self._say(job, f"skipped: spent US${spend:,.2f} in the last {sg_review.SPEND_DAYS} days, under "
                        f"US${job['min_spend']:,.0f}")  # fmt: skip
         return True
@@ -916,6 +1009,7 @@ class Console:
             with_logs = [r for r in regions if (doc["regions"].get(r) or {}).get("query_sets")]
             if not tasks:
                 job["status"] = "done"
+                self._read_settled(job)
                 self._say(job, f"flow logs already read for the last {job['days']} day(s) in {', '.join(with_logs)}"
                           if with_logs else "no VPC flow logs in CloudWatch Logs in these regions: the security groups "
                           "are in the console, but there is no traffic to review (turn on VPC flow logs)")  # fmt: skip
@@ -942,6 +1036,7 @@ class Console:
         if job["status"] != "confirm" or not extra:
             raise ConsoleError(409, "this read is not waiting for confirmation")
         job["status"] = "running"
+        self._read_asked(job, True)
         threading.Thread(target=self._run, args=(job, extra), daemon=True).start()
         return dict(job)
 
@@ -970,6 +1065,7 @@ class Console:
         finally:
             self._job_extra.pop(job["id"], None)
             self._refused_cache.clear()
+            self._read_settled(job)
 
     def read_stop(self, body: dict) -> dict:
         job = self._job(body)
@@ -977,6 +1073,7 @@ class Console:
         if job["status"] == "confirm":
             self._job_extra.pop(job["id"], None)
             job["status"] = "cancelled"
+            self._read_settled(job)
             self._say(job, "not read")
         elif extra:
             extra["stop"].set()
@@ -1094,6 +1191,7 @@ class Console:
         jobs = [self.jobs[i] for i in b["jobs"] if self.jobs[i]["status"] == "confirm" and self._job_extra.get(i)]
         for j in jobs:
             j["status"] = "queued"
+            self._read_asked(j, True)
         b["status"], b["run_started"] = "running", time.time()
         b["run_done0"] = sum(j.get("done") or 0 for j in jobs)
 
@@ -1133,6 +1231,7 @@ class Console:
                 self._say(j, f"read {d} slices, {n / 1e9:.2f} GB scanned, about US${n / 1e9 * sg_review.INSIGHTS_PER_GB:.2f}")
                 self._job_extra.pop(j["id"], None)
                 self._refused_cache.clear()
+                self._read_settled(j)
                 return
             j["status"] = "running"
             self._run(j, self._job_extra[j["id"]], first.get(j["id"], (0, 0)))
@@ -1149,6 +1248,7 @@ class Console:
                 if j["status"] == "queued":
                     j["status"] = "cancelled"
                     self._job_extra.pop(j["id"], None)
+                    self._read_settled(j)
                     self._say(j, "not read")
             b["status"] = "stopped" if b["stop"].is_set() else "done"
             self.warm_reports()
@@ -2122,6 +2222,7 @@ def main(argv=None) -> int:
         st = console.state()
         LOG.info("acting as %s; database %s; two-person approval %s", st["me"], st["db"], "on" if st["approvals"] else "off")
         console.warm_reports()
+        threading.Timer(5, console.resume_reads).start()  # after the page can answer
     except Exception as exc:  # noqa: BLE001 - the page offers to start it
         if not _database_down(exc):
             raise
