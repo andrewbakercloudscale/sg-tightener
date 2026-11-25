@@ -470,6 +470,10 @@ section.nodata .card:not(.empty-state) { display: none; }
   .au-act.keep, .au-act.open, .au-act.wait, .au-act.off { background: var(--surface-2); color: var(--muted); }
   .au-ext { color: var(--bad); font-weight: 600; }
   #auditPrint { display: none; }
+  .trail-t { table-layout: fixed; width: 100%; min-width: 900px; }
+  .trail-t td { vertical-align: top; overflow-wrap: anywhere; }
+  .trail-t code { white-space: normal; }
+  .trail-t details summary { cursor: pointer; color: var(--accent); font-size: 12px; margin-top: 4px; }
   @media print {
     body.print-audit > *:not(#auditPrint) { display: none !important; }
     body.print-audit #auditPrint { display: block !important; }
@@ -579,9 +583,10 @@ section.nodata .card:not(.empty-state) { display: none; }
 
   <section id="tab-groups" hidden>
     <h2>Security groups</h2>
-    <p class="lede">Tighten an account at a time. The flow logs say what each inbound rule should become: narrower
-      sources, fewer ports, or removed when nothing used it. One change request carries the whole plan, and a
-      second person approves it. Open a group only to look closer.</p>
+    <p class="lede">The rules themselves, one account and region at a time. Look at any group's rules, propose a rule
+      by hand, keep a change someone made in AWS, and <b>Apply approved changes</b> to make them in AWS.
+      <b>Remediate</b> is where the flow logs suggest the changes for a whole account; this is where you check
+      and apply them.</p>
     <div class="tools">
       <select id="gWhere" aria-label="Account and region"></select>
       <input id="gFilter" type="search" placeholder="Filter groups and rules…" aria-label="Filter groups">
@@ -619,7 +624,8 @@ section.nodata .card:not(.empty-state) { display: none; }
   <section id="tab-requests" hidden>
     <h2>Change requests</h2>
     <p class="lede">A request changes nothing until a different person approves it. Approved requests reach AWS when someone applies them; they are marked applied once AWS holds every change.</p>
-    <div class="tools"><select id="rStatus" aria-label="Status"><option value="pending">Waiting for approval</option><option value="approved">Approved, not applied</option><option value="applied">Applied</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option><option value="">All</option></select></div>
+    <div class="tools"><select id="rStatus" aria-label="Status"><option value="pending">Waiting for approval</option><option value="approved">Approved, not applied</option><option value="applied">Applied</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option><option value="">All</option></select>
+      <label class="small" title="On: a different person must approve each request. Off: whoever proposes may approve it too, and new requests are approved at once (Apply still makes them in AWS). Each switch is recorded in the audit trail."><input type="checkbox" id="rTwo"> Two-person approval</label></div>
     <div id="requestList"></div>
   </section>
 
@@ -632,7 +638,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <select id="aOrigin" aria-label="Origin"><option value="">Every origin</option><option value="external">Outside the tool</option><option value="apply">Applied</option><option value="tool">Requests and decisions</option><option value="approved">Approved changes</option></select>
       <span class="muted small" id="aN"></span>
     </div>
-    <div class="card scroll"><table><thead><tr><th>#</th><th>When</th><th>Who</th><th>What</th><th>Where</th><th>Why</th></tr></thead><tbody id="auditRows"></tbody></table></div>
+    <div class="card scroll"><table class="trail-t"><colgroup><col style="width:5%"><col style="width:10%"><col style="width:15%"><col style="width:33%"><col style="width:17%"><col style="width:20%"></colgroup><thead><tr><th>#</th><th>When</th><th>Who</th><th>What</th><th>Where</th><th>Why</th></tr></thead><tbody id="auditRows"></tbody></table></div>
   </section>
 
   <section id="tab-macro" hidden>
@@ -1562,7 +1568,11 @@ section.nodata .card:not(.empty-state) { display: none; }
   function usd0(n) { return `US$${Math.round(n).toLocaleString()}`; }
   async function loadHero(a, read) {
     const box = $("xHero");
-    if (!a) { box.innerHTML = ""; return; }
+    if (!a) { box.innerHTML = ""; box.dataset.acct = ""; return; }
+    if (box.dataset.acct !== a) {  // never leave the last account's summary under this one's name
+      box.dataset.acct = a;
+      box.innerHTML = `<div class="card"><p>${loading("Loading the account summary…")}</p></div>`;
+    }
     let p = await api(`/api/profile?account=${encodeURIComponent(a)}`, undefined, true);
     if ((read || p.stale) && !heroBusy.has(a)) {
       if (!p.totals) box.innerHTML = `<div class="card"><p>${loading("Reading the account summary from AWS: spend, EC2, RDS, S3, PrivateLink… (under a minute)")}</p></div>`;
@@ -1572,7 +1582,9 @@ section.nodata .card:not(.empty-state) { display: none; }
       catch (e) { if (!p.totals) { if ($("xAcct").value === a) box.innerHTML = `<div class="flash err"><b>The account summary (spend and services) could not be read from AWS.</b> ${esc(e.message)} <button class="btn sm" id="heroRetry">Try again</button></div>`, $("heroRetry").onclick = () => loadHero(a, true).catch(() => {}); return; } }
       finally { heroBusy.delete(a); }
     }
-    if ($("xAcct").value === a && p.totals) drawHero(p, false);
+    if ($("xAcct").value !== a) return;
+    if (p.totals) drawHero(p, false);
+    else box.innerHTML = `<div class="card"><p class="muted">No account summary (spend and services) has been read for this account yet. <button class="btn sm" id="heroRead">Read it now</button></p></div>`, $("heroRead").onclick = () => loadHero(a, true).catch(() => {});
   }
   const HERO_ICON = {
     spend: '<path d="M12 2v20M17 6.5C17 4.6 14.8 3.5 12 3.5S7 4.6 7 6.5s2 2.8 5 3.5 5 1.6 5 3.6-2.2 3.4-5 3.4-5-1.2-5-3"/>',
@@ -1951,6 +1963,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   async function loadRequests() {
     if (!S) await loadState();
     const rows = await api(`/api/requests?status=${encodeURIComponent($("rStatus").value)}`);
+    $("rTwo").checked = !!S.approvals;
     $("requestList").innerHTML = rows.map((r) => {
       const mine = r.proposer.split(" (")[0] === S.me_principal;
       const ruleLine = (c) => `<code>${esc(c.direction === "in" ? "in" : "out")} ${esc(c.proto === "-1" ? "all" : `${c.proto} ${c.from === c.to ? c.from : c.from + "-" + c.to}`)} ${esc(c.source)}</code>`;
@@ -1962,8 +1975,8 @@ section.nodata .card:not(.empty-state) { display: none; }
            ${r.changes.narrowed.added.map((c) => `<li><span class="pill" style="--p:var(--good)">to</span> ${ruleLine(c)}</li>`).join("")}
            <li class="muted small">${r.changes.ingress.length} inbound and ${r.changes.egress.length} outbound rule(s) in all</li>`
         : (r.changes.length > 12 ? (xs) => `${xs.slice(0, 10).join("")}<li class="muted small"><details><summary>Show all ${r.changes.length.toLocaleString()} changes</summary><ul>${xs.slice(10).join("")}</ul></details></li>` : (xs) => xs.join(""))(r.changes.map((c) => `<li><span class="pill" style="--p:${c.op === "add" ? "var(--good)" : "var(--bad)"}">${c.op}</span> <code>${esc(c.group)}</code> ${esc(c.rule.direction === "in" ? "inbound" : "outbound")} <code>${esc(c.rule.proto === "-1" ? "all traffic" : `${c.rule.proto} ${c.rule.from === c.rule.to ? c.rule.from : c.rule.from + "-" + c.rule.to}`)}</code> ${c.rule.direction === "in" ? "from" : "to"} <code>${esc(c.rule.source)}</code> <span class="muted small">${esc(c.rule.description)}</span></li>`));
-      const buttons = r.status === "pending" ? (mine
-        ? `<span class="muted small">A different person must approve it, or cancel it at the top.</span>`
+      const buttons = r.status === "pending" ? (mine && S.approvals
+        ? `<span class="muted small">A different person must approve it, or cancel it at the top. On your own laptop? Untick Two-person approval above to approve it yourself.</span>`
         : `<input placeholder="Note (required to reject)" data-note="${r.id}"><button class="btn primary" data-dec="approve|${r.id}">Approve</button><button class="btn danger" data-dec="reject|${r.id}">Reject</button>`)
         : r.status === "approved" && r.kind === "merge" ? `<button class="btn primary" data-applymerge="${r.id}">Move ${Object.keys(r.changes.enis).length} interface(s) onto ${esc(r.changes.target_name)}</button><span class="muted small">Apply the rule changes for ${esc(r.region)} first.</span>`
         : r.status === "approved" && r.kind === "asset" ? `<button class="btn primary" data-applyasset="${r.id}">Create the group and move ${esc(r.changes.eni)}</button>`
@@ -2003,6 +2016,11 @@ section.nodata .card:not(.empty-state) { display: none; }
     }));
   }
   $("rStatus").addEventListener("change", loadRequests);
+  $("rTwo").addEventListener("change", (e) => act(e.target, async () => {
+    const res = await api("/api/approvals", {on: e.target.checked});
+    flash(res.approvals ? "Two-person approval is on: a different person must approve each request." : "Two-person approval is off: you can approve your own requests, and new ones are approved at once. Apply still makes them in AWS. Recorded in the audit trail.");
+    await loadState(); await loadRequests();
+  }));
 
   // ---- audit
   async function loadAudit() {
@@ -2019,12 +2037,15 @@ section.nodata .card:not(.empty-state) { display: none; }
     const up = page("audit", rows.length, loadAudit);
     $("auditRows").innerHTML = rows.map((e) => {
       const d = e.detail || {};
-      const lines = [...(d.added || []).map((r) => ["+", r]), ...(d.removed || []).map((r) => ["−", r])]
-        .slice(0, 12).map(([m, r]) => `<div class="small"><code>${m} ${esc(r.group ? r.group + " " : "")}${esc(r.direction)} ${esc(r.proto === "-1" ? "all" : `${r.proto} ${r.from === r.to ? r.from : r.from + "-" + r.to}`)} ${esc(r.source)}</code></div>`).join("");
+      const all = [...(d.added || []).map((r) => ["+", r]), ...(d.removed || []).map((r) => ["−", r])]
+        .map(([m, r]) => `<div class="small"><code>${m} ${esc(r.group ? r.group + " " : "")}${esc(r.direction)} ${esc(r.proto === "-1" ? "all" : `${r.proto} ${r.from === r.to ? r.from : r.from + "-" + r.to}`)} ${esc(r.source)}</code></div>`);
+      const lines = all.length > 6 ? `${all.slice(0, 4).join("")}<details><summary>${(all.length - 4).toLocaleString()} more change(s)</summary>${all.slice(4, 500).join("")}${all.length > 504 ? `<div class="muted small">and ${(all.length - 504).toLocaleString()} more: see the change request</div>` : ""}</details>` : all.join("");
+      const gids = (e.group_id || "").split(",").filter(Boolean);
+      const where = gids.length > 3 ? `<div><code>${gids.slice(0, 2).map(esc).join(", ")}</code></div><details><summary>${gids.length.toLocaleString()} groups in all</summary><code>${gids.slice(2).map(esc).join(", ")}</code></details>` : `<div><code>${esc(gids.join(", "))}</code></div>`;
       const ext = e.origin === "external";
       return `<tr><td class="small">${e.seq}</td><td class="small">${esc(when(e.at))}</td><td class="small">${who(e.actor)}${d.changed_by ? `<div><b>changed by</b> ${esc(d.changed_by)}</div>` : ""}</td>
         <td><span class="pill" style="--p:${ext ? "var(--bad)" : e.origin === "apply" ? "var(--good)" : "var(--accent)"}">${esc(e.origin)}</span> ${esc(e.action)}${d.request ? ` <b>#${d.request}</b>` : ""}${lines}</td>
-        <td class="small">${esc(e.account)} ${esc(e.region)}<div><code>${esc(e.group_id)}</code></div></td>
+        <td class="small">${esc(e.account)} ${esc(e.region)}${where}</td>
         <td class="small">${esc(e.reason)}${e.ticket ? ` <code>${esc(e.ticket)}</code>` : ""}</td></tr>`;
     }).slice(up.a, up.b).join("") || '<tr><td colspan="6" class="muted">Nothing in this window.</td></tr>';
     pagerAfter($("auditRows"), up.bar);

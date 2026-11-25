@@ -161,6 +161,23 @@ def test_two_person_approval_from_proposal_to_aws(estate, monkeypatch, capsys):
     assert store.verify()[0]
 
 
+def test_with_two_person_approval_off_the_proposer_may_approve_their_own_request(estate, monkeypatch):
+    db = estate.groups["db"]
+    _Who(monkeypatch)
+    sg_db.main(["import", "--regions", REGION])
+    store = _db()
+    with store:
+        store.set_approvals(True, "test", "on")
+    sg_db.main(["add", "--region", REGION, "--group", db, "--proto", "tcp", "--port", "5432",
+                "--source", "10.4.1.0/24", "--reason", "app subnet"])
+    (req,) = store.requests("pending")
+    with store:
+        store.set_approvals(False, "test", "one person runs this")
+    assert sg_db.main(["approve", str(req["id"])]) == 0
+    got = store.requests(rid=req["id"])[0]
+    assert got["status"] == "approved" and "approved by its proposer" in got["note"]
+
+
 def test_reject_needs_a_note_and_write_tools_refuse_while_approvals_are_on(estate, monkeypatch):
     ec2, db = estate.ec2, estate.groups["db"]
     _Who(monkeypatch)

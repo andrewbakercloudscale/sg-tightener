@@ -591,3 +591,29 @@ def test_change_request_has_a_cancel_button_at_the_top_for_its_proposer():
     assert 'data-dec="cancel|${r.id}"' in head and ">Cancel request</button>" in head
     assert "Show all ${r.changes.length.toLocaleString()} changes" in page
     assert 'confirmInline(b, `Press again to cancel #${id}`)' in page
+
+
+def test_change_requests_page_switches_two_person_approval():
+    import pathlib
+    import sg_console
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    assert 'id="rTwo"' in page and 'api("/api/approvals", {on: e.target.checked})' in page
+    assert "mine && S.approvals" in page  # with it off, the proposer gets Approve and Reject
+    assert hasattr(sg_console.Console, "set_approvals")
+
+
+def test_audit_trail_has_fixed_column_widths_and_folds_long_entries():
+    """A 1,239-change request squeezed What into one word a line and pushed Where off the screen."""
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    assert '<table class="trail-t"><colgroup>' in page and ".trail-t { table-layout: fixed;" in page
+    assert "more change(s)</summary>" in page and "groups in all</summary>" in page
+
+
+def test_switching_account_never_leaves_the_last_accounts_summary_showing():
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    body = page[page.index("async function loadHero(a, read) {"):]
+    body = body[:body.index("const HERO_ICON")]
+    assert "box.dataset.acct !== a" in body and "Loading the account summary" in body
+    assert "No account summary (spend and services) has been read" in body

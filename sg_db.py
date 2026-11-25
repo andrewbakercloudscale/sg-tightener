@@ -579,15 +579,17 @@ class Store:
         return got[0]
 
     def decide(self, rid: int, actor: str, approve: bool, note: str = "") -> dict:
-        """Approve (a different person from the proposer) or reject a pending request."""
+        """Approve (a different person from the proposer, unless two-person approval is off) or reject a pending request."""
         r = self._request(rid)
         if r["status"] != "pending":
             raise Refused(f"request #{rid} is {r['status']}, not pending")
-        if approve and principal(actor) == principal(r["proposer"]):
+        if approve and principal(actor) == principal(r["proposer"]) and self.approvals():
             raise Refused(f"request #{rid} was proposed by {principal(actor)}: a different person must approve it")
         if not approve and not note.strip():
             raise Refused("say why it is rejected (--note): it goes in the audit trail")
         if approve:
+            if principal(actor) == principal(r["proposer"]):
+                note = f"{note}; " * bool(note.strip()) + "approved by its proposer (two-person approval is off)"
             return self._approve(rid, actor, note)
         self.db.execute("UPDATE requests SET status = 'rejected', decided_by = ?, decided_at = ?, note = ? WHERE id = ?",
                         (actor, _now(), note, rid))  # fmt: skip

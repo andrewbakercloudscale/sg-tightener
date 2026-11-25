@@ -1451,6 +1451,21 @@ class Console:
         finally:
             st.close()
 
+    def set_approvals(self, body: dict) -> dict:
+        """Two-person approval on or off (audited). Off suits one person running the console on their own laptop."""
+        on = bool(body.get("on"))
+        reason = str(body.get("reason") or "").strip() or ("two-person approval from the console" if on else
+                                                           "one person runs this console: the proposer may approve")  # fmt: skip
+        st = self.store()
+        try:
+            with st:
+                st.set_approvals(on, self.actor(), reason)
+            return {"approvals": st.approvals()}
+        except sg_db.Refused as exc:
+            raise ConsoleError(400, str(exc))
+        finally:
+            st.close()
+
     def _ec2(self, account: str, region: str):
         t = self.targets(fresh=True)
         return t, t.session(account).client("ec2", region_name=region)
@@ -1883,7 +1898,7 @@ def make_handler(console: Console, token: str, port: int):
                 return self._json(400, {"error": f"bad JSON: {exc}"})
             if not isinstance(body, dict):
                 return self._json(400, {"error": "bad JSON: an object is expected"})
-            route = {"/api/propose": console.propose, "/api/tighten": console.tighten, "/api/remediate": console.remediate, "/api/merge-apply": console.merge_apply, "/api/decide": console.decide, "/api/apply": console.apply,
+            route = {"/api/propose": console.propose, "/api/tighten": console.tighten, "/api/remediate": console.remediate, "/api/merge-apply": console.merge_apply, "/api/decide": console.decide, "/api/approvals": console.set_approvals, "/api/apply": console.apply,
                      "/api/reconcile": console.reconcile, "/api/adopt": console.adopt, "/api/check": console.check,
                      "/api/profile": lambda body: console.profile(_need(body, "account"), read=True),
                      "/api/asset-apply": console.asset_apply, "/api/asset-revert": console.asset_revert,
