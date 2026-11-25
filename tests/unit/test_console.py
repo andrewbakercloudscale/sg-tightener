@@ -556,3 +556,12 @@ def test_remediate_has_an_audit_of_every_rule_before_and_after_and_why():
     for col in ("<th style=\"width:24%\">Before</th>", "<th style=\"width:24%\">After</th>", "<th>Why</th>"):
         assert col in page
     assert "function auditWhy" in page and "Download CSV" in page
+
+
+def test_explain_buttons_look_like_buttons():
+    """A quiet (borderless) Explain reads as a label, not a button."""
+    import pathlib
+    import re
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    for tag in re.findall(r"<button[^>]*>Explain</button>", page):
+        assert "quiet" not in tag, tag

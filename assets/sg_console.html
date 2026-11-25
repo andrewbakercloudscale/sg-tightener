@@ -679,7 +679,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     <div class="tools">
       <input id="xFind" type="search" placeholder="Find an account (name or number)…" aria-label="Find an account to remediate">
       <select id="xAcct" aria-label="Account to remediate"></select>
-      <span class="range"><b>Evidence from</b><input type="date" id="xFrom" aria-label="Use flow logs from this date"><b>to</b><input type="date" id="xTo" aria-label="Use flow logs up to and including this date"><button class="btn sm quiet" type="button" id="xRangeWhy" aria-expanded="false">Explain</button></span>
+      <span class="range"><b>Evidence from</b><input type="date" id="xFrom" aria-label="Use flow logs from this date"><b>to</b><input type="date" id="xTo" aria-label="Use flow logs up to and including this date"><button class="btn sm" type="button" id="xRangeWhy" aria-expanded="false">Explain</button></span>
       <label class="small"><input type="checkbox" id="xHide" checked> Hide accounts without flow logs</label>
       <button class="btn sm primary" type="button" id="xPdf" style="margin-left:auto" disabled title="Opens the print dialog: choose Save as PDF">Export to PDF</button>
     </div>
@@ -1822,7 +1822,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("xBody").innerHTML = `
       ${short ? `<div class="flash">Only <b>${Math.round(P.have_days)} days</b> of flow logs read between these ${Math.round(P.days)} days: rules are narrowed to the sources seen in it and rules nothing used are removed. Anything that runs less often (a monthly job, a DR test) will be refused: it shows on <b>Rejected traffic</b>, where <b>Propose allowing</b> opens it again. A longer read makes that less likely. <button class="btn sm" id="xRead">Re-read ${Math.round(P.days)} days for this account</button></div>` : ""}
       <div class="fix-top">
-        <div class="card"><div class="eyebrow">The tightened account</div><h3 style="margin-top:2px;display:flex;align-items:center;gap:10px">Before and after <button class="btn sm quiet" type="button" id="xAudit" title="Every rule: what it was, what it becomes, and why">Explain</button></h3>
+        <div class="card"><div class="eyebrow">The tightened account</div><h3 style="margin-top:2px;display:flex;align-items:center;gap:10px">Before and after <button class="btn sm" type="button" id="xAudit" title="Every rule: what it was, what it becomes, and why">Explain</button></h3>
           <div class="evidence"><span class="chip">${Math.round(P.have_days)} ${many(Math.round(P.have_days), "day")} of flow logs used</span><span class="chip">${ymd(P.from)} → ${ymd(P.to - 1)}</span>${P.stored_from != null ? `<span class="chip">read: ${ymd(P.stored_from)} → ${ymd(P.stored_to - 1)}</span>` : ""}</div>
           <div class="kpis">
             ${kpi("External (internet) IPv4 addresses let in", eBefore, eAfter, fmtN)}
