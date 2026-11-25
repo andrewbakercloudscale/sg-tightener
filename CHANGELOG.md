@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.53.0 - 2026-11-25
+
+- **Rejected traffic: Read the last 24 hours now**: reads the newest flow logs for the account filtered (or every
+  chosen account) from that page. Priced first, read on a yes, then the page refreshes.
+- **Risk by owner** opens on the Product Head tag by default, on Risk overview and the Accounts tab.
+
 ## 5.52.0 - 2026-11-25
 
 - **Fix from the Accounts tab, in place**: "Fix these now" and each rule's "Narrow it…" / "Rule not needed:
