@@ -4603,6 +4603,85 @@ def _asset_rows(asset_enis, asset_over, enis, groups, snaps, rules, logged_ids) 
     return out
 
 
+SEEN_PUBLIC = 3000  # public sources kept per account in the estate's address book (by flows); private ones all
+SEEN_PORTS = 8  # ports kept per source (by flows); how many there were is counted
+
+
+def sightings(doc: dict) -> dict:
+    """The account's part of the estate's address book: every source its flow logs hold (the whole read, not one
+    range), with flows let in, refused and answered (its replies to the account's own connections), when first and
+    last seen, in which regions, and the ports it asked for; and every address of the account's own interfaces with
+    what is behind it. IP addresses are reused, so first and last seen date each sighting.
+    Each source: [flows let in, refused, replies, first, last, ports refused, addresses tried, regions,
+    [[proto, port, let in, refused]] busiest first, ports let in]."""
+    by: dict[str, list] = {}  # src -> [in, refused, replies, first, last, {(proto, port): [in, refused]}, regions, dsts, ports, dsts counted]
+
+    def one(src, c):
+        x = by.get(src)
+        if x is None:
+            x = by[src] = [0, 0, 0, c["s"], c["e"], {}, set(), set(), 0, 0]
+        x[3], x[4] = min(x[3], c["s"]), max(x[4], c["e"])
+        x[6].add(c["r"])
+        return x
+
+    for c in doc.get("chunks") or []:
+        if c.get("st") not in ("ok", "cut"):
+            continue
+        for src, dst, _eni, proto, dport, action, flows in c.get("rows") or []:
+            if not src:
+                continue
+            x = one(src, c)
+            if dport >= EPHEMERAL and action == "ACCEPT":
+                x[2] += flows
+                continue
+            i = 0 if action == "ACCEPT" else 1
+            x[i] += flows
+            p = x[5].setdefault((str(proto), dport), [0, 0])
+            p[i] += flows
+            x[7].add(dst)
+        for src, flows, ports, dsts, dst, _eni, port, proto in c.get("pub") or []:
+            if not src:
+                continue
+            x = one(src, c)
+            x[1] += flows
+            p = x[5].setdefault((str(proto), port), [0, 0])
+            p[1] += flows
+            x[7].add(dst)
+            x[8] = max(x[8], ports)
+            x[9] = max(x[9], dsts)  # counted when the read folded them, not named
+    private = [s for s in by if private_ip(s)]
+    public = sorted((s for s in by if not private_ip(s)), key=lambda s: -(by[s][0] + by[s][1] + by[s][2]))[:SEEN_PUBLIC]
+    seen = {}
+    for s in private + public:
+        x = by[s]
+        ports = sorted(x[5].items(), key=lambda kv: -(kv[1][0] + kv[1][1]))[:SEEN_PORTS]
+        refused_ports = max(x[8], sum(1 for v in x[5].values() if v[1]))
+        seen[s] = [x[0], x[1], x[2], x[3], x[4], refused_ports, max(x[9], len(x[7])), sorted(x[6]),
+                   [[pr, pt, a, b] for (pr, pt), (a, b) in ports], sum(1 for v in x[5].values() if v[0])]  # fmt: skip
+    hosts = hosts_model(doc)
+    ips: dict[str, list] = {}
+    for ip, eid in hosts["by_ip"].items():
+        ips.setdefault(eid, []).append(ip)
+    own = {eid: [*e, ips.get(eid, [])] for eid, e in hosts["enis"].items() if ips.get(eid)}
+    return {"seen": seen, "own": own, "name": doc.get("name", "")}
+
+
+def private_ip(ip: str) -> bool:
+    """RFC 1918, carrier-grade NAT (100.64.0.0/10, what EKS pods often use) and IPv6 unique local: addresses inside
+    someone's own networks. Not ipaddress's is_private, which counts the documentation ranges too."""
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if a.version == 6:
+        return a in _ULA
+    n = int(a)
+    return any(lo <= n <= hi for lo, hi in PRIVATE)
+
+
+_ULA = ipaddress.ip_network("fc00::/7")
+
+
 def report_row(kind: str, account: str, name: str, range_key: str):
     """One account's row for a console report ("macro" or "refused"), or None if none of its flow logs were read.
     A top-level function so the console can build many in parallel processes. "flow" is whether its flow
@@ -4615,6 +4694,8 @@ def report_row(kind: str, account: str, name: str, range_key: str):
         return {"rate": e["rate"], "spent": e["spent"], "regions": e["regions"],
                 "cost": {str(x["days"]): x["cost"] for x in e["ranges"]},
                 "bytes": {str(x["days"]): x["bytes"] for x in e["ranges"]}}
+    if kind == "seen":
+        return sightings(doc) if doc else None
     if kind == "flow":
         import sg_remediate
 

@@ -60,7 +60,7 @@ REPORT_CACHE_VERSION = 7  # 5: refused rows carry every target and the verdict; 
 # a page asking for a report some accounts have no row in yet gets the rows there are at once, and the rest are
 # built in the background (it asks again); tests set SG_NO_WARM and get every row before the answer
 REPORTS_WAIT = os.environ.get("SG_NO_WARM") == "1"
-WARM = (("macro", "1m"), ("refused", "24h"), ("macro", "1w"), ("macro", "3m"), ("macro", "24h"), ("macro", "6m"),
+WARM = (("macro", "1m"), ("refused", "24h"), ("seen", "all"), ("macro", "1w"), ("macro", "3m"), ("macro", "24h"), ("macro", "6m"),
         ("macro", "1y"))  # built in the background, default views first, so a page opens from rows already built
 WARM_EVERY = 600
 DEFAULT_DAYS = 7  # a read's default look back: 30 days across an OU can cost hundreds of dollars in Logs Insights
@@ -129,6 +129,7 @@ class Console:
         self._lock = threading.Lock()
         self._refused_cache: dict = {}
         self._report_lock = threading.Lock()
+        self._ip_idx = None  # (signature, index) of the estate's address book
         self._report_gates: dict = {}
         self._warming: threading.Thread | None = None
         self._plans: dict = {}  # the last remediation plans built, newest last
@@ -726,6 +727,107 @@ class Console:
         types = {k: n for k, (n, _) in sg_review.SOURCE_TYPES.items()}
         return {"range": range_key, "rows": rows, "accounts": accounts, "types": types, "no_flow_logs_read": len(unread),
                 "building": building}
+
+    # ------------------------------------------------------------------ the estate's address book
+    def _ip_index(self) -> tuple[dict, int]:
+        """{"seen": ip -> [(account, sighting)], "own": ip -> [(account, eni, interface)], "names": account -> name},
+        and how many accounts are still being added. Rebuilt only when an account's sightings change."""
+        rows, building = self._reports_soon("seen", "all", {})
+        sig = tuple(sorted((a, id(r)) for a, r in rows.items()))
+        got = self._ip_idx
+        if got and got[0] == sig:
+            return got[1], building
+        seen: dict[str, list] = {}
+        own: dict[str, list] = {}
+        for account, r in rows.items():
+            if not r:
+                continue
+            for ip, x in (r.get("seen") or {}).items():
+                seen.setdefault(ip, []).append((account, x))
+            for eid, e in (r.get("own") or {}).items():
+                for ip in e[8]:
+                    own.setdefault(ip, []).append((account, eid, e))
+        idx = {"seen": seen, "own": own, "names": {a: (r or {}).get("name", "") for a, r in rows.items()},
+               "indexed": sum(1 for r in rows.values() if r)}
+        self._ip_idx = (sig, idx)
+        return idx, building
+
+    def _who(self, src: str, proto: str, port, account: str) -> dict | None:
+        """What a source being let in is, for the apply preview: one address answered in full, a range by its size,
+        a security group by name. None when nothing can be said."""
+        import ipaddress as _ipa
+
+        try:
+            net = _ipa.ip_network(src, strict=False)
+        except ValueError:
+            return {"group": src} if src.startswith("sg-") else None
+        if net.num_addresses > 1:
+            return {"addresses": net.num_addresses, "answers": [{"q": "How many addresses?", "tone": "warn" if net.num_addresses > 256 else "info",
+                    "a": f"{net.num_addresses:,} addresses: every one of them is let in, not just the ones seen."}]}  # fmt: skip
+        try:
+            got = self.ip_profile(str(net.network_address), proto, port, account)
+        except Exception as exc:  # noqa: BLE001 - the preview still lists the change
+            LOG.warning("no profile of %s: %s", src, exc)
+            return None
+        return {"addresses": 1, "answers": got["answers"], "ip": got["ip"]}
+
+    def ip_profile(self, ip: str, proto: str = "", port=None, account: str = "") -> dict:
+        """Everything known about one IP address across the estate, as answers to what anyone asks before letting it
+        in: who owns it (AWS service and region, one of our accounts, or an AS number and its owner), whether it is
+        on a threat list or a Tor exit, which of our interfaces it is (and that instance's operating system), every
+        account that let it in or refused it and on which ports, whether it scanned, when first and last seen, and
+        what the port it asks for is. Nothing is sent to it: the tool only reads."""
+        import ipaddress as _ipa
+
+        import sg_ipintel
+        import sg_review
+
+        ip = str(ip or "").strip().split("/")[0]
+        try:
+            addr = _ipa.ip_address(ip)
+        except ValueError:
+            raise ConsoleError(400, f"{ip or 'nothing'} is not an IP address")
+        ip = str(addr)
+        idx, building = self._ip_index()
+        names = dict(idx["names"])
+        try:
+            st = self.store()
+            try:
+                names.update({a: n for a, n in st.account_names().items() if n})
+            finally:
+                st.close()
+        except Exception:  # noqa: BLE001 - names are a nicety
+            pass
+        private = sg_review.private_ip(ip)
+        intel = {} if private else sg_ipintel.get().label(ip)
+        ours = [{"account": a, "account_name": names.get(a, ""), "eni": eid, "kind": e[0], "instance": e[1], "name": e[2],
+                 "os": e[3], "type": e[4], "groups": e[5], "region": e[6], "desc": e[7]}
+                for a, eid, e in idx["own"].get(ip, [])]  # fmt: skip
+        seen = []
+        for a, x in idx["seen"].get(ip, []):
+            ports = []
+            for pr, pt, n_in, n_ref in x[8]:
+                pc = sg_review.port_class(pr, pt)
+                ports.append({"proto": sg_review.PROTO_NAME.get(str(pr), str(pr)), "port": pt, "svc": pc["svc"],
+                              "cls": pc["name"], "risky": pc["risky"], "let_in": n_in, "refused": n_ref})  # fmt: skip
+            seen.append({"account": a, "account_name": names.get(a, ""), "let_in": x[0], "refused": x[1], "replies": x[2],
+                         "first": x[3], "last": x[4], "ports_refused": x[5], "addresses": x[6], "regions": x[7],
+                         "ports": ports, "ports_let_in": x[9] if len(x) > 9 else 0,
+                         "scan": x[5] >= 10 or (x[6] >= 5 and x[5] > 1)})  # fmt: skip
+        seen.sort(key=lambda r: -(r["let_in"] + r["refused"] + r["replies"]))
+        pnum = {"tcp": "6", "udp": "17", "icmp": "1"}.get(str(proto).lower(), str(proto))
+        port_info = None
+        if port not in (None, ""):
+            try:
+                pc = sg_review.port_class(pnum or "6", int(port))
+                port_info = {"proto": sg_review.PROTO_NAME.get(pnum, pnum), "port": int(port), **pc,
+                             "database": pc["cls"] == "database",
+                             "why": sg_review.PORT_CLASSES.get(pc["cls"], ("", ""))[1]}  # fmt: skip
+            except (TypeError, ValueError):
+                raise ConsoleError(400, "port is a number")
+        return {"ip": ip, "private": private, "intel": intel, "ours": ours, "seen": seen, "port": port_info,
+                "answers": _ip_answers(ip, private, intel, ours, seen, port_info, account, names),
+                "accounts_indexed": idx["indexed"], "building": building}  # fmt: skip
 
     # ------------------------------------------------------------------ AWS sign-in (SSO)
     def _need_sso(self):
@@ -1629,6 +1731,8 @@ class Console:
                 c["evidence"] = {"days": ev.get("days"), "sources": ev.get("seen", 0), "last_used": ev.get("last_used"),
                                  "action": ev.get("action"), "lost": lost}  # fmt: skip
                 at_risk += bool(lost)
+            if op == "add" and d == sg_db.IN:
+                c["who"] = self._who(src, proto, lo, account)
             changes.append(c)
         enis = {a["eni"] for g in {c["group"] for c in changes} for a in on.get(g, [])}
         return {"account": account, "region": region, "mode": mode, "changes": changes,
@@ -2071,6 +2175,9 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.requests(q.get("status", "")))
                 if url.path == "/api/macro":
                     return self._json(200, console.macro(q.get("range", "1m")))
+                if url.path == "/api/ip":
+                    return self._json(200, console.ip_profile(_need(q, "ip"), q.get("proto", ""), q.get("port"),
+                                                              q.get("account", "")))  # fmt: skip
                 if url.path == "/api/refused":
                     return self._json(200, console.refused(q.get("range", "24h")))
                 if url.path == "/api/sso":
@@ -2243,6 +2350,82 @@ _port_ranges = sg_remediate.port_ranges
 _plan_rule = sg_remediate.plan_rule
 
 PROTO_NAMES = {"6": "tcp", "17": "udp", "1": "icmp", "58": "icmpv6", "-1": "-1", "tcp": "tcp", "udp": "udp"}
+
+
+def _when(t) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(t)) if t else "?"
+
+
+def _ip_answers(ip, private, intel, ours, seen, port, account, names) -> list[dict]:
+    """The questions asked before letting an address in, answered from what the estate knows: [{q, a, tone}], tone
+    good | warn | bad | info."""
+    out = []
+
+    def say(q, a, tone="info"):
+        out.append({"q": q, "a": a, "tone": tone})
+
+    def acct(a):
+        return f"{names.get(a) or a} ({a})" if names.get(a) else a
+
+    if ours:
+        o = ours[0]
+        say("Whose is it?", f"Ours: {o['kind'] or 'interface'} {o['instance'] or o['eni']}"
+            + (f" \u201c{o['name']}\u201d" if o["name"] else "") + f" in {acct(o['account'])}, {o['region']}"
+            + (f"; groups {', '.join(o['groups'])}" if o["groups"] else "")
+            + (f" (and {len(ours) - 1} more interface(s) with this address in other accounts or VPCs)" if len(ours) > 1 else ""),
+            "good")  # fmt: skip
+    elif private:
+        say("Whose is it?", "A private address that is none of the interfaces read in any account: on premises, another "
+            "network over Direct Connect, VPN or transit gateway, or an interface in an account not read yet.", "warn")
+    elif intel.get("kind") == "aws":
+        say("Whose is it?", f"{intel.get('name')} (AWS publishes {intel.get('prefix', '')} for {intel.get('service', '')}). "
+            "Not one of our accounts' interfaces: another AWS customer's, or an AWS service.", "info")
+    else:
+        asn = f"AS{intel['asn']} {intel.get('owner', '')}".strip() if intel.get("asn") else "no AS number on the lists"
+        say("Whose is it?", f"{intel.get('name') or ip}: {asn}" + (f", {intel['country']}" if intel.get("country") else "")
+            + (f", block {intel['block']}" if intel.get("block") else "") + ".", "info")
+    if intel.get("threat") or intel.get("group") in ("threat", "anon"):
+        say("Is it on a threat list or Tor?", intel.get("what") or intel.get("threat") or "Yes", "bad")
+    elif not private:
+        say("Is it on a threat list or Tor?", "No: not on the threat lists or the Tor exit list read.", "good")
+    os_ = sorted({o["os"] for o in ours if o["os"]})
+    say("What operating system?", ", ".join(os_) + f" ({ours[0].get('type') or 'instance'})" if os_ else
+        "Unknown: only our own EC2 instances report one. Nothing is probed or scanned: this tool only reads.",
+        "info")  # fmt: skip
+    if port:
+        say("What port is it asking for?", f"{port['port']}/{port['proto']}: {port['svc']} ({port['name']})"
+            + (". A database port: only its own application tier and admin hosts should reach it." if port["database"]
+               else ". " + port["why"] if port.get("why") else ""), "bad" if port["risky"] else "info")  # fmt: skip
+    scans = [r for r in seen if r["scan"]]
+    if scans:
+        r = max(scans, key=lambda r: r["ports_refused"])
+        say("Has it scanned?", f"Yes: {r['ports_refused']} ports refused on {r['addresses']} addresses in "
+            f"{acct(r['account'])}" + (f", and scanned {len(scans) - 1} more account(s)" if len(scans) > 1 else "") + ".", "bad")
+    elif seen:
+        say("Has it scanned?", "No: at most " + str(max(r["ports_refused"] for r in seen)) + " port(s) refused in any account.", "good")
+    if not seen:
+        say("Have we seen it before?", "Never: in no account's flow logs read so far.", "warn")
+    else:
+        first, last = min(r["first"] for r in seen), max(r["last"] for r in seen)
+        say("Have we seen it before?", f"Yes, in {len(seen)} account(s): first {_when(first)}, last {_when(last)}.", "info")
+        let = [r for r in seen if r["let_in"] and r["account"] != account]
+        if let:
+            top = ", ".join(f"{acct(r['account'])} on " + ", ".join(f"{p['port']}" for p in r["ports"] if p["let_in"])[:60]
+                            for r in let[:3])  # fmt: skip
+            say("Is it already let in elsewhere?", f"Yes, {len(let)} other account(s): {top}"
+                + (f" and {len(let) - 3} more" if len(let) > 3 else "") + ".", "good")
+        else:
+            say("Is it already let in elsewhere?", "No other account lets it in.", "warn")
+        talk = [r for r in seen if r["replies"]]
+        if talk:
+            say("Do our hosts connect to it?", f"Yes, from {len(talk)} account(s): "
+                + ", ".join(acct(r["account"]) for r in talk[:3]) + (f" and {len(talk) - 3} more" if len(talk) > 3 else "")
+                + " (it answered their connections).", "info")  # fmt: skip
+        ref = [r for r in seen if r["refused"] and r["account"] != account]
+        if ref:
+            say("Is it refused elsewhere?", f"Yes, {len(ref)} other account(s): "
+                + ", ".join(acct(r["account"]) for r in ref[:3]) + (f" and {len(ref) - 3} more" if len(ref) > 3 else "") + ".", "info")
+    return out
 
 
 def _assets_quiet(st, account: str, region: str) -> list[dict]:

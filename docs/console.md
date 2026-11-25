@@ -369,6 +369,26 @@ python sg_review.py watch --regions eu-west-1 --ou-id ou-ab12-cdef3456 --slack h
 rejected traffic that needs attention; an account whose role cannot be assumed is logged and the rest
 carry on. The same table is on the org page (`sg-review-org/index.html`, **All rejected traffic**).
 
+### The address book: who an IP address is, before you let it in
+
+**Look up an IP address** on **Rejected traffic** (and the **Before you let it in** section of **Fix…**, and
+each added source in the **Apply** preview) answers, from every account read:
+
+| Question | Answered from |
+|---|---|
+| Whose is it? | One of our interfaces (account, instance, name, groups); an AWS service and region from AWS's published ranges; or the AS number, its owner, country and block |
+| Is it on a threat list or Tor? | The threat lists and the Tor exit list |
+| What operating system? | Our own EC2 instances only (`PlatformDetails`). Nothing is probed or scanned: the tool only reads |
+| What port is it asking for? | The port catalogue: service, class, and whether it is a database or another risky port |
+| Has it scanned? | Ports refused and addresses tried, in every account |
+| Have we seen it before? | First and last seen across the estate |
+| Is it already let in elsewhere? Refused elsewhere? Do our hosts connect to it? | Every account's flow logs, with the ports |
+
+The book is built in the background from each account's whole read (every private source, the 3,000 busiest
+public ones per account) and kept in the database with the other report rows. IP addresses are reused: each
+sighting carries its dates. A range being let in is shown by its size: every address in it is let in, not just
+the ones seen.
+
 ## Flags
 
 | Flag | Default | Meaning |
