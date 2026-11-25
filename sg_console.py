@@ -56,9 +56,30 @@ RANGES = ("24h", "1w", "1m", "3m", "6m", "1y")
 MIN_SPEND = 100.0  # US$ in the last 30 days: reading an OU skips accounts spending less (0 reads every one)
 AGES = {"estimate": 3600}  # reports that depend on the time as well as the read: rebuilt (in the background) this often
 SETTLING = 600  # a read written to in the last ten minutes keeps its last report row (built in this window)
-REPORT_PROCS = max(1, min(8, (os.cpu_count() or 2) - 1))  # processes building report rows at once
+# Processes building report rows at once. Each holds one account's flow logs (often 1-3 GB): eight at once, two
+# builds at a time, drove a 32 GB Mac into swap (load 90, 2026-11-25). Now at most a quarter of the cores, at most
+# one per 6 GB of memory, one build at a time (REPORT_GATE), at low priority (nice) so the Mac stays usable.
+def _report_procs() -> int:
+    try:
+        mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        mem = 8 << 30
+    return max(1, min(4, (os.cpu_count() or 2) // 4, mem // (6 << 30)))
+
+
+REPORT_PROCS = int(os.environ.get("SG_REPORT_PROCS") or _report_procs())
+REPORT_GATE = threading.BoundedSemaphore(1)  # one parallel report build at a time, whichever report asks
+# A report kind whose rows changed shape since REPORT_CACHE_VERSION: only that kind is rebuilt (a single global bump
+# rebuilt every report of every account at once). 9: own interfaces carry launch time, image and VPC.
+KIND_VERSIONS = {"seen": 9}
+
+
+def _kind_version(kind: str) -> int:
+    return KIND_VERSIONS.get(kind, REPORT_CACHE_VERSION)
+
+
 SHOW_OLD = ("refused", "macro")  # reports whose rows from an earlier version are shown while being rebuilt
-REPORT_CACHE_VERSION = 9  # 9: own interfaces carry launch time, image and VPC; 5: refused rows carry every target and the verdict; 6, 7: one service is not a scan; 8: the day before
+REPORT_CACHE_VERSION = 8  # 5: refused rows carry every target and the verdict; 6, 7: one service is not a scan; 8: the day before
 # a page asking for a report some accounts have no row in yet gets the rows there are at once, and the rest are
 # built in the background (it asks again); tests set SG_NO_WARM and get every row before the answer
 REPORTS_WAIT = os.environ.get("SG_NO_WARM") == "1"
@@ -719,8 +740,8 @@ class Console:
                 try:
                     # a process is replaced after a few accounts: one large account leaves gigabytes behind in the
                     # process that built it, and a long-lived one would keep them for every account after
-                    with multiprocessing.get_context("spawn").Pool(min(REPORT_PROCS, len(items)), maxtasksperchild=4,
-                                                                   **_child_data_dir()) as pool:  # fmt: skip
+                    with REPORT_GATE, multiprocessing.get_context("spawn").Pool(
+                            min(REPORT_PROCS, len(items)), maxtasksperchild=4, **_child_data_dir(nice=True)) as pool:
                         for (_, a, _, _), got in zip(args, pool.imap(sg_review.report_row_safe, args, chunksize=1)):
                             took(a, got)
                 except Exception:  # processes not available here: build the rest one by one
@@ -910,7 +931,7 @@ class Console:
             import sg_store
 
             try:
-                got = sg_store.report_rows(REPORT_CACHE_VERSION)
+                got = sg_store.report_rows(_kind_version)
                 # an earlier version's row is shown until rebuilt only where the page reads it (it may lack new fields)
                 self._reports_mem = {k: v for k, v in got.items() if not v.get("old") or k.split("|", 1)[0] in SHOW_OLD}
                 old = sum(1 for v in self._reports_mem.values() if v.get("old"))
@@ -927,7 +948,7 @@ class Console:
 
         rows = self._reports_mem or {}
         try:
-            sg_store.save_report_rows(REPORT_CACHE_VERSION, {k: rows[k] for k in (rows if keys is None else keys)
+            sg_store.save_report_rows(_kind_version, {k: rows[k] for k in (rows if keys is None else keys)
                                                              if k in rows and not rows[k].get("old")})
         except Exception as exc:  # noqa: BLE001 - rebuilt from the reads
             LOG.warning("report rows not saved: %s", exc)
@@ -2548,12 +2569,23 @@ class _Done:
         return True
 
 
-def _child_data_dir() -> dict:
+def _child_init(data_dir: str, nice: bool = False) -> None:
+    import sg_ipintel
+
+    sg_ipintel.set_data_dir(data_dir)
+    if nice:
+        try:
+            os.nice(15)  # background work: the person at the Mac comes first
+        except OSError:
+            pass
+
+
+def _child_data_dir(nice: bool = False) -> dict:
     """Pool arguments that give a spawned process this console's data directory: a fresh process starts at the
     default one, so a console run with --data-dir built its plans and reports from the wrong account data."""
     import sg_ipintel
 
-    return {"initializer": sg_ipintel.set_data_dir, "initargs": (str(sg_ipintel.DATA_DIR),)}
+    return {"initializer": _child_init, "initargs": (str(sg_ipintel.DATA_DIR), nice)}
 
 
 def _plan_job(account: str, days: int, groups: dict, assets: dict, start, end) -> dict | None:

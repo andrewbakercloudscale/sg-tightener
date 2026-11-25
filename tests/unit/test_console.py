@@ -781,10 +781,22 @@ def test_spawned_plan_and_report_processes_use_the_consoles_data_directory(tmp_p
     import sg_ipintel
     monkeypatch.setattr(sg_ipintel, "DATA_DIR", tmp_path)
     got = sg_console._child_data_dir()
-    assert got["initializer"] is sg_ipintel.set_data_dir and got["initargs"] == (str(tmp_path),)
+    assert got["initializer"] is sg_console._child_init and got["initargs"] == (str(tmp_path), False)
     import pathlib
     src = pathlib.Path(sg_console.__file__).read_text()
-    assert src.count("**_child_data_dir()") == 2, "both process pools"
+    assert src.count("**_child_data_dir(") == 2, "both process pools"
+    seen = []
+    monkeypatch.setattr(sg_ipintel, "set_data_dir", seen.append)
+    sg_console._child_init(str(tmp_path))
+    assert seen == [str(tmp_path)]
+
+
+def test_report_builds_are_throttled_and_one_kind_rebuilds_alone():
+    """Eight workers, two builds at once, and a global version bump swapped a 32 GB Mac to a standstill."""
+    import sg_console
+    assert 1 <= sg_console.REPORT_PROCS <= 4 and sg_console.REPORT_GATE._value == 1
+    assert sg_console._kind_version("refused") == sg_console.REPORT_CACHE_VERSION
+    assert sg_console._kind_version("seen") >= sg_console.REPORT_CACHE_VERSION
 
 
 def test_the_audit_trail_shows_interfaces_that_came_or_went_not_undefined():

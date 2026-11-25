@@ -487,23 +487,27 @@ def prune(schema: str | None = None, now: float | None = None) -> dict:
 
 
 # ------------------------------------------------------------------------------------------- report rows
-def report_rows(version: int, schema: str | None = None) -> dict:
+def report_rows(version, schema: str | None = None) -> dict:
     """{"kind|range|account": {"mtime", "at", "row"}}. A row an earlier version of the reports built is kept, marked
     ``old`` with no stamp, so it is shown until this version rebuilds it rather than the page going empty after an
-    upgrade."""
-    return {f"{k}|{r}|{a}": ({"mtime": st, "at": at, "row": row} if v == version else
+    upgrade. ``version`` is a number, or a function of the kind giving the version that kind needs: a row at that
+    version or later is current, so a bump for one kind rebuilds that kind only."""
+    need = version if callable(version) else (lambda _k: version)
+    return {f"{k}|{r}|{a}": ({"mtime": st, "at": at, "row": row} if v >= need(k) else
                              {"mtime": None, "at": at, "row": row, "old": True})
             for k, r, a, v, st, at, row in db(schema).execute(
                 "SELECT kind, range_key, account, version, stamp, at, row FROM report_rows")}
 
 
-def save_report_rows(version: int, rows: dict, schema: str | None = None) -> None:
+def save_report_rows(version, rows: dict, schema: str | None = None) -> None:
+    need = version if callable(version) else (lambda _k: version)
     d = db(schema)
     with d.transaction():
         d.executemany("INSERT INTO report_rows (kind, range_key, account, version, stamp, at, row) VALUES "
                       "(?, ?, ?, ?, ?, ?, ?) ON CONFLICT (kind, range_key, account) DO UPDATE SET version = excluded.version, "
                       "stamp = excluded.stamp, at = excluded.at, row = excluded.row",
-                      [(*k.split("|", 2), version, v["mtime"], v["at"], _jsonb(v["row"])) for k, v in rows.items()])  # fmt: skip
+                      [(*k.split("|", 2), need(k.split("|", 1)[0]), v["mtime"], v["at"], _jsonb(v["row"]))
+                       for k, v in rows.items()])  # fmt: skip
 
 
 # ------------------------------------------------------------------------------------------- the local server

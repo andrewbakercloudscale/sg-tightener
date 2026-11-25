@@ -2788,27 +2788,39 @@ section.nodata .card:not(.empty-state) { display: none; }
     if (fixRow === r && $("fixSrc")) $("fixSrc").innerHTML = P.error ? `<p class="muted small">${esc(P.error)}</p>` : srcHtml(r, P);
   }
   // The source in one glance: whose it is, which host, its operating system, when it was made, and where else it went
+  // The source in one glance. A host is (account, address), never the address alone: the same private address in
+  // another account is another machine unless the networks are joined, so it is shown as such and never merged.
   function srcHtml(r, P) {
-    const nm = (a, n) => n ? `${esc(n)} (${esc(a)})` : esc(a);
-    const o = P.ours.find((x) => x.account === r.account) || P.ours[0], I = P.intel || {};
-    // the address book and the refused rows together (the address book lists only the busiest internet addresses)
-    const rr = (refusedData?.rows || []).filter((x) => x.src === r.src), acc = new Map();
-    for (const x of P.seen) acc.set(x.account, {account: x.account, account_name: x.account_name, scan: x.scan, ports_refused: x.ports_refused, addresses: x.addresses});
-    for (const x of rr) { const y = acc.get(x.account); if (!y) acc.set(x.account, {account: x.account, account_name: x.account_name, scan: x.scan, ports_refused: Number(x.ports || 1), addresses: Number(x.dsts || 1)});
-      else if (x.scan && !y.scan) Object.assign(y, {scan: true, ports_refused: Math.max(y.ports_refused, Number(x.ports || 1)), addresses: Math.max(y.addresses, Number(x.dsts || 1))}); }
-    const others = [...acc.values()].filter((x) => x.account !== r.account), scans = [...acc.values()].filter((x) => x.scan).sort((a, b) => b.ports_refused - a.ports_refused);
+    const nm = (a, n) => n ? `${esc(n)} (${esc(a)})` : esc(a), I = P.intel || {};
+    const priv = P.private || r.internal, dc = r.cat === "datacentre";
+    const o = P.ours.find((x) => x.account === r.account) || (priv ? null : P.ours[0]);  // a private address: this account's only
+    const elsewhere = priv ? P.ours.filter((x) => x.account !== r.account) : [];
+    // this host's own scanning: in this account only, for a private address; everywhere, for a public one
+    const rr = (refusedData?.rows || []).filter((x) => x.src === r.src && (!priv || x.account === r.account));
+    const sn = P.seen.filter((x) => !priv || x.account === r.account);
+    const scanned = rr.some((x) => x.scan) || sn.some((x) => x.scan) || r.scan;
+    const ports = Math.max(Number(r.ports || 1), ...rr.map((x) => Number(x.ports || 1)), ...sn.map((x) => x.ports_refused || 0));
+    const addrs = Math.max(Number(r.dsts || 1), ...rr.map((x) => Number(x.dsts || 1)), ...sn.map((x) => x.addresses || 0));
+    const otherAccts = new Map();  // the same address seen refused or let in elsewhere
+    for (const x of [...P.seen, ...(refusedData?.rows || []).filter((y) => y.src === r.src)]) if (x.account !== r.account) otherAccts.set(x.account, x.account_name || "");
     const cell = (k, v, sub) => `<div><span class="muted small">${k}</span><b style="font-size:14px">${v}</b>${sub ? `<span class="muted small">${sub}</span>` : ""}</div>`;
-    const owner = o ? `${nm(o.account, o.account_name)}` : P.private ? "Not found in any account read" : I.kind === "aws" ? esc(I.name || "AWS") : esc([I.asn && "AS" + I.asn, I.owner].filter(Boolean).join(" ") || "Unknown");
-    const ownerSub = o ? `${esc(o.region)}${o.vpc ? " · " + esc(o.vpc) : ""}` : P.private ? "private address: on premises, a peered network or an unread account" : [I.country, I.block].filter(Boolean).map(esc).join(" · ");
-    const host = o ? `${o.instance ? `<code>${esc(o.instance)}</code>` : `<code>${esc(o.eni)}</code>`}${o.name ? " " + esc(o.name) : ""}` : "—";
+    let kind, owner, ownerSub;
+    if (o) { kind = "Our host"; owner = nm(o.account, o.account_name); ownerSub = `${esc(o.region)}${o.vpc ? " · " + esc(o.vpc) : ""}`; }
+    else if (dc) { kind = "Data centre host"; owner = esc(r.name || "Data centre"); ownerSub = esc([r.range, "a private network outside AWS (on premises, Direct Connect or VPN)"].filter(Boolean).join(" · ")); }
+    else if (priv) { kind = "Private host, not found"; owner = "Not in any interface read"; ownerSub = "on premises, a peered network, an unread account, or deleted"; }
+    else { kind = "Internet host"; owner = I.kind === "aws" ? esc(I.name || "AWS") : esc([I.asn && "AS" + I.asn, I.owner].filter(Boolean).join(" ") || I.name || "Unknown"); ownerSub = [I.country, I.block].filter(Boolean).map(esc).join(" · "); }
+    const host = o ? `${o.instance ? `<code>${esc(o.instance)}</code>` : `<code>${esc(o.eni)}</code>`}${o.name ? " " + esc(o.name) : ""}` : dc ? esc(r.src) : "—";
     const hostSub = o ? esc([o.kind, o.desc, o.type].filter(Boolean).join(" · ")) : "";
-    const sameAcct = o ? (o.account === r.account ? '<span style="color:var(--good)">Yes</span>' : '<span style="color:var(--warn)">No</span>') : P.private ? '<span style="color:var(--warn)">Not found</span>' : "No (internet)";
-    const scanTxt = scans.length ? `<span style="color:var(--bad)">Yes, in ${scans.length} account${scans.length === 1 ? "" : "s"}</span>` : acc.size ? '<span style="color:var(--good)">No</span>' : "—";
-    const scanSub = scans.length ? scans.slice(0, 3).map((x) => `${esc(x.account_name || x.account)}: ${x.ports_refused} ports on ${x.addresses} addresses`).join("<br>") : `this source: ${Number(r.ports || 1)} ports on ${Number(r.dsts || 1)} addresses here`;
-    return `<div class="facts">${cell(o ? "Account" : "Owner", owner, ownerSub)}${cell("In this account?", sameAcct, o && o.account !== r.account ? "same private address may exist in several VPCs" : "")}${cell("Host", host, hostSub)}
+    const inAcct = o ? '<span style="color:var(--good)">Yes</span>' : dc ? "No: data centre" : priv ? '<span style="color:var(--warn)">Not found here</span>' : "No: internet";
+    const other = priv
+      ? cell("Same address in other accounts", elsewhere.length || otherAccts.size ? `${new Set([...elsewhere.map((x) => x.account), ...otherAccts.keys()]).size}` : "None",
+        elsewhere.length || otherAccts.size ? "different hosts unless their networks are joined: not counted as this one" : "")
+      : cell("Seen in other accounts", otherAccts.size ? `${otherAccts.size}` : "None", [...otherAccts].slice(0, 3).map(([a, n]) => esc(n || a)).join(", ") + (otherAccts.size > 3 ? ` +${otherAccts.size - 3}` : ""));
+    return `<p class="small" style="margin:0 0 6px"><span class="pill" style="--p:${o ? "var(--good)" : dc ? "var(--accent)" : priv ? "var(--warn)" : "var(--high)"}">${kind}</span> <code>${esc(r.src)}</code>${priv ? ` in ${nm(r.account, r.account_name)}` : ""}</p>
+      <div class="facts">${cell(o ? "Account" : "Owner", owner, ownerSub)}${cell("In this account?", inAcct, "")}${cell("Host", host, hostSub)}
       ${cell("Operating system", esc(o?.os || (o ? "not an EC2 instance" : "unknown")), o?.image ? "image " + esc(o.image) : "")}${cell("Created", o?.launched ? esc(when(o.launched)) : "—", o?.launched ? "" : o?.instance ? "read the account again for launch times" : "EC2 instances only")}
-      ${cell("Seen in other accounts", others.length ? `${others.length}` : "None", others.slice(0, 3).map((x) => esc(x.account_name || x.account)).join(", ") + (others.length > 3 ? ` +${others.length - 3}` : ""))}${cell("Scanned other assets?", scanTxt, scanSub)}</div>
-      ${P.ours.length > 1 ? `<p class="muted small">${P.ours.length} interfaces in the estate hold this address (private addresses repeat across VPCs): see the table below.</p>` : ""}`;
+      ${other}${cell("Scanned other assets?", scanned ? '<span style="color:var(--bad)">Yes</span>' : '<span style="color:var(--good)">No</span>', `${ports.toLocaleString()} port${ports === 1 ? "" : "s"} on ${addrs.toLocaleString()} address${addrs === 1 ? "" : "es"}${priv ? " in this account" : ""}`)}</div>
+      ${elsewhere.length ? `<p class="muted small">${elsewhere.length} interface(s) in other accounts hold ${esc(r.src)} too: ${elsewhere.slice(0, 3).map((x) => `${nm(x.account, x.account_name)} ${esc(x.instance || x.eni)}`).join("; ")}. Those are other machines unless the VPCs are connected.</p>` : ""}`;
   }
   function exportFixPdf() {
     const r = fixRow;
