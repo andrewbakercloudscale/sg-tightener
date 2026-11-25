@@ -448,6 +448,27 @@ section.nodata .card:not(.empty-state) { display: none; }
   #tab-fix > .tools { clear: both; }
   @media (max-width: 860px) { .reread { float: none; width: auto; margin: 0 0 12px; } }
   @media print { .reread { display: none !important; } }
+  #auditDlg { width: min(1280px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
+              background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
+  #auditDlg::backdrop { background: rgba(10,12,20,.45); }
+  #auditDlg .au-head { display: flex; gap: 16px; align-items: flex-start; padding: 18px 22px 8px; border-bottom: 1px solid var(--grid); }
+  #auditDlg .au-tools { margin-left: auto; display: flex; gap: 8px; }
+  #auditDlg .au-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 22px; border-bottom: 1px solid var(--grid); }
+  #auditDlg .au-body { overflow: auto; max-height: calc(92vh - 170px); padding: 0 22px 18px; }
+  .au-grp { margin-top: 16px; }
+  .au-grp h4 { margin: 0 0 6px; font-size: 14px; }
+  .au-grp h4 small { font-weight: 400; color: var(--muted); }
+  .au-t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .au-t th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--grid); }
+  .au-t td { vertical-align: top; padding: 8px; border-bottom: 1px solid var(--grid); }
+  .au-t .was { color: var(--bad); }
+  .au-t .now { color: var(--good); font-weight: 600; }
+  .au-t code { font-size: 11.5px; }
+  .au-act { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+  .au-act.tighten, .au-act.ports { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+  .au-act.remove { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+  .au-act.keep, .au-act.open, .au-act.wait, .au-act.off { background: var(--surface-2); color: var(--muted); }
+  .au-ext { color: var(--bad); font-weight: 600; }
   .range input[type=date] { border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 13px; padding: 4px 2px; }
 </style>
 </head>
@@ -667,6 +688,17 @@ section.nodata .card:not(.empty-state) { display: none; }
       days you do not trust, such as a day under attack: a source seen only then is not kept. Left empty, it uses the
       last 90 days of what was read. To have more days to choose from, read them first.</p>
     <div class="flash" id="xNote" hidden></div>
+    <dialog id="auditDlg" aria-labelledby="auditTitle">
+      <div class="au-head"><div><div class="eyebrow">Audit</div><h2 id="auditTitle" style="margin:2px 0 4px">Before and after, rule by rule</h2>
+        <p class="muted small" id="auditSub"></p></div>
+        <div class="au-tools"><button class="btn sm" type="button" id="auditCsv">Download CSV</button><button class="btn sm primary" type="button" id="auditClose">Close</button></div></div>
+      <div class="au-filters">
+        <select id="auditAct" aria-label="Which changes"><option value="">Every change</option><option value="tighten">Narrowed sources</option><option value="ports">Fewer ports</option><option value="remove">Removed as unused</option><option value="kept">Left as they are</option></select>
+        <label class="small"><input type="checkbox" id="auditExt"> Only rules letting in internet addresses</label>
+        <input id="auditFind" type="search" placeholder="Find a group, source or port…" aria-label="Find in the audit">
+        <span class="muted small" id="auditCount"></span></div>
+      <div class="au-body" id="auditBody"></div>
+    </dialog>
     <div class="print-only" id="xPrintHead"></div>
     <div id="xHero"></div>
     <div id="xBody"></div>
@@ -1671,6 +1703,85 @@ section.nodata .card:not(.empty-state) { display: none; }
     fixOff = new Set(); fixMergeOff = new Set(); fixOpen = new Set();
     drawFix();
   }
+  // ---- the audit: every rule, before and after, and why
+  const AU_ACT = {tighten: "Narrowed", ports: "Fewer ports", remove: "Removed", keep: "Kept", open: "Kept open", wait: "Left: too little evidence"};
+  function auditWhy(r, P) {
+    const ymd = (t) => new Date(t * 1000).toISOString().slice(0, 10);
+    const span = `${Math.round(P.have_days)} day${Math.round(P.have_days) === 1 ? "" : "s"} of flow logs (${ymd(P.from)} to ${ymd(P.to - 1)})`;
+    const seen = `${(r.seen || 0).toLocaleString()} source${r.seen === 1 ? "" : "s"} seen`;
+    const out = [];
+    if (r.action === "remove") out.push(`Nothing used this rule in ${span}, so it goes.`);
+    else if (r.action === "tighten") out.push(`${seen} in ${span}; the rule is narrowed to ${r.new.length && new Set(r.new.map((x) => x.source)).size} range${new Set(r.new.map((x) => x.source)).size === 1 ? "" : "s"} covering them (${fmtN(r.new_addresses)} address${r.new_addresses === 1 ? "" : "es"} instead of ${fmtN(r.addresses)}).`);
+    else if (r.action === "ports") out.push(`${seen}, but only on ${r.new.map((x) => portTxt(x.proto, x.from, x.to)).join(", ")} of ${r.ports}: the unused ports go.`);
+    else if (r.action === "keep") out.push(`Used, and nothing narrower would still let in what was seen (${seen}).`);
+    if (r.addresses - (r.internal || 0) > 0 && r.action !== "keep" && r.action !== "open" && r.action !== "wait")
+      out.push(`It let in ${fmtN(r.addresses - (r.internal || 0))} internet address${r.addresses - (r.internal || 0) === 1 ? "" : "es"}; after: ${fmtN(r.new_addresses - (r.new_internal || 0))}.`);
+    if (r.note) out.push(r.note);
+    if (r.last_used) out.push(`Last used ${when(r.last_used)}.`);
+    return out.map((x) => x.trim()).filter(Boolean).map((x) => /[.!?)]$/.test(x) ? x : `${x}.`).join(" ");
+  }
+  function auditAfter(r) {  // up to 8 sources shown, the rest counted (all of them in the CSV)
+    const by = new Map();
+    for (const x of r.new) { const k = portTxt(x.proto, x.from, x.to); if (!by.has(k)) by.set(k, []); if (!by.get(k).includes(x.source)) by.get(k).push(x.source); }
+    return [...by].map(([port, src]) => `<span title="${esc(src.join(", "))}">${src.slice(0, 8).map((x) => `<code>${esc(x)}</code>`).join(", ")}${src.length > 8 ? ` <span class="muted">and ${src.length - 8} more</span>` : ""}</span> <span class="muted">on</span> ${esc(port)}`).join("<br>");
+  }
+  function auditRows(P) {
+    const cg = new Set(fixChosen().groups.map((g) => g.id));
+    const rows = [];
+    for (const g of P.groups) for (const r of g.rules) {
+      const off = !cg.has(g.id) && r.action !== "keep" && r.action !== "open" && r.action !== "wait";
+      let after = "unchanged";
+      if (r.new != null && !off) {
+        if (!r.new.length) after = "removed";
+        else {  // the sources once, then the ports they are let in on
+          const by = new Map();
+          for (const x of r.new) { const k = portTxt(x.proto, x.from, x.to); if (!by.has(k)) by.set(k, new Set()); by.get(k).add(x.source); }
+          after = [...by].map(([port, src]) => `${[...src].join(", ")} on ${port}`).join("; ");
+        }
+      }
+      rows.push({g, r, off, after, act: off ? "off" : r.action, ext: r.v6 ? 0 : r.addresses - (r.internal || 0), next: r.v6 || off ? 0 : r.new_addresses - (r.new_internal || 0)});
+    }
+    return rows;
+  }
+  function drawAudit() {
+    const P = fixPlan;
+    if (!P) return;
+    const act = $("auditAct").value, ext = $("auditExt").checked, q = $("auditFind").value.trim().toLowerCase();
+    const all = auditRows(P);
+    const rows = all.filter((x) => (!act ? x.act !== "keep" && x.act !== "open" : act === "kept" ? ["keep", "open", "wait", "off"].includes(x.act) : x.act === act)
+      && (!ext || x.ext > 0) && (!q || `${x.g.name} ${x.g.id} ${x.r.source} ${x.r.ports} ${x.after} ${x.r.desc}`.toLowerCase().includes(q)));
+    $("auditCount").textContent = `${rows.length.toLocaleString()} of ${all.length.toLocaleString()} rules`;
+    const by = new Map();
+    for (const x of rows) { if (!by.has(x.g.id)) by.set(x.g.id, []); by.get(x.g.id).push(x); }
+    $("auditBody").innerHTML = by.size ? [...by.values()].map((xs) => { const g = xs[0].g; return `<div class="au-grp"><h4>${esc(g.name || g.id)} <small>${esc(g.id)} · ${esc(g.region)} · ${g.enis} interface(s)${g.description ? ` · ${esc(g.description)}` : ""}</small></h4>
+      <table class="au-t"><thead><tr><th style="width:24%">Before</th><th style="width:24%">After</th><th style="width:9%">Change</th><th>Why</th></tr></thead><tbody>
+      ${xs.map(({r, after, act, ext, next}) => `<tr><td class="was"><code>${esc(r.source)}</code> ${esc(r.ports)}<div class="muted small">${r.v6 ? "IPv6" : `${fmtN(r.addresses)} address${r.addresses === 1 ? "" : "es"}${ext ? ` · <span class="au-ext">${fmtN(ext)} internet</span>` : ""}`}${r.desc ? ` · ${esc(r.desc)}` : ""}</div></td>
+        <td class="now">${after === "removed" ? "Removed" : after === "unchanged" ? '<span class="muted">Unchanged</span>' : auditAfter(r)}${after !== "removed" && after !== "unchanged" && !r.v6 ? `<div class="muted small">${fmtN(r.new_addresses)} address${r.new_addresses === 1 ? "" : "es"}${ext ? ` · ${fmtN(next)} internet` : ""}</div>` : ""}</td>
+        <td><span class="au-act ${act}">${act === "off" ? "Unticked" : AU_ACT[act] || esc(act)}</span>${r.cut ? '<div class="muted small" title="Some hours of evidence hit the 10,000 row limit">cut hours</div>' : ""}</td>
+        <td>${esc(act === "off" ? "Its group is unticked, so this rule is not part of the proposal." : auditWhy(r, P))}${r.top && r.top.length && r.action !== "remove" ? `<div class="muted small">Seen: ${r.top.map((t) => `<code>${esc(t)}</code>`).join(" ")}${r.seen > r.top.length ? ` and ${(r.seen - r.top.length).toLocaleString()} more` : ""}</div>` : ""}</td></tr>`).join("")}
+      </tbody></table></div>`; }).join("") : '<p class="muted" style="padding:16px 0">No rule matches.</p>';
+  }
+  function openAudit() {
+    const P = fixPlan;
+    const ymd = (t) => new Date(t * 1000).toISOString().slice(0, 10);
+    $("auditSub").innerHTML = `${esc(P.name || P.account)} <code>${esc(P.account)}</code> · evidence ${ymd(P.from)} to ${ymd(P.to - 1)} (${Math.round(P.have_days)} day${Math.round(P.have_days) === 1 ? "" : "s"} read). Every rule the plan changes, what it was, what it becomes and why. Nothing has been applied.`;
+    drawAudit();
+    $("auditDlg").showModal();
+  }
+  function auditCsv() {
+    const P = fixPlan, q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const lines = [["group", "group id", "region", "source before", "ports before", "addresses before", "internet before", "after", "addresses after", "internet after", "change", "why"].map(q).join(",")];
+    for (const x of auditRows(P)) lines.push([x.g.name, x.g.id, x.g.region, x.r.source, x.r.ports, x.r.v6 ? "" : x.r.addresses, x.ext, x.after, x.r.v6 ? "" : x.off ? x.r.addresses : x.r.new_addresses, x.next, x.act === "off" ? "unticked" : x.act, x.act === "off" ? "group unticked" : auditWhy(x.r, P)].map(q).join(","));
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([lines.join("\n")], {type: "text/csv"}));
+    a.download = `sg-audit-${P.account}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+  $("auditClose").addEventListener("click", () => $("auditDlg").close());
+  $("auditCsv").addEventListener("click", auditCsv);
+  for (const id of ["auditAct", "auditExt"]) $(id).addEventListener("change", drawAudit);
+  $("auditFind").addEventListener("input", drawAudit);
   function fixChosen() {
     const groups = fixPlan.groups.filter((g) => g.changes && !fixOff.has(g.id));
     const merges = fixPlan.merges.filter((m) => !fixMergeOff.has(m.id) && m.members.every((x) => !fixOff.has(x.id)));
@@ -1711,7 +1822,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("xBody").innerHTML = `
       ${short ? `<div class="flash">Only <b>${Math.round(P.have_days)} days</b> of flow logs read between these ${Math.round(P.days)} days: rules are narrowed to the sources seen in it and rules nothing used are removed. Anything that runs less often (a monthly job, a DR test) will be refused: it shows on <b>Rejected traffic</b>, where <b>Propose allowing</b> opens it again. A longer read makes that less likely. <button class="btn sm" id="xRead">Re-read ${Math.round(P.days)} days for this account</button></div>` : ""}
       <div class="fix-top">
-        <div class="card"><div class="eyebrow">The tightened account</div><h3 style="margin-top:2px">Before and after</h3>
+        <div class="card"><div class="eyebrow">The tightened account</div><h3 style="margin-top:2px;display:flex;align-items:center;gap:10px">Before and after <button class="btn sm quiet" type="button" id="xAudit" title="Every rule: what it was, what it becomes, and why">Explain</button></h3>
           <div class="evidence"><span class="chip">${Math.round(P.have_days)} ${many(Math.round(P.have_days), "day")} of flow logs used</span><span class="chip">${ymd(P.from)} → ${ymd(P.to - 1)}</span>${P.stored_from != null ? `<span class="chip">read: ${ymd(P.stored_from)} → ${ymd(P.stored_to - 1)}</span>` : ""}</div>
           <div class="kpis">
             ${kpi("External (internet) IPv4 addresses let in", eBefore, eAfter, fmtN)}
@@ -1742,6 +1853,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       $("xReread").scrollIntoView({behavior: "smooth", block: "center"});
       $("xrGo").click();
     });
+    $("xAudit").addEventListener("click", openAudit);
     $("xGroups").addEventListener("toggle", () => { $("xGroups").open ? fixOpen.add("*") : fixOpen.delete("*"); });
     $("xAll").addEventListener("change", () => { for (const g of P.groups) $("xAll").checked ? fixOff.delete(g.id) : fixOff.add(g.id); drawFix(); });
     for (const b of document.querySelectorAll("[data-xmerge]")) b.addEventListener("change", () => { b.checked ? fixMergeOff.delete(b.dataset.xmerge) : fixMergeOff.add(b.dataset.xmerge); drawFix(); });

@@ -546,3 +546,13 @@ def test_an_unexpected_failure_is_explained_in_words_someone_can_act_on():
     assert "sign in again" in sg_console.plain_error(aws("ExpiredToken"))
     assert "network or VPN" in sg_console.plain_error(EndpointConnectionError(endpoint_url="https://ce"))
     assert "console.log" in sg_console.plain_error(KeyError("x"))
+
+
+def test_remediate_has_an_audit_of_every_rule_before_and_after_and_why():
+    import pathlib
+
+    page = pathlib.Path(__file__).resolve().parents[2].joinpath("assets", "sg_console.html").read_text()
+    assert 'id="xAudit"' in page and '<dialog id="auditDlg"' in page, "Explain beside Before and after opens the audit"
+    for col in ("<th style=\"width:24%\">Before</th>", "<th style=\"width:24%\">After</th>", "<th>Why</th>"):
+        assert col in page
+    assert "function auditWhy" in page and "Download CSV" in page
