@@ -40,12 +40,14 @@ def port_ranges(rule: dict, used: list) -> list | None:
     if proto not in ("6", "17") or hi <= lo:
         return None
     eph = sg_review.EPHEMERAL
-    ports = sorted({int(p) for pr, p in used if str(pr) == proto and (lo <= int(p) <= hi or int(p) >= eph <= hi)})
+    # Records folded into EPHEMERAL itself are replies to connections the interface opened. Security groups are
+    # stateful, so replies need no inbound rule: they are left out, and a rule is narrowed to the real ports seen.
+    ports = sorted({int(p) for pr, p in used if str(pr) == proto and lo <= int(p) <= hi and int(p) != eph})
     if not ports:
         return None
     out: list = []
     for p in ports:
-        a, b = (max(lo, eph), hi) if p >= eph else (p, p)  # replies to the account's own connections: one range
+        a, b = p, p
         if out and a <= out[-1][1] + 1:
             out[-1][1] = max(out[-1][1], b)
         else:
@@ -85,7 +87,7 @@ def plan_rule(r: dict) -> dict:
             "new_addresses": allowed if new is None else new_addr,
             "cut_addresses": 0 if new is None else max(0, allowed - new_addr),
             "port_count": span, "new_ports": span if new is None else new_ports,
-            "seen": int(r.get("here") or 0), "last_used": r.get("last_used"), "days": r.get("days"),
+            "cut": bool(r.get("cut")), "seen": int(r.get("here") or 0), "last_used": r.get("last_used"), "days": r.get("days"),
             "mix": dict(r.get("mix") or {}), "top": [t.get("src") for t in (r.get("top") or [])][:5]}  # fmt: skip
 
 
@@ -294,7 +296,7 @@ def totals(plan_groups: list[dict], merges: list[dict], groups: dict) -> dict:
             "interfaces": sum(g["enis"] for g in plan_groups), "mix": mix,
             "removed": sum(g["actions"]["remove"] for g in plan_groups), "open": sum(g["open"] for g in plan_groups),
             "wait": sum(g["actions"]["wait"] for g in plan_groups),
-            "incomplete": sum(1 for g in plan_groups for r in g["rules"] if r.get("status") == "incomplete"), "keep": sum(g["actions"]["keep"] for g in plan_groups),
+            "incomplete": sum(1 for g in plan_groups for r in g["rules"] if r.get("cut") and r["action"] in ACTIONABLE), "keep": sum(g["actions"]["keep"] for g in plan_groups),
             "narrowed": sum(g["actions"]["tighten"] + g["actions"]["ports"] for g in plan_groups)}  # fmt: skip
 
 

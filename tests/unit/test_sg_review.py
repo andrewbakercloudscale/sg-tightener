@@ -910,3 +910,18 @@ def test_reads_saved_before_replies_were_folded_are_folded_once():
     assert ("10.0.0.9", "10.0.0.5", "eni-1", "6", 2001, "ACCEPT", 1) in got, "a source with few ports keeps them"
     assert "k" not in doc["chunks"][0] and "slice" not in doc["regions"]["eu-west-1"]
     assert sg_review.fold_replies(doc) == 0
+
+
+def test_hours_cut_at_the_row_limit_still_narrow_the_rule():
+    """Owner, 2026-11-25: Remediate shows the least exposure the evidence allows. Hours cut at 10,000 rows used to
+    turn every rule in the region into "incomplete" and leave it as it was (891M addresses kept in aws-prd-plrdoc).
+    Now the rule narrows to the sources read, and is marked cut so the page says so."""
+    doc = demo_sg.build_doc(ACCT, time.time(), 90)
+    for c in doc["chunks"]:
+        c["st"] = "cut"
+    rep = sg_review.build(doc, "3m", "", demo_sg.INTERNAL)
+    assert not any(r["status"] == "incomplete" for r in rep["rules"])
+    by = {(r["gname"], r["source"]): r for r in rep["rules"]}
+    sftp = by[("partner-sftp", "203.0.113.0/24")]
+    assert sftp["status"] == "tighten" and sftp["suggest"] and sftp["cut"] and "10,000" in sftp["note"]
+    assert by[("payments-db", "172.16.0.0/12")]["status"] == "unused"

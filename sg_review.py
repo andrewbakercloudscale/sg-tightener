@@ -3256,6 +3256,7 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
                 row["mix"] = _mix(here, lab)
                 row["ports_used"] = sorted(dports)[:200]  # (protocol, port) seen through the rule: narrows a port range
                 row["status"], row["note"] = _status(row, rule, entry, logged, g, cut_regions, days)
+                _mark_cut(row, g, cut_regions)
                 if not entry.startswith("pl-"):  # for the Tighten panel: who used it, and when last
                     row["keep_src"] = [[s, h[1]] for s, h in here.items()] + [[s, None] for s in sorted(unattr - set(here))]
                     row["fit_ok"] = logged and g["region"] not in cut_regions and days >= EVIDENCE_DAYS
@@ -3272,7 +3273,7 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
                         row["status"], row["note"] = "used", "In use across the range: nothing to take away"
                         row["suggest"], row["suggest_size"] = [], None
                 out.append(row)
-    rank = {"tighten": 0, "unused": 1, "open": 2, "watch": 3, "incomplete": 4, "not logged": 5, "used": 6}
+    rank = {"tighten": 0, "unused": 1, "open": 2, "watch": 3, "not logged": 5, "used": 6}
     out.sort(key=lambda r: (rank.get(r["status"], 9), -r["never"]))
     return out
 
@@ -3400,8 +3401,6 @@ def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regi
         row["status"], row["note"] = "open", "Open to every IPv6 address: the users are listed; a narrower range may do"
     elif not logged:
         row["status"], row["note"] = "not logged", "Some of this group's interfaces have no flow log (accepted traffic) in CloudWatch Logs"
-    elif g["region"] in cut_regions:
-        row["status"], row["note"] = "incomplete", "Some slices were cut at the 10,000 row limit: not safe to act on until they are read again, in shorter slices"
     elif days < EVIDENCE_DAYS:
         row["status"], row["note"] = "watch", f"Only {days:.0f} days of flow logs: read a longer range before changing this rule"
     elif not here and not unattr:
@@ -3412,6 +3411,7 @@ def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regi
                        if private else "Public IPv6 range: the suggestion keeps only the /64s seen; check with the partner first")
     else:
         row["status"] = "used"
+    _mark_cut(row, g, cut_regions)
     if row["status"] == "tighten":
         cidrs = sg_tightener.collapse_ipv6_to_cidrs(sorted(set(here) | unattr), sg_tightener.DEFAULT_MAX_RULES,
                                                     sg_tightener.DEFAULT_TOLERANCE, within=entry)  # fmt: skip
@@ -3423,13 +3423,23 @@ def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regi
     return row
 
 
+CUT_NOTE = "Some hours read were cut at the 10,000 row limit: sources only in the missing rows are not kept. If one is refused it shows on Rejected traffic; reading those hours again in shorter slices fills them in"
+
+
+def _mark_cut(row, g, cut_regions) -> None:
+    """Hours cut at the row limit still narrow a rule, to the sources they hold (owner's decision 2026-11-25:
+    Remediate always shows the least exposure the evidence allows, and the person proposing decides when to
+    act). The rule is marked so the page says its evidence was cut."""
+    if g["region"] in cut_regions and row["status"] in ("tighten", "unused", "used"):
+        row["cut"] = True
+        row["note"] = (row["note"] + ". " if row["note"] else "") + CUT_NOTE
+
+
 def _status(row, rule, entry, logged, g, cut_regions, days) -> tuple[str, str]:
     if entry == "0.0.0.0/0":
         return "open", "Open to every address: the users are listed; a prefix list or narrower range may do"
     if not logged:
         return "not logged", "Some of this group's interfaces have no flow log (accepted traffic) in CloudWatch Logs"
-    if g["region"] in cut_regions:
-        return "incomplete", "Some slices were cut at the 10,000 row limit: not safe to act on until they are read again, in shorter slices"
     if days < EVIDENCE_DAYS:
         return "watch", f"Only {days:.0f} days of flow logs: read a longer range before changing this rule"
     if not row["here"] and not row["unattributed"]:

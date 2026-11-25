@@ -446,7 +446,9 @@ def test_proposing_the_plan_removes_each_old_rule_and_adds_its_new_ones(tmp_path
 
 def test_a_port_range_narrows_to_the_ports_seen():
     assert sg_console._port_ranges({"proto": "6", "from": 8000, "to": 8100}, [("6", 8080), ("6", 8081), ("6", 8443), ("17", 8090)]) == [[8080, 8081]]
-    assert sg_console._port_ranges({"proto": "6", "from": 0, "to": 65535}, [("6", 443), ("6", 40000)]) == [[443, 443], [32768, 65535]]
+    assert sg_console._port_ranges({"proto": "6", "from": 0, "to": 65535}, [("6", 443), ("6", 40000)]) == [[443, 443], [40000, 40000]]
+    # replies, folded into EPHEMERAL, need no inbound rule (groups are stateful): only the real port is kept
+    assert sg_console._port_ranges({"proto": "6", "from": 0, "to": 65535}, [("6", 443), ("6", 32768)]) == [[443, 443]]
     assert sg_console._port_ranges({"proto": "6", "from": 443, "to": 443}, [("6", 443)]) is None
     assert sg_console._port_ranges({"proto": "-1", "from": 0, "to": 65535}, [("6", 443)]) is None
     assert sg_console._port_ranges({"proto": "6", "from": 1, "to": 100}, []) is None
