@@ -55,6 +55,7 @@ import argparse
 import datetime as dt
 import getpass
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -101,6 +102,92 @@ def rule_limit() -> int:
                           or sg_tightener.DEFAULT_MAX_RULES))
     except (OSError, ValueError, TypeError, AttributeError):
         return sg_tightener.DEFAULT_MAX_RULES
+
+
+# How apply moves a group from the rules it holds to the rules wanted (the console offers all three)
+APPLY_STRATEGIES = {
+    "room": "Add first, then swap: new rules go in while the group has free rules; after that one old rule is "
+            "removed for each new one, the one with least impact first",
+    "bridge": "Bridge: a temporary rule per port spanning the old and new sources goes in first, the rules are "
+              "swapped underneath it, then it is removed",
+    "remove-first": "Remove first: every old rule goes, then the new ones are added (a gap while it runs)",
+}
+BRIDGE_DESC = "sg-tightener temporary bridge while rules are replaced"
+
+
+def _net(src: str):
+    try:
+        return ipaddress.ip_network(src, strict=False)
+    except ValueError:
+        return None  # a security group or prefix list
+
+
+def _covered(rule, by: list) -> bool:
+    """Whether another rule in ``by`` lets in everything ``rule`` does: same direction, its protocol (or all
+    traffic), its ports, and its sources (the same group or prefix list, or a block containing the CIDR)."""
+    n = _net(rule[4])
+    for r in by:
+        if r == rule or r[0] != rule[0]:
+            continue
+        if r[1] != "-1" and (r[1] != rule[1] or not (r[2] <= rule[2] and rule[3] <= r[3])):
+            continue
+        m = _net(r[4])
+        if r[4] == rule[4] or (n is not None and m is not None and n.version == m.version and n.subnet_of(m)):
+            return True
+    return False
+
+
+def _impact(rule, want: list) -> tuple:
+    """Removal order for "room", least impact first: rules whose traffic a wanted rule still lets in, then the
+    narrowest (fewest addresses that might lose access); security groups and prefix lists last."""
+    n = _net(rule[4])
+    return (not _covered(rule, want), n.num_addresses if n is not None else 1 << 128, rule)
+
+
+def _room_order(rm: list, add: list, held: int, limit: int, want: list) -> list:
+    rm = sorted(rm, key=lambda x: _impact(x[2], want))
+    out, n = [], held
+    for a in add:
+        while n >= limit and rm:
+            out.append(rm.pop(0))
+            n -= 1
+        out.append(a)
+        n += 1
+    return out + rm
+
+
+def _bridge_order(gid: str, rm: list, add: list, held: int, wanted: int, limit: int) -> list:
+    """Temporary rules, one per (protocol, ports, IP version) of the rules removed: the smallest block spanning
+    every old and new source there. One that is an old rule itself is kept to the end instead of added."""
+    spans: dict = {}
+    for _, _, r, _ in rm + add:
+        n = _net(r[4])
+        if n is None:
+            continue
+        k = (r[0], r[1], r[2], r[3], n.version)
+        lo, hi = spans.get(k, (n, n))
+        spans[k] = (min(lo, n, key=lambda x: int(x.network_address)),
+                    max(hi, n, key=lambda x: int(x.broadcast_address)))
+    keys_rm = {(r[0], r[1], r[2], r[3], _net(r[4]).version) for _, _, r, _ in rm if _net(r[4]) is not None}
+    bridges, kept = [], []
+    for k in sorted(keys_rm, key=str):
+        lo, hi = spans[k]
+        first, last = int(lo.network_address), int(hi.broadcast_address)
+        bits = 32 if k[4] == 4 else 128
+        plen = bits - max(0, (first ^ last).bit_length())
+        net = ipaddress.ip_network((first >> (bits - plen) << (bits - plen), plen))
+        rule = (k[0], k[1], k[2], k[3], str(net))
+        old = next((x for x in rm if x[2] == rule), None)
+        if old:
+            kept.append(old)  # the old wide rule is the bridge: it simply goes last
+        elif rule not in {x[2] for x in add}:
+            bridges.append(rule)
+    if held + len(bridges) > limit or wanted + len(bridges) > limit:
+        raise Refused(f"{gid}: not enough free rules for the bridge ({len(bridges)} needed; the group holds {held} "
+                      f"and will hold {wanted}, the limit is {limit}). Choose \"Add first, then swap\".")
+    mid = [x for x in rm if x not in kept]
+    return ([(gid, "add", b, BRIDGE_DESC) for b in bridges] + mid + add
+            + [(gid, "remove", b, BRIDGE_DESC) for b in bridges] + kept)
 
 class Refused(RuntimeError):
     """The database will not do this as things stand (external changes, unapplied changes)."""
@@ -323,13 +410,15 @@ class Store:
             "SELECT direction, proto, from_port, to_port, source, description FROM rules WHERE account = ? AND "
             "region = ? AND group_id = ? AND state = ?", (account, region, group_id, state))}
 
-    def pending(self, account: str, region: str, group_id: str = "") -> list[tuple[str, str, Rule, str]]:
+    def pending(self, account: str, region: str, group_id: str = "", strategy: str = "room") -> list[tuple[str, str, Rule, str]]:
         """What apply would do: (group, "add" or "remove", rule, description), in the order it does it.
 
-        Adds come first, as many as the group has room for under the rule limit, so a narrow replacement is in
-        place before the wide rule it replaces goes; then the removals; then any adds that needed that room.
-        Removing first (the old order) left a window, and on a plan over the limit a permanent gap: the wide rule
-        gone and AWS refusing the adds past the limit."""
+        ``strategy`` (see APPLY_STRATEGIES) is how a group moves from the rules it holds to the rules wanted:
+        "room" adds first while the group has free rules, then removes one old rule (least impact first) for each
+        further add; "bridge" first adds a temporary rule per port spanning the old and new sources, swaps the
+        rules underneath it, then removes it; "remove-first" removes every old rule, then adds the new ones."""
+        if strategy not in APPLY_STRATEGIES:
+            raise Refused(f"unknown apply strategy {strategy!r}: one of {', '.join(APPLY_STRATEGIES)}")
         limit = rule_limit()
         out = []
         for gid in [group_id] if group_id else self.groups(account, region):
@@ -337,8 +426,13 @@ class Store:
             for d in sorted({r[0] for r in set(want) | set(have)}):
                 rm = [(gid, "remove", r, have[r]) for r in sorted(set(have) - set(want)) if r[0] == d]
                 add = [(gid, "add", r, want[r]) for r in sorted(set(want) - set(have)) if r[0] == d]
-                room = max(0, limit - sum(1 for r in have if r[0] == d))
-                out += add[:room] + rm + add[room:]
+                held = sum(1 for r in have if r[0] == d)
+                if strategy == "remove-first":
+                    out += rm + add
+                elif strategy == "bridge":
+                    out += _bridge_order(gid, rm, add, held, sum(1 for r in want if r[0] == d), limit)
+                else:
+                    out += _room_order(rm, add, held, limit, [r for r in want if r[0] == d])
         return out
 
     def over_limit(self, account: str, region: str, group_id: str = "") -> list[str]:
@@ -829,7 +923,7 @@ def _permission_problems(result: dict) -> list[str]:
 
 
 def push(store: Store, ec2, account: str, region: str, actor: str, gid: str = "", reason: str = "",
-         ticket: str = "") -> dict:  # fmt: skip
+         ticket: str = "", strategy: str = "room") -> dict:  # fmt: skip
     """Make AWS match desired. Refuses if AWS changed outside the tool since it was last read (reconcile
     first, so a person has seen it). Refuses in surveillance mode, and before any change unless a DryRun
     shows every call needed is allowed. Returns {"done": n, "failed": [...]}."""
@@ -849,7 +943,8 @@ def push(store: Store, ec2, account: str, region: str, actor: str, gid: str = ""
         raise Refused("nothing was changed: these groups would go over the rule limit, so AWS would refuse part of "
                       "the change after the rest was made:\n  " + "\n  ".join(over)
                       + "\nNarrow the plan (Remediate: Narrowing settings) or raise the quota with AWS and the limit.")
-    todo = store.pending(account, region, gid)
+    todo = store.pending(account, region, gid, strategy)
+    LOG.info("applying %d change(s) in %s %s, %s", len(todo), account, region, strategy)
     if todo:
         perms = check_permissions(ec2, sorted({g for g, _, _, _ in todo}))
         with store:
@@ -1299,7 +1394,7 @@ def cmd_propose(args, store: Store) -> int:
 def cmd_apply(args, store: Store) -> int:
     t = Targets(args)
     account = args.account or t.account
-    pend = store.pending(account, args.region, args.group or "")
+    pend = store.pending(account, args.region, args.group or "", args.strategy)
     if not pend:
         print("nothing to apply")
         return 0
@@ -1309,7 +1404,7 @@ def cmd_apply(args, store: Store) -> int:
         sg_tightener._confirm(f"make these {len(pend)} change(s) in {account} {args.region}")
     try:
         res = push(store, t.session(account).client("ec2", region_name=args.region), account, args.region, t.actor,
-                   args.group or "", args.reason or "sg_db.py apply", args.ticket)  # fmt: skip
+                   args.group or "", args.reason or "sg_db.py apply", args.ticket, args.strategy)  # fmt: skip
     except Refused as exc:
         raise SystemExit(str(exc))
     print(f"{res['done']} change(s) made" + (f", {len(res['failed'])} failed" if res["failed"] else "")
@@ -1721,6 +1816,8 @@ def _build_parser() -> argparse.ArgumentParser:
     where(q)
     q.add_argument("--group")
     q.add_argument("--yes", action="store_true")
+    q.add_argument("--strategy", choices=list(APPLY_STRATEGIES), default="room",
+                   help="; ".join(f"{k}: {v}" for k, v in APPLY_STRATEGIES.items()).replace("%", "%%"))
     reasoned(q, required=False)
     aws(q)
     q = sub.add_parser("adopt", help="propose accepting what AWS holds into the database (a change request)")

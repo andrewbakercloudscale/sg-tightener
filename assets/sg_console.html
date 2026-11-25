@@ -778,8 +778,19 @@ section.nodata .card:not(.empty-state) { display: none; }
       <label class="small"><input type="checkbox" id="gUnused"> Show groups on no interface <span id="gUnusedN" class="muted"></span></label>
       <span class="spacer"></span>
       <button class="btn" id="gReconcile" title="Read the groups, rules and interfaces from AWS again; anything changed outside this tool is recorded in the Audit trail">Refresh from AWS</button>
+      <label class="small">How to apply <select id="gStrategy" aria-label="How to apply the changes">
+        <option value="room">Add first, then swap (safest)</option>
+        <option value="bridge">Bridge with a temporary rule</option>
+        <option value="remove-first">Remove first, then add</option></select></label>
+      <button class="btn sm" type="button" id="gStrategyWhy" aria-expanded="false">Explain</button>
       <button class="btn primary" id="gApply">Apply approved changes</button>
     </div>
+    <div class="card small" id="gStrategyHelp" hidden>
+      <p style="margin-top:0">A group cannot hold more than its rule limit (60 by default, set in Remediate → Narrowing settings), so replacing rules needs an order. Apply refuses any group whose final rules would be over the limit, before changing anything.</p>
+      <p><b>Add first, then swap</b> (recommended): the new rules go in while the group has free rules, so a narrow rule is in place before the wide rule it replaces goes. When the group is full, one old rule is removed for each further new rule, least impact first: first rules whose traffic a new rule still lets in, then the narrowest (fewest addresses that could lose access). Nothing is opened wider than it is now.</p>
+      <p><b>Bridge with a temporary rule</b>: first adds, for each port, one temporary rule spanning every old and new source there (the smallest block covering them, not the whole internet unless an old rule already was), then swaps the rules underneath it and removes it. Nothing is cut off at any moment, but for those seconds the group lets in that whole block; if the apply stops part way, the bridge stays until the next apply removes it. Needs a free rule per port; refused otherwise. When the rule being replaced already spans the new ones, it is the bridge and is simply removed last.</p>
+      <p><b>Remove first, then add</b>: every old rule goes, then the new ones are added. Uses no extra rules, but traffic the new rules allow is refused until they are in (a few seconds, longer if an add fails).</p>
+      <p>The preview lists the changes in the order they are made.</p></div>
     <div class="card plan" id="gPlan"></div>
     <div class="card" id="gApplyBox" hidden></div>
     <div class="flash" id="modeNote" hidden></div>
@@ -1658,7 +1669,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   // Apply shows what it will change first: every rule, the groups and interfaces it touches, the request it came
   // from, and what the flow logs say about each rule removed. Only then does a second button make the changes.
   $("gApply").addEventListener("click", (e) => act(e.target, async () => {
-    const w = where(), P = await api("/api/apply-preview", w), S2 = P.summary;
+    const w = {...where(), strategy: $("gStrategy").value}, P = await api("/api/apply-preview", w), S2 = P.summary;
     const box = $("gApplyBox");
     box.hidden = false;
     if (!P.changes.length) { box.innerHTML = '<p class="muted" style="margin:0">Nothing to apply in this region: AWS already holds every approved change.</p>'; return; }
@@ -1672,7 +1683,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     };
     const lost = P.changes.filter((c) => c.evidence?.lost.length).length;
     const overN = (P.over_limit || []).length;
-    box.innerHTML = `${overN ? `<div class="flash err" style="margin:0 0 8px"><b>Apply will refuse this: ${overN} group${overN === 1 ? "" : "s"} would go over the rule limit</b>, and AWS would turn away the rules past it after the rest were made. ${P.over_limit.map((x) => `<div class="small"><code>${esc(x)}</code></div>`).join("")}<div class="small">Narrow the plan (Remediate → Narrowing settings) or raise the quota with AWS and the limit there.</div></div>` : ""}<h3 style="margin:0 0 4px">What Apply will change in AWS</h3>
+    box.innerHTML = `${overN ? `<div class="flash err" style="margin:0 0 8px"><b>Apply will refuse this: ${overN} group${overN === 1 ? "" : "s"} would go over the rule limit</b>, and AWS would turn away the rules past it after the rest were made. ${P.over_limit.map((x) => `<div class="small"><code>${esc(x)}</code></div>`).join("")}<div class="small">Narrow the plan (Remediate → Narrowing settings) or raise the quota with AWS and the limit there.</div></div>` : ""}<h3 style="margin:0 0 4px">What Apply will change in AWS</h3><p class="small muted" style="margin:0 0 6px">In this order, ${esc($("gStrategy").selectedOptions[0].textContent.toLowerCase())}${P.changes.some((c) => (c.rule.description || "").includes("temporary bridge")) ? ", including the temporary bridge rule(s) added first and removed last" : ""}; rule limit ${P.limit}.</p>
       <p style="margin:0 0 8px"><b>${S2.remove}</b> rule(s) removed and <b>${S2.add}</b> added, on <b>${S2.groups}</b> group(s)${S2.known ? ` protecting <b>${S2.interfaces}</b> network interface(s)` : ""}, in ${esc(w.account)} ${esc(w.region)}.</p>
       <div class="impact ${lost ? "" : "ok"}">${lost ? `<b>${lost} removal(s) cut off traffic the flow logs saw.</b> Those sources will be refused from the moment it is applied: they show on <b>Rejected traffic</b>, where <b>Fix…</b> lets them in again.` : "<b>Nothing the flow logs saw is cut off.</b> Anything rarer than the flow logs read (a monthly job) would be refused: it shows on <b>Rejected traffic</b> after the next read, where <b>Fix…</b> lets it in again."}</div>
       <div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Change</th><th>Impact</th><th>Asked for by</th></tr></thead><tbody>${P.changes.map((c) => `<tr><td><b>${esc(c.name)}</b> <code>${esc(c.group)}</code><div class="muted">${c.interfaces} interface(s)${c.instances.length ? ": " + c.instances.map(esc).join(", ") : ""}</div></td>
@@ -1693,6 +1704,9 @@ section.nodata .card:not(.empty-state) { display: none; }
       await loadState(); await loadGroups(); box.hidden = false;
     }));
   }));
+  $("gStrategyWhy").addEventListener("click", () => { const h = $("gStrategyHelp"); h.hidden = !h.hidden; $("gStrategyWhy").setAttribute("aria-expanded", String(!h.hidden)); });
+  try { const k = localStorage.getItem("sg.applyStrategy"); if (k) $("gStrategy").value = k; } catch (e) { /* a per-viewer convenience */ }
+  $("gStrategy").addEventListener("change", () => { try { localStorage.setItem("sg.applyStrategy", $("gStrategy").value); } catch (e) { /* ignore */ } $("gApplyBox").hidden = true; });
   $("gAdopt").addEventListener("click", (e) => act(e.target, async () => {
     const reason = $("pReason").value.trim();
     if (!reason) { openPropose({}); throw new Error("Write why in the Why box first, then press the button again."); }
@@ -2254,7 +2268,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     for (const b of document.querySelectorAll("[data-applyreq]")) b.addEventListener("click", () => act(b, async () => {
       if (!confirmInline(b)) return;
       const [account, region] = b.dataset.applyreq.split("|");
-      const res = await api("/api/apply", {account, region});
+      const res = await api("/api/apply", {account, region, strategy: $("gStrategy").value});
       flash(`${res.done} change(s) made in AWS${res.failed.length ? `, ${res.failed.length} failed` : ""}.`, res.failed.length > 0);
       await loadState(); await loadRequests();
     }));

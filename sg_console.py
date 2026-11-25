@@ -1937,7 +1937,8 @@ class Console:
         st = self.store()
         try:
             res = sg_db.push(st, ec2, account, region, t.actor, body.get("group") or "",
-                             str(body.get("reason") or "applied from the console"), str(body.get("ticket") or ""))  # fmt: skip
+                             str(body.get("reason") or "applied from the console"), str(body.get("ticket") or ""),
+                             str(body.get("strategy") or "room"))  # fmt: skip
             return res
         finally:
             st.close()
@@ -1949,7 +1950,10 @@ class Console:
         account, region = _need(body, "account"), _need(body, "region")
         st = self.store()
         try:
-            todo = st.pending(account, region, str(body.get("group") or ""))
+            try:
+                todo = st.pending(account, region, str(body.get("group") or ""), str(body.get("strategy") or "room"))
+            except sg_db.Refused as exc:
+                raise ConsoleError(400, str(exc)) from None
             over = st.over_limit(account, region, str(body.get("group") or ""))
             names = {g: v["name"] for g, v in st.groups(account, region).items()}
             assets = _assets_quiet(st, account, region)
@@ -1987,6 +1991,7 @@ class Console:
             changes.append(c)
         enis = {a["eni"] for g in {c["group"] for c in changes} for a in on.get(g, [])}
         return {"account": account, "region": region, "mode": mode, "changes": changes, "over_limit": over,
+                "strategy": str(body.get("strategy") or "room"), "limit": sg_db.rule_limit(),
                 "summary": {"add": sum(c["op"] == "add" for c in changes), "remove": sum(c["op"] == "remove" for c in changes),
                             "groups": len({c["group"] for c in changes}), "interfaces": len(enis),
                             "known": bool(assets), "at_risk": at_risk}}  # fmt: skip

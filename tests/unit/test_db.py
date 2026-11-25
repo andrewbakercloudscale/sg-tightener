@@ -179,3 +179,48 @@ def test_parse_command_rule_ids_and_refusals():
                 ["revoke-security-group-ingress", "--protocol", "tcp", "--port", "22", "--cidr", "1.2.3.4/32"]):
         with pytest.raises(ValueError):
             sg_db.parse_command(bad)
+
+
+def _plan(store, limit, monkeypatch):
+    monkeypatch.setattr(sg_db, "rule_limit", lambda: limit)
+    narrow = [(IN, "tcp", 443, 443, f"10.0.{i}.0/24") for i in range(3)]
+    with store:
+        store.desire(ACCT, REGION, "sg-1", "alice", "least privilege", remove=[HTTPS_VPC], add={r: "" for r in narrow})
+    return narrow
+
+
+def test_remove_first_leaves_the_gap_it_says(store, monkeypatch):
+    _plan(store, 60, monkeypatch)
+    assert [op for _, op, _, _ in store.pending(ACCT, REGION, strategy="remove-first")] == ["remove", "add", "add", "add"]
+
+
+def test_room_removes_least_impact_first(store, monkeypatch):
+    monkeypatch.setattr(sg_db, "rule_limit", lambda: 2)
+    wide, small, kept = (IN, "tcp", 443, 443, "10.0.0.0/16"), (IN, "tcp", 22, 22, "10.9.9.9/32"), (IN, "tcp", 443, 443, "10.0.5.0/24")
+    with store:
+        store.import_region(ACCT, "eu-west-2", {"sg-2": group({wide: "", small: ""})}, "alice")
+        store.desire(ACCT, "eu-west-2", "sg-2", "alice", "narrow", remove=[wide, small], add={kept: ""})
+    # full group: one must go before the add. The /32 lets in fewer addresses than the /16, so it goes first,
+    # and the /16 (whose traffic the new /24 does not cover) only after the add
+    assert [(op, r[4]) for _, op, r, _ in store.pending(ACCT, "eu-west-2", strategy="room")] == [
+        ("remove", "10.9.9.9/32"), ("add", "10.0.5.0/24"), ("remove", "10.0.0.0/16")]
+
+
+def test_bridge_keeps_the_wide_rule_or_adds_a_span(store, monkeypatch):
+    narrow = _plan(store, 60, monkeypatch)
+    # the one rule removed spans every new source: it is the bridge, and simply goes last
+    assert [(op, r[4]) for _, op, r, _ in store.pending(ACCT, REGION, strategy="bridge")] == [
+        *[("add", r[4]) for r in narrow], ("remove", "10.0.0.0/16")]
+    with store:
+        store.desire(ACCT, REGION, "sg-1", "alice", "more", add={(IN, "tcp", 443, 443, "10.1.0.0/24"): ""})
+    got = [(op, r[4], d) for _, op, r, d in store.pending(ACCT, REGION, strategy="bridge")]
+    assert got[0] == ("add", "10.0.0.0/15", sg_db.BRIDGE_DESC) and got[-1] == ("remove", "10.0.0.0/15", sg_db.BRIDGE_DESC)
+    assert ("remove", "10.0.0.0/16", "vpc https") in got[1:-1]
+
+
+def test_bridge_without_room_is_refused(store, monkeypatch):
+    _plan(store, 4, monkeypatch)
+    with store:
+        store.desire(ACCT, REGION, "sg-1", "alice", "more", add={(IN, "tcp", 443, 443, "10.1.0.0/24"): ""})
+    with pytest.raises(Refused, match="bridge"):
+        store.pending(ACCT, REGION, strategy="bridge")
