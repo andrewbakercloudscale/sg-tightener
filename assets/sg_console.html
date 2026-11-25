@@ -2010,8 +2010,8 @@ section.nodata .card:not(.empty-state) { display: none; }
         ? `<li>Merge ${r.changes.members.map((g) => `<code>${esc((r.changes.names || {})[g] || g)}</code>`).join(", ")} into <code>${esc(r.changes.target_name)}</code> (<code>${esc(r.changes.target)}</code>): ${Object.keys(r.changes.enis).length} interface(s) move onto it, which by then lets in the ${r.changes.need.length} rule(s) they need. The emptied groups stay, on no interface.</li>`
         : r.kind === "asset"
         ? `<li>A group of its own, <code>${esc(r.changes.group_name)}</code>, for <code>${esc(r.changes.eni)}</code>${r.changes.instance ? ` (<code>${esc(r.changes.instance)}</code>)` : ""} in place of ${r.changes.from_groups.map((g) => `<code>${esc(g)}</code>`).join(", ")}, from ${r.changes.evidence.flows} flow(s) of ${r.changes.evidence.sources} source(s)</li>
-           ${r.changes.narrowed.removed.map((c) => `<li><span class="pill" style="--p:var(--bad)">narrowed</span> ${ruleLine(c)}</li>`).join("")}
-           ${r.changes.narrowed.added.map((c) => `<li><span class="pill" style="--p:var(--good)">to</span> ${ruleLine(c)}</li>`).join("")}
+           ${r.changes.narrowed.removed.map((c) => `<li><span class="pill" style="--p:var(--bad)">not carried over</span> ${ruleLine(c)}</li>`).join("")}
+           ${r.changes.narrowed.added.map((c) => `<li><span class="pill" style="--p:var(--good)">in its place</span> ${ruleLine(c)}</li>`).join("")}
            <li class="muted small">${r.changes.ingress.length} inbound and ${r.changes.egress.length} outbound rule(s) in all</li>`
         : (r.changes.length > 12 ? (xs) => `${xs.slice(0, 10).join("")}<li class="muted small"><details><summary>Show all ${r.changes.length.toLocaleString()} changes</summary><ul>${xs.slice(10).join("")}</ul></details></li>` : (xs) => xs.join(""))(r.changes.map((c) => `<li><span class="pill" style="--p:${c.op === "add" ? "var(--good)" : "var(--bad)"}">${c.op}</span> <code>${esc(c.group)}</code> ${esc(c.rule.direction === "in" ? "inbound" : "outbound")} <code>${esc(c.rule.proto === "-1" ? "all traffic" : `${c.rule.proto} ${c.rule.from === c.rule.to ? c.rule.from : c.rule.from + "-" + c.rule.to}`)}</code> ${c.rule.direction === "in" ? "from" : "to"} <code>${esc(c.rule.source)}</code> <span class="muted small">${esc(c.rule.description)}</span></li>`));
       const buttons = r.status === "pending" ? (mine && S.approvals
@@ -2077,7 +2077,9 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("auditRows").innerHTML = rows.map((e) => {
       const d = e.detail || {};
       const all = [...(d.added || []).map((r) => ["+", r]), ...(d.removed || []).map((r) => ["−", r])]
-        .map(([m, r]) => `<div class="small"><code>${m} ${esc(r.group ? r.group + " " : "")}${esc(r.direction)} ${esc(r.proto === "-1" ? "all" : `${r.proto} ${r.from === r.to ? r.from : r.from + "-" + r.to}`)} ${esc(r.source)}</code></div>`);
+        .map(([m, r]) => r.eni  // an interface that came or went: its instance and groups, not a rule
+          ? `<div class="small"><code>${m} ${esc(r.eni)}${r.instance ? ` (${esc(r.instance)})` : ""} ${esc((r.groups || []).join(", "))}</code></div>`
+          : `<div class="small"><code>${m} ${esc(r.group ? r.group + " " : "")}${esc(r.direction)} ${esc(r.proto === "-1" ? "all" : `${r.proto} ${r.from === r.to ? r.from : r.from + "-" + r.to}`)} ${esc(r.source)}</code></div>`);
       const lines = all.length > 6 ? `${all.slice(0, 4).join("")}<details><summary>${(all.length - 4).toLocaleString()} more change(s)</summary>${all.slice(4, 500).join("")}${all.length > 504 ? `<div class="muted small">and ${(all.length - 504).toLocaleString()} more: see the change request</div>` : ""}</details>` : all.join("");
       const gids = (e.group_id || "").split(",").filter(Boolean);
       const where = gids.length > 3 ? `<div><code>${gids.slice(0, 2).map(esc).join(", ")}</code></div><details><summary>${gids.length.toLocaleString()} groups in all</summary><code>${gids.slice(2).map(esc).join(", ")}</code></details>` : `<div><code>${esc(gids.join(", "))}</code></div>`;

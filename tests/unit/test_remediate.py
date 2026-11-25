@@ -300,4 +300,5 @@ def test_open_to_all_with_no_internet_traffic_is_critical():
     assert not rem.plan_rule({**base, "source": "0.0.0.0/0", "status": "open", "ext": 0})["urgent"], "kept: web on a public LB"
     assert not rem.plan_rule({**base, "source": "10.0.0.0/8", "status": "unused", "ext": 0})["urgent"]
     assert rem.plan_rule({**base, "source": "::/0", "status": "unused", "ext": 0})["urgent"]
-    assert sg_review._external({"10.0.0.5": [3, 0], "100.64.1.1": [2, 0], "8.8.8.8": [4, 0], "fd00::1": [1, 0]}) == 4
+    assert sg_review._external({"10.0.0.5": [3, 0], "100.64.1.1": [2, 0], "8.8.8.8": [4, 0], "fd00::1": [1, 0],
+                                "203.0.113.7": [5, 0]}) == 9, "anything not private is from outside"

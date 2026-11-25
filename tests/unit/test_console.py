@@ -773,3 +773,30 @@ def test_the_propose_bar_does_not_float_over_the_page():
     page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
     rule = re.search(r"\.fix-go \{[^}]*\}", page).group(0)
     assert "sticky" not in rule and "fixed" not in rule
+
+
+def test_spawned_plan_and_report_processes_use_the_consoles_data_directory(tmp_path, monkeypatch):
+    """A console run with --data-dir built its plans in fresh processes that read the default data directory."""
+    import sg_console
+    import sg_ipintel
+    monkeypatch.setattr(sg_ipintel, "DATA_DIR", tmp_path)
+    got = sg_console._child_data_dir()
+    assert got["initializer"] is sg_ipintel.set_data_dir and got["initargs"] == (str(tmp_path),)
+    import pathlib
+    src = pathlib.Path(sg_console.__file__).read_text()
+    assert src.count("**_child_data_dir()") == 2, "both process pools"
+
+
+def test_the_audit_trail_shows_interfaces_that_came_or_went_not_undefined():
+    """'assets-imported' entries listed '+ undefined undefined': their rows are interfaces, not rules."""
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    body = page[page.index('$("auditRows").innerHTML'):][:1500]
+    assert "r.eni" in body and "r.instance" in body
+
+
+def test_an_asset_request_says_which_rules_go_and_which_replace_them():
+    """The pills read 'narrowed' on a rule that is dropped and 'to' on its replacement."""
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    assert ">not carried over</span> ${ruleLine(c)}" in page and ">in its place</span> ${ruleLine(c)}" in page

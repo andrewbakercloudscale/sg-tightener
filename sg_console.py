@@ -108,7 +108,7 @@ def _date_range(frm, to) -> tuple[float | None, float | None]:
     return start, (end + 86400 if end is not None else None)
 
 
-PLAN_FORMAT = 3  # raised when a plan gains fields, so plans kept on disk are built again (2: critical rules)
+PLAN_FORMAT = 4  # raised when a plan gains fields, so plans kept on disk are built again (2: critical rules)
 
 
 class ConsoleError(Exception):
@@ -657,7 +657,8 @@ class Console:
         try:
             # a process is replaced after a few accounts: one large account leaves gigabytes behind in the process
             # that built it, and a long-lived one would keep them for every account after
-            with multiprocessing.get_context("spawn").Pool(min(REPORT_PROCS, len(items)), maxtasksperchild=4) as pool:
+            with multiprocessing.get_context("spawn").Pool(min(REPORT_PROCS, len(items)), maxtasksperchild=4,
+                                                           **_child_data_dir()) as pool:  # fmt: skip
                 return pool.starmap(sg_review.report_row, [(kind, a, n, range_key) for a, n in items], chunksize=1)
         except Exception:  # processes not available here: build them one by one
             LOG.exception("building reports in parallel failed; building them one by one")
@@ -1395,7 +1396,8 @@ class Console:
                             import multiprocessing
 
                             # a fresh process for every plan: one of 15 million rows peaks near 8 GB, given back at once
-                            self._plan_pool = multiprocessing.get_context("spawn").Pool(PLAN_PROCS, maxtasksperchild=1)
+                            self._plan_pool = multiprocessing.get_context("spawn").Pool(PLAN_PROCS, maxtasksperchild=1,
+                                                                                        **_child_data_dir())  # fmt: skip
                         pending = self._plan_pool.apply_async(_plan_job, (account, days, groups, assets, start, end))
                     self._plan_pending[key] = pending
             try:
@@ -2055,6 +2057,14 @@ class _Done:
 
     def ready(self) -> bool:
         return True
+
+
+def _child_data_dir() -> dict:
+    """Pool arguments that give a spawned process this console's data directory: a fresh process starts at the
+    default one, so a console run with --data-dir built its plans and reports from the wrong account data."""
+    import sg_ipintel
+
+    return {"initializer": sg_ipintel.set_data_dir, "initargs": (str(sg_ipintel.DATA_DIR),)}
 
 
 def _plan_job(account: str, days: int, groups: dict, assets: dict, start, end) -> dict | None:

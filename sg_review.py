@@ -3248,14 +3248,7 @@ def _suggest(rej: dict, enis: dict, groups: dict, snaps: dict, lab) -> list[dict
 
 def _external(here: dict) -> int:
     """Connections through a rule from public (internet) addresses: not RFC 1918, 100.64/10, ULA or the like."""
-    n = 0
-    for src, h in here.items():
-        try:
-            if ipaddress.ip_address(src).is_global:
-                n += h[0]
-        except ValueError:
-            continue
-    return n
+    return sum(h[0] for src, h in here.items() if _is_public(src))  # documentation ranges count too: not private
 
 
 def _mix(here: dict, lab) -> dict:

@@ -112,9 +112,8 @@ Old bookmarks ending in `?token=…` still work.
 | **Overview** | Every account and region: its **mode** (surveillance or enforce), groups, rules, assets, changes waiting to be applied, **whether this identity can apply there** (with a **Check** button: a DryRun of every write, nothing changes), when AWS was last read. The approvals mode, who you are acting as, and whether the audit trail's hash chain is intact. For an account `sg_review.py` has read, **Review and tighten** opens its Security Group Review (`/review?account=ID`), whose **Tighten** panel proposes the fitted rules here as a change request ([how](security-group-review.md#tighten-pull-the-room-back-by-kind-type-and-name)) |
 | **Risk overview** | Every account `sg_review.py` has read, side by side: headline tiles, a risk heatmap, over-provisioning by owner and over time, internet exposure, high-risk sources let in, the biggest rules to tighten, and blind spots ([below](#risk-overview-every-account)) |
 | **Over-provisioning** | For leaders: over-provisioned addresses by account and per asset, rated red, amber or green, led by a chart of over-provisioning over time by source type, with KPIs and **Remediate** for each account ([below](#over-provisioning-by-account-and-asset)) |
-| **Remediate** | Pick an account and a look back: the account before and after, where its traffic comes from, the groups that change and the merges; untick anything sensitive and propose ([below](#remediate-an-account)) |
-| **Security groups** | Tighten an account at a time. Pick an account and region: **Tighten this account** shows the plan from its flow logs (rules to narrow, unused rules to remove, addresses taken away) and **Propose the whole plan** sends it as one change request. Each group is one row, worst first, 50 to a page, with **Propose** for that group and **Details** for its rules: the rule now, what the flow logs say, the new rule and what it takes away. **Refresh from AWS** (read the groups, rules and interfaces again; changes made outside the tool go in the Audit trail), **Apply approved changes** (press twice; off in surveillance mode); **Propose a change by hand** and **Propose keeping what AWS holds** below. Then every **asset** (network interface) and its **History** of group changes |
-| **Change requests** | Requests waiting for approval, approved, applied, rejected, withdrawn. Approve, or reject with a note, someone else's request; withdraw your own. Apply an approved one. An **asset request** (from `sg_db.py asset-propose`) shows the interface, the group it gets, the rules narrowed and why, and once approved **Create the group and move** the interface |
+| **Remediate** | Pick an account and the evidence dates: the account before and after (with % reduction, **Explain** and **Export to PDF**), where its traffic comes from, rules open to everyone that nothing outside used (**critical**, with **Propose this group**), a **Re-read from AWS** panel that prices only the hours never read, and every security group region by region (**Refresh from AWS**, **Apply approved changes**, **Propose a change by hand**); untick anything sensitive and propose ([below](#remediate-an-account)) |
+| **Change requests** | Requests waiting for approval, approved, applied, rejected, withdrawn. Approve, or reject with a note, someone else's request; **Cancel request** on your own. **Two-person approval** can be unticked to approve your own on a single-user laptop (audited). Apply an approved one. An **asset request** (from `sg_db.py asset-propose`) shows the interface, the group it gets, the rules not carried over and what goes in their place, and once approved **Create the group and move** the interface |
 | **Audit trail** | Every entry, newest first, searchable (who, why, ticket, group, rule) and filtered by time and origin. Changes made outside the tool are red, with who made them from CloudTrail |
 | **Rejected traffic** | A line chart of the distinct addresses refused over time, one line per kind of source, then every source the security groups and network ACLs refused, in every account `sg_review.py` has read, worst verdict first. Each source is marked **internal** or **external**, **IPv6**, **scanning**, and **new** (first seen in the last 7 days, never before in at least 14 days of flow logs), with when it was first seen. Filter by account, severity, risky ports, new addresses only, internal / external / IPv6 / scanning, and text. **Propose allowing** opens the change form with the source, port and a reason filled in |
 
@@ -152,11 +151,17 @@ The **Remediate** tab is the whole job for one account, for someone who should n
 
 ![Remediate: the account before and after, and where its traffic comes from](images/sg-console-remediate.png)
 
-![The groups that change, one open on its old and new rules](images/sg-console-remediate-groups.png)
+![Rules open to everyone that nothing outside your network used: critical](images/sg-console-critical.png)
+
+![Explain: the rule by rule audit behind the numbers](images/sg-console-explain.png)
+
+![Re-read from AWS: only hours never read are read, price first](images/sg-console-reread.png)
+
+![Security groups on Remediate, region by region](images/sg-console-remediate-groups.png)
 
 ## Tighten an account: the plan
 
-The **Security groups** tab is built to tighten an account at a time, not a rule at a time. For the account and
+**Remediate** is built to tighten an account at a time, not a rule at a time. For the account and
 region chosen, the flow logs `sg_review.py` read decide what each inbound rule should become:
 
 | The flow logs say | New rule |
@@ -171,8 +176,6 @@ ports (65,536 → 2). **Propose the whole plan** puts every change into one chan
 the new ones), with the reason written for you; **Propose** on a group or a rule sends just that. Nothing changes
 in AWS until a second person approves and someone applies it. Groups are listed worst first, 50 to a page;
 **Details** opens a group's rules only when you want to look closer.
-
-![Tighten this account: the plan from 90 days of flow logs](images/sg-console-tighten-plan.png)
 
 ![Each group, worst first, with Details open on one](images/sg-console-tighten-groups.png)
 
