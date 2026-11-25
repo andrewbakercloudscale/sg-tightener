@@ -934,7 +934,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <div class="acts" style="margin:0 0 6px"><label class="small">Show <select id="fScanN" aria-label="How many source IP addresses to show"><option value="50" selected>top 50</option><option value="100">top 100</option><option value="250">top 250</option><option value="500">top 500</option><option value="1000">top 1,000</option></select> source IP addresses</label>
         <button class="btn sm" type="button" id="fScanPdf">Export PDF</button>
         <button class="btn sm" type="button" id="fScanWhy" aria-expanded="false">Explain</button></div>
-      <p class="muted small" id="fScanHelp" hidden>The source IP addresses refused on the most ports, then at the most of our IP addresses, then with the most refused flows: what a host looking for its next way in does. Counted across every account the filters above keep: flows are added up; ports and IP addresses are the distinct ones named, or the most in any one account where the read only counted them; the account column says in how many accounts it was refused. Internal sources come first in importance: a scanning host inside your network may be compromised. <b>Show</b> chooses how many to list (50 to 1,000), 50 to a page. Click an address to filter the page by it, or <b>Fix…</b> to see everything known about it. <b>IP addresses tried</b> lists our addresses it was refused at when there are 5 or fewer; with more, <b>View</b> opens the list. Where the read only counted them, the number is larger than the list. <b>Export PDF</b> prints this table with the first 5 addresses of each source and how many more: choose "Save as PDF".</p>
+      <p class="muted small" id="fScanHelp" hidden>The source IP addresses refused on the most ports, then at the most of our IP addresses, then with the most refused flows: what a host looking for its next way in does. Counted across every account the filters above keep: flows are added up; ports and IP addresses are the distinct ones named, or the most in any one account where the read only counted them; the account column says in how many accounts it was refused. Internal sources come first in importance: a scanning host inside your network may be compromised. <b>Show</b> chooses how many to list (50 to 1,000), 50 to a page. Click an address, or <b>Fix…</b>, to see everything known about it. When the page's Search box holds something, only matching sources are listed: <b>Show all</b> clears it. <b>IP addresses tried</b> lists our addresses it was refused at when there are 5 or fewer; with more, <b>View</b> opens the list. Where the read only counted them, the number is larger than the list. <b>Export PDF</b> prints this table with the first 5 addresses of each source and how many more: choose "Save as PDF".</p>
       <div class="scroll"><table class="small"><thead><tr><th>#</th><th>Source</th><th class="num" title="Distinct ports it was refused on (at least the most in any one account)">Ports tried</th><th class="num" title="Distinct IP addresses of ours it was refused at (at least the most in any one account)">IP addresses tried</th><th class="num">Refused flows</th><th class="num">Accounts</th><th>Busiest ports</th><th>Last refused</th><th></th></tr></thead><tbody id="fScanRows"></tbody></table></div></div>
     <div class="card" id="fInsightCard"><div class="card-head"><h3 style="margin:0">Where the rejections come from and go to</h3><span class="muted small" id="fInsightNote"></span></div>
       <p class="muted small">The rejected traffic below, sliced every way: by source and destination IP address, kind of source, port and kind of port, verdict, and what refused it. Bars are refused flows. Click a line to filter by it.</p>
@@ -1522,7 +1522,8 @@ section.nodata .card:not(.empty-state) { display: none; }
     }
     if (!refusedData) refusedData = await api("/api/refused?range=24h", undefined, true).catch(() => null);
     if (!AV.pick) $("aBody").innerHTML = (M.building ? `<p class="muted small">${M.building} account(s) still being worked out: the figures fill in as they finish.</p>` : "") + A_EMPTY;
-    if (M.building) setTimeout(() => { if (!$("tab-accounts").hidden) { M = null; loadAccounts(true).catch(() => {}); } }, 6000);
+    // still being worked out: fetch again in the background, keeping what is shown (and searchable) meanwhile
+    if (M.building) setTimeout(async () => { if ($("tab-accounts").hidden) return; try { const N = await api("/api/macro?range=1m", undefined, true); M = N; if (!$("aList").hidden) drawAList(); loadAccounts(true); } catch (e) { /* tried again later */ } }, 6000);
     if (AV.pick) drawAccountView();
   }
   // The owner: the tag a person's name is in. A search matches any such tag (Linked HOD, Product Head, Platform
@@ -1556,8 +1557,9 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("aList").hidden = true; $("aQ").setAttribute("aria-expanded", "false");
     drawAccountView();
   }
-  $("aQ").addEventListener("focus", () => { if (M) drawAList(); else loadAccounts().then(drawAList).catch(() => {}); });
-  $("aQ").addEventListener("input", () => { if (M) drawAList(); });
+  const aListNow = () => (M ? Promise.resolve() : loadAccounts(true)).then(() => { if ($("aQ").value.trim() || document.activeElement === $("aQ")) drawAList(); }).catch((e) => flash(e.message, true));
+  $("aQ").addEventListener("focus", aListNow);
+  $("aQ").addEventListener("input", aListNow);
   $("aQ").addEventListener("keydown", (e) => {
     const os = [...$("aList").querySelectorAll(".co[data-k]")];
     if (e.key === "Escape") { $("aList").hidden = true; return; }
@@ -2752,14 +2754,18 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("fScanNote").textContent = `${list.length.toLocaleString()} of ${by.size.toLocaleString()} source IP addresses`;
     const fp = page("scan", list.length, () => drawScanners(shown));
     $("fScanRows").innerHTML = list.slice(fp.a, fp.b).map((x, i) => { const r = x.rows.reduce((m, y) => (Number(y.flows) > Number(m.flows) ? y : m), x.rows[0]);
-      return `<tr><td class="num">${fp.a + i + 1}</td><td><button class="btn sm" data-scanq="${esc(x.src)}" title="Filter the page by this address"><code>${esc(x.src)}</code></button><b class="print-only"><code>${esc(x.src)}</code></b> <span class="pill" style="--p:${r.internal ? "var(--good)" : "var(--warn)"}">${r.internal ? "internal" : "external"}</span>${x.rows.some((y) => y.scan) ? ' <span class="pill" style="--p:var(--high)">scanning</span>' : ""}${x.rows.some((y) => y.threat) ? ' <span class="pill" style="--p:var(--bad)">known malicious</span>' : ""}${x.rows.some((y) => y.tor) ? ' <span class="pill" style="--p:var(--bad)">Tor</span>' : ""}<div class="muted">${esc(r.name && r.name !== r.src ? r.name : "")}${r.type ? " · " + esc(r.type) : ""}</div></td>
+      return `<tr><td class="num">${fp.a + i + 1}</td><td><button class="btn sm" data-scanq="${esc(x.src)}" title="Everything known about this address"><code>${esc(x.src)}</code></button><b class="print-only"><code>${esc(x.src)}</code></b> <span class="pill" style="--p:${r.internal ? "var(--good)" : "var(--warn)"}">${r.internal ? "internal" : "external"}</span>${x.rows.some((y) => y.scan) ? ' <span class="pill" style="--p:var(--high)">scanning</span>' : ""}${x.rows.some((y) => y.threat) ? ' <span class="pill" style="--p:var(--bad)">known malicious</span>' : ""}${x.rows.some((y) => y.tor) ? ' <span class="pill" style="--p:var(--bad)">Tor</span>' : ""}<div class="muted">${esc(r.name && r.name !== r.src ? r.name : "")}${r.type ? " · " + esc(r.type) : ""}</div></td>
         <td class="num"><b>${x.np.toLocaleString()}</b></td><td class="num">${ipsCell(x)}</td><td class="num">${x.flows.toLocaleString()}</td>
         <td class="num" title="${esc([...x.accts].map((a) => acctLabel(a)).join(", "))}">${x.accts.size}</td>
         <td>${[...x.pf.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k]) => `<code style="white-space:nowrap">${esc(k)}</code>`).join("<br>")}</td><td>${esc(when(x.last))}</td>
         <td><button class="btn sm" data-scanfix="${esc(x.src)}" title="Who it is, everything it tried, why it was refused">Fix…</button></td></tr>`; }).join("")
       || '<tr><td colspan="9" class="muted">Nothing matches.</td></tr>';
     pagerAfter($("fScanRows"), fp.bar);
-    for (const b of $("fScanRows").querySelectorAll("[data-scanq]")) b.addEventListener("click", () => { $("fQ").value = b.dataset.scanq; drawRefused(); });
+    for (const b of $("fScanRows").querySelectorAll("[data-scanq]")) b.addEventListener("click", () => {
+      const x = by.get(b.dataset.scanq); openFix(x.rows.reduce((m, y) => (Number(y.flows) > Number(m.flows) ? y : m), x.rows[0])); });
+    const fq = $("fQ").value.trim();
+    $("fScanNote").innerHTML = esc($("fScanNote").textContent) + (fq ? ` · filtered by “${esc(fq)}” <button class="btn sm" type="button" id="fScanClear">Show all</button>` : "");
+    if (fq) $("fScanClear").addEventListener("click", () => { $("fQ").value = ""; drawRefused(); });
     for (const b of $("fScanRows").querySelectorAll("[data-scanfix]")) b.addEventListener("click", () => {
       const x = by.get(b.dataset.scanfix); openFix(x.rows.reduce((m, y) => (Number(y.flows) > Number(m.flows) ? y : m), x.rows[0])); });
   }
