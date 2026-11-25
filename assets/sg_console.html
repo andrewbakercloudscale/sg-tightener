@@ -491,11 +491,6 @@ section.nodata .card:not(.empty-state) { display: none; }
   .combo > input { width: 100%; }
   .combo-list { position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; width: max(100%, 440px); max-height: 420px; overflow: auto;
                 background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 30px rgba(0,0,0,.18); padding: 4px 0; }
-  #aList.combo-list { width: 100%; max-height: none; overflow: visible; }
-  #aList .acols { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
-  #aList .acol + .acol { border-left: 1px solid var(--grid); }
-  #aList .acol-list { max-height: 380px; overflow: auto; }
-  @media (max-width: 700px) { #aList .acols { grid-template-columns: 1fr; } }
   .combo-list .cg { padding: 6px 12px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); }
   .combo-list .co { display: flex; gap: 8px; justify-content: space-between; padding: 5px 12px; font-size: 13px; cursor: pointer; }
   .combo-list .co.act, .combo-list .co:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
@@ -738,12 +733,15 @@ section.nodata .card:not(.empty-state) { display: none; }
     <h2>Accounts: one account, or one owner against their peers</h2>
     <p class="lede">Type an account name or number, or an owner. An <b>owner</b> shows their accounts ranked, how they compare with every other owner, and where to focus. An <b>account</b> shows everything to do with it and the actions to take, in order. Export either to PDF.</p>
     <div class="tools">
-      <div class="combo" id="aCombo" style="min-width:420px;flex:1"><input id="aQ" type="search" placeholder="Account name or number, or an owner…" aria-label="Account or owner" role="combobox" aria-expanded="false" aria-controls="aList" autocomplete="off">
-        <div class="combo-list" id="aList" role="listbox" hidden></div></div>
+      <input id="acQ" type="search" placeholder="Search: part of an account name or number, or a person's name…" aria-label="Search accounts and owners" autocomplete="off" style="flex:1;min-width:320px">
       <button class="btn sm" type="button" id="aPdf" disabled>Export PDF</button>
       <button class="btn sm" type="button" id="aWhy" aria-expanded="false">Explain</button>
     </div>
-    <p class="small" id="aHelp" hidden>The figures come from the flow logs read for each account (the last month) and its security groups, the same as <b>Risk overview</b>. <b>Risk points</b>: 100 for each critical area, 10 for each high, 1 for each medium, across: needs attention, high-risk sources let in, open to the internet on risky ports, outbound to threat lists, never-seen addresses allowed, rules to tighten, probing, and blind spots. <b>Peers</b> are every other account (or owner) read. Type part of an account name or number (such as <b>app</b>) or of a person's name: matching <b>accounts</b> and <b>owners</b> are listed side by side; pick one. An owner is anyone named in an account tag such as Linked HOD, Product Head or Platform Custodian, and is compared with the other people in that same tag. <b>Export PDF</b> prints this page only: choose "Save as PDF".</p>
+    <div class="tools" id="acPick">
+      <label class="small" style="flex:1;min-width:280px">Matching accounts <select id="acAcct" aria-label="Matching accounts" style="width:100%"></select></label>
+      <label class="small" style="flex:1;min-width:280px">Matching owners <select id="acOwner" aria-label="Matching owners" style="width:100%"></select></label>
+    </div>
+    <p class="small" id="aHelp" hidden>The figures come from the flow logs read for each account (the last month) and its security groups, the same as <b>Risk overview</b>. <b>Risk points</b>: 100 for each critical area, 10 for each high, 1 for each medium, across: needs attention, high-risk sources let in, open to the internet on risky ports, outbound to threat lists, never-seen addresses allowed, rules to tighten, probing, and blind spots. <b>Peers</b> are every other account (or owner) read. Type part of an account name or number (such as <b>app</b>) or of a person's name in the search box: the two dropdowns below it fill with the matching <b>accounts</b> and the matching <b>owners</b>. Choose from either. An owner is anyone named in an account tag such as Linked HOD, Product Head or Platform Custodian, and is compared with the other people in that same tag. <b>Export PDF</b> prints this page only: choose "Save as PDF".</p>
     <div class="print-only" id="aPrintHead"></div>
     <div id="aBody"><div class="card empty-state"><p class="muted" style="margin:0">Start typing an account or an owner above.</p></div></div>
   </section>
@@ -1523,7 +1521,8 @@ section.nodata .card:not(.empty-state) { display: none; }
     if (!refusedData) refusedData = await api("/api/refused?range=24h", undefined, true).catch(() => null);
     if (!AV.pick) $("aBody").innerHTML = (M.building ? `<p class="muted small">${M.building} account(s) still being worked out: the figures fill in as they finish.</p>` : "") + A_EMPTY;
     // still being worked out: fetch again in the background, keeping what is shown (and searchable) meanwhile
-    if (M.building) setTimeout(async () => { if ($("tab-accounts").hidden) return; try { const N = await api("/api/macro?range=1m", undefined, true); M = N; if (!$("aList").hidden) drawAList(); loadAccounts(true); } catch (e) { /* tried again later */ } }, 6000);
+    if (M.building) setTimeout(async () => { if ($("tab-accounts").hidden) return; try { const N = await api("/api/macro?range=1m", undefined, true); M = N; drawAList(); loadAccounts(true); } catch (e) { /* tried again later */ } }, 6000);
+    drawAList();
     if (AV.pick) drawAccountView();
   }
   // The owner: the tag a person's name is in. A search matches any such tag (Linked HOD, Product Head, Platform
@@ -1543,31 +1542,30 @@ section.nodata .card:not(.empty-state) { display: none; }
       .map((a) => ({k: "account", v: a.account, label: a.name || a.account, sub: `${a.account} · ${points(a).toLocaleString()} pts`}));
     return {acc, own};
   }
+  // One search box fills two dropdowns: the matching accounts, and the matching owners; choosing from either
+  // shows it in full
   function drawAList() {
-    const q = $("aQ").value.toLowerCase().trim(), {acc, own} = aItems(q);
-    const row = (x) => `<div class="co" role="option" data-k="${x.k}" data-v="${esc(x.v)}"${x.tag ? ` data-tag="${esc(x.tag)}"` : ""}><span>${esc(x.label)}</span><span class="n">${esc(x.sub)}</span></div>`;
-    const col = (title, xs) => `<div class="acol"><div class="cg">${title} (${xs.length.toLocaleString()})</div><div class="acol-list">${xs.slice(0, 300).map(row).join("") || '<div class="co muted">None match</div>'}</div></div>`;
-    $("aList").innerHTML = `<div class="acols">${col("Accounts, most risk first", acc)}${col("Owners", own)}</div>`;
-    $("aList").hidden = false; $("aQ").setAttribute("aria-expanded", "true");
+    const q = $("acQ").value.toLowerCase().trim(), {acc, own} = aItems(q);
+    const lim = 500;
+    $("acAcct").innerHTML = `<option value="">${acc.length ? `${acc.length.toLocaleString()} account${acc.length === 1 ? "" : "s"}${q ? " match" : ""}: choose one…` : "No account matches"}</option>`
+      + acc.slice(0, lim).map((x) => `<option value="${esc(x.v)}">${esc(x.label)} · ${esc(x.sub)}</option>`).join("");
+    $("acOwner").innerHTML = `<option value="">${own.length ? `${own.length.toLocaleString()} owner${own.length === 1 ? "" : "s"}${q ? " match" : ""}: choose one…` : "No owner matches"}</option>`
+      + own.slice(0, lim).map((x, i) => `<option value="${i}">${esc(x.label)} · ${esc(x.sub)}</option>`).join("");
+    $("acOwner")._own = own;
+    if (AV.pick?.k === "account") $("acAcct").value = AV.pick.v;
   }
-  function pickA(el) {
-    if (!el?.dataset.k) return;
-    AV.pick = {k: el.dataset.k, v: el.dataset.v, tag: el.dataset.tag || ""};
-    $("aQ").value = el.querySelector("span").textContent;
-    $("aList").hidden = true; $("aQ").setAttribute("aria-expanded", "false");
-    drawAccountView();
-  }
-  const aListNow = () => (M ? Promise.resolve() : loadAccounts(true)).then(() => { if ($("aQ").value.trim() || document.activeElement === $("aQ")) drawAList(); }).catch((e) => flash(e.message, true));
-  $("aQ").addEventListener("focus", aListNow);
-  $("aQ").addEventListener("input", aListNow);
-  $("aQ").addEventListener("keydown", (e) => {
-    const os = [...$("aList").querySelectorAll(".co[data-k]")];
-    if (e.key === "Escape") { $("aList").hidden = true; return; }
-    if (e.key === "Enter") { e.preventDefault(); pickA(os.find((o) => o.classList.contains("act")) || os[0]); }
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); const at = os.findIndex((o) => o.classList.contains("act")); const n = Math.max(0, Math.min(os.length - 1, at + (e.key === "ArrowDown" ? 1 : -1))); os.forEach((o, j) => o.classList.toggle("act", j === n)); os[n]?.scrollIntoView({block: "nearest"}); }
+  $("acAcct").addEventListener("change", () => {
+    const v = $("acAcct").value;
+    if (!v) return;
+    AV.pick = {k: "account", v}; $("acOwner").value = ""; drawAccountView();
   });
-  $("aList").addEventListener("mousedown", (e) => { e.preventDefault(); pickA(e.target.closest(".co")); });
-  document.addEventListener("click", (e) => { if (!e.target.closest("#aCombo")) $("aList").hidden = true; });
+  $("acOwner").addEventListener("change", () => {
+    const x = ($("acOwner")._own || [])[+$("acOwner").value];
+    if ($("acOwner").value === "" || !x) return;
+    AV.pick = {k: "owner", v: x.v, tag: x.tag}; $("acAcct").value = ""; drawAccountView();
+  });
+  const aListNow = () => (M ? Promise.resolve() : loadAccounts(true)).then(drawAList).catch((e) => flash(e.message, true));
+  $("acQ").addEventListener("input", aListNow);
   $("aWhy").addEventListener("click", () => { const h = $("aHelp"); h.hidden = !h.hidden; $("aWhy").setAttribute("aria-expanded", String(!h.hidden)); });
   const SEVCOL = {critical: "var(--bad)", high: "var(--high)", medium: "var(--warn)"};
   const rankOf = (xs, v) => 1 + xs.filter((x) => x > v).length;
@@ -1644,12 +1642,12 @@ section.nodata .card:not(.empty-state) { display: none; }
         <h3>Where to focus first</h3>${acts.length ? `<ol class="small">${acts.map(([a, sv, what, how]) => `<li style="margin:6px 0"><span class="pill" style="--p:${SEVCOL[sv]}">${sv}</span> <b>${esc(a.name || a.account)}</b>: ${what}. ${esc(how)}.</li>`).join("")}</ol>` : '<p class="small" style="color:var(--good)">Nothing urgent across these accounts.</p>'}
         <h3>Their accounts, most risk first</h3><div class="scroll"><table class="small"><thead><tr><th>Account</th><th class="num">Risk points</th><th class="num">Critical · high</th><th class="num">Open (risky)</th><th class="num">Never-seen allowed</th><th class="num">Rules to tighten</th><th></th></tr></thead><tbody>${mine.map((a) => `<tr><td><b>${esc(a.name || a.account)}</b> <code>${esc(a.account)}</code></td><td class="num">${points(a).toLocaleString()}</td><td class="num">${a.attention?.critical || 0} · ${a.attention?.high || 0}</td><td class="num">${a.open || 0} (${a.open_risky || 0})</td><td class="num">${big(a.over_now || 0)}</td><td class="num">${(a.tighten || 0) + (a.unused || 0)}</td><td><button class="btn sm" data-aacct="${esc(a.account)}">Open</button></td></tr>`).join("")}</tbody></table></div></div>`;
     }
-    for (const b of $("aBody").querySelectorAll("[data-aacct]")) b.addEventListener("click", () => { AV.pick = {k: "account", v: b.dataset.aacct}; const a = A.find((x) => x.account === b.dataset.aacct); $("aQ").value = a?.name || b.dataset.aacct; drawAccountView(); window.scrollTo({top: 0, behavior: "smooth"}); });
+    for (const b of $("aBody").querySelectorAll("[data-aacct]")) b.addEventListener("click", () => { AV.pick = {k: "account", v: b.dataset.aacct}; $("acAcct").value = b.dataset.aacct; $("acOwner").value = ""; drawAccountView(); window.scrollTo({top: 0, behavior: "smooth"}); });
     for (const b of $("aBody").querySelectorAll("[data-aresolve]")) b.addEventListener("click", async () => { await show("refused"); openResolve(b.dataset.aresolve); });
     for (const b of $("aBody").querySelectorAll("[data-atab]")) b.addEventListener("click", () => show(b.dataset.atab));
   }
   $("aPdf").addEventListener("click", () => {
-    const day = new Date().toISOString().slice(0, 10), what = AV.pick?.k === "owner" ? `owner ${AV.pick.v}` : $("aQ").value;
+    const day = new Date().toISOString().slice(0, 10), what = AV.pick?.k === "owner" ? `owner ${AV.pick.v}` : (() => { const x = (M?.accounts || []).find((y) => y.account === AV.pick?.v); return x ? `${x.name || ""} ${x.account}`.trim() : "account"; })();
     $("aPrintHead").innerHTML = `<div class="eyebrow">Security Tightener · ${AV.pick?.k === "owner" ? "owner report" : "account report"}</div><h2 style="margin:2px 0 4px">${esc(what)}</h2><p class="muted small">Exported ${esc(when(Date.now() / 1000))} · flow logs of the last month</p>`;
     printSection("tab-accounts", `Security Tightener - ${what} - ${day}`);
   });

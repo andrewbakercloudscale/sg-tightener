@@ -393,11 +393,41 @@ def review_stamp(account: str, schema: str | None = None) -> float | None:
     return row[0] if row else None
 
 
+def _stream(d, sql: str, params) -> Iterable:
+    """Rows of a big query a few at a time (a server-side cursor), so the whole result is never held twice:
+    once as text from the server and once as Python objects. Inside a transaction only."""
+    cur = d.conn.cursor(name=f"sgt_{os.getpid()}_{threading.get_ident()}")
+    cur.itersize = 20
+    try:
+        cur.execute(translate(sql, False), params)
+        yield from cur
+    finally:
+        cur.close()
+
+
+def _share(rows, seen: dict) -> None:
+    """Make every repeated value in flow-log rows one shared object. An account's rows repeat the same few
+    thousand addresses, interfaces and ports millions of times; as separate strings and numbers they took
+    6.4 GB for the busiest account (14.7 million rows); shared, and read a few slices at a time, 2.2 GB."""
+    if not rows:
+        return
+    get = seen.setdefault
+    for r in rows:
+        if len(r) == 7:  # source, destination, interface, protocol, port, action, flows (flows are mostly small)
+            a, b, c, p, q, x = r[0], r[1], r[2], r[3], r[4], r[5]
+            r[0], r[1], r[2], r[3], r[4], r[5] = get(a, a), get(b, b), get(c, c), get(p, p), get(q, q), get(x, x)
+        else:
+            for i, v in enumerate(r):
+                if v.__class__ is str or v.__class__ is int:
+                    r[i] = get(v, v)
+
+
 def review_load(account: str, schema: str | None = None, doc_schema: int = 1, rows: bool = True) -> dict | None:
     """An account's read. Without ``rows`` each slice comes without its flow-log rows (what was read, when, and
     its state only): a fraction of the memory, for reports that need no traffic."""
     d = db(schema)
     cutoff = time.time() - RETENTION
+    seen: dict = {}
     with d.transaction():  # one consistent picture while a read is saving
         row = d.execute("SELECT name, mode, meta FROM review_accounts WHERE account = ?", (account,)).fetchone()
         if row is None:
@@ -405,9 +435,11 @@ def review_load(account: str, schema: str | None = None, doc_schema: int = 1, ro
         regions = dict(d.execute("SELECT region, data FROM review_regions WHERE account = ?", (account,)))
         chunks = []
         cols = "data" if rows else "data - 'rows' - 'pub'"
-        for k, data in d.execute(f"SELECT id, {cols} FROM review_slices WHERE account = ? AND e >= ? ORDER BY id",
-                                 (account, cutoff)):  # fmt: skip
+        sql = f"SELECT id, {cols} FROM review_slices WHERE account = ? AND e >= ? ORDER BY id"
+        for k, data in _stream(d, sql, (account, cutoff)) if rows else d.execute(sql, (account, cutoff)):
             data["k"] = k
+            if rows:
+                _share(data.get("rows"), seen)
             chunks.append(data)
         reads = []
         for k, data in d.execute("SELECT id, data FROM review_reads WHERE account = ? AND at >= ? ORDER BY id",

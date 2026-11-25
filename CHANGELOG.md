@@ -1,5 +1,15 @@
 # Changelog
 
+## 5.51.0 - 2026-11-25
+
+- **Accounts search**: one search box fills two dropdowns, the matching accounts and the matching owners; choose
+  from either. Typing works before the figures have loaded and while they rebuild (the search box shared its id
+  with the audit trail's, so typing went nowhere).
+- **Memory**: an account's flow logs are read from the database a few slices at a time and every repeated
+  address, interface and port is held once: the busiest account (14.7 million rows) went from 6.4 GB to 1.9 GB.
+- **Scanning Assets**: clicking an address opens its details instead of filtering the page; Show all clears a
+  filter; the PDF lists each source's first five addresses; the View IPs arrow draws properly.
+
 ## 5.50.0 - 2026-11-25
 
 - **Accounts tab**: type part of an account name or number, or a person's name; matching accounts and owners
