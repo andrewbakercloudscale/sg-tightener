@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.56.0 - 2026-11-25
+
+- **Read more from an account**: the account view reads its flow logs for the last 24 hours, 7, 30 or 90 days (priced first, Read or Stop), then refreshes its figures; the Fix dialog's short-history warning points to it.
+- **Risk points explained**: "Where its risk points come from" shows each kind's points (critical 100, high 10, medium 1) and the total.
+- **Database and computer, now** (Settings): database size, rows and storage of each table, connections, cache hit rate, uptime; the database container's CPU, memory, disk and network; the console's memory, CPU and the computer's load. Refreshes every 15 seconds.
+- **Buttons**: Sign out and Review look like every other button.
+
 ## 5.55.0 - 2026-11-25
 
 - **Spend in search**: the Accounts search lists accounts and owners with their monthly spend, biggest first; an owner's accounts table shows spend a month.
