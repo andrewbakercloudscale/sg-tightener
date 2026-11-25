@@ -129,6 +129,8 @@ def test_propose_then_a_different_person_approves_through_the_api(console):
     assert (8443, "want") in states and (443, "both") in states
     _, pending, _ = _req(p, "GET", "/api/requests?status=approved")
     assert [r["id"] for r in pending] == [rid]
+    _, drift, _ = _req(p, "GET", f"/api/drift?account={ACCOUNT}&region={REGION}")
+    assert [(d["change"], d["apply"]) for d in drift] == [(f"approved in request #{rid}, not applied yet", "adds it")]
 
     _, log, _ = _req(p, "GET", "/api/audit?q=chg-9")
     acts = [e["action"] for e in log]
@@ -293,6 +295,28 @@ def test_groups_on_no_interface_are_left_out_of_the_counts_and_flagged(console):
     assert r["groups"] == 1 and r["rules"] == 1 and r["unused"] == 1
     groups = {g["name"]: g["enis"] for g in _req(p, "GET", f"/api/groups?account={ACCOUNT}&region={r2}")[1]}
     assert groups == {"app": 1, "old": 0}
+
+
+def test_changed_outside_the_tool_is_explained_rule_by_rule(console):
+    r2 = "eu-west-3"
+    gid = "sg-0ddd000000000004"
+    keep, extra = (sg_db.IN, "tcp", 443, 443, "10.0.0.0/16"), (sg_db.IN, "tcp", 5432, 5432, "100.65.0.0/16")
+    st = sg_db.Store(console["db"])
+    with st:
+        st.import_region(ACCOUNT, r2, {gid: {"name": "db", "vpc": "vpc-3", "description": "", "rules": {keep: "web"}}},
+                         "arn:aws:sts::111122223333:assumed-role/Admin/alice")  # fmt: skip
+        st.observe(ACCOUNT, r2, {gid: {"name": "db", "vpc": "vpc-3", "description": "", "rules": {extra: "eks"}}},
+                   "alice", who=lambda g: "bob")  # fmt: skip
+    st.close()
+    p = console["port"]
+    _, state, _ = _req(p, "GET", "/api/state")
+    assert next(r for r in state["accounts"][0]["regions"] if r["region"] == r2)["pending"] == 2
+    _, drift, _ = _req(p, "GET", f"/api/drift?account={ACCOUNT}&region={r2}")
+    got = {(d["change"], d["rule"], d["apply"], d["keep"], d["by"], d["name"]) for d in drift}
+    assert got == {("added in AWS", sg_db.rule_text(extra), "removes it again", "keeps it", "bob", "db"),
+                   ("removed in AWS", sg_db.rule_text(keep), "adds it back", "leaves it removed", "bob", "db")}
+    assert all(d["noticed"] for d in drift)
+    assert _req(p, "GET", f"/api/drift?account={ACCOUNT}")[0] == 400
 
 
 def test_spend_is_read_for_every_account_with_credits_left_out():

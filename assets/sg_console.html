@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>Security Group Console</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><path d='M32 3 8 12v18c0 15 10 26 24 31 14-5 24-16 24-31V12z' fill='%231f5fbf' stroke='%230b2d63' stroke-width='3'/><rect x='21' y='29' width='22' height='17' rx='3' fill='%23fff'/><path d='M25 29v-5a7 7 0 0 1 14 0v5' fill='none' stroke='%23fff' stroke-width='4'/><circle cx='32' cy='36' r='2.6' fill='%231f5fbf'/><rect x='30.8' y='37' width='2.4' height='5' fill='%231f5fbf'/></svg>">
 <style>
 :root {
   color-scheme: light;
@@ -296,6 +297,15 @@ td .cellrow .btn + .btn { margin-left: 0; }
 section.nodata .card:not(.empty-state) { display: none; }
 .empty-state { border: 1px dashed var(--control-line); background: color-mix(in srgb, var(--accent) 4%, var(--surface)); }
 .empty-state h3 { margin: 0 0 6px; } .empty-state ol { margin: 8px 0 0; padding-left: 20px; } .empty-state li { margin: 4px 0; }
+  .hero-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .hero-head .btn { margin-left: auto; }
+  .hero-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .hero-t { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+  .hero-v { font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
+  .hero-l { font-size: .85rem; font-weight: 600; }
+  .hero-top { margin-top: 12px; }
+  .hero-top table { width: 100%; }
+  .hbar { height: 10px; border-radius: 5px; background: var(--accent); }
 </style>
 </head>
 <body>
@@ -502,6 +512,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <label class="small"><input type="checkbox" id="xHide" checked> Hide accounts without flow logs</label>
     </div>
     <div class="flash" id="xNote" hidden></div>
+    <div id="xHero"></div>
     <div id="xBody"></div>
   </section>
 
@@ -703,7 +714,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const rp = page("regions", regions.length, loadState);
     $("regions").innerHTML = regions.map((r, i) => `<tr><td>${esc(r.name || r.account)}<div class="muted small"><code>${esc(r.account)}</code></div></td>
       <td>${modePill(r.mode)}</td>
-      <td>${esc(r.region)}</td><td>${r.groups}</td><td>${r.rules}</td><td>${r.assets}</td><td>${r.pending ? `<button class="pill" style="--p:var(--warn);cursor:pointer" data-open="${i}" title="Open to keep what AWS holds or put it back">${r.pending}</button>` : "0"}</td>
+      <td>${esc(r.region)}</td><td>${r.groups}</td><td>${r.rules}</td><td>${r.assets}</td><td>${r.pending ? `<span class="cellrow"><span class="pill" style="--p:var(--warn)">${r.pending}</span><button class="btn sm" data-drift="${i}" aria-expanded="false" title="Which rules differ from what is saved here, and what Apply or keeping them would do">Explain</button></span>` : "0"}</td>
       <td class="small"><span class="cellrow">${permCell(r.permissions)} <button class="btn sm" data-check="${i}">Check</button></span></td>
       <td class="small">${esc(when(r.synced_at))}</td><td><span class="cellrow"><button class="btn sm" data-open="${i}">Open</button>${r.reviewed ? `<button class="btn sm primary" data-fix="${esc(r.account)}">Remediate</button><a class="btn sm quiet" href="/review?account=${encodeURIComponent(r.account)}" target="_blank" rel="noopener" title="The account's Security Group Review, in a new tab">Review</a>` : ""}</span></td></tr>`).slice(rp.a, rp.b).join("")
       || `<tr><td colspan="10" class="muted">${S.sso ? "Nothing yet: sign in with AWS SSO above, choose your accounts and select Read." : "Nothing yet: run <code>sg_db.py import --regions … [--ou-id …]</code>."}</td></tr>`;
@@ -714,6 +725,29 @@ section.nodata .card:not(.empty-state) { display: none; }
       flash(res.ok ? `${r.account} ${r.region}: this identity can change all ${res.checked} group(s) checked (DryRun, nothing changed).${res.mode === "surveillance" ? ` The account is in surveillance mode; to allow applying: sg_db.py mode enforce --account ${r.account} --reason "…"` : ""}`
         : `${r.account} ${r.region}: cannot apply everywhere: ${res.problems.join("; ")}`, !res.ok);
       await loadState();
+    }));
+    for (const b of document.querySelectorAll("[data-drift]")) b.addEventListener("click", () => act(b, async () => {
+      const tr = b.closest("tr"), open = tr.nextElementSibling && tr.nextElementSibling.classList.contains("drift-row");
+      if (open) { tr.nextElementSibling.remove(); b.setAttribute("aria-expanded", "false"); b.textContent = "Explain"; return; }
+      const r = regions[+b.dataset.drift];
+      const rows = await api(`/api/drift?account=${encodeURIComponent(r.account)}&region=${encodeURIComponent(r.region)}`);
+      const ext = rows.filter((d) => !d.request).length;
+      const row = document.createElement("tr");
+      row.className = "drift-row";
+      row.innerHTML = `<td colspan="10"><div class="card" style="margin:4px 0 10px">
+        <p class="small" style="margin:0 0 8px"><b>${rows.length} rule${rows.length === 1 ? "" : "s"} in ${esc(r.name || r.account)} ${esc(r.region)} differ from what is saved here.</b>
+        ${ext ? `${ext} ${ext === 1 ? "was" : "were"} changed in AWS outside this tool (the console, the CLI, Terraform or another pipeline) and found by <b>Refresh from AWS</b>. Each is in the <b>Audit trail</b>.` : ""}
+        For each, choose: <b>Apply</b> puts AWS back to what is saved here, or <b>Propose keeping what AWS holds</b> (on <b>Security groups</b>) saves AWS's version as the wanted one. Nothing changes until you do one of these.</p>
+        <div class="scroll"><table><thead><tr><th>Group</th><th>What differs</th><th>Rule</th><th>Noticed</th><th>Changed by</th><th>Apply</th><th>Keep what AWS holds</th></tr></thead><tbody>
+        ${rows.map((d) => `<tr><td>${esc(d.name || d.group)}<div class="muted small"><code>${esc(d.group)}</code></div></td><td>${esc(d.change)}</td>
+          <td class="small">${esc(d.rule)}${d.description ? `<div class="muted">${esc(d.description)}</div>` : ""}</td>
+          <td class="small">${d.noticed ? esc(when(d.noticed)) : "—"}</td><td class="small">${esc(d.by || (d.request ? "" : "not known (CloudTrail not read)"))}</td>
+          <td class="small">${esc(d.apply)}</td><td class="small">${esc(d.keep || "—")}</td></tr>`).join("")}
+        </tbody></table></div>
+        <p style="margin:8px 0 0"><button class="btn sm" data-open="${b.dataset.drift}">Open ${esc(r.region)} on Security groups</button></p></div></td>`;
+      tr.after(row);
+      row.querySelector("[data-open]").addEventListener("click", () => { $("gWhere").value = `${r.account}|${r.region}`; show("groups"); });
+      b.setAttribute("aria-expanded", "true"); b.textContent = "Hide";
     }));
     for (const b of document.querySelectorAll("[data-open]")) b.addEventListener("click", () => {
       const r = regions[+b.dataset.open]; $("gWhere").value = `${r.account}|${r.region}`; show("groups");
@@ -1307,8 +1341,53 @@ section.nodata .card:not(.empty-state) { display: none; }
     if (notRead.length) msg.push(`<b>${notRead.length} account${notRead.length === 1 ? "'s" : "s'"} flow logs not read yet</b>${hide ? " (hidden)" : ""}: on the Overview, Read all (or Read one), with How far back at 30 days or more.`);
     $("xNote").hidden = !msg.length; $("xNote").innerHTML = msg.join("<br>");
   }
+  // ---- the account at a glance: spend, what runs there, its biggest services (sg_profile, kept a day)
+  const heroBusy = new Set();
+  function heroBytes(n) { const u = ["B", "KB", "MB", "GB", "TB", "PB"]; let i = 0; while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; } return `${n >= 100 || i === 0 ? Math.round(n) : n.toFixed(1)} ${u[i]}`; }
+  function usd0(n) { return `US$${Math.round(n).toLocaleString()}`; }
+  async function loadHero(a, read) {
+    const box = $("xHero");
+    if (!a) { box.innerHTML = ""; return; }
+    let p = await api(`/api/profile?account=${encodeURIComponent(a)}`, undefined, true);
+    if ((read || p.stale) && !heroBusy.has(a)) {
+      if (!p.totals) box.innerHTML = `<div class="card"><p>${loading("Reading the account summary from AWS: spend, EC2, RDS, S3, PrivateLink… (under a minute)")}</p></div>`;
+      else drawHero(p, true);
+      heroBusy.add(a);
+      try { p = await api("/api/profile", {account: a}, true); }
+      catch (e) { if (!p.totals) { if ($("xAcct").value === a) box.innerHTML = `<div class="flash err">Account summary not read: ${esc(e.message)}</div>`; return; } }
+      finally { heroBusy.delete(a); }
+    }
+    if ($("xAcct").value === a && p.totals) drawHero(p, false);
+  }
+  function drawHero(p, refreshing) {
+    const t = p.totals || {}, s3 = p.s3 || {}, sp = p.spend || {};
+    const n = (k) => !t[k] ? "—" : `${t[k].n.toLocaleString()}${t[k].missing.length ? "*" : ""}`;
+    const miss = Object.entries(t).filter(([, v]) => v.missing.length).map(([k, v]) => `${k}: ${v.missing.join(", ")}`);
+    const tile = (v, label, sub) => `<div class="hero-t"><div class="hero-v">${v}</div><div class="hero-l">${label}</div>${sub ? `<div class="muted small">${sub}</div>` : ""}</div>`;
+    const month = sp.month ? new Date(sp.month + "-01T00:00:00Z").toLocaleDateString("en-GB", {month: "long", year: "numeric", timeZone: "UTC"}) : "";
+    const tiles = [
+      tile(sp.error || sp.total == null ? "—" : usd0(sp.total), `spent in ${esc(month || "last month")}`, sp.error ? `Cost Explorer: ${esc(sp.error)}` : sp.this_month != null ? `${usd0(sp.this_month)} this month so far` : ""),
+      tile(n("ec2"), "EC2 instances", t.ec2_running ? `${t.ec2_running.n.toLocaleString()} running` : ""),
+      tile(n("rds"), "RDS databases", t.rds_clusters ? `${t.rds_clusters.n.toLocaleString()} cluster(s)` : ""),
+      tile(s3.error || s3.buckets == null ? "—" : s3.buckets.toLocaleString(), "S3 buckets", s3.error ? esc(s3.error) : s3.bytes != null ? `${heroBytes(s3.bytes)} · ${Math.round((s3.objects || 0) / 1e6).toLocaleString()}M objects` : ""),
+      tile(n("privatelink"), "PrivateLink endpoints", t.gateway_endpoints ? `+ ${t.gateway_endpoints.n} gateway · ${t.endpoint_services ? t.endpoint_services.n : 0} service(s) offered` : ""),
+      tile(n("load_balancers"), "load balancers", ""),
+      tile(n("lambda"), "Lambda functions", ""),
+      tile(n("eks"), "EKS clusters", t.vpcs ? `${t.vpcs.n} VPC(s)` : ""),
+    ];
+    const top = sp.top || [];
+    const max = top.length ? top[0].cost : 1;
+    $("xHero").innerHTML = `<div class="card hero">
+      <div class="hero-head"><b>${esc((fixPlan && fixPlan.account === p.account && fixPlan.name) || p.account)}</b> <span class="muted small">at a glance · read ${esc(when(p.at))}${refreshing ? " · reading again…" : ""} · ${Object.keys(p.regions || {}).length} region(s)</span>
+        <button class="btn sm quiet" id="heroRead" title="Read the summary from AWS again (Cost Explorer charges about US$0.02)">Read again</button></div>
+      <div class="hero-grid">${tiles.join("")}</div>
+      ${top.length ? `<details class="hero-top" open><summary>Top ${top.length} services by spend in ${esc(month)}</summary><table class="small">${top.map((x) => `<tr><td>${esc(x.service)}</td><td style="width:45%"><div class="hbar" style="width:${Math.max(1, (x.cost / max) * 100).toFixed(1)}%"></div></td><td class="num">${usd0(x.cost)}</td><td class="num muted">${(x.share * 100).toFixed(1)}%</td></tr>`).join("")}</table></details>` : ""}
+      ${miss.length ? `<p class="muted small">* not read everywhere: ${esc(miss.join("; "))}</p>` : ""}</div>`;
+    $("heroRead").addEventListener("click", () => loadHero(p.account, true).catch((e) => flash(e.message, true)));
+  }
   async function loadFixPlan() {
     const a = $("xAcct").value;
+    loadHero(a).catch(() => {});
     if (!a) { $("xBody").innerHTML = ""; return; }
     $("xBody").innerHTML = `<div class="card"><p>${loading("Working out what every group should let in…")}</p></div>`;
     fixPlan = await api(`/api/remediation?account=${encodeURIComponent(a)}&days=${$("xDays").value}`);

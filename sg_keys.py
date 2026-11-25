@@ -212,6 +212,10 @@ class Keys:
 
         return sg_review.account_spend(self.base().client("ce", region_name="us-east-1"))
 
+    def ce_client(self):
+        """Cost Explorer as this profile: every account's costs from the management account, else its own."""
+        return self.base().client("ce", region_name="us-east-1")
+
     def chosen(self) -> list[dict]:
         return [] if self.state.get("signed_out") else list(self.state.get("chosen") or [])
 

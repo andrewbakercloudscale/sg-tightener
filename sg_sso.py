@@ -409,6 +409,11 @@ class Sso:
             self._save()
         return spend
 
+    def ce_client(self):
+        """Cost Explorer in the management account, with the role chosen for every account."""
+        role = next((c["role"] for c in self.chosen()), "")
+        return self.role_session(self._mgmt(role), role).client("ce", region_name="us-east-1")
+
     def _mgmt(self, role: str) -> str:
         mgmt = self.state.get("mgmt")
         if not mgmt:

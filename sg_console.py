@@ -283,6 +283,72 @@ class Console:
         finally:
             st.close()
 
+    def profile(self, account: str, read: bool = False) -> dict:
+        """The account at a glance (sg_profile): kept a day; ``read`` reads it from AWS now."""
+        import sg_profile
+        import sg_review
+
+        prof = sg_profile.cached(account)
+        if not read and (prof is None or time.time() - prof.get("at", 0) > sg_profile.KEEP):
+            return {"account": account, "stale": True, **(prof or {})}
+        if read:
+            st = self.store()
+            try:
+                regions = sorted({r for a, r in st.regions(account)}) or ["af-south-1"]
+            finally:
+                st.close()
+            t = self.targets(fresh=True)
+            sess = t.session(account)
+            ce = None
+            auth = self.auth()
+            if auth is not None and hasattr(auth, "ce_client"):
+                try:
+                    ce = auth.ce_client()
+                except Exception as exc:  # noqa: BLE001 - not the management account: the account's own costs
+                    LOG.info("Cost Explorer in the management account is out of reach (%s): asking %s", exc, account)
+            prof = sg_profile.read(sess, account, regions, ce or sess.client("ce", region_name="us-east-1"),
+                                   sg_review.BOTO_CONFIG)  # fmt: skip
+            sg_profile.save(account, prof)
+        return prof
+
+    def drift(self, account: str, region: str) -> list[dict]:
+        """Each rule where AWS differs from what is saved here: what changed in AWS, when the tool noticed it
+        (and who made it, when CloudTrail said), what Apply would do and what keeping it means."""
+        st = self.store()
+        try:
+            groups = st.groups(account, region)
+            seen: dict = {}
+            for e in st.log(account, region, "", "", 2000):
+                if e["origin"] == "external" and e["group_id"]:
+                    seen[e["group_id"]] = e  # oldest first: the latest wins
+            approved = {}  # (group, op, rule) of an approved request not yet applied: wanted here, not drift
+            for r in st.requests("approved", account, region):
+                for c in r["changes"] if isinstance(r["changes"], list) else []:
+                    j = c.get("rule") or {}
+                    key = (j.get("direction"), j.get("proto"), j.get("from"), j.get("to"), j.get("source"))
+                    approved[(c.get("group"), c.get("op"), key)] = r["id"]
+            out = []
+            for gid, op, rule, desc in st.pending(account, region):
+                e = seen.get(gid) or {}
+                rid = approved.get((gid, op, tuple(rule)))
+                added = op == "remove"  # in AWS, not wanted here: someone added it in AWS
+                if rid:
+                    out.append({"group": gid, "name": (groups.get(gid) or {}).get("name", ""),
+                                "change": f"approved in request #{rid}, not applied yet", "rule": sg_db.rule_text(rule),
+                                "description": desc, "noticed": "", "by": "", "request": rid,
+                                "apply": "adds it" if op == "add" else "removes it",
+                                "keep": ""})  # fmt: skip
+                    continue
+                out.append({"group": gid, "name": (groups.get(gid) or {}).get("name", ""),
+                            "change": "added in AWS" if added else "removed in AWS",
+                            "rule": sg_db.rule_text(rule), "description": desc,
+                            "noticed": e.get("at", ""), "by": (e.get("detail") or {}).get("changed_by", ""),
+                            "apply": "removes it again" if added else "adds it back",
+                            "keep": "keeps it" if added else "leaves it removed"})  # fmt: skip
+            return out
+        finally:
+            st.close()
+
     def audit(self, q: dict) -> list[dict]:
         st = self.store()
         try:
@@ -1657,6 +1723,10 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.assets(_need(q, "account"), _need(q, "region")))
                 if url.path == "/api/asset-history":
                     return self._json(200, console.asset_history(_need(q, "eni")))
+                if url.path == "/api/profile":
+                    return self._json(200, console.profile(_need(q, "account")))
+                if url.path == "/api/drift":
+                    return self._json(200, console.drift(_need(q, "account"), _need(q, "region")))
                 if url.path == "/api/audit":
                     return self._json(200, console.audit(q))
                 if url.path == "/api/requests":
@@ -1704,6 +1774,7 @@ def make_handler(console: Console, token: str, port: int):
                 return self._json(400, {"error": "bad JSON: an object is expected"})
             route = {"/api/propose": console.propose, "/api/tighten": console.tighten, "/api/remediate": console.remediate, "/api/merge-apply": console.merge_apply, "/api/decide": console.decide, "/api/apply": console.apply,
                      "/api/reconcile": console.reconcile, "/api/adopt": console.adopt, "/api/check": console.check,
+                     "/api/profile": lambda body: console.profile(_need(body, "account"), read=True),
                      "/api/asset-apply": console.asset_apply, "/api/asset-revert": console.asset_revert,
                      "/api/sso/start": console.sso_start, "/api/sso/choose": console.sso_choose,
                      "/api/sso/signout": console.sso_sign_out, "/api/read": console.read_start,
