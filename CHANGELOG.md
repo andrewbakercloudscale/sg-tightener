@@ -1,5 +1,26 @@
 # Changelog
 
+## 5.50.0 - 2026-11-25
+
+- **Accounts tab**: type part of an account name or number, or a person's name; matching accounts and owners
+  (from any person tag: Linked HOD, Product Head, Platform Custodian …) are listed side by side. An account
+  shows its risk against every account and its owner's, what to do in order, rules open to the internet,
+  rules to tighten and scanning sources; an owner shows their rank among owners and where to focus. PDF export.
+- **Settings tab**: version and newest release, repository and author; scheduled reads (a time missed while the
+  Mac slept runs once on waking); narrowing settings and the default apply strategy; report workers; approvals
+  and always running; database connection (test and save); data folder and Back up now.
+- **Three ways to apply**: add first then swap (removing the rule with the fewest flow-log hits first), a
+  temporary bridge rule, or remove first; in the console and `sg_db.py apply --strategy`. Apply adds before
+  it removes and refuses a group that would go over the rule limit.
+- **Narrowing**: console suggestions share each group's rule budget as `plan` does; 100.64.0.0/10 (EKS pods)
+  merges like private ranges.
+- **Rejected traffic**: IPs of Interest: Scanning Assets (top 50 to 1,000, with the IPs tried, PDF export);
+  the source of a rejection at a glance (account, host, OS, launch time, other accounts, scans), a host is its
+  account plus address, data-centre sources named; one source to PDF; last scanned on the chart.
+- **Lighter on the Mac**: report rebuilds use at most a quarter of the cores and one worker per 6 GB, one at a
+  time at low priority, and a format change rebuilds only that report. A read of many accounts survives a
+  console restart (priced again; spending still asks).
+
 ## 5.49.0 - 2026-11-25
 
 - **Scheduled reads**: the console reads every chosen account's new flow logs by itself, by default once a day
