@@ -495,6 +495,12 @@ section.nodata .card:not(.empty-state) { display: none; }
   .combo-list .co { display: flex; gap: 8px; justify-content: space-between; padding: 5px 12px; font-size: 13px; cursor: pointer; }
   .combo-list .co.act, .combo-list .co:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
   .combo-list .co .n { color: var(--ink-2); white-space: nowrap; }
+  #actDlg { width: min(1100px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
+            background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
+  #actDlg::backdrop { background: rgba(10,12,20,.45); }
+  #actDlg .au-head { display: flex; gap: 16px; align-items: flex-start; padding: 18px 22px 10px; border-bottom: 1px solid var(--grid); }
+  #actDlg .au-tools { margin-left: auto; display: flex; gap: 8px; }
+  #actDlg .au-body { overflow: auto; max-height: calc(92vh - 110px); padding: 6px 22px 20px; }
   #fixDlg { width: min(1100px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
             background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
   #fixDlg .au-head { display: flex; gap: 16px; align-items: flex-start; padding: 18px 22px 10px; border-bottom: 1px solid var(--grid); }
@@ -962,6 +968,11 @@ section.nodata .card:not(.empty-state) { display: none; }
     </dialog>
   </section>
 </main>
+<dialog id="actDlg" aria-labelledby="actTitle">
+      <div class="au-head"><div><div class="eyebrow">Accounts</div><h2 id="actTitle" style="margin:2px 0 4px">Fix</h2><div class="muted small" id="actSub"></div></div>
+        <div class="au-tools"><button class="btn sm primary" type="button" id="actClose">Close</button></div></div>
+      <div class="au-body" id="actBody"></div>
+    </dialog>
 <script nonce="{{NONCE}}">
 (() => {
   "use strict";
@@ -1580,11 +1591,11 @@ section.nodata .card:not(.empty-state) { display: none; }
     const out = [], ref = (refusedData?.rows || []).filter((r) => r.account === a.account);
     const inside = ref.filter((r) => r.internal && r.scan);
     if (a.high_active) out.push(["critical", `${a.high_active} high-risk source(s) (scanners, threat lists or Tor) were let in by a rule`, "Close the rule that lets them in", "fix"]);
-    if (a.open_risky) out.push(["critical", `${a.open_risky} rule(s) open to the whole internet on risky ports (${(a.open_risky_list || []).slice(0, 3).map((x) => esc(x.ports || x)).join(", ")})`, "Narrow to the callers seen, or put it behind a load balancer or VPN", "fix"]);
+    if (a.open_risky) out.push(["critical", `${a.open_risky} rule(s) open to the whole internet on risky ports (${(a.open_risky_list || []).slice(0, 3).map((x) => esc(x.ports || x)).join(", ")})`, "Narrow to the callers seen, or put it behind a load balancer or VPN", "fix:open"]);
     if (inside.length) out.push(["critical", `${inside.length} host(s) inside the network are scanning (${inside.slice(0, 3).map((r) => esc(r.src)).join(", ")})`, "Find what runs there; isolate it if nothing should scan", "resolve"]);
     if (a.egress_bad) out.push(["critical", `${a.egress_bad} connection(s) out to known malicious addresses`, "Investigate the host that made them", "review"]);
     if (a.attention?.critical || a.attention?.high) out.push(["high", `${a.attention.critical || 0} critical and ${a.attention.high || 0} high findings in its review`, "Work through them on the account's review", "review"]);
-    if (a.open > a.open_risky) out.push(["high", `${a.open - a.open_risky} more rule(s) open to the whole internet`, "Narrow them, or confirm the service is public", "fix"]);
+    if (a.open > a.open_risky) out.push(["high", `${a.open - a.open_risky} more rule(s) open to the whole internet`, "Narrow them, or confirm the service is public", "fix:open"]);
     if (a.tighten + a.unused) out.push(["medium", `${a.tighten} rule(s) wider than their traffic and ${a.unused} unused, letting in ${big(a.over_now)} addresses never seen`, "Propose the tightening plan", "fix"]);
     const wanted = ref.filter((r) => r.wanted && !r.restore), back = ref.filter((r) => r.restore);
     if (back.length) out.push(["high", `${back.length} source(s) refused since a change removed the rule that let them in`, "Put the rule back for those sources", "resolve"]);
@@ -1597,7 +1608,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const mine = peers.filter((x) => ownerOf(x, tag) === owner), rMine = rankOf(mine.map(points), P);
     const ref = (refusedData?.rows || []).filter((x) => x.account === a.account);
     const act = aActions(a), SEVC = {critical: "var(--bad)", high: "var(--high)", medium: "var(--warn)"};
-    const go = {fix: `<button class="btn sm primary" data-fix="${esc(a.account)}">Remediate</button>`, resolve: `<button class="btn sm" data-aresolve="${esc(a.account)}">Resolve rejected traffic</button>`,
+    const go = {fix: `<button class="btn sm primary" data-aact="all">Fix these now</button>`, "fix:open": `<button class="btn sm primary" data-aact="open">Fix these now</button>`, resolve: `<button class="btn sm" data-aresolve="${esc(a.account)}">Resolve rejected traffic</button>`,
       review: `<a class="btn sm" href="/review?account=${encodeURIComponent(a.account)}" target="_blank" rel="noopener">Open review</a>`, overview: `<button class="btn sm" data-atab="overview">Overview</button>`};
     const tags = Object.entries(a.tags || {}).slice(0, 8).map(([k, v]) => `<span class="muted">${esc(k)}:</span> ${esc(v)}`).join(" · ");
     const cell = (k, v, sub, col) => `<div><span class="muted small">${k}</span><b${col ? ` style="color:${col}"` : ""}>${v}</b>${sub ? `<span class="muted small">${sub}</span>` : ""}</div>`;
@@ -1616,7 +1627,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <h3>What to do, in order</h3>${act.length ? `<ol class="small">${act.map(([sv, what, how, where]) => `<li style="margin:6px 0"><span class="pill" style="--p:${SEVC[sv]}">${sv}</span> <b>${what}.</b> ${esc(how)}. ${go[where] || ""}</li>`).join("")}</ol>` : '<p class="small" style="color:var(--good)">Nothing urgent: keep reading its flow logs.</p>'}
       ${dims.length ? `<h3>Where its risk points come from</h3><table class="small"><tbody>${dims.map((d) => `<tr><td><span class="pill" style="--p:${LCOL[d[2]]}">${["low", "medium", "high", "critical"][d[2]]}</span> ${esc(d[0])}</td><td>${d[1]}</td><td class="muted">${esc(d[3])}</td></tr>`).join("")}</tbody></table>` : ""}
       ${ext.length ? `<h3>Open to the internet</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Ports</th><th>Source</th><th class="num">Interfaces</th></tr></thead><tbody>${ext.map((x) => `<tr><td>${esc(x.group)}<div class="muted">${esc(x.region)}</div></td><td><code>${esc(x.ports)}</code>${x.risky ? " ⚠" : ""}</td><td><code>${esc(x.source)}</code></td><td class="num">${x.enis}</td></tr>`).join("")}</tbody></table></div>` : ""}
-      ${top.length ? `<h3>Biggest rules to tighten</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Ports</th><th>Source</th><th class="num">Never-seen addresses</th><th>What to do</th></tr></thead><tbody>${top.map((x) => `<tr><td>${esc(x.group)}<div class="muted">${esc(x.region)} · ${x.enis} interface(s)</div></td><td><code>${esc(x.ports)}</code></td><td><code>${esc(x.source)}</code></td><td class="num">${big(x.never)}</td><td>${RULE_DO[x.status] || esc(x.status)}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      ${top.length ? `<h3>Biggest rules to tighten</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Ports</th><th>Source</th><th class="num">Never-seen addresses</th><th>What to do</th></tr></thead><tbody>${top.map((x) => `<tr><td>${esc(x.group)}<div class="muted">${esc(x.region)} · ${x.enis} interface(s)</div></td><td><code>${esc(x.ports)}</code></td><td><code>${esc(x.source)}</code></td><td class="num">${big(x.never)}</td><td>${RULE_DO[x.status] || esc(x.status)}${["unused", "tighten"].includes(x.status) ? ` <button class="btn sm primary" data-arule="${esc(JSON.stringify({g: x.group, r: x.region, p: x.ports, s: x.source}))}">${x.status === "unused" ? "Remove it" : "Narrow it"}…</button>` : ""}</td></tr>`).join("")}</tbody></table></div>` : ""}
       ${scans.length ? `<h3>Scanning sources refused (24 h)</h3><div class="scroll"><table class="small"><thead><tr><th>Source</th><th class="num">Ports</th><th class="num">Addresses</th><th class="num">Flows</th><th>Verdict</th></tr></thead><tbody>${scans.map((x) => `<tr><td><code>${esc(x.src)}</code> ${x.internal ? '<span class="pill" style="--p:var(--bad)">internal</span>' : ""}<div class="muted">${esc(x.name || "")}</div></td><td class="num">${x.ports || 1}</td><td class="num">${x.dsts || 1}</td><td class="num">${Number(x.flows).toLocaleString()}</td><td>${esc(x.title || x.verdict)}</td></tr>`).join("")}</tbody></table></div>` : ""}
       <div class="acts" style="margin-top:10px">${go.fix}${go.resolve}${go.review}</div></div>`;
   }
@@ -1648,6 +1659,8 @@ section.nodata .card:not(.empty-state) { display: none; }
         <h3>Their accounts, most risk first</h3><div class="scroll"><table class="small"><thead><tr><th>Account</th><th class="num">Risk points</th><th class="num">Critical · high</th><th class="num">Open (risky)</th><th class="num">Never-seen allowed</th><th class="num">Rules to tighten</th><th></th></tr></thead><tbody>${mine.map((a) => `<tr><td><b>${esc(a.name || a.account)}</b> <code>${esc(a.account)}</code></td><td class="num">${points(a).toLocaleString()}</td><td class="num">${a.attention?.critical || 0} · ${a.attention?.high || 0}</td><td class="num">${a.open || 0} (${a.open_risky || 0})</td><td class="num">${big(a.over_now || 0)}</td><td class="num">${(a.tighten || 0) + (a.unused || 0)}</td><td><button class="btn sm" data-aacct="${esc(a.account)}">Open</button></td></tr>`).join("")}</tbody></table></div></div>`;
     }
     for (const b of $("aBody").querySelectorAll("[data-aacct]")) b.addEventListener("click", () => { AV.pick = {k: "account", v: b.dataset.aacct}; $("acAcct").value = b.dataset.aacct; $("acOwner").value = ""; drawAccountView(); window.scrollTo({top: 0, behavior: "smooth"}); });
+    for (const b of $("aBody").querySelectorAll("[data-arule]")) b.addEventListener("click", () => { const x = JSON.parse(b.dataset.arule); openAct(AV.pick.v, (r) => r.gname === x.g && r.region === x.r && r.source === x.s && r.ports === x.p, "this rule"); });
+    for (const b of $("aBody").querySelectorAll("[data-aact]")) b.addEventListener("click", () => openAct(AV.pick.v, b.dataset.aact === "open" ? (r) => ["0.0.0.0/0", "::/0"].includes(r.source) : () => true, b.dataset.aact === "open" ? "the rules open to the internet" : "every rule the flow logs say to change"));
     for (const b of $("aBody").querySelectorAll("[data-aresolve]")) b.addEventListener("click", async () => { await show("refused"); openResolve(b.dataset.aresolve); });
     for (const b of $("aBody").querySelectorAll("[data-atab]")) b.addEventListener("click", () => show(b.dataset.atab));
   }
@@ -1656,6 +1669,82 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("aPrintHead").innerHTML = `<div class="eyebrow">Security Tightener · ${AV.pick?.k === "owner" ? "owner report" : "account report"}</div><h2 style="margin:2px 0 4px">${esc(what)}</h2><p class="muted small">Exported ${esc(when(Date.now() / 1000))} · flow logs of the last month</p>`;
     printSection("tab-accounts", `Security Tightener - ${what} - ${day}`);
   });
+
+  // ---- Fix from the Accounts tab, in place: the rules chosen, what each becomes, propose, and (one person running
+  // the console) apply, without leaving the page
+  let AFIX = null;
+  async function openAct(account, pick, what) {
+    const a = (M?.accounts || []).find((x) => x.account === account);
+    AFIX = {account, what};
+    $("actTitle").textContent = `Fix ${what}`;
+    $("actSub").textContent = `${a?.name || account} (${account})`;
+    $("actBody").innerHTML = loading("Working out what each rule should become…");
+    $("actDlg").showModal();
+    let V;
+    try { V = await api(`/api/verdicts?account=${encodeURIComponent(account)}`, undefined, true); } catch (e) { $("actBody").innerHTML = `<p style="color:var(--bad)">${esc(e.message)}</p>`; return; }
+    const rules = (V.rules || []).filter((r) => ["tighten", "remove", "ports"].includes(r.action) && pick(r))
+      .sort((x, y) => (y.addresses - y.new_addresses) - (x.addresses - x.new_addresses));
+    AFIX.rules = rules;
+    if (!rules.length) { $("actBody").innerHTML = '<p>Nothing to change here: the flow logs do not support removing or narrowing these rules yet (too few days read, or the traffic needs them). Read more days on the Overview, then look again.</p>'; return; }
+    const after = (r) => r.action === "remove" ? '<b style="color:var(--bad)">removed</b>' : r.new.map((n) => `<code>${n.proto === "-1" ? "all traffic" : `${esc(PROTO[n.proto] || n.proto)} ${n.from === n.to ? n.from : n.from + "-" + n.to}`} from ${esc(n.source)}</code>`).join("<br>");
+    const regions = [...new Set(rules.map((r) => r.region))];
+    const minDays = Math.min(...rules.map((r) => r.days ?? 0));
+    const thin = minDays < 7 ? `<div class="flash err" style="margin:10px 0 0"><b>Only ${minDays.toFixed(1)} day(s) of flow logs read for some of these.</b> A weekly or monthly job could still need a rule marked "removed". Read at least 7 days (Overview, How far back) before removing, or untick those rules.</div>` : "";
+    $("actBody").innerHTML = thin + `<ol class="small steps" style="margin:10px 0 12px;padding-left:20px"><li><b>Check</b> the changes below; untick any you want to keep.</li><li><b>Propose</b>: a change request is recorded with your reason.</li><li>${S?.approvals ? "<b>A second person approves</b> it under Change requests, then it is applied." : "<b>Apply</b> it to AWS from here (two-person approval is off)."}</li></ol>
+      <div class="scroll"><table class="small"><thead><tr><th><input type="checkbox" id="actAll" checked aria-label="All"></th><th>Group</th><th>Rule now</th><th>Becomes</th><th class="num">Addresses no longer let in</th><th>Evidence</th></tr></thead><tbody>${rules.map((r, i) => `<tr><td><input type="checkbox" data-ai="${i}" checked aria-label="Change this rule"></td>
+        <td><b>${esc(r.gname || r.group)}</b><div class="muted"><code>${esc(r.group)}</code> · ${esc(r.region)}</div></td>
+        <td><code>${esc(r.ports)} from ${esc(r.source)}</code>${r.desc ? `<div class="muted">${esc(r.desc)}</div>` : ""}</td><td>${after(r)}</td>
+        <td class="num">${fmtN(r.cut_addresses)}</td><td class="muted">${r.action === "remove" ? `no traffic fitting it in ${r.days ?? "?"} days` : `${r.seen} source(s) used it in ${r.days ?? "?"} days: they stay let in`}</td></tr>`).join("")}</tbody></table></div>
+      <div class="acts" style="margin-top:10px"><input id="actWhy" style="flex:1;min-width:260px" value="${esc(`Remove or narrow rules that ${V.days ? Math.round(V.days) + " days of" : ""} VPC flow logs show are not needed`)}" aria-label="Reason"><input id="actTicket" placeholder="Ticket (optional)" style="width:150px" aria-label="Ticket">
+        <button class="btn primary" type="button" id="actGo">Propose ${rules.length} change${rules.length === 1 ? "" : "s"}</button></div>
+      <div id="actOut" class="small" style="margin-top:10px"></div>
+      ${regions.length > 1 ? `<p class="muted small">In ${regions.length} regions: one change request each.</p>` : ""}`;
+    const boxes = () => [...$("actBody").querySelectorAll("[data-ai]")];
+    const count = () => { const n = boxes().filter((b) => b.checked).length; $("actGo").textContent = `Propose ${n} change${n === 1 ? "" : "s"}`; $("actGo").disabled = !n; };
+    $("actAll").addEventListener("change", (e) => { boxes().forEach((b) => { b.checked = e.target.checked; }); count(); });
+    boxes().forEach((b) => b.addEventListener("change", count));
+    $("actGo").addEventListener("click", (e) => act(e.target, async () => {
+      const chosen = boxes().filter((b) => b.checked).map((b) => AFIX.rules[+b.dataset.ai]);
+      const by = new Map();
+      for (const r of chosen) { if (!by.has(r.region)) by.set(r.region, []); by.get(r.region).push(r.key); }
+      const done = [];
+      for (const [region, keys] of by) {
+        const res = await api("/api/tighten", {account, region, keys, reason: $("actWhy").value, ticket: $("actTicket").value});
+        done.push({region, id: res.id, rules: res.rules, cut: res.cut_addresses, status: res.status});
+      }
+      e.target.hidden = true;
+      boxes().forEach((b) => { b.disabled = true; }); $("actAll").disabled = true;
+      const mode = (S?.accounts || []).find((x) => x.account === account)?.mode;
+      $("actOut").innerHTML = `<div class="impact ok"><b>Proposed:</b> ${done.map((d) => `change request #${d.id} in ${esc(d.region)} (${d.rules} rule(s), ${fmtN(d.cut)} fewer addresses)`).join("; ")}.</div>`
+        + (S?.approvals ? '<p>Next: a second person approves it under <button class="btn sm" type="button" data-atab="requests">Change requests</button>.</p>'
+          : mode === "surveillance" ? `<p>This account is in <b>surveillance</b> mode, so nothing is sent to AWS. Switch it to enforce on the Overview to apply.</p>`
+          : `<p>Next: <button class="btn primary" type="button" id="actApply">Apply to AWS now</button> <span class="muted">shows exactly what will change first</span></p>`);
+      $("actOut").querySelector("[data-atab]")?.addEventListener("click", () => { $("actDlg").close(); show("requests"); });
+      $("actApply")?.addEventListener("click", (ev) => act(ev.target, async () => {
+        const groups = [...new Set(chosen.map((r) => r.region + "|" + r.group))];
+        let html = "";
+        for (const [region] of by) {
+          const P = await api("/api/apply-preview", {account, region, strategy: S?.apply_strategy || "room"});
+          const mine = P.changes.filter((c) => groups.includes(region + "|" + c.group));
+          html += `<p><b>${esc(region)}</b>: ${mine.filter((c) => c.op === "remove").length} removed, ${mine.filter((c) => c.op === "add").length} added${P.changes.length > mine.length ? `, plus ${P.changes.length - mine.length} other approved change(s) on these groups` : ""}.${P.summary.at_risk ? ` <b style="color:var(--bad)">${P.summary.at_risk} removal(s) cut off traffic the flow logs saw.</b>` : " Nothing the flow logs saw is cut off."}</p>`;
+        }
+        $("actOut").insertAdjacentHTML("beforeend", `<div class="card" style="margin-top:8px">${html}<button class="btn primary" type="button" id="actApplyGo">Yes, apply</button> <button class="btn" type="button" id="actApplyNo">Not now</button></div>`);
+        ev.target.disabled = true;
+        $("actApplyNo").addEventListener("click", () => $("actDlg").close());
+        $("actApplyGo").addEventListener("click", (e2) => act(e2.target, async () => {
+          const out = [];
+          for (const region of [...new Set(chosen.map((r) => r.region))]) for (const g of [...new Set(chosen.filter((r) => r.region === region).map((r) => r.group))]) {
+            const res = await api("/api/apply", {account, region, group: g, strategy: S?.apply_strategy || "room"});
+            out.push(`${g}: ${res.done} change(s)${res.failed.length ? `, <b style="color:var(--bad)">${res.failed.length} failed</b>` : ""}`);
+          }
+          $("actOut").insertAdjacentHTML("beforeend", `<div class="impact ok" style="margin-top:8px"><b>Applied in AWS.</b> ${out.join("; ")}. Anything that breaks shows on Rejected traffic after the next read.</div>`);
+          e2.target.disabled = true; await loadState();
+        }));
+      }));
+      await loadState();
+    }));
+  }
+  $("actClose").addEventListener("click", () => $("actDlg").close());
 
   // ---- Settings
   let SET = null;

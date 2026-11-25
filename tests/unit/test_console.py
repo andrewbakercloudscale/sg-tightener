@@ -812,3 +812,20 @@ def test_an_asset_request_says_which_rules_go_and_which_replace_them():
     import pathlib
     page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
     assert ">not carried over</span> ${ruleLine(c)}" in page and ">in its place</span> ${ruleLine(c)}" in page
+
+
+def test_the_console_page_script_parses():
+    """A duplicate const (two features naming the same variable) stopped every button on the page."""
+    import pathlib
+    import shutil
+    import subprocess
+
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    page = pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html"
+    js = ("const fs=require('fs');const h=fs.readFileSync(process.argv[1],'utf8');"
+          "for (const m of h.matchAll(/<script[^>]*>([\\s\\S]*?)<\\/script>/g)) new Function(m[1]);")
+    r = subprocess.run([node, "-e", js, str(page)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-800:]
