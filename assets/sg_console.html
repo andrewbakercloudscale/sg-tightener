@@ -1585,6 +1585,24 @@ section.nodata .card:not(.empty-state) { display: none; }
     tighten: '<span class="pill" style="--p:var(--warn)">Narrow it</span><div class="muted small">only some of the addresses it allows were seen: keep those</div>',
     open: '<span class="pill" style="--p:var(--high)">Open to everyone</span><div class="muted small">decide whether it must be public</div>',
     watch: '<span class="pill" style="--p:var(--muted)">Keep watching</span><div class="muted small">not enough flow logs read yet to judge</div>'};
+  // "16.8M (100%)": never-seen addresses and their share of what the rule allows
+  const cidrSize = (c) => { const m = /^\d+\.\d+\.\d+\.\d+\/(\d+)$/.exec(c || ""); return m ? 2 ** (32 - +m[1]) : 0; };
+  const neverPct = (n, of) => { n = n || 0; if (!of) return big(n); const p = 100 * n / of; return `${big(n)} <span class="muted">(${p >= 99.95 ? "100" : p >= 10 ? Math.round(p) : p.toFixed(1)}%)</span>`; };
+  // Refused at an internet rule's group, on its ports, in the last day: what the rule did not let in
+  function refusedAt(account, x) {
+    const m = /^(tcp|udp|icmp|all)\s*(\d+)?(?:-(\d+))?/.exec(x.ports || ""), lo = m && m[2] ? +m[2] : 0, hi = m && m[3] ? +m[3] : lo;
+    const pn = {tcp: "6", udp: "17", icmp: "1"}[m ? m[1] : ""] || "";
+    const srcs = new Set(); let flows = 0;
+    for (const r of (refusedData?.rows || [])) {
+      if (r.account !== account) continue;
+      for (const t of targetsOf(r)) {
+        if (!(t.groups || r.groups || []).includes(x.gid) || (t.region || r.region) !== x.region) continue;
+        if (m && m[1] !== "all" && (String(t.proto) !== pn || (lo && (+t.port < lo || +t.port > hi)))) continue;
+        srcs.add(r.src); flows += Number(t.flows) || 0;
+      }
+    }
+    return {srcs: srcs.size, flows};
+  }
   const SEVCOL = {critical: "var(--bad)", high: "var(--high)", medium: "var(--warn)"};
   const rankOf = (xs, v) => 1 + xs.filter((x) => x > v).length;
   const pctBelow = (r, n) => n > 1 ? Math.round(100 * (n - r) / (n - 1)) : 100;
@@ -1622,14 +1640,17 @@ section.nodata .card:not(.empty-state) { display: none; }
       <div class="facts">${cell("Risk points", P.toLocaleString(), `rank ${r} of ${peers.length}: riskier than ${pctBelow(r, peers.length)}% of accounts`, P >= 100 ? "var(--bad)" : P >= 10 ? "var(--high)" : "")}
         ${cell("Among the owner's", `${rMine} of ${mine.length}`, esc(owner))}
         ${cell("Critical · high", `${a.attention?.critical || 0} · ${a.attention?.high || 0}`, "findings in its review", a.attention?.critical ? "var(--bad)" : "")}
-        ${cell("Open to the internet", `${a.open || 0}`, `${a.open_risky || 0} on risky ports`, a.open_risky ? "var(--bad)" : "")}
+        ${cell("Open to everyone (0.0.0.0/0)", `${a.open || 0}`, `${a.open_risky || 0} on risky ports`, a.open_risky ? "var(--bad)" : "")}
         ${cell("Never-seen addresses allowed", big(a.over_now || 0), `${a.tighten || 0} rules to tighten, ${a.unused || 0} unused`)}
         ${cell("Rejected (24 h)", ref.length.toLocaleString(), `${ref.filter((x) => x.scan).length} scanning · ${ref.filter((x) => x.internal).length} internal`)}
         ${cell("Flow logs", `${Math.round((a.covered || 0) * 100)}%`, a.not_logged ? `${a.not_logged} interfaces not logged` : "of the month read")}</div>
       <h3>What to do, in order</h3>${act.length ? `<ol class="small">${act.map(([sv, what, how, where]) => `<li style="margin:6px 0"><span class="pill" style="--p:${SEVC[sv]}">${sv}</span> <b>${what}.</b> ${esc(how)}. ${go[where] || ""}</li>`).join("")}</ol>` : '<p class="small" style="color:var(--good)">Nothing urgent: keep reading its flow logs.</p>'}
       ${dims.length ? `<h3>Where its risk points come from</h3><table class="small"><tbody>${dims.map((d) => `<tr><td><span class="pill" style="--p:${LCOL[d[2]]}">${["low", "medium", "high", "critical"][d[2]]}</span> ${esc(d[0])}</td><td>${d[1]}</td><td class="muted">${esc(d[3])}</td></tr>`).join("")}</tbody></table>` : ""}
-      ${ext.length ? `<h3>Open to the internet</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Ports</th><th>Source</th><th class="num">Interfaces</th></tr></thead><tbody>${ext.map((x) => `<tr><td>${esc(x.group)}<div class="muted">${esc(x.region)}</div></td><td><code>${esc(x.ports)}</code>${x.risky ? " ⚠" : ""}</td><td><code>${esc(x.source)}</code></td><td class="num">${x.enis}</td></tr>`).join("")}</tbody></table></div>` : ""}
-      ${top.length ? `<h3>Biggest rules to tighten</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Ports</th><th>Source</th><th class="num">Never-seen addresses</th><th>What to do</th></tr></thead><tbody>${top.map((x) => `<tr><td>${esc(x.group)}<div class="muted">${esc(x.region)} · ${x.enis} interface(s)</div></td><td><code>${esc(x.ports)}</code></td><td><code>${esc(x.source)}</code></td><td class="num">${big(x.never)}</td><td>${["unused", "tighten"].includes(x.status) ? `<button class="btn sm primary" data-arule="${esc(JSON.stringify({g: x.group, r: x.region, p: x.ports, s: x.source}))}">${x.status === "unused" ? "Rule not needed: remove it…" : "Narrow it…"}</button><div class="muted small">${x.status === "unused" ? "no traffic that fits it was ever seen" : "only some of the addresses it allows were seen: keep those"}</div>` : RULE_DO[x.status] || esc(x.status)}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      ${ext.length ? `<h3>Rules that let in internet addresses</h3><p class="muted small" style="margin:0 0 6px">Let in: the sources the flow logs saw this rule accept. Refused: sources turned away at the same interfaces and port in the last 24 hours (what the rule did not let in). Never seen: the internet addresses it allows that never connected, and their share of everything the rule allows.</p><div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Ports</th><th>Source</th><th class="num">Let in</th><th class="num">Refused (24 h)</th><th class="num">Never seen</th><th class="num">Interfaces</th></tr></thead><tbody>${ext.map((x) => { const f = refusedAt(a.account, x); return `<tr><td>${esc(x.group)}<div class="muted">${esc(x.region)}${x.desc ? " · " + esc(x.desc) : ""}</div></td><td><code>${esc(x.ports)}</code>${x.risky ? " ⚠" : ""}</td><td><code>${esc(x.source)}</code>${x.open ? ' <span class="pill" style="--p:var(--bad)">everyone</span>' : ""}</td>
+        <td class="num"><b style="color:${x.here ? "var(--good)" : "var(--muted)"}">${(x.here || 0).toLocaleString()}</b> source${x.here === 1 ? "" : "s"}<div class="muted">${x.last_used ? "last " + esc(when(x.last_used)) : "never used"}</div></td>
+        <td class="num"><b style="color:${f.srcs ? "var(--bad)" : "var(--muted)"}">${f.srcs.toLocaleString()}</b> source${f.srcs === 1 ? "" : "s"}<div class="muted">${f.flows.toLocaleString()} flows</div></td>
+        <td class="num">${neverPct(x.never_ext, x.allowed)}</td><td class="num">${x.enis}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
+      ${top.length ? `<h3>Biggest rules to tighten</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Ports</th><th>Source</th><th class="num">Never-seen addresses (share of the rule)</th><th>What to do</th></tr></thead><tbody>${top.map((x) => `<tr><td>${esc(x.group)}<div class="muted">${esc(x.region)} · ${x.enis} interface(s)</div></td><td><code>${esc(x.ports)}</code></td><td><code>${esc(x.source)}</code></td><td class="num">${neverPct(x.never, cidrSize(x.source))}</td><td>${["unused", "tighten"].includes(x.status) ? `<button class="btn sm primary" data-arule="${esc(JSON.stringify({g: x.group, r: x.region, p: x.ports, s: x.source}))}">${x.status === "unused" ? "Rule not needed: remove it…" : "Narrow it…"}</button><div class="muted small">${x.status === "unused" ? "no traffic that fits it was ever seen" : "only some of the addresses it allows were seen: keep those"}</div>` : RULE_DO[x.status] || esc(x.status)}</td></tr>`).join("")}</tbody></table></div>` : ""}
       ${scans.length ? `<h3>Scanning sources refused (24 h)</h3><div class="scroll"><table class="small"><thead><tr><th>Source</th><th class="num">Ports</th><th class="num">Addresses</th><th class="num">Flows</th><th>Verdict</th></tr></thead><tbody>${scans.map((x) => `<tr><td><code>${esc(x.src)}</code> ${x.internal ? '<span class="pill" style="--p:var(--bad)">internal</span>' : ""}<div class="muted">${esc(x.name || "")}</div></td><td class="num">${x.ports || 1}</td><td class="num">${x.dsts || 1}</td><td class="num">${Number(x.flows).toLocaleString()}</td><td>${esc(x.title || x.verdict)}</td></tr>`).join("")}</tbody></table></div>` : ""}
       <div class="acts" style="margin-top:10px">${go.fix}${go.resolve}${go.review}</div></div>`;
   }

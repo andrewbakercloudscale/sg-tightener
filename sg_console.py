@@ -667,8 +667,15 @@ class Console:
                 t = threading.Thread(target=self._reports, args=(kind, range_key, names), daemon=True)
                 self._report_gates[key] = t
                 t.start()
-        if not missing:
-            return self._reports(kind, range_key, names), 0  # every row there: the usual path, stale ones refreshed
+        if not missing:  # every row there: answer from them at once, brought up to date behind the page
+            key = ("bg", kind, range_key)
+            with self._report_lock:
+                busy = self._report_gates.get(key)
+                if busy is None or not busy.is_alive():
+                    t = threading.Thread(target=self._reports, args=(kind, range_key, names), daemon=True)
+                    self._report_gates[key] = t
+                    t.start()
+            return out, 0
         return out, missing
 
     def _reports(self, kind: str, range_key: str, names: dict) -> dict:
