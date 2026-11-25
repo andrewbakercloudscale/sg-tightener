@@ -628,6 +628,51 @@ def server_status() -> dict:
             "can_start": not ok and local and bool(docker) and (engine or bool(colima))}  # fmt: skip
 
 
+def metrics(d: "Db") -> dict:
+    """The database's size, its tables (rows and storage), connections, cache hits and how long it has run."""
+    one = lambda q: d.execute(q).fetchone()  # noqa: E731
+    tables = []
+    for name, est, live, total, idx in d.execute(
+            "SELECT c.relname, GREATEST(c.reltuples, 0)::bigint, COALESCE(s.n_live_tup, 0), pg_total_relation_size(c.oid),"
+            " pg_indexes_size(c.oid) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+            " LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid"
+            " WHERE n.nspname = current_schema() AND c.relkind = 'r' ORDER BY 4 DESC").fetchall():  # fmt: skip
+        tables.append({"name": name, "rows": int(live or est or 0), "bytes": int(total), "index_bytes": int(idx)})
+    hit, read, commits, rollbacks, deadlocks, temp = one(
+        "SELECT blks_hit, blks_read, xact_commit, xact_rollback, deadlocks, temp_bytes FROM pg_stat_database"
+        " WHERE datname = current_database()")  # fmt: skip
+    conns, active, mx = one("SELECT count(*), count(*) FILTER (WHERE state = 'active'),"
+                            " current_setting('max_connections')::int FROM pg_stat_activity"
+                            " WHERE datname = current_database()")  # fmt: skip
+    started, version, db_bytes, schema = one("SELECT extract(epoch FROM pg_postmaster_start_time()),"
+                                             " current_setting('server_version'), pg_database_size(current_database()),"
+                                             " current_schema()")  # fmt: skip
+    sets = dict(d.execute("SELECT name, current_setting(name) FROM pg_settings"
+                          " WHERE name IN ('shared_buffers', 'work_mem', 'effective_cache_size')").fetchall())  # fmt: skip
+    return {"version": version, "started": float(started), "db_bytes": int(db_bytes), "schema": schema,
+            "schema_bytes": sum(t["bytes"] for t in tables), "rows": sum(t["rows"] for t in tables), "tables": tables,
+            "connections": int(conns), "active": int(active), "max_connections": int(mx),
+            "cache_hit": (hit / (hit + read)) if hit + read else None, "commits": int(commits),
+            "rollbacks": int(rollbacks), "deadlocks": int(deadlocks), "temp_bytes": int(temp), "settings": sets}
+
+
+def container_stats() -> dict | None:
+    """CPU, memory, disk and network of the local database's container, or None when it is not local or Docker
+    does not answer."""
+    docker = _bin("docker")
+    if not docker or not env_file().exists():
+        return None
+    try:
+        ids = _run([docker, "compose", "-f", str(compose_file()), "--env-file", str(env_file()), "ps", "-q", "postgres"],
+                   20).stdout.split()  # fmt: skip
+        if not ids:
+            return None
+        out = _run([docker, "stats", "--no-stream", "--format", "{{json .}}", ids[0]], 20).stdout.strip()
+        return json.loads(out.splitlines()[0]) if out else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return None
+
+
 def start_server(say=print) -> None:
     """Start the local database: colima first when Docker's engine is not running, then the container. Raises
     RuntimeError saying what failed."""

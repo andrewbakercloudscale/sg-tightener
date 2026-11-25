@@ -211,8 +211,8 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: 16
 .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn.danger { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, var(--surface)); border-color: color-mix(in srgb, var(--bad) 45%, var(--control-line)); }
 .btn.danger:hover { background: color-mix(in srgb, var(--bad) 18%, var(--surface)); border-color: var(--bad); }
-.btn.quiet { color: var(--ink-2); }  /* still a bordered button: a borderless one reads as a label */
-.btn.quiet:hover { background: var(--btn-hover); color: var(--ink); }
+.btn.quiet { }  /* looks like every other button: a different colour read as disabled */
+.btn.quiet:hover { background: var(--btn-hover); }
 .btn[disabled], .btn[disabled]:hover { opacity: .5; cursor: not-allowed; transform: none; background: var(--btn-bg); }
 .btn.primary[disabled] { background: var(--accent); }
 td .btn, .chips .btn { height: 30px; padding: 0 10px; font-size: 12.5px; }
@@ -625,7 +625,7 @@ section.nodata .card:not(.empty-state) { display: none; }
         <p class="muted small">Your company's sign-in says <b>you cannot access this right now</b> after you changed network or turned on a VPN such as Zscaler? The browser is still using its earlier sign-in and connection. Select <b>Copy sign-in link</b> and paste it into a private (incognito) window, or quit and reopen the browser, then approve the same code.</p>
       </div>
       <div id="ssoIn" hidden>
-        <div class="acct-bar"><span class="pill" style="--p:var(--good)">signed in</span> <span id="ssoWho" class="who-line"></span> <button class="btn sm" id="ssoRenew" title="Sign in again on AWS's page, for a fresh session; reads keep going meanwhile">Renew</button><button class="btn quiet" id="ssoOutBtn">Sign out</button></div>
+        <div class="acct-bar"><span class="pill" style="--p:var(--good)">signed in</span> <span id="ssoWho" class="who-line"></span> <button class="btn sm" id="ssoRenew" title="Sign in again on AWS's page, for a fresh session; reads keep going meanwhile">Renew</button><button class="btn sm" id="ssoOutBtn" title="Forget this sign-in on this computer: reads stop until you sign in again">Sign out</button></div>
         <div id="ssoPick">
           <div class="form">
             <label id="pRoleWrap">Role in every account<select id="pRole"></select></label>
@@ -717,6 +717,9 @@ section.nodata .card:not(.empty-state) { display: none; }
         <button class="btn sm" type="button" id="stDsnTest">Test</button><button class="btn sm primary" type="button" id="stDsnSave">Test and save</button></div>
       <p class="small" id="stDbHelp" hidden style="margin:8px 0 0">Everything (groups, rules, the audit trail, flow logs read, reports) is kept in PostgreSQL. By default a local database in Docker on this Mac. To share one with your team, point every console at the same server: paste its connection string, <b>Test</b> it, then <b>Test and save</b>. It is written to the file shown (readable only by you) and used from the next start. If the environment variable is set, it wins over the file.</p>
       <p class="small" id="stDsnNote"></p></div>
+    <div class="card" id="stMx"><div class="card-head"><h3 style="margin:0">Database and computer, now</h3><span class="acts" style="margin:0"><button class="btn sm" type="button" id="stMxGo">Refresh</button><button class="btn sm" type="button" id="stMxWhy" aria-expanded="false">Explain</button></span></div>
+      <p class="small" id="stMxHelp" hidden style="margin:0 0 8px"><b>Database</b>: its size on disk, the rows and storage of each table (rows are PostgreSQL's live count, so close but not exact), connections in use against the most allowed, and the cache hit rate (the share of reads answered from memory: above 99% is healthy; lower means it reads the disk often). <b>Database container</b>: CPU, memory, disk and network of the local PostgreSQL in Docker (shown only when it runs on this Mac); disk and network are totals since it started. <b>Console</b>: this console's own memory and CPU, and the computer's load (processes waiting for a core, averaged over 1, 5 and 15 minutes: under the number of cores is fine). The figures refresh every 15 seconds while this tab is open; <b>Refresh</b> reads them now.</p>
+      <div id="stMxBody" class="small">Loading…</div></div>
     <div class="card" id="stData"><div class="card-head"><h3 style="margin:0">Data and backups</h3><button class="btn sm" type="button" id="stDataWhy" aria-expanded="false">Explain</button></div>
       <div id="stDataBody" class="small"></div>
       <div class="acts" style="margin-top:8px"><button class="btn sm primary" type="button" id="stBackup">Back up now</button><span class="muted small" id="stBackupNote"></span></div>
@@ -1631,7 +1634,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const wanted = ref.filter((r) => r.wanted && !r.restore), back = ref.filter((r) => r.restore);
     if (back.length) out.push(["high", `${back.length} source(s) refused since a change removed the rule that let them in`, "Put the rule back for those sources", "resolve"]);
     if (wanted.length) out.push(["medium", `${wanted.length} refused source(s) look like a real service`, "Check with the team and let them in, or leave refused", "resolve"]);
-    if (a.covered < 0.98 || a.not_logged) out.push(["medium", a.not_logged ? `${a.not_logged} interface(s) without flow logs` : `flow logs read for only ${Math.round(a.covered * 100)}% of the month`, a.not_logged ? "Turn on VPC flow logs for them" : "Read further back on the Overview", "overview"]);
+    if (a.covered < 0.98 || a.not_logged) out.push(["medium", a.not_logged ? `${a.not_logged} interface(s) without flow logs` : `flow logs read for only ${Math.round(a.covered * 100)}% of the month`, a.not_logged ? "Turn on VPC flow logs for them" : "Read more of its flow logs", a.not_logged ? "overview" : "read"]);
     return out;
   }
   function aCard(a, peers) {
@@ -1640,7 +1643,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const ref = (refusedData?.rows || []).filter((x) => x.account === a.account);
     const act = aActions(a), SEVC = {critical: "var(--bad)", high: "var(--high)", medium: "var(--warn)"};
     const go = {fix: `<button class="btn sm primary" data-aact="all">Fix these now</button>`, "fix:open": `<button class="btn sm primary" data-aact="open">Fix these now</button>`, resolve: `<button class="btn sm" data-aresolve="${esc(a.account)}">Resolve rejected traffic</button>`,
-      review: `<a class="btn sm" href="/review?account=${encodeURIComponent(a.account)}" target="_blank" rel="noopener">Open review</a>`, overview: `<button class="btn sm" data-atab="overview">Overview</button>`};
+      review: `<a class="btn sm" href="/review?account=${encodeURIComponent(a.account)}" target="_blank" rel="noopener">Open review</a>`, overview: `<button class="btn sm" data-atab="overview">Overview</button>`, read: `<button class="btn sm" data-aread>Read more data</button>`};
     const tags = Object.entries(a.tags || {}).slice(0, 8).map(([k, v]) => `<span class="muted">${esc(k)}:</span> ${esc(v)}`).join(" · ");
     const cell = (k, v, sub, col) => `<div><span class="muted small">${k}</span><b${col ? ` style="color:${col}"` : ""}>${v}</b>${sub ? `<span class="muted small">${sub}</span>` : ""}</div>`;
     const dims = DIMS.map((d) => [d[0], d[1](a), d[2](a), d[3]]).filter((d) => d[2]).sort((x, y) => y[2] - x[2]);
@@ -1655,8 +1658,11 @@ section.nodata .card:not(.empty-state) { display: none; }
         ${cell("Never-seen addresses allowed", big(a.over_now || 0), `${a.tighten || 0} rules to tighten, ${a.unused || 0} unused`)}
         ${cell("Rejected (24 h)", ref.length.toLocaleString(), `${ref.filter((x) => x.scan).length} scanning · ${ref.filter((x) => x.internal).length} internal`)}
         ${cell("Flow logs", `${Math.round((a.covered || 0) * 100)}%`, a.not_logged ? `${a.not_logged} interfaces not logged` : "of the month read")}</div>
+      <div class="acts" style="margin:10px 0 0;align-items:center;flex-wrap:wrap"><label class="small">Read its flow logs for the last <select id="avDays">${[1, 7, 30, 90].map((d) => `<option value="${d}"${d === 30 ? " selected" : ""}>${d === 1 ? "24 hours" : d + " days"}</option>`).join("")}</select></label>
+        <button class="btn primary sm" type="button" id="avRead">Read more data</button><button class="btn sm" type="button" id="avReadWhy" aria-expanded="false">Explain</button><span class="small" id="avReadNote"></span></div>
+      <p class="small muted" id="avReadHelp" hidden style="margin:4px 0 0"><b>Read more data</b> reads this account's VPC flow logs for the chosen period, skipping hours already read. It is priced first and nothing is spent until you press <b>Read</b>; <b>Stop</b> ends it at any time and keeps what was read. When it finishes this page refreshes: the flow-log share, rules to tighten and unused rules all use the new data. Read at least 7 days before removing rules, so weekly jobs are seen.</p>
       <h3>What to do, in order</h3>${act.length ? `<ol class="small">${act.map(([sv, what, how, where]) => `<li style="margin:6px 0"><span class="pill" style="--p:${SEVC[sv]}">${sv}</span> <b>${what}.</b> ${esc(how)}. ${go[where] || ""}</li>`).join("")}</ol>` : '<p class="small" style="color:var(--good)">Nothing urgent: keep reading its flow logs.</p>'}
-      ${dims.length ? `<h3>Where its risk points come from</h3><table class="small"><tbody>${dims.map((d) => `<tr><td><span class="pill" style="--p:${LCOL[d[2]]}">${["low", "medium", "high", "critical"][d[2]]}</span> ${esc(d[0])}</td><td>${d[1]}</td><td class="muted">${esc(d[3])}</td></tr>`).join("")}</tbody></table>` : ""}
+      ${dims.length ? `<h3>Where its risk points come from</h3><p class="muted small" style="margin:0 0 6px">Each kind of risk scores by its level: <b>critical 100</b>, <b>high 10</b>, <b>medium 1</b>, so one critical outweighs nine highs. The points add up to the account's ${P.toLocaleString()}.</p><table class="small"><thead><tr><th>Kind of risk</th><th>Now</th><th class="num">Points</th><th>What it counts</th></tr></thead><tbody>${dims.map((d) => `<tr><td><span class="pill" style="--p:${LCOL[d[2]]}">${["low", "medium", "high", "critical"][d[2]]}</span> ${esc(d[0])}</td><td>${d[1]}</td><td class="num"><b>${POINTS[d[2]].toLocaleString()}</b></td><td class="muted">${esc(d[3])}</td></tr>`).join("")}<tr><td colspan="2"><b>Total</b></td><td class="num"><b>${P.toLocaleString()}</b></td><td></td></tr></tbody></table>` : ""}
       ${ext.length ? `<h3>Rules that let in internet addresses</h3><p class="muted small" style="margin:0 0 6px">Let in: the sources the flow logs saw this rule accept. Refused: sources turned away at the same interfaces and port in the last 24 hours (what the rule did not let in). Never seen: the internet addresses it allows that never connected, and their share of everything the rule allows.</p><div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Ports</th><th>Source</th><th class="num">Let in</th><th class="num">Refused (24 h)</th><th class="num">Never seen</th><th class="num">Interfaces</th></tr></thead><tbody>${ext.map((x) => { const f = refusedAt(a.account, x); return `<tr><td>${esc(x.group)}<div class="muted">${esc(x.region)}${x.desc ? " · " + esc(x.desc) : ""}</div></td><td><code>${esc(x.ports)}</code>${x.risky ? " ⚠" : ""}</td><td><code>${esc(x.source)}</code>${x.open ? ' <span class="pill" style="--p:var(--bad)">everyone</span>' : ""}</td>
         <td class="num"><b style="color:${x.here ? "var(--good)" : "var(--muted)"}">${(x.here || 0).toLocaleString()}</b> source${x.here === 1 ? "" : "s"}<div class="muted">${x.last_used ? "last " + esc(when(x.last_used)) : "never used"}</div></td>
         <td class="num"><b style="color:${f.srcs ? "var(--bad)" : "var(--muted)"}">${f.srcs.toLocaleString()}</b> source${f.srcs === 1 ? "" : "s"}<div class="muted">${f.flows.toLocaleString()} flows</div></td>
@@ -1698,6 +1704,48 @@ section.nodata .card:not(.empty-state) { display: none; }
     for (const b of $("aBody").querySelectorAll("[data-aact]")) b.addEventListener("click", () => openAct(AV.pick.v, b.dataset.aact === "open" ? (r) => ["0.0.0.0/0", "::/0"].includes(r.source) : () => true, b.dataset.aact === "open" ? "the rules open to the internet" : "every rule the flow logs say to change"));
     for (const b of $("aBody").querySelectorAll("[data-aresolve]")) b.addEventListener("click", async () => { await show("refused"); openResolve(b.dataset.aresolve); });
     for (const b of $("aBody").querySelectorAll("[data-atab]")) b.addEventListener("click", () => show(b.dataset.atab));
+    for (const b of $("aBody").querySelectorAll("[data-aread]")) b.addEventListener("click", () => { $("avRead")?.scrollIntoView({behavior: "smooth", block: "center"}); $("avRead")?.focus(); });
+    if ($("avRead")) {
+      $("avReadWhy").addEventListener("click", () => { const h = $("avReadHelp"); h.hidden = !h.hidden; $("avReadWhy").setAttribute("aria-expanded", String(!h.hidden)); });
+      $("avRead").addEventListener("click", (e) => act(e.target, async () => {
+        const b = await api("/api/read/all", {regions: "all", days: Number($("avDays").value), min_spend: 0, accounts: [AV.pick.v]});
+        AV.readId = String(b.id); AV.readAcct = AV.pick.v;
+        drawAvRead();
+      }));
+      drawAvRead();
+    }
+  }
+  // Read more of one account's flow logs from its view: priced, read on a yes, then the figures refresh
+  let avPoll = null;
+  async function drawAvRead() {
+    clearTimeout(avPoll);
+    const note = $("avReadNote");
+    if (!note) return;
+    let b = null;
+    try { b = await api("/api/batch", undefined, true); } catch (e) { return; }
+    if (!$("avReadNote")) return;
+    const c = (b && b.count) || {}, mine = b && AV.readId === String(b.id);
+    if (!b || ["done", "stopped"].includes(b.status)) {
+      $("avRead").disabled = false;
+      if (mine) {
+        AV.readId = null;
+        if (b.status === "done") {
+          note.innerHTML = `<span style="color:var(--good)">Read${c.failed ? `, ${c.failed} failed` : ""}. Refreshing the figures…</span>`;
+          const again = async () => { try { M = await api("/api/macro?range=1m", undefined, true); refusedData = null; await loadAccounts(true); } catch (e) { /* tried again below */ } };
+          setTimeout(again, 4000); setTimeout(again, 30000);
+        } else note.innerHTML = '<span class="muted">Stopped: what was read is kept.</span>';
+      }
+      return;
+    }
+    $("avRead").disabled = true;
+    const stop = '<button class="btn sm" type="button" id="avStop">Stop</button>';
+    const other = mine ? "" : '<span class="muted">Another read is under way: </span>';
+    if (b.status === "pricing") note.innerHTML = `${other}${loading(`Pricing: ${b.accounts - (c.starting || 0)} of ${b.accounts} account(s)`)} ${stop}`;
+    else if (b.status === "confirm") note.innerHTML = `${other}<b>${b.to_read} account(s), about US$${Number(b.cost).toFixed(2)}</b>${b.cost_unknown ? ` plus ${b.cost_unknown} not yet priced` : ""} <button class="btn primary sm" type="button" id="avGo">Read</button> ${stop}`;
+    else note.innerHTML = `${other}${loading(`Reading: ${b.read || 0} of ${b.to_read} account(s) done${b.eta ? `, about ${Math.ceil(b.eta / 60)} min left` : ""}`)} ${stop}`;
+    $("avGo")?.addEventListener("click", (e) => act(e.target, async () => { await api("/api/read/all/confirm", {}); drawAvRead(); }));
+    $("avStop")?.addEventListener("click", (e) => act(e.target, async () => { await api("/api/read/all/stop", {}); drawAvRead(); }));
+    avPoll = setTimeout(drawAvRead, 3000);
   }
   $("aPdf").addEventListener("click", () => {
     const day = new Date().toISOString().slice(0, 10), what = AV.pick?.k === "owner" ? `owner ${AV.pick.v}` : (() => { const x = (M?.accounts || []).find((y) => y.account === AV.pick?.v); return x ? `${x.name || ""} ${x.account}`.trim() : "account"; })();
@@ -1724,7 +1772,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const after = (r) => r.action === "remove" ? '<b style="color:var(--bad)">removed</b>' : r.new.map((n) => `<code>${n.proto === "-1" ? "all traffic" : `${esc(PROTO[n.proto] || n.proto)} ${n.from === n.to ? n.from : n.from + "-" + n.to}`} from ${esc(n.source)}</code>`).join("<br>");
     const regions = [...new Set(rules.map((r) => r.region))];
     const minDays = Math.min(...rules.map((r) => r.days ?? 0));
-    const thin = minDays < 7 ? `<div class="flash err" style="margin:10px 0 0"><b>Only ${minDays.toFixed(1)} day(s) of flow logs read for some of these.</b> A weekly or monthly job could still need a rule marked "removed". Read at least 7 days (Overview, How far back) before removing, or untick those rules.</div>` : "";
+    const thin = minDays < 7 ? `<div class="flash err" style="margin:10px 0 0"><b>Only ${minDays.toFixed(1)} day(s) of flow logs read for some of these.</b> A weekly or monthly job could still need a rule marked "removed". Read at least 7 days before removing (close this and press <b>Read more data</b> on the account), or untick those rules.</div>` : "";
     $("actBody").innerHTML = thin + `<ol class="small steps" style="margin:10px 0 12px;padding-left:20px"><li><b>Check</b> the changes below; untick any you want to keep.</li><li><b>Propose</b>: a change request is recorded with your reason.</li><li>${S?.approvals ? "<b>A second person approves</b> it under Change requests, then it is applied." : "<b>Apply</b> it to AWS from here (two-person approval is off)."}</li></ol>
       <div class="scroll"><table class="small"><thead><tr><th><input type="checkbox" id="actAll" checked aria-label="All"></th><th>Group</th><th>Rule now</th><th>Becomes</th><th class="num">Addresses no longer let in</th><th>Evidence</th></tr></thead><tbody>${rules.map((r, i) => `<tr><td><input type="checkbox" data-ai="${i}" checked aria-label="Change this rule"></td>
         <td><b>${esc(r.gname || r.group)}</b><div class="muted"><code>${esc(r.group)}</code> · ${esc(r.region)}</div></td>
@@ -1785,7 +1833,37 @@ section.nodata .card:not(.empty-state) { display: none; }
   let SET = null;
   const toggleHelp = (btn, box) => $(btn).addEventListener("click", () => { const h = $(box); h.hidden = !h.hidden; $(btn).setAttribute("aria-expanded", String(!h.hidden)); });
   for (const [b, h] of [["stApplyWhy", "stApplyHelp"], ["stPerfWhy", "stPerfHelp"], ["stDbWhy", "stDbHelp"], ["stDataWhy", "stDataHelp"]]) toggleHelp(b, h);
+  // Database and computer figures, refreshed while Settings is open
+  let mxPoll = null;
+  const bSize = (n) => n == null ? "—" : n >= 1e9 ? `${(n / 1e9).toFixed(n >= 1e10 ? 0 : 1)} GB` : n >= 1e6 ? `${Math.round(n / 1e6)} MB` : n >= 1e3 ? `${Math.round(n / 1e3)} kB` : `${n} B`;
+  async function loadMetrics() {
+    clearTimeout(mxPoll);
+    if ($("tab-settings").hidden) return;
+    let X;
+    try { X = await api("/api/db-metrics", undefined, true); } catch (e) { $("stMxBody").innerHTML = `<p class="muted">${esc(e.message)}</p>`; return; }
+    const D = X.db, C = X.container, K = X.console, f = (k, v, sub, col) => `<div><span class="muted small">${k}</span><b${col ? ` style="color:${col}"` : ""}>${v}</b>${sub ? `<span class="muted small">${sub}</span>` : ""}</div>`;
+    const up = (t) => { const d = (Date.now() / 1000 - t) / 86400; return d >= 1 ? `${Math.floor(d)} day${Math.floor(d) === 1 ? "" : "s"}` : `${Math.round(d * 24)} h`; };
+    let h = X.error ? `<p style="color:var(--bad)">The database did not answer: ${esc(X.error)}</p>` : "";
+    if (D) {
+      const hit = D.cache_hit == null ? null : D.cache_hit * 100, maxB = Math.max(1, ...D.tables.map((t) => t.bytes));
+      h += `<h4 style="margin:0 0 4px">Database</h4><div class="facts">${f("Size on disk", bSize(D.db_bytes), `${bSize(D.schema_bytes)} in this console's tables`)}
+        ${f("Rows", D.rows.toLocaleString(), `in ${D.tables.length} tables`)}
+        ${f("Connections", `${D.connections} of ${D.max_connections}`, `${D.active} busy now`, D.connections > D.max_connections * 0.8 ? "var(--bad)" : "")}
+        ${f("Cache hit", hit == null ? "—" : `${hit.toFixed(1)}%`, "reads answered from memory", hit != null && hit < 95 ? "var(--warn)" : "")}
+        ${f("Running for", up(D.started), `PostgreSQL ${esc(D.version)}`)}
+        ${f("Transactions", D.commits.toLocaleString(), `${D.rollbacks.toLocaleString()} rolled back · ${D.deadlocks} deadlock${D.deadlocks === 1 ? "" : "s"}`)}</div>
+        <p class="muted small" style="margin:4px 0 8px">Memory settings: shared buffers ${esc(D.settings.shared_buffers || "?")} · work memory ${esc(D.settings.work_mem || "?")} · cache size assumed ${esc(D.settings.effective_cache_size || "?")}</p>
+        <div class="scroll"><table class="small"><thead><tr><th>Table</th><th class="num">Rows</th><th class="num">Storage</th><th class="num">Of which indexes</th><th style="width:30%">Share of storage</th></tr></thead><tbody>${D.tables.map((t) => `<tr><td><code>${esc(t.name)}</code></td><td class="num">${t.rows.toLocaleString()}</td><td class="num">${bSize(t.bytes)}</td><td class="num">${bSize(t.index_bytes)}</td><td><div class="bar-track"><div class="bar-fill" style="width:${(100 * t.bytes / maxB).toFixed(1)}%"></div></div></td></tr>`).join("")}</tbody></table></div>`;
+    }
+    if (C) h += `<h4 style="margin:12px 0 4px">Database container (Docker on this Mac)</h4><div class="facts">${f("CPU", esc(C.CPUPerc), "of one core")}${f("Memory", esc(C.MemPerc), esc(C.MemUsage))}${f("Disk read / written", esc(C.BlockIO), "since it started")}${f("Network in / out", esc(C.NetIO), "since it started")}${f("Processes", esc(C.PIDs))}</div>`;
+    if (K) h += `<h4 style="margin:12px 0 4px">Console</h4><div class="facts">${f("Memory", bSize(K.rss), `of ${bSize(K.memory)} on this computer`)}${f("CPU", K.cpu == null ? "—" : `${K.cpu.toFixed(1)}%`, "of one core, averaged")}${f("Threads", K.threads)}${f("Computer load", K.load ? K.load.map((x) => x.toFixed(1)).join(" · ") : "—", `1, 5 and 15 min · ${K.cores} cores`, K.load && K.load[0] > K.cores ? "var(--warn)" : "")}</div>`;
+    $("stMxBody").innerHTML = h + `<p class="muted small" style="margin:8px 0 0">Read ${esc(new Date(X.at * 1000).toLocaleTimeString())}</p>`;
+    mxPoll = setTimeout(loadMetrics, 15000);
+  }
+  $("stMxGo").addEventListener("click", (e) => act(e.target, loadMetrics));
+  toggleHelp("stMxWhy", "stMxHelp");
   async function loadSettings() {
+    loadMetrics();
     if (!S) await loadState();
     SET = await api("/api/settings");
     const A = SET.about, L = A.latest || {};

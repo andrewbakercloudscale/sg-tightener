@@ -491,6 +491,35 @@ class Console:
         return {**sg_store.server_status(), "starting": bool(self._db_start and self._db_start["running"]),
                 "steps": list((self._db_start or {}).get("steps") or []), "error": (self._db_start or {}).get("error", "")}
 
+    def db_metrics(self) -> dict:
+        """The Settings tab's figures: the database (size, rows and storage of each table, connections, cache),
+        its container (CPU, memory, disk) when it runs on this computer, and the console's own process."""
+        import sg_store
+
+        out: dict = {"at": time.time()}
+        st = self.store()
+        try:
+            out["db"] = sg_store.metrics(st.db)
+        except Exception as exc:  # noqa: BLE001 - shown on the page
+            out["error"] = str(exc)[:300]
+        finally:
+            st.close()
+        out["container"] = sg_store.container_stats()
+        rss = cpu = None
+        try:
+            got = subprocess.run(["ps", "-o", "rss=,%cpu=", "-p", str(os.getpid())], capture_output=True, text=True,
+                                 timeout=5).stdout.split()  # fmt: skip
+            rss, cpu = int(got[0]) * 1024, float(got[1])
+        except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+            pass
+        try:
+            load = os.getloadavg()
+        except OSError:
+            load = None
+        out["console"] = {"rss": rss, "cpu": cpu, "threads": threading.active_count(), "load": load,
+                          "cores": os.cpu_count(), "memory": _mem_bytes(), "pid": os.getpid()}
+        return out
+
     def database_start(self, _body: dict | None = None) -> dict:
         """Start the local database in the background (colima first if Docker's engine is not running)."""
         import sg_store
@@ -2655,6 +2684,8 @@ def make_handler(console: Console, token: str, port: int):
                     return self._page(console.review(_need(q, "account"), token))
                 if url.path == "/api/database":
                     return self._json(200, console.database())
+                if url.path == "/api/db-metrics":
+                    return self._json(200, console.db_metrics())
                 if url.path == "/api/state":
                     return self._json(200, console.state())
                 if url.path == "/api/remediation":
