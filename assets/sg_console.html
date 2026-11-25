@@ -1518,9 +1518,9 @@ section.nodata .card:not(.empty-state) { display: none; }
     await loadState(); await loadGroups();
   }));
   // A second press within 5 seconds confirms (no browser dialogs).
-  function confirmInline(btn) {
+  function confirmInline(btn, ask = "Press again to apply") {
     if (btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = btn.dataset.label; return true; }
-    btn.dataset.label = btn.textContent; btn.dataset.armed = "1"; btn.textContent = "Press again to apply";
+    btn.dataset.label = btn.textContent; btn.dataset.armed = "1"; btn.textContent = ask;
     setTimeout(() => { if (btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = btn.dataset.label; } }, 5000);
     return false;
   }
@@ -1961,24 +1961,25 @@ section.nodata .card:not(.empty-state) { display: none; }
            ${r.changes.narrowed.removed.map((c) => `<li><span class="pill" style="--p:var(--bad)">narrowed</span> ${ruleLine(c)}</li>`).join("")}
            ${r.changes.narrowed.added.map((c) => `<li><span class="pill" style="--p:var(--good)">to</span> ${ruleLine(c)}</li>`).join("")}
            <li class="muted small">${r.changes.ingress.length} inbound and ${r.changes.egress.length} outbound rule(s) in all</li>`
-        : r.changes.map((c) => `<li><span class="pill" style="--p:${c.op === "add" ? "var(--good)" : "var(--bad)"}">${c.op}</span> <code>${esc(c.group)}</code> ${esc(c.rule.direction === "in" ? "inbound" : "outbound")} <code>${esc(c.rule.proto === "-1" ? "all traffic" : `${c.rule.proto} ${c.rule.from === c.rule.to ? c.rule.from : c.rule.from + "-" + c.rule.to}`)}</code> ${c.rule.direction === "in" ? "from" : "to"} <code>${esc(c.rule.source)}</code> <span class="muted small">${esc(c.rule.description)}</span></li>`).join("");
+        : (r.changes.length > 12 ? (xs) => `${xs.slice(0, 10).join("")}<li class="muted small"><details><summary>Show all ${r.changes.length.toLocaleString()} changes</summary><ul>${xs.slice(10).join("")}</ul></details></li>` : (xs) => xs.join(""))(r.changes.map((c) => `<li><span class="pill" style="--p:${c.op === "add" ? "var(--good)" : "var(--bad)"}">${c.op}</span> <code>${esc(c.group)}</code> ${esc(c.rule.direction === "in" ? "inbound" : "outbound")} <code>${esc(c.rule.proto === "-1" ? "all traffic" : `${c.rule.proto} ${c.rule.from === c.rule.to ? c.rule.from : c.rule.from + "-" + c.rule.to}`)}</code> ${c.rule.direction === "in" ? "from" : "to"} <code>${esc(c.rule.source)}</code> <span class="muted small">${esc(c.rule.description)}</span></li>`));
       const buttons = r.status === "pending" ? (mine
-        ? `<button class="btn" data-dec="cancel|${r.id}">Withdraw</button><span class="muted small">A different person must approve it.</span>`
+        ? `<span class="muted small">A different person must approve it, or cancel it at the top.</span>`
         : `<input placeholder="Note (required to reject)" data-note="${r.id}"><button class="btn primary" data-dec="approve|${r.id}">Approve</button><button class="btn danger" data-dec="reject|${r.id}">Reject</button>`)
         : r.status === "approved" && r.kind === "merge" ? `<button class="btn primary" data-applymerge="${r.id}">Move ${Object.keys(r.changes.enis).length} interface(s) onto ${esc(r.changes.target_name)}</button><span class="muted small">Apply the rule changes for ${esc(r.region)} first.</span>`
         : r.status === "approved" && r.kind === "asset" ? `<button class="btn primary" data-applyasset="${r.id}">Create the group and move ${esc(r.changes.eni)}</button>`
         : r.status === "approved" ? `<button class="btn primary" data-applyreq="${esc(r.account)}|${esc(r.region)}">Apply in ${esc(r.region)}</button>` : "";
       return `<div class="card"><div class="tools" style="margin:0 0 6px"><b>#${r.id}</b><span class="pill" style="--p:${STATUS[r.status]}">${esc(r.status)}</span>
-        <span>${esc(r.account)} · ${esc(r.region)}</span><span class="muted small">proposed by ${who(r.proposer)} at ${esc(when(r.at))}</span>${r.ticket ? `<code>${esc(r.ticket)}</code>` : ""}</div>
+        <span>${esc(r.account)} · ${esc(r.region)}</span><span class="muted small">proposed by ${who(r.proposer)} at ${esc(when(r.at))}</span>${r.ticket ? `<code>${esc(r.ticket)}</code>` : ""}${r.status === "pending" && mine ? `<button class="btn danger sm" style="margin-left:auto" data-dec="cancel|${r.id}" title="Withdraw your request: nothing in AWS changes, and the audit trail records it">Cancel request</button>` : ""}</div>
         <div>${esc(r.reason)}</div><ul>${changes}</ul>
         ${r.decided_by ? `<div class="muted small">${esc(r.status === "cancelled" ? "withdrawn" : r.status === "rejected" ? "rejected" : "approved")} by ${who(r.decided_by)} at ${esc(when(r.decided_at))}${r.note ? `: ${esc(r.note)}` : ""}${r.applied_at ? ` · applied ${esc(when(r.applied_at))}` : ""}</div>` : ""}
         <div class="tools">${buttons}</div></div>`;
     }).join("") || '<p class="muted">No change requests here.</p>';
     for (const b of document.querySelectorAll("[data-dec]")) b.addEventListener("click", () => act(b, async () => {
       const [action, id] = b.dataset.dec.split("|");
+      if (action === "cancel" && !confirmInline(b, `Press again to cancel #${id}`)) return;
       const note = document.querySelector(`[data-note="${id}"]`)?.value || "";
       const res = await api("/api/decide", {id: +id, action, note});
-      flash(`Change request #${res.id}: ${res.status}.${res.status === "approved" ? " Apply it to make it in AWS." : ""}`);
+      flash(`Change request #${res.id}: ${res.status}${res.status === "cancelled" ? "; nothing in AWS changed" : ""}.${res.status === "approved" ? " Apply it to make it in AWS." : ""}`);
       await loadState(); await loadRequests();
     }));
     for (const b of document.querySelectorAll("[data-applymerge]")) b.addEventListener("click", () => act(b, async () => {

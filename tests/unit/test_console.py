@@ -580,3 +580,14 @@ def test_remediate_can_propose_a_single_group():
     page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
     assert 'data-xp="${esc(g.id)}"' in page and ">Propose this group</button>" in page
     assert "proposeFix(b, [b.dataset.xp], [])" in page
+
+
+def test_change_request_has_a_cancel_button_at_the_top_for_its_proposer():
+    """With 1,239 changes listed, a Withdraw button at the bottom of the card could not be found."""
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    head = page[page.index("proposed by ${who(r.proposer)}"):]
+    head = head[:head.index("<ul>${changes}</ul>")]
+    assert 'data-dec="cancel|${r.id}"' in head and ">Cancel request</button>" in head
+    assert "Show all ${r.changes.length.toLocaleString()} changes" in page
+    assert 'confirmInline(b, `Press again to cancel #${id}`)' in page
