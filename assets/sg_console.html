@@ -491,6 +491,11 @@ section.nodata .card:not(.empty-state) { display: none; }
   .combo > input { width: 100%; }
   .combo-list { position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; width: max(100%, 440px); max-height: 420px; overflow: auto;
                 background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 30px rgba(0,0,0,.18); padding: 4px 0; }
+  #aList.combo-list { width: 100%; max-height: none; overflow: visible; }
+  #aList .acols { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+  #aList .acol + .acol { border-left: 1px solid var(--grid); }
+  #aList .acol-list { max-height: 380px; overflow: auto; }
+  @media (max-width: 700px) { #aList .acols { grid-template-columns: 1fr; } }
   .combo-list .cg { padding: 6px 12px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); }
   .combo-list .co { display: flex; gap: 8px; justify-content: space-between; padding: 5px 12px; font-size: 13px; cursor: pointer; }
   .combo-list .co.act, .combo-list .co:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
@@ -541,6 +546,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     body.print-ins #tab-refused > :not(#fPrintHead):not(#fChartCard):not(#fScanCard):not(#fInsightCard),
     body.print-att #tab-refused > :not(#fPrintHead):not(#fAttention) { display: none !important; }
     body.print-scan #tab-refused > :not(#fPrintHead):not(#fScanCard) { display: none !important; }
+    .screen-only { display: none !important; }
     body.print-scan #fScanCard .acts, body.print-scan #fScanCard [data-scanfix], body.print-scan #fScanCard summary { display: none !important; }
     body.print-audit #auditPrint { display: block !important; }
     body.print-fix > *:not(#fixPrint) { display: none !important; }
@@ -734,11 +740,10 @@ section.nodata .card:not(.empty-state) { display: none; }
     <div class="tools">
       <div class="combo" id="aCombo" style="min-width:420px;flex:1"><input id="aQ" type="search" placeholder="Account name or number, or an owner…" aria-label="Account or owner" role="combobox" aria-expanded="false" aria-controls="aList" autocomplete="off">
         <div class="combo-list" id="aList" role="listbox" hidden></div></div>
-      <label class="small">Owner tag <select id="aTag" aria-label="Which account tag names the owner"></select></label>
       <button class="btn sm" type="button" id="aPdf" disabled>Export PDF</button>
       <button class="btn sm" type="button" id="aWhy" aria-expanded="false">Explain</button>
     </div>
-    <p class="small" id="aHelp" hidden>The figures come from the flow logs read for each account (the last month) and its security groups, the same as <b>Risk overview</b>. <b>Risk points</b>: 100 for each critical area, 10 for each high, 1 for each medium, across: needs attention, high-risk sources let in, open to the internet on risky ports, outbound to threat lists, never-seen addresses allowed, rules to tighten, probing, and blind spots. <b>Peers</b> are every other account (or owner) read. The owner is the account tag chosen in <b>Owner tag</b>. <b>Export PDF</b> prints this page only: choose "Save as PDF".</p>
+    <p class="small" id="aHelp" hidden>The figures come from the flow logs read for each account (the last month) and its security groups, the same as <b>Risk overview</b>. <b>Risk points</b>: 100 for each critical area, 10 for each high, 1 for each medium, across: needs attention, high-risk sources let in, open to the internet on risky ports, outbound to threat lists, never-seen addresses allowed, rules to tighten, probing, and blind spots. <b>Peers</b> are every other account (or owner) read. Type part of an account name or number (such as <b>app</b>) or of a person's name: matching <b>accounts</b> and <b>owners</b> are listed side by side; pick one. An owner is anyone named in an account tag such as Linked HOD, Product Head or Platform Custodian, and is compared with the other people in that same tag. <b>Export PDF</b> prints this page only: choose "Save as PDF".</p>
     <div class="print-only" id="aPrintHead"></div>
     <div id="aBody"><div class="card empty-state"><p class="muted" style="margin:0">Start typing an account or an owner above.</p></div></div>
   </section>
@@ -929,7 +934,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <div class="acts" style="margin:0 0 6px"><label class="small">Show <select id="fScanN" aria-label="How many source IP addresses to show"><option value="50" selected>top 50</option><option value="100">top 100</option><option value="250">top 250</option><option value="500">top 500</option><option value="1000">top 1,000</option></select> source IP addresses</label>
         <button class="btn sm" type="button" id="fScanPdf">Export PDF</button>
         <button class="btn sm" type="button" id="fScanWhy" aria-expanded="false">Explain</button></div>
-      <p class="muted small" id="fScanHelp" hidden>The source IP addresses refused on the most ports, then at the most of our IP addresses, then with the most refused flows: what a host looking for its next way in does. Counted across every account the filters above keep: flows are added up; ports and IP addresses are the distinct ones named, or the most in any one account where the read only counted them; the account column says in how many accounts it was refused. Internal sources come first in importance: a scanning host inside your network may be compromised. <b>Show</b> chooses how many to list (50 to 1,000), 50 to a page. Click an address to filter the page by it, or <b>Fix…</b> to see everything known about it. <b>IP addresses tried</b> lists our addresses it was refused at when there are 5 or fewer; with more, <b>View</b> opens the list. Where the read only counted them, the number is larger than the list. <b>Export PDF</b> prints this table as shown (with every address list open): choose "Save as PDF".</p>
+      <p class="muted small" id="fScanHelp" hidden>The source IP addresses refused on the most ports, then at the most of our IP addresses, then with the most refused flows: what a host looking for its next way in does. Counted across every account the filters above keep: flows are added up; ports and IP addresses are the distinct ones named, or the most in any one account where the read only counted them; the account column says in how many accounts it was refused. Internal sources come first in importance: a scanning host inside your network may be compromised. <b>Show</b> chooses how many to list (50 to 1,000), 50 to a page. Click an address to filter the page by it, or <b>Fix…</b> to see everything known about it. <b>IP addresses tried</b> lists our addresses it was refused at when there are 5 or fewer; with more, <b>View</b> opens the list. Where the read only counted them, the number is larger than the list. <b>Export PDF</b> prints this table with the first 5 addresses of each source and how many more: choose "Save as PDF".</p>
       <div class="scroll"><table class="small"><thead><tr><th>#</th><th>Source</th><th class="num" title="Distinct ports it was refused on (at least the most in any one account)">Ports tried</th><th class="num" title="Distinct IP addresses of ours it was refused at (at least the most in any one account)">IP addresses tried</th><th class="num">Refused flows</th><th class="num">Accounts</th><th>Busiest ports</th><th>Last refused</th><th></th></tr></thead><tbody id="fScanRows"></tbody></table></div></div>
     <div class="card" id="fInsightCard"><div class="card-head"><h3 style="margin:0">Where the rejections come from and go to</h3><span class="muted small" id="fInsightNote"></span></div>
       <p class="muted small">The rejected traffic below, sliced every way: by source and destination IP address, kind of source, port and kind of port, verdict, and what refused it. Bars are refused flows. Click a line to filter by it.</p>
@@ -1517,34 +1522,36 @@ section.nodata .card:not(.empty-state) { display: none; }
     }
     if (!refusedData) refusedData = await api("/api/refused?range=24h", undefined, true).catch(() => null);
     if (!AV.pick) $("aBody").innerHTML = (M.building ? `<p class="muted small">${M.building} account(s) still being worked out: the figures fill in as they finish.</p>` : "") + A_EMPTY;
-    const A = M.accounts, tag = ownerTag(A);
-    $("aTag").innerHTML = tagKeys(A).map((x) => `<option value="${esc(x.k)}">${esc(x.k)} (${x.n})</option>`).join("") || '<option value="">no tags read</option>';
-    if (tag) $("aTag").value = tag;
     if (M.building) setTimeout(() => { if (!$("tab-accounts").hidden) { M = null; loadAccounts(true).catch(() => {}); } }, 6000);
     if (AV.pick) drawAccountView();
   }
-  const aTagNow = () => $("aTag").value || ownerTag(M?.accounts || []);
+  // The owner: the tag a person's name is in. A search matches any such tag (Linked HOD, Product Head, Platform
+  // Custodian …) and says which one; the owner view compares by that tag.
+  const PERSON_TAG = /owner|hod|head|executive|manager|custodian|lead|director/i;
+  const aTagNow = () => (AV.pick?.k === "owner" && AV.pick.tag) || ownerTag(M?.accounts || []);
   function aItems(q) {
-    const A = M?.accounts || [], tag = aTagNow(), out = [];
+    const A = M?.accounts || [], hit = (t) => !q || String(t).toLowerCase().includes(q);
     const owners = new Map();
-    for (const a of A) { const o = ownerOf(a, tag); owners.set(o, (owners.get(o) || 0) + 1); }
-    const hit = (t) => !q || t.toLowerCase().includes(q);
-    for (const [o, n] of [...owners].sort((x, y) => y[1] - x[1])) if (hit(o)) out.push({k: "owner", v: o, label: o, sub: `${n} account${n === 1 ? "" : "s"}`});
-    for (const a of [...A].sort((x, y) => points(y) - points(x))) if (hit(`${a.name} ${a.account}`)) out.push({k: "account", v: a.account, label: a.name || a.account, sub: `${a.account} · ${points(a).toLocaleString()} points`});
-    return out;
+    for (const a of A) for (const [k, v] of Object.entries(a.tags || {})) {
+      if (!PERSON_TAG.test(k) || !v || !hit(v)) continue;
+      const key = k + "\u0001" + v, x = owners.get(key) || {k: "owner", v, tag: k, n: 0};
+      x.n++; owners.set(key, x);
+    }
+    const own = [...owners.values()].sort((x, y) => y.n - x.n || x.v.localeCompare(y.v)).map((x) => ({...x, label: x.v, sub: `${x.tag} · ${x.n} account${x.n === 1 ? "" : "s"}`}));
+    const acc = [...A].filter((a) => hit(`${a.name} ${a.account}`)).sort((x, y) => points(y) - points(x))
+      .map((a) => ({k: "account", v: a.account, label: a.name || a.account, sub: `${a.account} · ${points(a).toLocaleString()} pts`}));
+    return {acc, own};
   }
   function drawAList() {
-    const q = $("aQ").value.toLowerCase().trim(), xs = aItems(q);
-    const own = xs.filter((x) => x.k === "owner").slice(0, 8), acc = xs.filter((x) => x.k === "account").slice(0, 12);
-    let i = 0;
-    $("aList").innerHTML = (own.length ? `<div class="cg">Owners (${esc(aTagNow() || "owner")})</div>` + own.map((x) => `<div class="co" role="option" data-i="${i++}" data-k="owner" data-v="${esc(x.v)}"><span>${esc(x.label)}</span><span class="n">${esc(x.sub)}</span></div>`).join("") : "")
-      + (acc.length ? '<div class="cg">Accounts, most risk first</div>' + acc.map((x) => `<div class="co" role="option" data-i="${i++}" data-k="account" data-v="${esc(x.v)}"><span>${esc(x.label)}</span><span class="n">${esc(x.sub)}</span></div>`).join("") : "")
-      || '<div class="co muted">Nothing matches</div>';
+    const q = $("aQ").value.toLowerCase().trim(), {acc, own} = aItems(q);
+    const row = (x) => `<div class="co" role="option" data-k="${x.k}" data-v="${esc(x.v)}"${x.tag ? ` data-tag="${esc(x.tag)}"` : ""}><span>${esc(x.label)}</span><span class="n">${esc(x.sub)}</span></div>`;
+    const col = (title, xs) => `<div class="acol"><div class="cg">${title} (${xs.length.toLocaleString()})</div><div class="acol-list">${xs.slice(0, 300).map(row).join("") || '<div class="co muted">None match</div>'}</div></div>`;
+    $("aList").innerHTML = `<div class="acols">${col("Accounts, most risk first", acc)}${col("Owners", own)}</div>`;
     $("aList").hidden = false; $("aQ").setAttribute("aria-expanded", "true");
   }
   function pickA(el) {
     if (!el?.dataset.k) return;
-    AV.pick = {k: el.dataset.k, v: el.dataset.v};
+    AV.pick = {k: el.dataset.k, v: el.dataset.v, tag: el.dataset.tag || ""};
     $("aQ").value = el.querySelector("span").textContent;
     $("aList").hidden = true; $("aQ").setAttribute("aria-expanded", "false");
     drawAccountView();
@@ -1559,7 +1566,6 @@ section.nodata .card:not(.empty-state) { display: none; }
   });
   $("aList").addEventListener("mousedown", (e) => { e.preventDefault(); pickA(e.target.closest(".co")); });
   document.addEventListener("click", (e) => { if (!e.target.closest("#aCombo")) $("aList").hidden = true; });
-  $("aTag").addEventListener("change", () => { try { localStorage.setItem("sg-owner-tag", $("aTag").value); } catch (e) { /* ignore */ } OWN.tag = $("aTag").value; if (AV.pick?.k === "owner") AV.pick = null; drawAccountView(); });
   $("aWhy").addEventListener("click", () => { const h = $("aHelp"); h.hidden = !h.hidden; $("aWhy").setAttribute("aria-expanded", String(!h.hidden)); });
   const SEVCOL = {critical: "var(--bad)", high: "var(--high)", medium: "var(--warn)"};
   const rankOf = (xs, v) => 1 + xs.filter((x) => x > v).length;
@@ -2109,8 +2115,8 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("fPrintHead").innerHTML = `<div class="eyebrow">Security Tightener · rejected traffic</div><h2 style="margin:2px 0 4px">${esc(title)}</h2>
       <p class="muted small">Exported ${esc(when(Date.now() / 1000))} · ${esc(att ? `${$("fRange").selectedOptions[0].textContent} · sorted by ${$("fSort").selectedOptions[0].textContent.toLowerCase()}` : filters.join(" · "))}</p>`;
     printSection("tab-refused", `Security Tightener - ${title} - ${day}`,
-      () => { document.body.classList.add(scan ? "print-scan" : att ? "print-att" : "print-ins"); if (scan) $("fScanCard").querySelectorAll("details").forEach((d) => { d.dataset.was = d.open ? "1" : ""; d.open = true; }); if (att && !attAll) { attAll = true; drawAttention(); } },
-      () => { document.body.classList.remove("print-att", "print-ins", "print-scan"); if (scan) $("fScanCard").querySelectorAll("details").forEach((d) => { d.open = !!d.dataset.was; }); if (att && attAll !== keepAll) { attAll = keepAll; drawAttention(); } });
+      () => { document.body.classList.add(scan ? "print-scan" : att ? "print-att" : "print-ins"); if (att && !attAll) { attAll = true; drawAttention(); } },
+      () => { document.body.classList.remove("print-att", "print-ins", "print-scan");  if (att && attAll !== keepAll) { attAll = keepAll; drawAttention(); } });
   }
   $("fPdfIns").addEventListener("click", () => exportRefusedPdf("ins"));
   $("fPdfAtt").addEventListener("click", () => exportRefusedPdf("att"));
@@ -2729,7 +2735,8 @@ section.nodata .card:not(.empty-state) { display: none; }
     const more = x.nd > ips.length ? `<div class="muted">+${(x.nd - ips.length).toLocaleString()} counted, not named</div>` : "";
     const list = ips.map((d) => `<code>${esc(d)}</code>`).join("<br>");
     if (ips.length <= 5) return `<b>${x.nd.toLocaleString()}</b>${ips.length ? `<div class="small" style="text-align:left">${list}</div>` : ""}${more}`;
-    return `<b>${x.nd.toLocaleString()}</b><details class="small" style="text-align:left"><summary class="btn sm" style="display:inline-block;margin-top:4px">View ${ips.length.toLocaleString()} IPs</summary><div style="max-height:240px;overflow:auto;margin-top:4px">${list}</div></details>${more}`;
+    const top5 = ips.slice(0, 5).map((d) => `<code>${esc(d)}</code>`).join("<br>");
+    return `<b>${x.nd.toLocaleString()}</b><details class="small screen-only" style="text-align:left"><summary class="btn sm" style="display:inline-block;margin-top:4px">View ${ips.length.toLocaleString()} IPs</summary><div style="max-height:240px;overflow:auto;margin-top:4px">${list}</div></details><div class="small print-only" style="text-align:left">${top5}<div class="muted">+${(x.nd - 5).toLocaleString()} more</div></div>`;
   }
   function drawScanners(shown) {
     const by = new Map();
@@ -2745,10 +2752,10 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("fScanNote").textContent = `${list.length.toLocaleString()} of ${by.size.toLocaleString()} source IP addresses`;
     const fp = page("scan", list.length, () => drawScanners(shown));
     $("fScanRows").innerHTML = list.slice(fp.a, fp.b).map((x, i) => { const r = x.rows.reduce((m, y) => (Number(y.flows) > Number(m.flows) ? y : m), x.rows[0]);
-      return `<tr><td class="num">${fp.a + i + 1}</td><td><button class="btn sm" data-scanq="${esc(x.src)}" title="Filter the page by this address"><code>${esc(x.src)}</code></button> <span class="pill" style="--p:${r.internal ? "var(--good)" : "var(--warn)"}">${r.internal ? "internal" : "external"}</span>${x.rows.some((y) => y.scan) ? ' <span class="pill" style="--p:var(--high)">scanning</span>' : ""}${x.rows.some((y) => y.threat) ? ' <span class="pill" style="--p:var(--bad)">known malicious</span>' : ""}${x.rows.some((y) => y.tor) ? ' <span class="pill" style="--p:var(--bad)">Tor</span>' : ""}<div class="muted">${esc(r.name && r.name !== r.src ? r.name : "")}${r.type ? " · " + esc(r.type) : ""}</div></td>
+      return `<tr><td class="num">${fp.a + i + 1}</td><td><button class="btn sm" data-scanq="${esc(x.src)}" title="Filter the page by this address"><code>${esc(x.src)}</code></button><b class="print-only"><code>${esc(x.src)}</code></b> <span class="pill" style="--p:${r.internal ? "var(--good)" : "var(--warn)"}">${r.internal ? "internal" : "external"}</span>${x.rows.some((y) => y.scan) ? ' <span class="pill" style="--p:var(--high)">scanning</span>' : ""}${x.rows.some((y) => y.threat) ? ' <span class="pill" style="--p:var(--bad)">known malicious</span>' : ""}${x.rows.some((y) => y.tor) ? ' <span class="pill" style="--p:var(--bad)">Tor</span>' : ""}<div class="muted">${esc(r.name && r.name !== r.src ? r.name : "")}${r.type ? " · " + esc(r.type) : ""}</div></td>
         <td class="num"><b>${x.np.toLocaleString()}</b></td><td class="num">${ipsCell(x)}</td><td class="num">${x.flows.toLocaleString()}</td>
         <td class="num" title="${esc([...x.accts].map((a) => acctLabel(a)).join(", "))}">${x.accts.size}</td>
-        <td>${[...x.pf.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k]) => `<code>${esc(k)}</code>`).join(" ")}</td><td>${esc(when(x.last))}</td>
+        <td>${[...x.pf.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k]) => `<code style="white-space:nowrap">${esc(k)}</code>`).join("<br>")}</td><td>${esc(when(x.last))}</td>
         <td><button class="btn sm" data-scanfix="${esc(x.src)}" title="Who it is, everything it tried, why it was refused">Fix…</button></td></tr>`; }).join("")
       || '<tr><td colspan="9" class="muted">Nothing matches.</td></tr>';
     pagerAfter($("fScanRows"), fp.bar);
