@@ -540,6 +540,8 @@ section.nodata .card:not(.empty-state) { display: none; }
     body.print-audit > *:not(#auditPrint) { display: none !important; }
     body.print-ins #tab-refused > :not(#fPrintHead):not(#fChartCard):not(#fScanCard):not(#fInsightCard),
     body.print-att #tab-refused > :not(#fPrintHead):not(#fAttention) { display: none !important; }
+    body.print-scan #tab-refused > :not(#fPrintHead):not(#fScanCard) { display: none !important; }
+    body.print-scan #fScanCard .acts, body.print-scan #fScanCard [data-scanfix], body.print-scan #fScanCard summary { display: none !important; }
     body.print-audit #auditPrint { display: block !important; }
     body.print-fix > *:not(#fixPrint) { display: none !important; }
     body.print-fix #fixPrint { display: block !important; }
@@ -925,8 +927,9 @@ section.nodata .card:not(.empty-state) { display: none; }
       <div id="fChart"></div></div>
     <div class="card" id="fScanCard"><div class="card-head"><h3 style="margin:0">IPs of Interest: Scanning Assets</h3><span class="muted small" id="fScanNote"></span></div>
       <div class="acts" style="margin:0 0 6px"><label class="small">Show <select id="fScanN" aria-label="How many source IP addresses to show"><option value="50" selected>top 50</option><option value="100">top 100</option><option value="250">top 250</option><option value="500">top 500</option><option value="1000">top 1,000</option></select> source IP addresses</label>
+        <button class="btn sm" type="button" id="fScanPdf">Export PDF</button>
         <button class="btn sm" type="button" id="fScanWhy" aria-expanded="false">Explain</button></div>
-      <p class="muted small" id="fScanHelp" hidden>The source IP addresses refused on the most ports, then at the most of our IP addresses, then with the most refused flows: what a host looking for its next way in does. Counted across every account the filters above keep: flows are added up; ports and IP addresses are the distinct ones named, or the most in any one account where the read only counted them; the account column says in how many accounts it was refused. Internal sources come first in importance: a scanning host inside your network may be compromised. <b>Show</b> chooses how many to list (50 to 1,000), 50 to a page. Click an address to filter the page by it, or <b>Fix…</b> to see everything known about it.</p>
+      <p class="muted small" id="fScanHelp" hidden>The source IP addresses refused on the most ports, then at the most of our IP addresses, then with the most refused flows: what a host looking for its next way in does. Counted across every account the filters above keep: flows are added up; ports and IP addresses are the distinct ones named, or the most in any one account where the read only counted them; the account column says in how many accounts it was refused. Internal sources come first in importance: a scanning host inside your network may be compromised. <b>Show</b> chooses how many to list (50 to 1,000), 50 to a page. Click an address to filter the page by it, or <b>Fix…</b> to see everything known about it. <b>IP addresses tried</b> lists our addresses it was refused at when there are 5 or fewer; with more, <b>View</b> opens the list. Where the read only counted them, the number is larger than the list. <b>Export PDF</b> prints this table as shown (with every address list open): choose "Save as PDF".</p>
       <div class="scroll"><table class="small"><thead><tr><th>#</th><th>Source</th><th class="num" title="Distinct ports it was refused on (at least the most in any one account)">Ports tried</th><th class="num" title="Distinct IP addresses of ours it was refused at (at least the most in any one account)">IP addresses tried</th><th class="num">Refused flows</th><th class="num">Accounts</th><th>Busiest ports</th><th>Last refused</th><th></th></tr></thead><tbody id="fScanRows"></tbody></table></div></div>
     <div class="card" id="fInsightCard"><div class="card-head"><h3 style="margin:0">Where the rejections come from and go to</h3><span class="muted small" id="fInsightNote"></span></div>
       <p class="muted small">The rejected traffic below, sliced every way: by source and destination IP address, kind of source, port and kind of port, verdict, and what refused it. Bars are refused flows. Click a line to filter by it.</p>
@@ -1354,7 +1357,7 @@ section.nodata .card:not(.empty-state) { display: none; }
         <p class="muted small">Accounts that spent less in the last 30 days are skipped (0 reads every one); their spend comes from Cost Explorer in the management account. Then security groups, then one price for every account's flow logs before anything is spent. 4 accounts are read at a time.</p>`;
     } else if (b.status === "pricing") {
       const left = k("starting");
-      h = `<p>${loading(`Checking spend, reading security groups and pricing flow logs: ${b.accounts - left} of ${b.accounts} accounts${k("skipped") ? `, ${k("skipped")} skipped (under US$${b.min_spend} a month)` : ""}${eta(b)}`)}</p><div class="bar-track"><div class="bar-fill" style="width:${Math.round(100 * (b.accounts - left) / b.accounts)}%"></div></div><div class="tools"><button class="btn danger" id="bStop">Stop</button></div>`;
+      h = `${b.resumed ? '<p class="small"><span class="pill" style="--p:var(--warn)">picked up again</span> The console restarted while this was under way, so it is being priced again. Nothing is spent until you say yes.</p>' : ""}<p>${loading(`Checking spend, reading security groups and pricing flow logs: ${b.accounts - left} of ${b.accounts} accounts${k("skipped") ? `, ${k("skipped")} skipped (under US$${b.min_spend} a month)` : ""}${eta(b)}`)}</p><div class="bar-track"><div class="bar-fill" style="width:${Math.round(100 * (b.accounts - left) / b.accounts)}%"></div></div><div class="tools"><button class="btn danger" id="bStop">Stop</button></div>`;
     } else if (b.status === "confirm") {
       h = `<div class="cost-box warn"><div class="cost-row"><span><span class="small muted">Data to read</span><b>about ${bytesTxt(b.cost / (EST ? EST.per_gb : 0.005) * 1e9)}</b></span><span><span class="small muted">AWS will charge about</span><b>${money2(b.cost)}</b></span><span class="small muted">CloudWatch Logs Insights, billed to these accounts. Nothing is charged until you select Read below.</span></div></div>
         <p><b>Ready to read flow logs in ${b.to_read} of ${b.accounts} accounts: ${esc(usd(b.cost))}</b>${b.cost_unknown ? ` plus ${b.cost_unknown} account(s) whose cost is not known until a first 1-day read` : ""}.
@@ -1506,13 +1509,18 @@ section.nodata .card:not(.empty-state) { display: none; }
   }));
   // ---- Accounts: one account in full, or one owner against their peers
   let AV = {pick: null};
-  async function loadAccounts() {
-    if (!M) { $("aBody").innerHTML = `<div class="card">${loading("Reading every account's figures…")}</div>`; M = await api("/api/macro?range=1m"); }
-    if (!refusedData) refusedData = await api("/api/refused?range=24h").catch(() => null);
+  const A_EMPTY = '<div class="card empty-state"><p class="muted" style="margin:0">Start typing an account or an owner above.</p></div>';
+  async function loadAccounts(quiet) {
+    if (!M) {
+      if (!quiet && !AV.pick) $("aBody").innerHTML = `<div class="card">${loading("Reading every account's figures…")}</div>`;
+      M = await api("/api/macro?range=1m", undefined, quiet);
+    }
+    if (!refusedData) refusedData = await api("/api/refused?range=24h", undefined, true).catch(() => null);
+    if (!AV.pick) $("aBody").innerHTML = (M.building ? `<p class="muted small">${M.building} account(s) still being worked out: the figures fill in as they finish.</p>` : "") + A_EMPTY;
     const A = M.accounts, tag = ownerTag(A);
     $("aTag").innerHTML = tagKeys(A).map((x) => `<option value="${esc(x.k)}">${esc(x.k)} (${x.n})</option>`).join("") || '<option value="">no tags read</option>';
     if (tag) $("aTag").value = tag;
-    if (M.building) setTimeout(() => { if (!$("tab-accounts").hidden) { M = null; loadAccounts().catch(() => {}); } }, 6000);
+    if (M.building) setTimeout(() => { if (!$("tab-accounts").hidden) { M = null; loadAccounts(true).catch(() => {}); } }, 6000);
     if (AV.pick) drawAccountView();
   }
   const aTagNow = () => $("aTag").value || ownerTag(M?.accounts || []);
@@ -2096,15 +2104,17 @@ section.nodata .card:not(.empty-state) { display: none; }
     const filters = [$("fRange").selectedOptions[0].textContent, $("fAcct").value ? `account ${acctLabel($("fAcct").value)}` : "every account",
       $("fSev").value && `severity ${$("fSev").value}`, $("fQ").value && `search "${$("fQ").value}"`, $("fRisky").checked && "risky ports only",
       $("fNew").checked && "new IP addresses only", $("fWhere").value && $("fWhere").selectedOptions[0].textContent].filter(Boolean);
-    const title = att ? "Accounts that need attention" : "Rejected traffic: insights and graphs";
+    const scan = part === "scan";
+    const title = scan ? "IPs of Interest: Scanning Assets" : att ? "Accounts that need attention" : "Rejected traffic: insights and graphs";
     $("fPrintHead").innerHTML = `<div class="eyebrow">Security Tightener · rejected traffic</div><h2 style="margin:2px 0 4px">${esc(title)}</h2>
       <p class="muted small">Exported ${esc(when(Date.now() / 1000))} · ${esc(att ? `${$("fRange").selectedOptions[0].textContent} · sorted by ${$("fSort").selectedOptions[0].textContent.toLowerCase()}` : filters.join(" · "))}</p>`;
     printSection("tab-refused", `Security Tightener - ${title} - ${day}`,
-      () => { document.body.classList.add(att ? "print-att" : "print-ins"); if (att && !attAll) { attAll = true; drawAttention(); } },
-      () => { document.body.classList.remove("print-att", "print-ins"); if (att && attAll !== keepAll) { attAll = keepAll; drawAttention(); } });
+      () => { document.body.classList.add(scan ? "print-scan" : att ? "print-att" : "print-ins"); if (scan) $("fScanCard").querySelectorAll("details").forEach((d) => { d.dataset.was = d.open ? "1" : ""; d.open = true; }); if (att && !attAll) { attAll = true; drawAttention(); } },
+      () => { document.body.classList.remove("print-att", "print-ins", "print-scan"); if (scan) $("fScanCard").querySelectorAll("details").forEach((d) => { d.open = !!d.dataset.was; }); if (att && attAll !== keepAll) { attAll = keepAll; drawAttention(); } });
   }
   $("fPdfIns").addEventListener("click", () => exportRefusedPdf("ins"));
   $("fPdfAtt").addEventListener("click", () => exportRefusedPdf("att"));
+  $("fScanPdf").addEventListener("click", () => exportRefusedPdf("scan"));
   $("fPdfWhy").addEventListener("click", () => { const h = $("fPdfHelp"); h.hidden = !h.hidden; $("fPdfWhy").setAttribute("aria-expanded", String(!h.hidden)); });
   function exportOverPdf() {
     const day = new Date().toISOString().slice(0, 10);
@@ -2713,6 +2723,14 @@ section.nodata .card:not(.empty-state) { display: none; }
     for (const b of $("refusedRows").querySelectorAll("[data-rfix]")) b.addEventListener("click", () => openFix(shown[+b.dataset.rfix]));
   }
   // IPs of Interest: the sources refused on the most ports and addresses, added up across the accounts shown
+  // Our addresses a source was refused at: listed when 5 or fewer, behind View when more
+  function ipsCell(x) {
+    const ips = [...x.dsts].filter(Boolean).sort((a, b) => a.localeCompare(b, undefined, {numeric: true}));
+    const more = x.nd > ips.length ? `<div class="muted">+${(x.nd - ips.length).toLocaleString()} counted, not named</div>` : "";
+    const list = ips.map((d) => `<code>${esc(d)}</code>`).join("<br>");
+    if (ips.length <= 5) return `<b>${x.nd.toLocaleString()}</b>${ips.length ? `<div class="small" style="text-align:left">${list}</div>` : ""}${more}`;
+    return `<b>${x.nd.toLocaleString()}</b><details class="small" style="text-align:left"><summary class="btn sm" style="display:inline-block;margin-top:4px">View ${ips.length.toLocaleString()} IPs</summary><div style="max-height:240px;overflow:auto;margin-top:4px">${list}</div></details>${more}`;
+  }
   function drawScanners(shown) {
     const by = new Map();
     for (const r of shown) {
@@ -2728,7 +2746,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const fp = page("scan", list.length, () => drawScanners(shown));
     $("fScanRows").innerHTML = list.slice(fp.a, fp.b).map((x, i) => { const r = x.rows.reduce((m, y) => (Number(y.flows) > Number(m.flows) ? y : m), x.rows[0]);
       return `<tr><td class="num">${fp.a + i + 1}</td><td><button class="btn sm" data-scanq="${esc(x.src)}" title="Filter the page by this address"><code>${esc(x.src)}</code></button> <span class="pill" style="--p:${r.internal ? "var(--good)" : "var(--warn)"}">${r.internal ? "internal" : "external"}</span>${x.rows.some((y) => y.scan) ? ' <span class="pill" style="--p:var(--high)">scanning</span>' : ""}${x.rows.some((y) => y.threat) ? ' <span class="pill" style="--p:var(--bad)">known malicious</span>' : ""}${x.rows.some((y) => y.tor) ? ' <span class="pill" style="--p:var(--bad)">Tor</span>' : ""}<div class="muted">${esc(r.name && r.name !== r.src ? r.name : "")}${r.type ? " · " + esc(r.type) : ""}</div></td>
-        <td class="num"><b>${x.np.toLocaleString()}</b></td><td class="num">${x.nd.toLocaleString()}</td><td class="num">${x.flows.toLocaleString()}</td>
+        <td class="num"><b>${x.np.toLocaleString()}</b></td><td class="num">${ipsCell(x)}</td><td class="num">${x.flows.toLocaleString()}</td>
         <td class="num" title="${esc([...x.accts].map((a) => acctLabel(a)).join(", "))}">${x.accts.size}</td>
         <td>${[...x.pf.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k]) => `<code>${esc(k)}</code>`).join(" ")}</td><td>${esc(when(x.last))}</td>
         <td><button class="btn sm" data-scanfix="${esc(x.src)}" title="Who it is, everything it tried, why it was refused">Fix…</button></td></tr>`; }).join("")

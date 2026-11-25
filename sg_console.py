@@ -1635,7 +1635,11 @@ class Console:
             gained = done - b.get("run_done0", 0)
             if gained > 0:
                 eta = (now - b["run_started"]) / gained * (slices - done)
+        if b["status"] in ("done", "stopped") and not b.get("forgotten"):
+            b["forgotten"] = True
+            self._batch_keep(None)
         return {"id": b["id"], "status": b["status"], "accounts": len(jobs), "count": count, "days": b["days"],
+                "resumed": bool(b.get("resumed")),
                 "min_spend": b.get("min_spend", 0), "spend_from": b.get("spend_from", ""),
                 "eta": None if eta is None else round(eta), "elapsed": round(now - b.get("run_started", b["started"])),
                 "regions": b["regions"], "started": b["started"], "cost": round(sum(costs), 2),
@@ -1671,8 +1675,56 @@ class Console:
         for j in jobs:
             j["batch"], j["min_spend"] = b["id"], min_spend
         self.batch = b
+        self._batch_keep({"accounts": [j["account"] for j in jobs], "regions": body.get("regions") or "all",
+                          "days": jobs[0]["days"], "min_spend": min_spend, "at": time.time()})
         threading.Thread(target=self._batch_price, args=(b, jobs), daemon=True).start()
         return self.batch_status()
+
+    # A read of many accounts lives in this process: a restart (an upgrade, a crash) lost it, and the page went
+    # back to "Read all" as if nothing had been asked. What was asked is kept in the database until it finishes
+    # or is stopped, and a restarted console prices it again (spending still waits for a yes).
+    BATCH_KEY = "batch_resume"
+
+    def _batch_keep(self, ask: dict | None) -> None:
+        try:
+            st = self.store()
+            try:
+                with st:
+                    st.meta_set(self.BATCH_KEY, json.dumps(ask) if ask else "")
+            finally:
+                st.close()
+        except Exception as exc:  # noqa: BLE001 - only the resume after a restart is lost
+            LOG.warning("read of many accounts not remembered: %s", exc)
+
+    def resume_batch(self) -> None:
+        """After a restart: price again the read of many accounts that was under way (asked within 12 hours)."""
+        try:
+            st = self.store()
+            try:
+                ask = json.loads(st.meta_get(self.BATCH_KEY, "") or "null")
+            finally:
+                st.close()
+        except Exception:  # noqa: BLE001 - nothing to resume
+            return
+        if not ask or time.time() - float(ask.get("at") or 0) > 12 * 3600:
+            return
+        for _ in range(60):  # the sign-in is read in the background at start
+            try:
+                if self.auth() and self.auth().chosen():
+                    break
+            except Exception:  # noqa: BLE001 - not signed in yet
+                pass
+            time.sleep(10)
+        else:
+            LOG.warning("read of many accounts not resumed: not signed in to AWS")
+            return
+        try:
+            self.read_all({"accounts": ask["accounts"], "regions": ask["regions"], "days": ask["days"],
+                           "min_spend": ask["min_spend"]})
+            self.batch["resumed"] = True
+            LOG.info("resumed the read of %d account(s) that a restart stopped", len(ask["accounts"]))
+        except ConsoleError as exc:
+            LOG.warning("read of many accounts not resumed: %s", exc)
 
     @staticmethod
     def _flow_regions(account: str, regions, doc: dict | None = None):
@@ -3067,6 +3119,8 @@ def serve(console: Console, port: int = 8765, token: str | None = None) -> tuple
     if os.environ.get("SG_NO_WARM") != "1":
         threading.Thread(target=console.warm, daemon=True, name="warm-reports").start()
     console.load_saved_procs()
+    if os.environ.get("SG_NO_SCHEDULE") != "1" and os.environ.get("SG_NO_WARM") != "1":
+        threading.Thread(target=console.resume_batch, daemon=True, name="resume-read").start()
     if os.environ.get("SG_NO_SCHEDULE") != "1" and os.environ.get("SG_NO_WARM") != "1":
         threading.Thread(target=console.scheduler, daemon=True, name="scheduled-reads").start()
     httpd.daemon_threads = True
