@@ -558,6 +558,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   <div class="bar"><h1>Security Group Console</h1><span class="who" id="who"></span><span class="who" id="mode"></span></div>
   <nav role="tablist">
     <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+    <button role="tab" data-tab="accounts" aria-selected="false">Accounts</button>
     <button role="tab" data-tab="macro" aria-selected="false">Risk overview</button>
     <button role="tab" data-tab="over" aria-selected="false">Over-provisioning</button>
     <button role="tab" data-tab="fix" aria-selected="false">Remediate</button>
@@ -723,6 +724,21 @@ section.nodata .card:not(.empty-state) { display: none; }
       <span class="muted small" id="aN"></span>
     </div>
     <div class="card scroll"><table class="trail-t"><colgroup><col style="width:5%"><col style="width:10%"><col style="width:15%"><col style="width:33%"><col style="width:17%"><col style="width:20%"></colgroup><thead><tr><th>#</th><th>When</th><th>Who</th><th>What</th><th>Where</th><th>Why</th></tr></thead><tbody id="auditRows"></tbody></table></div>
+  </section>
+
+  <section id="tab-accounts" hidden>
+    <h2>Accounts: one account, or one owner against their peers</h2>
+    <p class="lede">Type an account name or number, or an owner. An <b>owner</b> shows their accounts ranked, how they compare with every other owner, and where to focus. An <b>account</b> shows everything to do with it and the actions to take, in order. Export either to PDF.</p>
+    <div class="tools">
+      <div class="combo" id="aCombo" style="min-width:420px;flex:1"><input id="aQ" type="search" placeholder="Account name or number, or an owner…" aria-label="Account or owner" role="combobox" aria-expanded="false" aria-controls="aList" autocomplete="off">
+        <div class="combo-list" id="aList" role="listbox" hidden></div></div>
+      <label class="small">Owner tag <select id="aTag" aria-label="Which account tag names the owner"></select></label>
+      <button class="btn sm" type="button" id="aPdf" disabled>Export PDF</button>
+      <button class="btn sm" type="button" id="aWhy" aria-expanded="false">Explain</button>
+    </div>
+    <p class="small" id="aHelp" hidden>The figures come from the flow logs read for each account (the last month) and its security groups, the same as <b>Risk overview</b>. <b>Risk points</b>: 100 for each critical area, 10 for each high, 1 for each medium, across: needs attention, high-risk sources let in, open to the internet on risky ports, outbound to threat lists, never-seen addresses allowed, rules to tighten, probing, and blind spots. <b>Peers</b> are every other account (or owner) read. The owner is the account tag chosen in <b>Owner tag</b>. <b>Export PDF</b> prints this page only: choose "Save as PDF".</p>
+    <div class="print-only" id="aPrintHead"></div>
+    <div id="aBody"><div class="card empty-state"><p class="muted" style="margin:0">Start typing an account or an owner above.</p></div></div>
   </section>
 
   <section id="tab-macro" hidden>
@@ -1080,7 +1096,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     }
     for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
     for (const s of document.querySelectorAll("main > section")) s.hidden = s.id !== "tab-" + tab;
-    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, macro: loadMacro, over: loadOver, fix: loadFix, overview: loadState, settings: loadSettings})[tab]?.())
+    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, macro: loadMacro, over: loadOver, fix: loadFix, overview: loadState, settings: loadSettings, accounts: loadAccounts})[tab]?.())
       .catch((e) => flash(e.message, true));
   }
 
@@ -1488,6 +1504,140 @@ section.nodata .card:not(.empty-state) { display: none; }
     flash(on ? "Always running is on: the console starts when you log in." : "Always running is off.");
     await loadState();
   }));
+  // ---- Accounts: one account in full, or one owner against their peers
+  let AV = {pick: null};
+  async function loadAccounts() {
+    if (!M) { $("aBody").innerHTML = `<div class="card">${loading("Reading every account's figures…")}</div>`; M = await api("/api/macro?range=1m"); }
+    if (!refusedData) refusedData = await api("/api/refused?range=24h").catch(() => null);
+    const A = M.accounts, tag = ownerTag(A);
+    $("aTag").innerHTML = tagKeys(A).map((x) => `<option value="${esc(x.k)}">${esc(x.k)} (${x.n})</option>`).join("") || '<option value="">no tags read</option>';
+    if (tag) $("aTag").value = tag;
+    if (M.building) setTimeout(() => { if (!$("tab-accounts").hidden) { M = null; loadAccounts().catch(() => {}); } }, 6000);
+    if (AV.pick) drawAccountView();
+  }
+  const aTagNow = () => $("aTag").value || ownerTag(M?.accounts || []);
+  function aItems(q) {
+    const A = M?.accounts || [], tag = aTagNow(), out = [];
+    const owners = new Map();
+    for (const a of A) { const o = ownerOf(a, tag); owners.set(o, (owners.get(o) || 0) + 1); }
+    const hit = (t) => !q || t.toLowerCase().includes(q);
+    for (const [o, n] of [...owners].sort((x, y) => y[1] - x[1])) if (hit(o)) out.push({k: "owner", v: o, label: o, sub: `${n} account${n === 1 ? "" : "s"}`});
+    for (const a of [...A].sort((x, y) => points(y) - points(x))) if (hit(`${a.name} ${a.account}`)) out.push({k: "account", v: a.account, label: a.name || a.account, sub: `${a.account} · ${points(a).toLocaleString()} points`});
+    return out;
+  }
+  function drawAList() {
+    const q = $("aQ").value.toLowerCase().trim(), xs = aItems(q);
+    const own = xs.filter((x) => x.k === "owner").slice(0, 8), acc = xs.filter((x) => x.k === "account").slice(0, 12);
+    let i = 0;
+    $("aList").innerHTML = (own.length ? `<div class="cg">Owners (${esc(aTagNow() || "owner")})</div>` + own.map((x) => `<div class="co" role="option" data-i="${i++}" data-k="owner" data-v="${esc(x.v)}"><span>${esc(x.label)}</span><span class="n">${esc(x.sub)}</span></div>`).join("") : "")
+      + (acc.length ? '<div class="cg">Accounts, most risk first</div>' + acc.map((x) => `<div class="co" role="option" data-i="${i++}" data-k="account" data-v="${esc(x.v)}"><span>${esc(x.label)}</span><span class="n">${esc(x.sub)}</span></div>`).join("") : "")
+      || '<div class="co muted">Nothing matches</div>';
+    $("aList").hidden = false; $("aQ").setAttribute("aria-expanded", "true");
+  }
+  function pickA(el) {
+    if (!el?.dataset.k) return;
+    AV.pick = {k: el.dataset.k, v: el.dataset.v};
+    $("aQ").value = el.querySelector("span").textContent;
+    $("aList").hidden = true; $("aQ").setAttribute("aria-expanded", "false");
+    drawAccountView();
+  }
+  $("aQ").addEventListener("focus", () => { if (M) drawAList(); else loadAccounts().then(drawAList).catch(() => {}); });
+  $("aQ").addEventListener("input", () => { if (M) drawAList(); });
+  $("aQ").addEventListener("keydown", (e) => {
+    const os = [...$("aList").querySelectorAll(".co[data-k]")];
+    if (e.key === "Escape") { $("aList").hidden = true; return; }
+    if (e.key === "Enter") { e.preventDefault(); pickA(os.find((o) => o.classList.contains("act")) || os[0]); }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); const at = os.findIndex((o) => o.classList.contains("act")); const n = Math.max(0, Math.min(os.length - 1, at + (e.key === "ArrowDown" ? 1 : -1))); os.forEach((o, j) => o.classList.toggle("act", j === n)); os[n]?.scrollIntoView({block: "nearest"}); }
+  });
+  $("aList").addEventListener("mousedown", (e) => { e.preventDefault(); pickA(e.target.closest(".co")); });
+  document.addEventListener("click", (e) => { if (!e.target.closest("#aCombo")) $("aList").hidden = true; });
+  $("aTag").addEventListener("change", () => { try { localStorage.setItem("sg-owner-tag", $("aTag").value); } catch (e) { /* ignore */ } OWN.tag = $("aTag").value; if (AV.pick?.k === "owner") AV.pick = null; drawAccountView(); });
+  $("aWhy").addEventListener("click", () => { const h = $("aHelp"); h.hidden = !h.hidden; $("aWhy").setAttribute("aria-expanded", String(!h.hidden)); });
+  const SEVCOL = {critical: "var(--bad)", high: "var(--high)", medium: "var(--warn)"};
+  const rankOf = (xs, v) => 1 + xs.filter((x) => x > v).length;
+  const pctBelow = (r, n) => n > 1 ? Math.round(100 * (n - r) / (n - 1)) : 100;
+  function aActions(a) {
+    // The actions for one account, most urgent first, each with where to do it
+    const out = [], ref = (refusedData?.rows || []).filter((r) => r.account === a.account);
+    const inside = ref.filter((r) => r.internal && r.scan);
+    if (a.high_active) out.push(["critical", `${a.high_active} high-risk source(s) (scanners, threat lists or Tor) were let in by a rule`, "Close the rule that lets them in", "fix"]);
+    if (a.open_risky) out.push(["critical", `${a.open_risky} rule(s) open to the whole internet on risky ports (${(a.open_risky_list || []).slice(0, 3).map((x) => esc(x.ports || x)).join(", ")})`, "Narrow to the callers seen, or put it behind a load balancer or VPN", "fix"]);
+    if (inside.length) out.push(["critical", `${inside.length} host(s) inside the network are scanning (${inside.slice(0, 3).map((r) => esc(r.src)).join(", ")})`, "Find what runs there; isolate it if nothing should scan", "resolve"]);
+    if (a.egress_bad) out.push(["critical", `${a.egress_bad} connection(s) out to known malicious addresses`, "Investigate the host that made them", "review"]);
+    if (a.attention?.critical || a.attention?.high) out.push(["high", `${a.attention.critical || 0} critical and ${a.attention.high || 0} high findings in its review`, "Work through them on the account's review", "review"]);
+    if (a.open > a.open_risky) out.push(["high", `${a.open - a.open_risky} more rule(s) open to the whole internet`, "Narrow them, or confirm the service is public", "fix"]);
+    if (a.tighten + a.unused) out.push(["medium", `${a.tighten} rule(s) wider than their traffic and ${a.unused} unused, letting in ${big(a.over_now)} addresses never seen`, "Propose the tightening plan", "fix"]);
+    const wanted = ref.filter((r) => r.wanted && !r.restore), back = ref.filter((r) => r.restore);
+    if (back.length) out.push(["high", `${back.length} source(s) refused since a change removed the rule that let them in`, "Put the rule back for those sources", "resolve"]);
+    if (wanted.length) out.push(["medium", `${wanted.length} refused source(s) look like a real service`, "Check with the team and let them in, or leave refused", "resolve"]);
+    if (a.covered < 0.98 || a.not_logged) out.push(["medium", a.not_logged ? `${a.not_logged} interface(s) without flow logs` : `flow logs read for only ${Math.round(a.covered * 100)}% of the month`, a.not_logged ? "Turn on VPC flow logs for them" : "Read further back on the Overview", "overview"]);
+    return out;
+  }
+  function aCard(a, peers) {
+    const P = points(a), ranks = peers.map(points), r = rankOf(ranks, P), tag = aTagNow(), owner = ownerOf(a, tag);
+    const mine = peers.filter((x) => ownerOf(x, tag) === owner), rMine = rankOf(mine.map(points), P);
+    const ref = (refusedData?.rows || []).filter((x) => x.account === a.account);
+    const act = aActions(a), SEVC = {critical: "var(--bad)", high: "var(--high)", medium: "var(--warn)"};
+    const go = {fix: `<button class="btn sm primary" data-fix="${esc(a.account)}">Remediate</button>`, resolve: `<button class="btn sm" data-aresolve="${esc(a.account)}">Resolve rejected traffic</button>`,
+      review: `<a class="btn sm" href="/review?account=${encodeURIComponent(a.account)}" target="_blank" rel="noopener">Open review</a>`, overview: `<button class="btn sm" data-atab="overview">Overview</button>`};
+    const tags = Object.entries(a.tags || {}).slice(0, 8).map(([k, v]) => `<span class="muted">${esc(k)}:</span> ${esc(v)}`).join(" · ");
+    const cell = (k, v, sub, col) => `<div><span class="muted small">${k}</span><b${col ? ` style="color:${col}"` : ""}>${v}</b>${sub ? `<span class="muted small">${sub}</span>` : ""}</div>`;
+    const dims = DIMS.map((d) => [d[0], d[1](a), d[2](a), d[3]]).filter((d) => d[2]).sort((x, y) => y[2] - x[2]);
+    const top = (a.top_rules || []).slice(0, 8), ext = (a.ext_rules || []).slice(0, 8);
+    const scans = [...new Map(ref.filter((x) => x.scan).map((x) => [x.src, x])).values()].sort((x, y) => Number(y.ports || 1) - Number(x.ports || 1)).slice(0, 8);
+    return `<div class="card"><div class="card-head"><h3 style="margin:0">${esc(a.name || a.account)} <code class="small">${esc(a.account)}</code></h3><span class="pill" style="--p:${a.rag === "red" ? "var(--bad)" : a.rag === "amber" ? "var(--warn)" : "var(--good)"}">${esc(a.rag || "")}</span></div>
+      <p class="small" style="margin:4px 0">${esc(tag || "Owner")}: <b>${esc(owner)}</b> · ${esc(a.mode || "")} mode${a.spend != null ? ` · ${money(a.spend)} a month` : ""}${tags ? `<br>${tags}` : ""}</p>
+      <div class="facts">${cell("Risk points", P.toLocaleString(), `rank ${r} of ${peers.length}: riskier than ${pctBelow(r, peers.length)}% of accounts`, P >= 100 ? "var(--bad)" : P >= 10 ? "var(--high)" : "")}
+        ${cell("Among the owner's", `${rMine} of ${mine.length}`, esc(owner))}
+        ${cell("Critical · high", `${a.attention?.critical || 0} · ${a.attention?.high || 0}`, "findings in its review", a.attention?.critical ? "var(--bad)" : "")}
+        ${cell("Open to the internet", `${a.open || 0}`, `${a.open_risky || 0} on risky ports`, a.open_risky ? "var(--bad)" : "")}
+        ${cell("Never-seen addresses allowed", big(a.over_now || 0), `${a.tighten || 0} rules to tighten, ${a.unused || 0} unused`)}
+        ${cell("Rejected (24 h)", ref.length.toLocaleString(), `${ref.filter((x) => x.scan).length} scanning · ${ref.filter((x) => x.internal).length} internal`)}
+        ${cell("Flow logs", `${Math.round((a.covered || 0) * 100)}%`, a.not_logged ? `${a.not_logged} interfaces not logged` : "of the month read")}</div>
+      <h3>What to do, in order</h3>${act.length ? `<ol class="small">${act.map(([sv, what, how, where]) => `<li style="margin:6px 0"><span class="pill" style="--p:${SEVC[sv]}">${sv}</span> <b>${what}.</b> ${esc(how)}. ${go[where] || ""}</li>`).join("")}</ol>` : '<p class="small" style="color:var(--good)">Nothing urgent: keep reading its flow logs.</p>'}
+      ${dims.length ? `<h3>Where its risk points come from</h3><table class="small"><tbody>${dims.map((d) => `<tr><td><span class="pill" style="--p:${LCOL[d[2]]}">${["low", "medium", "high", "critical"][d[2]]}</span> ${esc(d[0])}</td><td>${d[1]}</td><td class="muted">${esc(d[3])}</td></tr>`).join("")}</tbody></table>` : ""}
+      ${ext.length ? `<h3>Open to the internet</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Ports</th><th>Source</th><th class="num">Interfaces</th></tr></thead><tbody>${ext.map((x) => `<tr><td>${esc(x.group)}<div class="muted">${esc(x.region)}</div></td><td><code>${esc(x.ports)}</code>${x.risky ? " ⚠" : ""}</td><td><code>${esc(x.source)}</code></td><td class="num">${x.enis}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      ${top.length ? `<h3>Biggest rules to tighten</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Ports</th><th>Source</th><th class="num">Never-seen addresses</th><th></th></tr></thead><tbody>${top.map((x) => `<tr><td>${esc(x.group)}<div class="muted">${esc(x.region)} · ${x.enis} interface(s)</div></td><td><code>${esc(x.ports)}</code></td><td><code>${esc(x.source)}</code></td><td class="num">${big(x.never)}</td><td>${esc(x.status)}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      ${scans.length ? `<h3>Scanning sources refused (24 h)</h3><div class="scroll"><table class="small"><thead><tr><th>Source</th><th class="num">Ports</th><th class="num">Addresses</th><th class="num">Flows</th><th>Verdict</th></tr></thead><tbody>${scans.map((x) => `<tr><td><code>${esc(x.src)}</code> ${x.internal ? '<span class="pill" style="--p:var(--bad)">internal</span>' : ""}<div class="muted">${esc(x.name || "")}</div></td><td class="num">${x.ports || 1}</td><td class="num">${x.dsts || 1}</td><td class="num">${Number(x.flows).toLocaleString()}</td><td>${esc(x.title || x.verdict)}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      <div class="acts" style="margin-top:10px">${go.fix}${go.resolve}${go.review}</div></div>`;
+  }
+  function drawAccountView() {
+    const A = M?.accounts || [];
+    $("aPdf").disabled = !AV.pick;
+    if (!AV.pick) return;
+    const tag = aTagNow();
+    if (AV.pick.k === "account") {
+      const a = A.find((x) => x.account === AV.pick.v);
+      $("aBody").innerHTML = a ? aCard(a, A) : '<div class="card"><p class="muted">No flow logs read for that account yet: read it on the Overview.</p></div>';
+    } else {
+      const owner = AV.pick.v, mine = A.filter((a) => ownerOf(a, tag) === owner).sort((x, y) => points(y) - points(x));
+      const by = new Map();
+      for (const a of A) { const o = ownerOf(a, tag); const x = by.get(o) || {o, pts: 0, n: 0, crit: 0, open: 0, over: 0}; x.pts += points(a); x.n++; x.crit += a.attention?.critical || 0; x.open += a.open_risky || 0; x.over += a.over_now || 0; by.set(o, x); }
+      const all = [...by.values()], me = by.get(owner) || {pts: 0, n: 0, crit: 0, open: 0, over: 0};
+      const r = rankOf(all.map((x) => x.pts), me.pts), avg = me.n ? me.pts / me.n : 0;
+      const avgs = all.map((x) => x.pts / Math.max(1, x.n)).sort((x, y) => x - y), med = avgs[Math.floor(avgs.length / 2)] || 0;
+      const peers = all.sort((x, y) => y.pts - x.pts).slice(0, 15);
+      const maxp = Math.max(1, ...peers.map((x) => x.pts));
+      const acts = mine.flatMap((a) => aActions(a).map((x) => [a, ...x])).sort((x, y) => ["critical", "high", "medium"].indexOf(x[1]) - ["critical", "high", "medium"].indexOf(y[1])).slice(0, 15);
+      $("aBody").innerHTML = `<div class="card"><div class="card-head"><h3 style="margin:0">${esc(owner)}</h3><span class="muted small">${esc(tag || "owner")} · ${mine.length} account${mine.length === 1 ? "" : "s"}</span></div>
+        <div class="facts"><div><span class="muted small">Risk points</span><b style="color:${me.pts >= 100 ? "var(--bad)" : ""}">${me.pts.toLocaleString()}</b><span class="muted small">rank ${r} of ${all.length} owners: riskier than ${pctBelow(r, all.length)}%</span></div>
+          <div><span class="muted small">Per account</span><b>${Math.round(avg).toLocaleString()}</b><span class="muted small">median owner ${Math.round(med).toLocaleString()}: ${avg > med ? "worse than most" : "better than most"}</span></div>
+          <div><span class="muted small">Critical findings</span><b>${me.crit}</b></div><div><span class="muted small">Open to internet, risky ports</span><b>${me.open}</b></div>
+          <div><span class="muted small">Never-seen addresses allowed</span><b>${big(me.over)}</b></div></div>
+        <h3>Against their peers</h3><table class="small"><tbody>${peers.map((x) => `<tr${x.o === owner ? ' style="font-weight:700"' : ""}><td style="width:30%">${esc(x.o)}${x.o === owner ? " ◀" : ""}</td><td style="width:50%"><div class="bar-track" style="margin:0"><div class="bar-fill" style="width:${(100 * x.pts / maxp).toFixed(1)}%;background:${x.o === owner ? "var(--accent)" : "var(--muted)"}"></div></div></td><td class="num">${x.pts.toLocaleString()} pts · ${x.n} acct</td></tr>`).join("")}${peers.some((x) => x.o === owner) ? "" : `<tr style="font-weight:700"><td>${esc(owner)} ◀</td><td></td><td class="num">${me.pts.toLocaleString()} pts · rank ${r}</td></tr>`}</tbody></table>
+        <h3>Where to focus first</h3>${acts.length ? `<ol class="small">${acts.map(([a, sv, what, how]) => `<li style="margin:6px 0"><span class="pill" style="--p:${SEVCOL[sv]}">${sv}</span> <b>${esc(a.name || a.account)}</b>: ${what}. ${esc(how)}.</li>`).join("")}</ol>` : '<p class="small" style="color:var(--good)">Nothing urgent across these accounts.</p>'}
+        <h3>Their accounts, most risk first</h3><div class="scroll"><table class="small"><thead><tr><th>Account</th><th class="num">Risk points</th><th class="num">Critical · high</th><th class="num">Open (risky)</th><th class="num">Never-seen allowed</th><th class="num">Rules to tighten</th><th></th></tr></thead><tbody>${mine.map((a) => `<tr><td><b>${esc(a.name || a.account)}</b> <code>${esc(a.account)}</code></td><td class="num">${points(a).toLocaleString()}</td><td class="num">${a.attention?.critical || 0} · ${a.attention?.high || 0}</td><td class="num">${a.open || 0} (${a.open_risky || 0})</td><td class="num">${big(a.over_now || 0)}</td><td class="num">${(a.tighten || 0) + (a.unused || 0)}</td><td><button class="btn sm" data-aacct="${esc(a.account)}">Open</button></td></tr>`).join("")}</tbody></table></div></div>`;
+    }
+    for (const b of $("aBody").querySelectorAll("[data-aacct]")) b.addEventListener("click", () => { AV.pick = {k: "account", v: b.dataset.aacct}; const a = A.find((x) => x.account === b.dataset.aacct); $("aQ").value = a?.name || b.dataset.aacct; drawAccountView(); window.scrollTo({top: 0, behavior: "smooth"}); });
+    for (const b of $("aBody").querySelectorAll("[data-aresolve]")) b.addEventListener("click", async () => { await show("refused"); openResolve(b.dataset.aresolve); });
+    for (const b of $("aBody").querySelectorAll("[data-atab]")) b.addEventListener("click", () => show(b.dataset.atab));
+  }
+  $("aPdf").addEventListener("click", () => {
+    const day = new Date().toISOString().slice(0, 10), what = AV.pick?.k === "owner" ? `owner ${AV.pick.v}` : $("aQ").value;
+    $("aPrintHead").innerHTML = `<div class="eyebrow">Security Tightener · ${AV.pick?.k === "owner" ? "owner report" : "account report"}</div><h2 style="margin:2px 0 4px">${esc(what)}</h2><p class="muted small">Exported ${esc(when(Date.now() / 1000))} · flow logs of the last month</p>`;
+    printSection("tab-accounts", `Security Tightener - ${what} - ${day}`);
+  });
+
   // ---- Settings
   let SET = null;
   const toggleHelp = (btn, box) => $(btn).addEventListener("click", () => { const h = $(box); h.hidden = !h.hidden; $(btn).setAttribute("aria-expanded", String(!h.hidden)); });
