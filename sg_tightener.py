@@ -162,6 +162,9 @@ RFC1918_BLOCKS = [
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
+    # shared address space (RFC 6598): not RFC 1918, but private to the VPC like it. EKS gives pods addresses here
+    # (custom networking), so treating it as public kept every pod a /32: hundreds of rules on one group
+    ipaddress.ip_network("100.64.0.0/10"),
 ]
 
 DEFAULT_PREFIX_THRESHOLD = 24

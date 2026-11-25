@@ -90,6 +90,18 @@ PROBE_PERM = {"IpProtocol": "tcp", "FromPort": 9, "ToPort": 9,
 Rule = tuple
 
 
+
+def rule_limit() -> int:
+    """Rules per security group and direction that apply may leave: the console's setting (tighten.json in the data
+    directory, "max_rules"), else AWS's default quota."""
+    try:
+        import sg_ipintel
+
+        return max(1, int(json.loads((sg_ipintel.DATA_DIR / "tighten.json").read_text()).get("max_rules")
+                          or sg_tightener.DEFAULT_MAX_RULES))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return sg_tightener.DEFAULT_MAX_RULES
+
 class Refused(RuntimeError):
     """The database will not do this as things stand (external changes, unapplied changes)."""
 
@@ -312,13 +324,32 @@ class Store:
             "region = ? AND group_id = ? AND state = ?", (account, region, group_id, state))}
 
     def pending(self, account: str, region: str, group_id: str = "") -> list[tuple[str, str, Rule, str]]:
-        """What apply would do: (group, "add" or "remove", rule, description), removals first."""
+        """What apply would do: (group, "add" or "remove", rule, description), in the order it does it.
+
+        Adds come first, as many as the group has room for under the rule limit, so a narrow replacement is in
+        place before the wide rule it replaces goes; then the removals; then any adds that needed that room.
+        Removing first (the old order) left a window, and on a plan over the limit a permanent gap: the wide rule
+        gone and AWS refusing the adds past the limit."""
+        limit = rule_limit()
         out = []
         for gid in [group_id] if group_id else self.groups(account, region):
             want, have = self.rules(account, region, gid, "desired"), self.rules(account, region, gid, "synced")
-            out += [(gid, "remove", r, have[r]) for r in sorted(set(have) - set(want))]
-            out += [(gid, "add", r, want[r]) for r in sorted(set(want) - set(have))]
-        out.sort(key=lambda x: (x[0], x[1] != "remove"))
+            for d in sorted({r[0] for r in set(want) | set(have)}):
+                rm = [(gid, "remove", r, have[r]) for r in sorted(set(have) - set(want)) if r[0] == d]
+                add = [(gid, "add", r, want[r]) for r in sorted(set(want) - set(have)) if r[0] == d]
+                room = max(0, limit - sum(1 for r in have if r[0] == d))
+                out += add[:room] + rm + add[room:]
+        return out
+
+    def over_limit(self, account: str, region: str, group_id: str = "") -> list[str]:
+        """Groups whose desired rules (one direction) exceed the rule limit: apply would fail part way."""
+        limit, out = rule_limit(), []
+        for gid in [group_id] if group_id else self.groups(account, region):
+            want = self.rules(account, region, gid, "desired")
+            for d in sorted({r[0] for r in want}):
+                n = sum(1 for r in want if r[0] == d)
+                if n > limit:
+                    out.append(f"{gid}: {n} {'inbound' if d == IN else 'outbound'} rules wanted, the limit is {limit}")
         return out
 
     # ---------------------------------------------------------------- writes (inside `with store:`)
@@ -813,6 +844,11 @@ def push(store: Store, ec2, account: str, region: str, actor: str, gid: str = ""
                       f"trail. Review them with `sg_db.py reconcile --regions {region}`, then apply (to put them "
                       f"back) or adopt (to keep them).")  # fmt: skip
     out = {"done": 0, "failed": []}
+    over = store.over_limit(account, region, gid)
+    if over:
+        raise Refused("nothing was changed: these groups would go over the rule limit, so AWS would refuse part of "
+                      "the change after the rest was made:\n  " + "\n  ".join(over)
+                      + "\nNarrow the plan (Remediate: Narrowing settings) or raise the quota with AWS and the limit.")
     todo = store.pending(account, region, gid)
     if todo:
         perms = check_permissions(ec2, sorted({g for g, _, _, _ in todo}))

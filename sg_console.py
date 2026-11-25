@@ -1950,6 +1950,7 @@ class Console:
         st = self.store()
         try:
             todo = st.pending(account, region, str(body.get("group") or ""))
+            over = st.over_limit(account, region, str(body.get("group") or ""))
             names = {g: v["name"] for g, v in st.groups(account, region).items()}
             assets = _assets_quiet(st, account, region)
             on: dict[str, list] = {}
@@ -1985,7 +1986,7 @@ class Console:
                 c["who"] = self._who(src, proto, lo, account)
             changes.append(c)
         enis = {a["eni"] for g in {c["group"] for c in changes} for a in on.get(g, [])}
-        return {"account": account, "region": region, "mode": mode, "changes": changes,
+        return {"account": account, "region": region, "mode": mode, "changes": changes, "over_limit": over,
                 "summary": {"add": sum(c["op"] == "add" for c in changes), "remove": sum(c["op"] == "remove" for c in changes),
                             "groups": len({c["group"] for c in changes}), "interfaces": len(enis),
                             "known": bool(assets), "at_risk": at_risk}}  # fmt: skip

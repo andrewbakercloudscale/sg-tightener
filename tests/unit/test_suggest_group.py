@@ -66,3 +66,12 @@ def test_nothing_to_take_away_is_in_use(monkeypatch):
 def test_group_rule_count_counts_every_entry():
     g = {"rules": [{"cidrs": ["10.0.0.0/8"], "cidrs6": ["::/0"], "pls": ["pl-1"], "refs": ["sg-1", "sg-2"]}]}
     assert sg_review.group_rule_count(g) == 5
+
+
+def test_pod_addresses_in_shared_space_merge_like_private_ones():
+    import sg_tightener
+
+    pods = [f"100.64.{i}.{j}" for i in range(4) for j in range(1, 250, 3)]  # an EKS pod range, partly used
+    cidrs = sg_tightener.collapse_ips_to_cidrs(pods, 60, 0.7)
+    assert len(cidrs) < 10  # was one /32 per pod: 332 rules
+    assert all(ipaddress.IPv4Network(c).subnet_of(ipaddress.IPv4Network("100.64.0.0/10")) for c in cidrs)

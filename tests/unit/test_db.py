@@ -85,9 +85,24 @@ def test_desire_needs_a_reason_and_a_known_group(store):
         d = store.desire(ACCT, REGION, "sg-1", "alice", "least privilege", "CHG-1", remove=[HTTPS_VPC],
                          add={(IN, "tcp", 443, 443, "10.0.1.0/24"): "api"})
     assert len(d["added"]) == 1 and len(d["removed"]) == 1
-    assert [(op, r) for _, op, r, _ in store.pending(ACCT, REGION)] == [
-        ("remove", HTTPS_VPC), ("add", (IN, "tcp", 443, 443, "10.0.1.0/24"))]
+    assert [(op, r) for _, op, r, _ in store.pending(ACCT, REGION)] == [  # the narrow rule first, then the wide goes
+        ("add", (IN, "tcp", 443, 443, "10.0.1.0/24")), ("remove", HTTPS_VPC)]
     assert store.log()[-1]["ticket"] == "CHG-1"
+
+
+def test_adds_wait_for_room_and_over_the_limit_is_refused(store, monkeypatch):
+    monkeypatch.setattr(sg_db, "rule_limit", lambda: 3)
+    narrow = [(IN, "tcp", 443, 443, f"10.0.{i}.0/24") for i in range(3)]
+    with store:
+        store.desire(ACCT, REGION, "sg-1", "alice", "least privilege", remove=[HTTPS_VPC], add={r: "" for r in narrow})
+    # one inbound rule held, limit 3: two adds fit before the removal, the third only after it
+    assert [(op, r[4]) for _, op, r, _ in store.pending(ACCT, REGION)] == [
+        ("add", "10.0.0.0/24"), ("add", "10.0.1.0/24"), ("remove", "10.0.0.0/16"), ("add", "10.0.2.0/24")]
+    assert store.over_limit(ACCT, REGION) == []
+    with store:
+        store.desire(ACCT, REGION, "sg-1", "alice", "more", add={(IN, "tcp", 443, 443, "10.0.9.0/24"): ""})
+    assert store.over_limit(ACCT, REGION) == ["sg-1: 4 inbound rules wanted, the limit is 3"]
+
 
 
 def test_failed_transaction_leaves_no_trace(store):
