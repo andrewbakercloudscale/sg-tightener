@@ -735,3 +735,22 @@ def test_security_groups_is_part_of_remediate_not_a_second_tab():
     assert 'id="tab-groups"' not in page and 'data-tab="groups"' not in page
     assert page.count('id="modeNote"') == 1
     assert 'if (t === "groups")' in page or "show(\"groups\")" in page or 'show("groups")' in page
+
+
+def test_buttons_are_never_the_colour_of_the_card():
+    """'buttons should never be white on white': a plain button is filled with a tint, not the card surface."""
+    import pathlib
+    import re
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    for rule in re.findall(r"(?m)^\.btn(?:\.quiet|\.danger|\[disabled\][^{]*)?(?::hover)?\s*\{[^}]*\}", page):
+        assert "background: var(--surface)" not in rule and "background: var(--surface-2)" not in rule, rule
+    assert "--btn-bg: color-mix(in srgb, var(--accent)" in page
+
+
+def test_the_read_waiting_for_a_yes_flashes_its_button_and_buttons_sit_clear_of_text():
+    """'make the button flash' / 'sometimes gap is v small': the confirm button pulses and sits on its own row."""
+    import pathlib
+    page = (pathlib.Path(__file__).resolve().parents[2] / "assets" / "sg_console.html").read_text()
+    assert 'class="btn sm primary pulse" data-rr="confirm"' in page and ".btn.pulse { animation: pulse" in page
+    assert '<div class="acts"><button class="btn sm primary pulse" data-rr="confirm"' in page
+    assert '<div class="acts"><button class="btn sm" data-rr="stop"' in page
