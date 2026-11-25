@@ -238,3 +238,48 @@ def test_addresses_let_in_are_split_into_internal_and_external():
     assert (r["new_internal"], r["new_addresses"] - r["new_internal"]) == (256, 1)
     gone = rem.plan_rule({**base, "source": "10.0.0.0/8", "status": "unused", "allowed": 2**24})
     assert (gone["internal"], gone["new_internal"]) == (2**24, 0)
+
+
+def test_a_plan_is_kept_so_a_restarted_console_does_not_build_it_again(world, monkeypatch):
+    first = world["console"].remediation(ACCOUNT, 90)
+    built = []
+    monkeypatch.setattr(sg_console, "_plan_job", lambda *a: built.append(a) or None)
+    again = sg_console.Console(str(world["db"]), targets=world["console"].targets).remediation(ACCOUNT, 90)
+    assert not built, "kept, not built again"
+    assert again["totals"] == first["totals"] and len(again["groups"]) == len(first["groups"])
+    other = sg_console.Console(str(world["db"]), targets=world["console"].targets).remediation(ACCOUNT, 30)
+    assert built and other["status"] == "unknown", "another window is built"
+
+
+def test_a_plan_is_built_in_another_process_and_a_second_request_waits_for_the_same_build(world, monkeypatch):
+    import threading
+
+    c = world["console"]
+    monkeypatch.setattr(sg_console, "REPORTS_WAIT", False)
+    calls, gate = [], threading.Event()
+
+    class Pool:
+        def apply_async(self, fn, args):
+            calls.append(args)
+
+            class R:
+                def get(self, timeout=None):
+                    gate.wait(5)
+                    return sg_console._plan_job(*args)
+
+                def ready(self):
+                    return gate.is_set()
+
+            return R()
+
+    c._plan_pool = Pool()
+    got = []
+    ts = [threading.Thread(target=lambda: got.append(c.remediation(ACCOUNT, 90))) for _ in range(2)]
+    for t in ts:
+        t.start()
+    time.sleep(0.3)
+    gate.set()
+    for t in ts:
+        t.join(10)
+    assert len(calls) == 1, "one build for both requests"
+    assert len(got) == 2 and got[0]["totals"] == got[1]["totals"]

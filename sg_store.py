@@ -393,7 +393,9 @@ def review_stamp(account: str, schema: str | None = None) -> float | None:
     return row[0] if row else None
 
 
-def review_load(account: str, schema: str | None = None, doc_schema: int = 1) -> dict | None:
+def review_load(account: str, schema: str | None = None, doc_schema: int = 1, rows: bool = True) -> dict | None:
+    """An account's read. Without ``rows`` each slice comes without its flow-log rows (what was read, when, and
+    its state only): a fraction of the memory, for reports that need no traffic."""
     d = db(schema)
     cutoff = time.time() - RETENTION
     with d.transaction():  # one consistent picture while a read is saving
@@ -402,7 +404,8 @@ def review_load(account: str, schema: str | None = None, doc_schema: int = 1) ->
             return None
         regions = dict(d.execute("SELECT region, data FROM review_regions WHERE account = ?", (account,)))
         chunks = []
-        for k, data in d.execute("SELECT id, data FROM review_slices WHERE account = ? AND e >= ? ORDER BY id",
+        cols = "data" if rows else "data - 'rows' - 'pub'"
+        for k, data in d.execute(f"SELECT id, {cols} FROM review_slices WHERE account = ? AND e >= ? ORDER BY id",
                                  (account, cutoff)):  # fmt: skip
             data["k"] = k
             chunks.append(data)

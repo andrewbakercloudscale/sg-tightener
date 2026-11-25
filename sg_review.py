@@ -904,9 +904,10 @@ def stamps() -> dict[str, float]:
     return {a: t for a, t in sg_store.review_stamps().items() if _ACCT_RE.fullmatch(a)}
 
 
-def load(account: str) -> dict | None:
-    doc = sg_store.review_load(_check(account), doc_schema=SCHEMA)
-    if doc:
+def load(account: str, rows: bool = True) -> dict | None:
+    """An account's read; ``rows=False`` leaves out the flow-log rows (never save a doc loaded that way)."""
+    doc = sg_store.review_load(_check(account), doc_schema=SCHEMA, rows=rows)
+    if doc and rows:
         fold_replies(doc)  # saved with the account's next read; `sg_review.py fold-replies` saves every account now
     return doc
 
@@ -1600,12 +1601,11 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
             if gid in groups:
                 groups[gid]["enis"].append(eid)
     own_ips = {ip for e in enis.values() for ip in [*e["ips"], *(e.get("ipv6") or [])]}
-
-    def mine(e: dict) -> set:
-        return {*e["ips"], *(e.get("ipv6") or [])}
+    eni_ips = {eid: {*e["ips"], *(e.get("ipv6") or [])} for eid, e in enis.items()}  # built once, not per row
+    covers: dict[tuple, bool] = {}  # (interface, protocol, port) -> whether a rule lets it in; ports fold, so few
 
     def relevant(eni_id, src, dst) -> bool:
-        if src in own_ips and (eni_id not in enis or src in mine(enis[eni_id])):
+        if src in own_ips and (eni_id not in enis or src in eni_ips[eni_id]):
             return False  # the interface's own outbound record
         e = enis.get(eni_id)
         if e is None:
@@ -1652,7 +1652,9 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
                 continue
             if action == "ACCEPT":
                 accepted_rows.append((src, dst, eni, str(proto), dport, flows, c))
-                if dport >= EPHEMERAL and not _rule_covers(groups, enis.get(eni), proto, dport):
+                if dport >= EPHEMERAL and not (
+                        covers[k] if (k := (eni, proto, dport)) in covers
+                        else covers.setdefault(k, _rule_covers(groups, enis.get(eni), proto, dport))):
                     continue  # replies to the account's own connections
                 a = act.setdefault(src, {"bins": set(), "flows": 0, "first": c["s"], "last": c["e"], "days": set(),
                                          "targets": {}, "today": False})  # fmt: skip
@@ -3195,6 +3197,10 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
             by_eni.setdefault(row[2], []).append(row)
         else:
             deleted.append(row)
+    # the refused-or-accepted rows of deleted interfaces, by (protocol, port): a rule looks only at its own ports
+    deleted_by_port: dict[tuple, list] = {}
+    for src, dst, _e, proto, dport, _f, _c in deleted:
+        deleted_by_port.setdefault((proto, dport), []).append((_ip(src), src, _ip(dst)))
     seen_ints = sorted(n for n in map(_ip, seen) if n is not None)
     seen6 = {a for a in map(_addr6, seen) if a is not None}
     ext_iv = {k: lab.cat_iv[k] for k in EXTERNAL_CATS}  # the public internet: AWS, SaaS and partners, everyone else
@@ -3209,6 +3215,9 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
         since = max([region_first.get(g["region"], end)] + created)
         days = max(0, (end - since) / DAY)
         rows = [r for e in g["enis"] for r in by_eni.get(e, [])]
+        by_port: dict[tuple, list] = {}  # (protocol, port) -> (source as a number, source, flows, end)
+        for src, _dst, _eni, proto, dport, flows, c in rows:
+            by_port.setdefault((proto, dport), []).append((_ip(src), src, flows, c["e"]))
         own6 = next((v.get("cidrs6") or [] for v in snap.get("vpcs") or [] if v["id"] == g["vpc"]), [])
         lb_public = public_lb(g, snap)
         for rule in g["rules"]:
@@ -3224,21 +3233,24 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
                     continue
                 allowed = sg_ipintel.size(ivs)
 
-                def inside(ip, ivs=ivs):
-                    n = _ip(ip)
-                    return n is not None and any(a <= n <= b for a, b in ivs)
-
                 here: dict[str, list] = {}
                 dports: set = set()
-                for src, _dst, _eni, proto, dport, flows, c in rows:
-                    if port_matches(rule, proto, dport) and inside(src):
-                        h = here.setdefault(src, [0, 0])
-                        h[0] += flows
-                        h[1] = max(h[1], c["e"])
+                for (proto, dport), got in by_port.items():
+                    if not port_matches(rule, proto, dport):
+                        continue
+                    hit = False
+                    for n, src, flows, e in got:
+                        if n is not None and any(a <= n <= b for a, b in ivs):
+                            h = here.setdefault(src, [0, 0])
+                            h[0] += flows
+                            h[1] = max(h[1], e)
+                            hit = True
+                    if hit:
                         dports.add((str(proto), int(dport)))
-                unattr = {src for src, dst, _e, proto, dport, _f, _c in deleted
-                          if port_matches(rule, proto, dport) and inside(src)
-                          and (n := _ip(dst)) is not None and any(a <= n <= b for a, b in vpc_iv)}  # fmt: skip
+                unattr = {src for (proto, dport), got in deleted_by_port.items() if port_matches(rule, proto, dport)
+                          for n, src, d in got
+                          if n is not None and any(a <= n <= b for a, b in ivs)
+                          and d is not None and any(a <= d <= b for a, b in vpc_iv)}  # fmt: skip
                 n_seen = sum(bisect_right(seen_ints, b) - bisect_right(seen_ints, a - 1) for a, b in ivs)
                 never_iv = sg_ipintel.subtract(ivs, seen_iv)
                 never = sg_ipintel.size(never_iv)
@@ -4464,7 +4476,7 @@ def report_row(kind: str, account: str, name: str, range_key: str):
     """One account's row for a console report ("macro" or "refused"), or None if none of its flow logs were read.
     A top-level function so the console can build many in parallel processes. "flow" is whether its flow
     logs were read and over how many days, for every account."""
-    doc = load(account)
+    doc = load(account, rows=kind not in ("estimate", "flow"))  # those two need no traffic: a fraction of the memory
     if kind == "estimate":  # what reading back each READ_DAYS would cost, from the bytes per second earlier reads scanned
         if not doc:
             return None

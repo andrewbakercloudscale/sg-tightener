@@ -126,6 +126,8 @@ class Console:
         self._report_gates: dict = {}
         self._warming: threading.Thread | None = None
         self._plans: dict = {}  # the last remediation plans built, newest last
+        self._plan_pending: dict = {}  # plan key -> the build in progress, so a second request waits for the same one
+        self._plan_pool = None  # processes that build plans: the console stays responsive while a big one builds
         self._owner_failed, self._owner_why = 0.0, ""
         self._reports_mem: dict | None = None
         self.sso = sso
@@ -645,13 +647,12 @@ class Console:
         if len(items) < 8 or REPORT_PROCS < 2:
             return [sg_review.report_row(kind, a, n, range_key) for a, n in items]
         import multiprocessing
-        from concurrent.futures import ProcessPoolExecutor
 
         try:
-            with ProcessPoolExecutor(max_workers=min(REPORT_PROCS, len(items)),
-                                     mp_context=multiprocessing.get_context("spawn")) as pool:  # fmt: skip
-                return list(pool.map(sg_review.report_row, [kind] * len(items), [a for a, _ in items],
-                                     [n for _, n in items], [range_key] * len(items)))  # fmt: skip
+            # a process is replaced after a few accounts: one large account leaves gigabytes behind in the process
+            # that built it, and a long-lived one would keep them for every account after
+            with multiprocessing.get_context("spawn").Pool(min(REPORT_PROCS, len(items)), maxtasksperchild=4) as pool:
+                return pool.starmap(sg_review.report_row, [(kind, a, n, range_key) for a, n in items], chunksize=1)
         except Exception:  # processes not available here: build them one by one
             LOG.exception("building reports in parallel failed; building them one by one")
             return [sg_review.report_row(kind, a, n, range_key) for a, n in items]
@@ -1274,11 +1275,35 @@ class Console:
             hit = self._plans.get(key)
         if hit is not None:
             return hit
-        doc = sg_review.load(account)
-        if not doc:
-            return {"status": "unknown", "days": days, "have_days": 0, "groups": [], "merges": [], "totals": {}}
-        out = sg_remediate.plan(doc, int(days), groups, assets, start, end)
-        out["account"], out["name"] = account, doc.get("name", "")
+        disk = hashlib.sha1(repr(key).encode()).hexdigest()
+        out = _plan_kept(account, disk)  # built before, perhaps before a restart
+        if out is None:
+            with self._report_lock:
+                pending = self._plan_pending.get(key)
+                if pending is None:
+                    if REPORTS_WAIT:
+                        pending = _Done(_plan_job(account, days, groups, assets, start, end))
+                    else:
+                        if self._plan_pool is None:
+                            import multiprocessing
+
+                            # a fresh process for every plan: one of 15 million rows peaks near 8 GB, given back at once
+                            self._plan_pool = multiprocessing.get_context("spawn").Pool(PLAN_PROCS, maxtasksperchild=1)
+                        pending = self._plan_pool.apply_async(_plan_job, (account, days, groups, assets, start, end))
+                    self._plan_pending[key] = pending
+            try:
+                out = pending.get(PLAN_TIMEOUT)
+            except multiprocessing_timeout():
+                raise ConsoleError(504, f"working out this account's plan is taking over {PLAN_TIMEOUT // 60} minutes "
+                                        "(it has a very large number of flow-log rows); it carries on in the "
+                                        "background, so open it again in a few minutes")  # fmt: skip
+            finally:
+                if pending.ready():
+                    with self._report_lock:
+                        self._plan_pending.pop(key, None)
+            if out is None:
+                return {"status": "unknown", "days": days, "have_days": 0, "groups": [], "merges": [], "totals": {}}
+            _plan_keep(account, disk, out)
         with self._report_lock:
             self._plans[key] = out
             while len(self._plans) > 20:
@@ -1746,17 +1771,21 @@ def make_handler(console: Console, token: str, port: int):
             return self.headers.get("Host", "") in hosts  # refuses DNS rebinding
 
         def _send(self, status: int, body: bytes, ctype: str, extra: dict | None = None):
-            self.send_response(status)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header("X-Frame-Options", "DENY")
-            for k, v in (extra or {}).items():
-                self.send_header(k, v)
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("X-Frame-Options", "DENY")
+                for k, v in (extra or {}).items():
+                    self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):  # the page was closed or reloaded before the answer
+                self.close_connection = True
+                LOG.info("%s: the page left before the answer", self.path)
 
         def _json(self, status: int, obj):
             self._send(status, json.dumps(obj, default=str).encode(), "application/json")
@@ -1881,6 +1910,75 @@ def make_handler(console: Console, token: str, port: int):
 
     return Handler
 
+
+
+PLAN_PROCS = 2  # remediation plans built at once, each in its own process
+PLAN_TIMEOUT = 600  # a request waits this long for a plan; the build carries on after it
+
+
+def multiprocessing_timeout():
+    import multiprocessing
+
+    return multiprocessing.TimeoutError
+
+
+class _Done:
+    """A finished result shaped like a pool's, for building in this process (tests)."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def get(self, timeout=None):
+        return self.value
+
+    def ready(self) -> bool:
+        return True
+
+
+def _plan_job(account: str, days: int, groups: dict, assets: dict, start, end) -> dict | None:
+    """One account's remediation plan, from its stored flow logs. A top-level function: it runs in its own process."""
+    import sg_review
+
+    doc = sg_review.load(account)
+    if not doc:
+        return None
+    out = sg_remediate.plan(doc, int(days), groups, assets, start, end)
+    out["account"], out["name"] = account, doc.get("name", "")
+    return out
+
+
+def _plan_file(account: str):
+    import sg_ipintel
+    import sg_store
+
+    return sg_store.File(sg_ipintel.DATA_DIR / "plans" / f"{account}.json")
+
+
+def _plan_kept(account: str, key: str) -> dict | None:
+    """A plan kept for this account and exactly these inputs (its flow logs, groups and window), or None."""
+    try:
+        got = json.loads(_plan_file(account).read_text())
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    except Exception:  # noqa: BLE001 - a cache: the plan is built again
+        LOG.exception("reading the kept plan of %s", account)
+        return None
+    return got.get(key)
+
+
+def _plan_keep(account: str, key: str, out: dict) -> None:
+    """Keep the account's last few plans, so a restart or another window does not build them again."""
+    try:
+        try:
+            got = json.loads(_plan_file(account).read_text())
+        except (FileNotFoundError, ValueError):
+            got = {}
+        got[key] = out
+        while len(got) > 4:
+            got.pop(next(iter(got)))
+        _plan_file(account).write_text(json.dumps(got, default=str))
+    except Exception:  # noqa: BLE001 - a cache: nothing is lost but time
+        LOG.exception("keeping the plan of %s", account)
 
 
 def plain_error(exc: BaseException) -> str:

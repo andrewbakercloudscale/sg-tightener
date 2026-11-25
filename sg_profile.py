@@ -185,22 +185,29 @@ def s3(sess, config=None, now: datetime | None = None) -> dict:
             "regions": {r: len(n) for r, n in by_region.items()}}
 
 
+REGION_WORKERS = 10  # regions read at once: each makes a handful of List/Describe calls
+
+
 def read(sess, account: str, regions: list[str], ce=None, config=None) -> dict:
-    """The account's profile: its regions read four at a time, S3 once, spend from ``ce`` (Cost Explorer in the
-    management account) when given."""
+    """The account's profile: its regions (REGION_WORKERS at a time), S3 and spend from ``ce`` (Cost Explorer in
+    the management account, when given) all read at once. A part that fails is noted, never the whole."""
     prof: dict = {"account": account, "at": time.time(), "regions": {}, "errors": []}
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        for region, got in zip(regions, pool.map(lambda r: region_counts(sess, r, config), regions)):
-            prof["regions"][region] = got
-    try:
-        prof["s3"] = s3(sess, config)
-    except Exception as exc:  # noqa: BLE001
-        prof["s3"] = {"error": _why(exc)}
-    if ce is not None:
+
+    def guarded(fn):
         try:
-            prof["spend"] = costs(ce, account)
-        except Exception as exc:  # noqa: BLE001
-            prof["spend"] = {"error": _why(exc)}
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - shown on the tile, the rest still read
+            return {"error": _why(exc)}
+
+    with ThreadPoolExecutor(max_workers=2) as side:
+        s3_f = side.submit(guarded, lambda: s3(sess, config))
+        ce_f = side.submit(guarded, lambda: costs(ce, account)) if ce is not None else None
+        with ThreadPoolExecutor(max_workers=REGION_WORKERS) as pool:
+            for region, got in zip(regions, pool.map(lambda r: guarded(lambda: region_counts(sess, r, config)), regions)):
+                prof["regions"][region] = got
+        prof["s3"] = s3_f.result()
+        if ce_f is not None:
+            prof["spend"] = ce_f.result()
     prof["totals"] = totals(prof)
     return prof
 

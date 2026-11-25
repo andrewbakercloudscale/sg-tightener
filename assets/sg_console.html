@@ -1648,9 +1648,19 @@ section.nodata .card:not(.empty-state) { display: none; }
     const a = $("xAcct").value;
     loadHero(a).catch(() => {});
     if (!a) { $("xBody").innerHTML = ""; return; }
-    $("xBody").innerHTML = `<div class="card"><p>${loading("Working out what every group should let in…")}</p></div>`;
+    const t0 = Date.now();
+    const wait = () => { const s = Math.round((Date.now() - t0) / 1000);
+      $("xBody").innerHTML = `<div class="card"><p>${loading(`Working out what every group should let in…${s >= 5 ? ` ${s} s` : ""}`)}</p>${s >= 20 ? '<p class="muted small">A large account (millions of flow-log rows) takes a few minutes the first time. It is kept afterwards, so opening it again is instant, even after a restart. Other tabs keep working meanwhile.</p>' : ""}</div>`; };
+    wait();
+    const tick = setInterval(() => { if ($("xAcct").value === a && !fixPlan) wait(); }, 1000);
+    fixPlan = null;
     const rng = `${$("xFrom").value ? `&from=${$("xFrom").value}` : ""}${$("xTo").value ? `&to=${$("xTo").value}` : ""}`;
-    fixPlan = await api(`/api/remediation?account=${encodeURIComponent(a)}&days=90${rng}`);
+    let got;
+    try { got = await api(`/api/remediation?account=${encodeURIComponent(a)}&days=90${rng}`); }
+    catch (e) { if ($("xAcct").value === a) $("xBody").innerHTML = `<div class="flash err"><b>The plan could not be worked out.</b> ${esc(e.message)} <button class="btn sm" id="xRetry">Try again</button></div>`, $("xRetry").onclick = () => loadFixPlan().catch(() => {}); return; }
+    finally { clearInterval(tick); }
+    if ($("xAcct").value !== a) return;  // another account was picked meanwhile: its own request draws it
+    fixPlan = got;
     const ymd = (t) => new Date(t * 1000).toISOString().slice(0, 10);
     if (fixPlan.from != null) {
       $("xFrom").value = ymd(fixPlan.from); $("xTo").value = ymd(fixPlan.to - 1);
