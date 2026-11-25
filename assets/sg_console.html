@@ -469,7 +469,32 @@ section.nodata .card:not(.empty-state) { display: none; }
   @media print { .reread { display: none !important; } }
   #auditDlg { width: min(1280px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
               background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
-  #auditDlg::backdrop, #fixDlg::backdrop { background: rgba(10,12,20,.45); }
+  #auditDlg::backdrop, #fixDlg::backdrop, #resolveDlg::backdrop { background: rgba(10,12,20,.45); }
+  #resolveDlg { width: min(1280px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
+                background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
+  #resolveDlg .au-head { display: flex; gap: 16px; align-items: flex-start; padding: 18px 22px 10px; border-bottom: 1px solid var(--grid); }
+  #resolveDlg .au-tools { margin-left: auto; display: flex; gap: 8px; }
+  #resolveDlg .au-body { overflow: auto; max-height: calc(92vh - 110px); padding: 6px 22px 20px; }
+  #resolveDlg h3 { margin: 18px 0 6px; font-size: 15px; }
+  /* insights: one panel per way of slicing the refused traffic, a bar per value */
+  .insights { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .insights .ip { border: 1px solid var(--grid); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+  .insights h4 { margin: 0 0 6px; font-size: 13px; }
+  .insights .ir { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; padding: 3px 4px; border-radius: 6px; font-size: 12.5px; }
+  .insights .ir.click { cursor: pointer; } .insights .ir.click:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .insights .ir .l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .insights .ir .n { color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .insights .ir .t { grid-column: 1 / -1; height: 5px; border-radius: 3px; background: var(--grid); overflow: hidden; }
+  .insights .ir .t > i { display: block; height: 100%; border-radius: 3px; }
+  /* the filter box: type to search, pick from what is there */
+  .combo { position: relative; }
+  .combo > input { width: 100%; }
+  .combo-list { position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; width: max(100%, 440px); max-height: 420px; overflow: auto;
+                background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 30px rgba(0,0,0,.18); padding: 4px 0; }
+  .combo-list .cg { padding: 6px 12px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); }
+  .combo-list .co { display: flex; gap: 8px; justify-content: space-between; padding: 5px 12px; font-size: 13px; cursor: pointer; }
+  .combo-list .co.act, .combo-list .co:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .combo-list .co .n { color: var(--ink-2); white-space: nowrap; }
   #fixDlg { width: min(1100px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
             background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
   #fixDlg .au-head { display: flex; gap: 16px; align-items: flex-start; padding: 18px 22px 10px; border-bottom: 1px solid var(--grid); }
@@ -481,6 +506,8 @@ section.nodata .card:not(.empty-state) { display: none; }
   .facts b { display: block; font-size: 18px; }
   .rec { border: 2px solid var(--accent); border-radius: 12px; padding: 12px 16px; margin: 12px 0;
          background: color-mix(in srgb, var(--accent) 7%, transparent); }
+  .qa td:first-child { white-space: nowrap; font-weight: 600; width: 1%; }
+  .qa td.good { color: var(--good); } .qa td.bad { color: var(--bad); } .qa td.warn { color: var(--warn); }
   .rec.keep { border-color: var(--good); background: color-mix(in srgb, var(--good) 8%, transparent); }
   .rec.warn { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, transparent); }
   .impact { border-left: 4px solid var(--warn); padding: 8px 12px; border-radius: 8px; margin: 8px 0;
@@ -784,7 +811,8 @@ section.nodata .card:not(.empty-state) { display: none; }
     <p class="lede">Every source the security groups and network ACLs turned away, in every account <code>sg_review.py</code> has read (all of an OU with <code>sg_review.py org</code>, kept fresh by <code>sg_review.py watch --org --loop</code>), worst verdict first.</p>
     <div class="tools">
       <select id="fRange" aria-label="Time window"><option value="24h">Last 24 hours</option><option value="1w">Last week</option><option value="1m">Last month</option><option value="3m">Last 3 months</option><option value="6m">Last 6 months</option><option value="1y">Last year</option></select>
-      <input id="fQ" type="search" placeholder="Filter: account, source, owner, port, verdict…" aria-label="Filter rejected traffic">
+      <div class="combo" id="fCombo"><input id="fQ" type="search" placeholder="Search: account, source, destination, port, verdict…" aria-label="Filter rejected traffic" role="combobox" aria-expanded="false" aria-controls="fQList" autocomplete="off">
+        <div class="combo-list" id="fQList" role="listbox" hidden></div></div>
       <select id="fSev" aria-label="Severity"><option value="">Every severity</option><option>critical</option><option>high</option><option>medium</option><option>low</option><option>info</option></select>
       <select id="fAcct" aria-label="Account"><option value="">Every account</option></select>
       <label class="small"><input id="fRisky" type="checkbox"> risky ports only</label>
@@ -794,15 +822,28 @@ section.nodata .card:not(.empty-state) { display: none; }
     </div>
     <p id="fGap" class="small" hidden style="margin:8px 0;padding:8px 12px;border-left:4px solid var(--muted);border-radius:8px;background:color-mix(in srgb, var(--muted) 12%, transparent)"></p>
     <div class="grid" id="fAccounts"></div>
+    <div class="card" id="ipCard"><div class="card-head"><h3 style="margin:0">Look up an IP address</h3><span class="muted small">the estate's address book</span></div>
+      <p class="muted small">Who owns it (one of our accounts, an AWS service, or an AS number and its owner), threat lists and Tor, the operating system when it is one of our instances, every account that let it in or refused it and on which ports, whether it scanned, and when it was first and last seen. Nothing is sent to the address.</p>
+      <div class="acts"><input id="ipQ" type="search" placeholder="IP address, e.g. 10.1.2.3" aria-label="IP address" style="width:220px"><input id="ipPort" type="search" placeholder="Port (optional)" aria-label="Port" style="width:130px"><button class="btn" id="ipGo">Look up</button></div>
+      <div id="ipOut"></div></div>
     <div class="card" id="fChartCard"><div class="card-head"><h3 style="margin:0">Rejected IP addresses over time</h3><span class="muted small" id="fChartNote"></span></div>
       <p class="muted small">Distinct source IP addresses refused in each period, one line per kind of source. Follows the account and time filters above.</p>
       <div id="fChart"></div></div>
+    <div class="card" id="fInsightCard"><div class="card-head"><h3 style="margin:0">Where the rejections come from and go to</h3><span class="muted small" id="fInsightNote"></span></div>
+      <p class="muted small">The rejected traffic below, sliced every way: by source and destination IP address, kind of source, port and kind of port, verdict, and what refused it. Bars are refused flows. Click a line to filter by it.</p>
+      <div class="insights" id="fInsights"></div></div>
     <div class="card scroll"><table><thead><tr><th>Severity</th><th>Account</th><th>Source</th><th>Refused on</th><th>Flows</th><th>Last seen</th><th>Verdict</th><th></th></tr></thead><tbody id="refusedRows"></tbody></table></div>
     <dialog id="fixDlg" aria-labelledby="fixTitle">
       <div class="au-head"><div><div class="eyebrow">Rejected traffic</div><h2 id="fixTitle" style="margin:2px 0 4px">Fix</h2>
         <div class="muted small" id="fixSub"></div></div>
         <div class="au-tools"><button class="btn sm primary" type="button" id="fixClose">Close</button></div></div>
       <div class="au-body" id="fixBody"></div>
+    </dialog>
+    <dialog id="resolveDlg" aria-labelledby="resolveTitle">
+      <div class="au-head"><div><div class="eyebrow">Resolve rejected traffic</div><h2 id="resolveTitle" style="margin:2px 0 4px">Resolve</h2>
+        <div class="muted small" id="resolveSub"></div></div>
+        <div class="au-tools"><button class="btn sm" type="button" id="resolveRemediate">Open in Remediate</button><button class="btn sm primary" type="button" id="resolveClose">Close</button></div></div>
+      <div class="au-body" id="resolveBody"></div>
     </dialog>
   </section>
 </main>
@@ -1552,7 +1593,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     if (!P.changes.length) { box.innerHTML = '<p class="muted" style="margin:0">Nothing to apply in this region: AWS already holds every approved change.</p>'; return; }
     const rt = (c) => `${esc(c.rule.proto === "-1" ? "all traffic" : `${c.rule.proto} ${c.rule.from === c.rule.to ? c.rule.from : c.rule.from + "-" + c.rule.to}`)} ${c.rule.direction === "in" ? "from" : "to"} <code>${esc(c.rule.source)}</code>`;
     const ev = (c) => {
-      if (c.op !== "remove") return '<span class="muted">lets this in from now on</span>';
+      if (c.op !== "remove") return `<span class="muted">lets this in from now on</span>${c.who?.answers ? `<details${c.who.answers.some((x) => x.tone === "bad") ? " open" : ""}><summary class="small">${c.who.ip ? "Who " + esc(c.who.ip) + " is" : "What it covers"}${c.who.answers.some((x) => x.tone === "bad") ? ' <span style="color:var(--bad)">⚠ check this</span>' : ""}</summary>${qaHtml(c.who.answers)}</details>` : c.who?.group ? `<div class="muted small">security group ${esc(c.who.group)}: whatever carries it</div>` : ""}`;
       if (!c.evidence) return '<span class="muted">no flow logs read for this rule</span>';
       const x = c.evidence;
       if (x.lost.length) return `<span style="color:var(--bad)"><b>will be refused:</b> ${x.lost.map((s) => `<code>${esc(s)}</code>`).join(" ")}</span> <span class="muted">used it, and no rule left lets them in</span>`;
@@ -2165,18 +2206,16 @@ section.nodata .card:not(.empty-state) { display: none; }
     // opens it on Remediate. While the rows are still being worked out (after a restart or an upgrade) say so and ask
     // again, rather than claiming nothing has been read.
     const range = $("fRange").value, building = refusedData.building || 0;
-    const accts = [...refusedData.accounts].sort((x, y) => (y.attention.critical || 0) - (x.attention.critical || 0) || (y.attention.high || 0) - (x.attention.high || 0) || y.refused - x.refused);
+    const sv = {};  // severities of the refused sources themselves: an account's attention also counts findings that are not refusals
+    for (const r of refusedData.rows) { const o = (sv[r.account] ??= {critical: 0, high: 0}); if (r.sev in o) o[r.sev]++; }
+    const accts = refusedData.accounts.map((a) => ({...a, attention: sv[a.account] || {critical: 0, high: 0}})).sort((x, y) => y.attention.critical - x.attention.critical || y.attention.high - x.attention.high || y.refused - x.refused);
     $("fAccounts").innerHTML = (building ? `<div class="card empty-state" style="grid-column:1/-1">${loading(`${accts.length.toLocaleString()} account${accts.length === 1 ? "" : "s"} shown · ${building.toLocaleString()} more being worked out from the flow logs read, the page fills in by itself`)}</div>` : "")
       + accts.filter((a) => a.refused).map((a) => `<div class="card stat${a.account === $("fAcct").value ? " on" : ""}"><b>${a.refused.toLocaleString()}</b><span>refused sources in ${esc(a.name || a.account)}${a.attention.critical ? ` · <span style="color:var(--bad)">${a.attention.critical} critical</span>` : ""}${a.attention.high ? ` · ${a.attention.high} high` : ""}</span>
-        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap"><button class="btn" data-facct="${esc(a.account)}">Its traffic</button><button class="btn primary" data-fix="${esc(a.account)}">Fix this account</button></div></div>`).join("")
+        <div style="margin-top:8px"><button class="btn primary" data-resolve="${esc(a.account)}" title="Its rejections over time, where they come from and go to, and a fix for each">Resolve</button></div></div>`).join("")
       || (building ? "" : noFlowLogs(refusedData.no_flow_logs_read || 0));
     $("fAccounts").onclick = (ev) => {
-      const b = ev.target.closest("[data-facct]");
-      if (!b) return;
-      $("fAcct").value = $("fAcct").value === b.dataset.facct ? "" : b.dataset.facct;
-      for (const c of $("fAccounts").querySelectorAll(".stat")) c.classList.toggle("on", !!c.querySelector(`[data-facct="${CSS.escape($("fAcct").value)}"]`) && !!$("fAcct").value);
-      drawRefused();
-      $("refusedRows").scrollIntoView({behavior: "smooth", block: "start"});
+      const b = ev.target.closest("[data-resolve]");
+      if (b) openResolve(b.dataset.resolve);
     };
     $("tab-refused").classList.toggle("nodata", !refusedData.accounts.length && !building);
     drawRefused();
@@ -2216,9 +2255,11 @@ section.nodata .card:not(.empty-state) { display: none; }
     const q = $("fQ").value.toLowerCase().trim(), sev = $("fSev").value, acct = $("fAcct").value, risky = $("fRisky").checked, nw = $("fNew").checked, wh = $("fWhere").value;
     const whereOk = (r) => !wh || (wh === "ext" ? !r.internal : wh === "int" ? r.internal : wh === "v6" ? r.v6 : wh === "bad" ? r.threat || r.tor : r.scan);
     const shown = refusedData.rows.filter((r) => (!sev || r.sev === sev) && (!acct || r.account === acct) && (!risky || r.risky) && (!nw || r.new) && whereOk(r) && (!q ||
-      [r.account, r.account_name, r.src, r.name, r.type, r.port, r.port_class, r.verdict, r.reason, r.kind, r.region, r.eni, r.dst].join(" ").toLowerCase().includes(q)));
+      rowText(r).includes(q)));
     $("fN").textContent = `${shown.length.toLocaleString()} of ${refusedData.rows.length.toLocaleString()}`;
     drawRefusedChart(acct);
+    $("fInsightNote").textContent = `${shown.length.toLocaleString()} refused source${shown.length === 1 ? "" : "s"}${acct ? "" : ` in ${new Set(shown.map((r) => r.account)).size.toLocaleString()} accounts`}`;
+    $("fInsights").innerHTML = insightsHtml(shown, {accounts: !acct, click: true});
     const fp = page("refused", shown.length, drawRefused);
     $("refusedRows").innerHTML = shown.slice(fp.a, fp.b).map((r, i) => `<tr><td><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span></td>
       <td>${esc(r.account_name || r.account)}<div class="muted small"><code style="white-space:nowrap">${esc(r.account)}</code></div></td>
@@ -2233,6 +2274,218 @@ section.nodata .card:not(.empty-state) { display: none; }
     pagerAfter($("refusedRows"), fp.bar);
     for (const b of $("refusedRows").querySelectorAll("[data-rfix]")) b.addEventListener("click", () => openFix(shown[+b.dataset.rfix]));
   }
+  // ---- the estate's address book: everything known about one IP address
+  const qaHtml = (answers) => `<table class="small qa"><tbody>${answers.map((x) => `<tr><td>${esc(x.q)}</td><td class="${esc(x.tone)}">${esc(x.a)}</td></tr>`).join("")}</tbody></table>`;
+  function ipHtml(P) {
+    const seen = P.seen.length ? `<h3>Where the estate has seen it</h3><div class="scroll"><table class="small"><thead><tr><th>Account</th><th class="num">Let in</th><th class="num">Refused</th><th class="num">Answered us</th><th>Ports (busiest)</th><th>First</th><th>Last</th></tr></thead><tbody>${P.seen.map((r) => `<tr><td><b>${esc(r.account_name || r.account)}</b> <code>${esc(r.account)}</code><div class="muted">${r.regions.map(esc).join(", ")}${r.scan ? ' · <span style="color:var(--bad)">scanned ' + r.ports_refused + " ports</span>" : ""}</div></td>
+      <td class="num">${Number(r.let_in).toLocaleString()}</td><td class="num">${Number(r.refused).toLocaleString()}</td><td class="num">${Number(r.replies).toLocaleString()}</td>
+      <td>${r.ports.map((p) => `<span title="${esc(p.svc)} · ${esc(p.cls)}"><code>${esc(p.proto)} ${esc(p.port)}</code>${p.risky ? " ⚠" : ""} <span class="muted">${esc(p.svc)}${p.refused && !p.let_in ? " (refused)" : ""}</span></span>`).join("<br>")}</td>
+      <td>${esc(when(r.first))}</td><td>${esc(when(r.last))}</td></tr>`).join("")}</tbody></table></div>` : "";
+    const ours = P.ours.length ? `<h3>Our interfaces with this address</h3><div class="scroll"><table class="small"><thead><tr><th>Account</th><th>Interface</th><th>Operating system</th><th>Groups</th></tr></thead><tbody>${P.ours.map((o) => `<tr><td><b>${esc(o.account_name || o.account)}</b> <code>${esc(o.account)}</code><div class="muted">${esc(o.region)}</div></td><td><code>${esc(o.instance || o.eni)}</code> ${esc(o.name)}<div class="muted">${esc(o.kind)}${o.desc ? " · " + esc(o.desc) : ""}</div></td><td>${esc(o.os || "—")}${o.type ? ` <span class="muted">${esc(o.type)}</span>` : ""}</td><td>${o.groups.map((g) => `<code>${esc(g)}</code>`).join(" ")}</td></tr>`).join("")}</tbody></table></div>` : "";
+    const note = P.building ? `<p class="muted small">${P.building} account(s) are still being added to the address book: look again in a few minutes for the full picture.</p>` : `<p class="muted small">From the flow logs of ${P.accounts_indexed} account(s), as read. IP addresses are reused: the dates say when each sighting was.</p>`;
+    return `${qaHtml(P.answers)}${note}${ours}${seen}`;
+  }
+  async function lookupIp() {
+    const ip = $("ipQ").value.trim();
+    if (!ip) { $("ipQ").focus(); return; }
+    $("ipOut").innerHTML = loading("Looking it up across the estate…");
+    try {
+      const P = await api(`/api/ip?ip=${encodeURIComponent(ip)}&port=${encodeURIComponent($("ipPort").value.trim())}`);
+      $("ipOut").innerHTML = ipHtml(P);
+    } catch (e) { $("ipOut").innerHTML = `<p class="small" style="color:var(--bad)">${esc(e.message)}</p>`; }
+  }
+  $("ipGo").addEventListener("click", lookupIp);
+  for (const id of ["ipQ", "ipPort"]) $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") lookupIp(); });
+  // ---- Insights: the refused traffic sliced every way. Destinations and ports come from each source's targets (the
+  // interfaces and ports it tried), so a source that tried several counts toward each, with that target's flows.
+  const tname = (k) => (refusedData?.types || {})[k] || k || "Unknown";
+  const portOf = (t) => `${PROTO[t.proto] || t.proto} ${t.port}`;
+  const targetsOf = (r) => (r.targets || []).length ? r.targets : [{dst: r.dst, eni: r.eni, proto: r.proto, port: r.port, flows: r.flows, kind: r.kind, port_class: r.port_class, risky: r.risky, by: r.by}];
+  const rowText = (r) => (r._t ??= [r.account, r.account_name, r.src, r.name, r.type, tname(r.cat), r.port, portOf(r), r.port_class, r.verdict, r.title, r.reason, r.kind, r.region, r.eni, r.dst, r.by,
+    ...targetsOf(r).flatMap((t) => [t.dst, t.eni, portOf(t), t.port_class])].join(" ").toLowerCase());
+  const WHERE = {external: ["External", (r) => !r.internal], internal: ["Internal", (r) => r.internal], v6: ["IPv6", (r) => r.v6], scan: ["Scanning (many ports or addresses)", (r) => r.scan],
+    new: ["New this week", (r) => r.new], threat: ["Known malicious", (r) => r.threat], tor: ["Tor exit", (r) => r.tor], risky: ["Tried a risky port", (r) => r.risky]};
+  const TODO = {inside: ["Investigate: a host inside is scanning", (r) => r.internal && r.scan, "var(--bad)"],
+    restore: ["Put back: let in until a change removed its rule", (r) => !!r.restore, "var(--high)"],
+    wanted: ["Probably wanted: refused traffic that looks like a real service", (r) => !!r.wanted && !r.restore, "var(--warn)"],
+    keep: ["Keep refusing: outside scans, threat lists, Tor", (r) => !r.internal && (r.scan || r.threat || r.tor), "var(--good)"]};
+  function matchInsight(r, k, v) {
+    switch (k) {
+      case "acct": return r.account === v;
+      case "src": return r.src === v;
+      case "dst": return targetsOf(r).some((t) => t.dst === v);
+      case "type": return r.cat === v;
+      case "where": return !!WHERE[v]?.[1](r);
+      case "todo": return !!TODO[v]?.[1](r);
+      case "port": return targetsOf(r).some((t) => portOf(t) === v);
+      case "pclass": return targetsOf(r).some((t) => (t.port_class || "Other") === v);
+      case "verdict": return (r.title || r.verdict) === v;
+      case "sev": return r.sev === v;
+      case "by": return (r.by || "Security group") === v;
+      case "kind": return targetsOf(r).some((t) => t.kind === v);
+      case "region": return r.region === v;
+      default: return true;
+    }
+  }
+  // {key: {flows, srcs: Set, label, sub, color}} for one way of slicing, busiest first
+  function slice(rows, each) {
+    const m = new Map();
+    for (const r of rows) for (const [key, flows, label, sub, color] of each(r)) {
+      const e = m.get(key) || {key, flows: 0, srcs: new Set(), label, sub, color};
+      e.flows += Number(flows) || 0; e.srcs.add(r.src); m.set(key, e);
+    }
+    return [...m.values()].sort((a, b) => b.flows - a.flows || b.srcs.size - a.srcs.size);
+  }
+  function insightsHtml(rows, {accounts = true, click = false, top = 8} = {}) {
+    if (!rows.length) return '<p class="muted">Nothing refused matches.</p>';
+    const panel = (title, k, items, color = "var(--accent)") => {
+      if (!items.length) return "";
+      const max = Math.max(1, ...items.map((e) => e.flows));
+      return `<div class="ip"><h4>${esc(title)} <span class="muted small">${items.length.toLocaleString()}</span></h4>${items.slice(0, top).map((e) => `<div class="ir${click ? " click" : ""}" data-ik="${k}" data-iv="${esc(e.key)}" title="${esc(e.label)}${e.sub ? " · " + esc(e.sub) : ""}"><span class="l">${k === "src" || k === "dst" || k === "port" ? `<code>${esc(e.label)}</code>` : esc(e.label)}${e.sub ? ` <span class="muted small">${esc(e.sub)}</span>` : ""}</span>
+        <span class="n">${e.srcs.size.toLocaleString()} src · ${big(e.flows)} flows</span><span class="t"><i style="width:${Math.max(2, (100 * e.flows) / max).toFixed(1)}%;background:${e.color || color}"></i></span></div>`).join("")}${items.length > top ? `<div class="muted small" style="padding:2px 4px">and ${(items.length - top).toLocaleString()} more</div>` : ""}</div>`;
+    };
+    const flag = (D) => Object.entries(D).map(([k, [label, f, color]]) => { const xs = rows.filter(f); return {key: k, label, flows: xs.reduce((s, r) => s + Number(r.flows || 0), 0), srcs: new Set(xs.map((r) => r.src)), color}; }).filter((e) => e.srcs.size);
+    return [
+      panel("What to do", "todo", flag(TODO)),
+      panel("Kind of source (IP type)", "type", slice(rows, (r) => [[r.cat, r.flows, tname(r.cat), "", TCOL[r.cat]]])),
+      panel("Where from", "where", flag(WHERE), "var(--warn)"),
+      panel("Source IP addresses", "src", slice(rows, (r) => [[r.src, r.flows, r.src, r.name && r.name !== r.src ? r.name : "", TCOL[r.cat]]])),
+      panel("Destination IP addresses", "dst", slice(rows, (r) => targetsOf(r).map((t) => [t.dst, t.flows, t.dst, [t.kind, t.desc].filter(Boolean).join(" · ")]))),
+      panel("Ports", "port", slice(rows, (r) => targetsOf(r).map((t) => [portOf(t), t.flows, portOf(t), `${t.port_class || ""}${t.risky ? " ⚠ risky" : ""}`, t.risky ? "var(--bad)" : ""]))),
+      panel("Kind of port", "pclass", slice(rows, (r) => targetsOf(r).map((t) => [t.port_class || "Other", t.flows, t.port_class || "Other", ""]))),
+      accounts ? panel("Accounts", "acct", slice(rows, (r) => [[r.account, r.flows, r.account_name || r.account, r.account_name ? r.account : ""]])) : "",
+      panel("Severity", "sev", slice(rows, (r) => [[r.sev, r.flows, r.sev, "", SEV[r.sev]]])),
+      panel("Verdict", "verdict", slice(rows, (r) => [[r.title || r.verdict, r.flows, r.title || r.verdict, ""]])),
+      panel("Destination kind", "kind", slice(rows, (r) => targetsOf(r).map((t) => [t.kind || "Unknown", t.flows, t.kind || "Unknown", ""]))),
+      panel("Refused by", "by", slice(rows, (r) => [[r.by || "Security group", r.flows, r.by || "Security group", ""]])),
+      panel("Regions", "region", slice(rows, (r) => [[r.region, r.flows, r.region, ""]])),
+    ].join("");
+  }
+  // A click on an insight on the page sets the filter controls, so what is filtered stays visible above
+  $("fInsights").addEventListener("click", (ev) => {
+    const el = ev.target.closest("[data-ik]");
+    if (!el) return;
+    const k = el.dataset.ik, v = el.dataset.iv;
+    const W = {external: "ext", internal: "int", v6: "v6", scan: "scan", threat: "bad", tor: "bad"};
+    if (k === "acct") $("fAcct").value = v;
+    else if (k === "sev") $("fSev").value = v;
+    else if (k === "where" && v === "new") $("fNew").checked = true;
+    else if (k === "where" && v === "risky") $("fRisky").checked = true;
+    else if (k === "where") $("fWhere").value = W[v] || "";
+    else if (k === "todo") { if (TODO[v]) { $("fQ").value = ""; openResolveRows(refusedData.rows.filter((r) => (!$("fAcct").value || r.account === $("fAcct").value) && TODO[v][1](r)), TODO[v][0], $("fAcct").value || ""); } return; }
+    else $("fQ").value = k === "type" ? tname(v) : v;
+    drawRefused();
+  });
+  function refusedChartHtml(A) {
+    A = A.filter((a) => (a.bins || []).length);
+    const NAMES = refusedData.types || {};
+    const keys = Object.keys(NAMES).filter((k) => A.some((a) => (a.by_type[k] || []).some(Boolean)));
+    const o = aligned(A, (a, i) => Object.fromEntries(keys.map((k) => [k, (a.by_type[k] || [])[i] || 0])));
+    return keys.length ? svgLines(o.ts, o.rows, keys, TCOL, NAMES) : '<p class="muted">Nothing refused in this window.</p>';
+  }
+
+  // ---- Resolve: one account's rejections (or any set of them): over time, where from and to, what to do, a fix each
+  let resolveState = null;
+  function openResolve(acct) {
+    const a = refusedData.accounts.find((x) => x.account === acct) || {account: acct};
+    openResolveRows(refusedData.rows.filter((r) => r.account === acct), a.name || acct, acct, a);
+  }
+  function openResolveRows(rows, title, acct, a = null) {
+    resolveState = {rows, filter: null, n: 60, acct};
+    $("resolveTitle").textContent = title;
+    $("resolveSub").textContent = `${acct ? acct + " · " : ""}${$("fRange").selectedOptions[0].textContent}${a && a.covered < 0.9 ? ` · flow logs cover ${Math.round(Math.max(0, a.covered) * 100)}% of it` : ""}`;
+    $("resolveRemediate").hidden = !acct;
+    $("resolveRemediate").dataset.fix = acct || "";
+    const n = (f) => rows.filter(f).length, flows = rows.reduce((s, r) => s + Number(r.flows || 0), 0);
+    const facts = `<div class="facts">
+      <div><span class="muted small">Refused sources</span><b>${(a?.refused || rows.length).toLocaleString()}</b>${a?.refused > rows.length ? `<span class="muted small">the ${rows.length.toLocaleString()} busiest listed here</span>` : ""}</div>
+      <div><span class="muted small">Refused flows</span><b>${big(flows)}</b></div>
+      <div><span class="muted small">Critical · high</span><b><span style="color:var(--bad)">${n((r) => r.sev === "critical")}</span> · ${n((r) => r.sev === "high")}</b></div>
+      <div><span class="muted small">External · internal</span><b>${n((r) => !r.internal)} · ${n((r) => r.internal)}</b></div>
+      <div><span class="muted small">Scanning</span><b>${n((r) => r.scan)}</b></div>
+      <div><span class="muted small">New this week</span><b>${n((r) => r.new)}</b></div></div>`;
+    const chart = a ? `<h3>Rejected IP addresses over time, by kind of source</h3>${refusedChartHtml([a])}` : "";
+    $("resolveBody").innerHTML = `${facts}${chart}<h3>Where they come from and go to</h3><p class="muted small">Click a line to narrow the list below to it.</p><div class="insights" id="rsInsights">${insightsHtml(rows, {accounts: !acct, click: true, top: 6})}</div>
+      <h3 id="rsListHead">Every refused source, worst first</h3><div id="rsFilter"></div><div class="scroll"><table class="small"><thead><tr><th>Severity</th>${acct ? "" : "<th>Account</th>"}<th>Source</th><th>Refused on</th><th class="num">Flows</th><th>Verdict and what to do</th><th></th></tr></thead><tbody id="rsRows"></tbody></table></div><div id="rsMore"></div>`;
+    $("rsInsights").addEventListener("click", (ev) => {
+      const el = ev.target.closest("[data-ik]");
+      if (!el) return;
+      resolveState.filter = {k: el.dataset.ik, v: el.dataset.iv, label: el.getAttribute("title")};
+      resolveState.n = 60;
+      drawResolveRows();
+      $("rsListHead").scrollIntoView({behavior: "smooth", block: "start"});
+    });
+    drawResolveRows();
+    if (!$("resolveDlg").open) $("resolveDlg").showModal();
+  }
+  function drawResolveRows() {
+    const {rows, filter, n, acct} = resolveState;
+    const shown = filter ? rows.filter((r) => matchInsight(r, filter.k, filter.v)) : rows;
+    $("rsFilter").innerHTML = filter ? `<p class="small">Only <b>${esc(filter.label)}</b>: ${shown.length.toLocaleString()} of ${rows.length.toLocaleString()} <button class="btn sm" id="rsAll">Show all</button></p>` : "";
+    $("rsRows").innerHTML = shown.slice(0, n).map((r, i) => `<tr><td><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span></td>${acct ? "" : `<td>${esc(r.account_name || r.account)}</td>`}
+      <td><code>${esc(r.src)}</code> ${pills(r)}<div class="muted">${esc(r.name)}${r.cat ? " · " + esc(tname(r.cat)) : ""}</div></td>
+      <td><code>${esc(portOf(r))}</code>${r.risky ? " ⚠" : ""} <span class="muted">${esc(r.port_class)}</span><div class="muted">${esc(r.kind)} ${esc(r.dst)}${r.ports > 1 ? ` · ${r.ports} ports` : ""}${r.dsts > 1 ? ` · ${r.dsts} addresses` : ""}</div></td>
+      <td class="num">${Number(r.flows).toLocaleString()}</td>
+      <td><b>${esc(r.title || r.verdict)}</b>${r.action && r.action !== "None." ? `<div class="muted">${esc(r.action)}</div>` : ""}</td>
+      <td><button class="btn" data-rsfix="${i}">Fix…</button></td></tr>`).join("") || `<tr><td colspan="7" class="muted">Nothing matches.</td></tr>`;
+    $("rsMore").innerHTML = shown.length > n ? `<p class="small">${n.toLocaleString()} of ${shown.length.toLocaleString()} shown <button class="btn sm" id="rsMoreBtn">Show ${Math.min(200, shown.length - n).toLocaleString()} more</button></p>` : "";
+    for (const b of $("rsRows").querySelectorAll("[data-rsfix]")) b.addEventListener("click", () => openFix(shown[+b.dataset.rsfix]));
+    $("rsAll")?.addEventListener("click", () => { resolveState.filter = null; drawResolveRows(); });
+    $("rsMoreBtn")?.addEventListener("click", () => { resolveState.n += 200; drawResolveRows(); });
+  }
+  $("resolveClose").addEventListener("click", () => $("resolveDlg").close());
+  $("resolveRemediate").addEventListener("click", () => $("resolveDlg").close());  // the page-wide [data-fix] handler opens Remediate
+
+  // ---- the search box: type to search, pick an account, source, destination, port or verdict from what is there
+  let comboAt = -1;
+  function comboItems(q) {
+    if (!refusedData) return [];
+    const rows = refusedData.rows, hit = (s) => !q || String(s || "").toLowerCase().includes(q);
+    const groups = [
+      ["Accounts", "acct", slice(rows, (r) => [[r.account, r.flows, r.account_name || r.account, r.account]])],
+      ["Source IP addresses", "q", slice(rows, (r) => [[r.src, r.flows, r.src, r.name && r.name !== r.src ? r.name : ""]])],
+      ["Destination IP addresses", "q", slice(rows, (r) => targetsOf(r).map((t) => [t.dst, t.flows, t.dst, t.kind || ""]))],
+      ["Ports", "q", slice(rows, (r) => targetsOf(r).map((t) => [portOf(t), t.flows, portOf(t), t.port_class || ""]))],
+      ["Kinds of source", "q", slice(rows, (r) => [[tname(r.cat), r.flows, tname(r.cat), ""]])],
+      ["Kinds of port", "q", slice(rows, (r) => targetsOf(r).map((t) => [t.port_class || "Other", t.flows, t.port_class || "Other", ""]))],
+      ["Verdicts", "q", slice(rows, (r) => [[r.title || r.verdict, r.flows, r.title || r.verdict, ""]])],
+    ];
+    return groups.map(([g, k, xs]) => [g, k, xs.filter((e) => hit(e.label) || (k === "acct" && hit(e.sub))).slice(0, q ? 8 : 4)]).filter((g) => g[2].length);
+  }
+  function drawCombo() {
+    const q = $("fQ").value.toLowerCase().trim(), G = comboItems(q);
+    let i = 0;
+    $("fQList").innerHTML = G.map(([g, k, xs]) => `<div class="cg">${esc(g)}</div>${xs.map((e) => `<div class="co" role="option" data-i="${i++}" data-k="${k}" data-v="${esc(k === "acct" ? e.key : e.label)}"><span>${esc(e.label)}${e.sub && e.sub !== e.label ? ` <span class="muted small">${esc(e.sub)}</span>` : ""}</span><span class="n">${e.srcs.size.toLocaleString()} src</span></div>`).join("")}`).join("")
+      || '<div class="co muted">Nothing refused matches</div>';
+    comboAt = -1;
+    $("fQList").hidden = false;
+    $("fQ").setAttribute("aria-expanded", "true");
+  }
+  function closeCombo() { $("fQList").hidden = true; $("fQ").setAttribute("aria-expanded", "false"); }
+  function pickCombo(el) {
+    if (!el?.dataset.k) return;
+    if (el.dataset.k === "acct") { $("fAcct").value = el.dataset.v; $("fQ").value = ""; } else $("fQ").value = el.dataset.v;
+    closeCombo();
+    drawRefused();
+  }
+  $("fQ").addEventListener("focus", drawCombo);
+  $("fQ").addEventListener("input", drawCombo);
+  $("fQ").addEventListener("keydown", (ev) => {
+    const os = [...$("fQList").querySelectorAll(".co[data-k]")];
+    if (ev.key === "Escape") return closeCombo();
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if ($("fQList").hidden) drawCombo();
+      comboAt = Math.max(0, Math.min(os.length - 1, comboAt + (ev.key === "ArrowDown" ? 1 : -1)));
+      os.forEach((o, j) => o.classList.toggle("act", j === comboAt));
+      os[comboAt]?.scrollIntoView({block: "nearest"});
+    } else if (ev.key === "Enter") {
+      if (comboAt >= 0) { ev.preventDefault(); pickCombo(os[comboAt]); } else closeCombo();
+    }
+  });
+  $("fQList").addEventListener("mousedown", (ev) => { ev.preventDefault(); pickCombo(ev.target.closest(".co")); });
+  document.addEventListener("click", (ev) => { if (!ev.target.closest("#fCombo")) closeCombo(); });
+
   // ---- Fix one refused source: who it is, what it tried, why, and where a rule letting it in belongs
   let fixRow = null;
   async function openFix(r) {
@@ -2241,6 +2494,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("fixSub").textContent = `${r.account_name || r.account} (${r.account}) · ${r.region}`;
     $("fixBody").innerHTML = loading("Looking at the interface, its groups and the audit trail…");
     $("fixDlg").showModal();
+    const who = api(`/api/ip?ip=${encodeURIComponent(r.src)}&port=${encodeURIComponent(r.port ?? "")}&proto=${encodeURIComponent(r.proto ?? "")}&account=${encodeURIComponent(r.account)}`, undefined, true).catch((e) => ({error: e.message}));
     let f = null;
     try {
       f = await api("/api/refused-fix", {account: r.account, region: r.region, eni: r.eni, src: r.src, proto: r.proto, port: r.port,
@@ -2248,6 +2502,8 @@ section.nodata .card:not(.empty-state) { display: none; }
     } catch (e) { f = {error: e.message}; }
     if (fixRow === r) $("fixBody").innerHTML = fixHtml(r, f);
     wireFix(r, f);
+    const P = await who;
+    if (fixRow === r && $("fixWho")) $("fixWho").innerHTML = P.error ? `<p class="muted small">${esc(P.error)}</p>` : ipHtml(P);
   }
   const pills = (r) => `<span class="pill" style="--p:${r.internal ? "var(--good)" : "var(--warn)"}">${r.internal ? "internal" : "external"}</span>${r.v6 ? ' <span class="pill" style="--p:var(--accent)">IPv6</span>' : ""}${r.scan ? ' <span class="pill" style="--p:var(--high)">port scanning</span>' : ""}${r.new ? ' <span class="pill" style="--p:var(--bad)">new</span>' : ""}${r.threat ? ' <span class="pill" style="--p:var(--bad)">known malicious</span>' : ""}${r.tor ? ' <span class="pill" style="--p:var(--bad)">Tor</span>' : ""}`;
   function fixHtml(r, f) {
@@ -2263,7 +2519,8 @@ section.nodata .card:not(.empty-state) { display: none; }
     const tg = (r.targets || []).length ? r.targets : [{eni: r.eni, dst: r.dst, proto: r.proto, port: r.port, flows: r.flows, kind: r.kind, groups: r.groups, port_class: r.port_class, risky: r.risky, by: r.by}];
     const tried = `<h3>What it tried to reach</h3><div class="scroll"><table class="small"><thead><tr><th>Interface</th><th>IP address</th><th>Port</th><th class="num">Flows</th><th>Refused by</th></tr></thead><tbody>${tg.map((t) => `<tr><td><code>${esc(t.eni)}</code><div class="muted">${esc(t.kind)}${t.desc ? " · " + esc(t.desc) : ""}${t.public ? ` · public ${esc(t.public)}` : ""}</div></td><td><code>${esc(t.dst)}</code></td><td><code>${esc(PROTO[t.proto] || t.proto)} ${esc(t.port)}</code>${t.risky ? " ⚠" : ""} <span class="muted">${esc(t.port_class)}</span></td><td class="num">${Number(t.flows).toLocaleString()}</td><td>${esc(t.by || "Security group")}</td></tr>`).join("")}</tbody></table></div>${(r.ports || 1) > tg.length ? `<p class="muted small">The ${tg.length} busiest shown; it tried ${Number(r.ports).toLocaleString()} ports on ${Number(r.dsts || 1).toLocaleString()} IP addresses in all.</p>` : ""}`;
     const verdict = `<h3>Why it was refused</h3><p><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span> <b>${esc(r.title || r.verdict)}</b></p><p class="small">${esc(r.reason)}</p>${r.action && r.action !== "None." ? `<p class="small"><b>Suggested:</b> ${esc(r.action)}</p>` : ""}`;
-    if (!f || f.error) return `${facts}${tried}${verdict}<div class="rec warn"><b>Where a rule belongs could not be worked out.</b> <span class="small">${esc(f?.error || "")}</span></div>`;
+    const whoBox = `<h3>Before you let it in: what the estate knows about ${esc(r.src)}</h3><div id="fixWho">${loading("Looking it up across every account…")}</div>`;
+    if (!f || f.error) return `${facts}${verdict}${whoBox}${tried}<div class="rec warn"><b>Where a rule belongs could not be worked out.</b> <span class="small">${esc(f?.error || "")}</span></div>`;
     const a = f.asset;
     const asset = a ? `<p class="small">Interface <code>${esc(a.eni)}</code>${a.instance ? ` on instance <code>${esc(a.instance)}</code>` : ""}${a.asg ? ` in auto scaling group <code>${esc(a.asg)}</code>` : ""} · ${esc(a.kind)}${a.description ? " · " + esc(a.description) : ""} · VPC <code>${esc(a.vpc_id)}</code></p>` : "";
     const groups = f.groups.length ? `<h3>Security groups on that interface</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th class="num">Interfaces</th><th>Lets in on ${esc(f.proto)} ${esc(f.port)}</th></tr></thead><tbody>${f.groups.map((g) => `<tr><td><b>${esc(g.name)}</b> <code>${esc(g.id)}</code><div class="muted">${esc(g.description)}</div></td><td class="num">${g.interfaces}</td><td>${g.lets_in ? '<span class="pill" style="--p:var(--good)">this source</span>' : g.serves_port ? g.sources.map((x) => `<code>${esc(x)}</code>`).join(" ") : '<span class="muted">nothing on this port</span>'}</td></tr>`).join("")}</tbody></table></div>` : "";
@@ -2279,7 +2536,7 @@ section.nodata .card:not(.empty-state) { display: none; }
         <select id="fixGroup" aria-label="Group to add it to">${f.alternatives.map((x) => `<option value="${esc(x.group)}" ${x.group === rec.group ? "selected" : ""}>${esc(x.name || x.group)} · ${x.interfaces} interface${x.interfaces === 1 ? "" : "s"}${x.serves_port ? ` · already serves ${esc(f.port)}` : ""}${x.group === rec.group && rec.kind === "add" ? " (recommended)" : ""}</option>`).join("")}</select>
         ${alsoHtml(r, f)}<button class="btn ${rec.kind === "add" ? "primary" : ""}" id="fixGo">${rec.kind === "add" ? "Propose this rule" : "Propose anyway"}</button></div>
         <p class="muted small" id="fixMsg" style="margin:6px 0 0">A change request: nothing changes in AWS until a second person approves it and it is applied.</p>` : ""}</div>`;
-    return `<p>${pills(r)} <span class="small">${who}</span></p>${facts}${verdict}${broke}${recBox}${tried}${asset}${groups}`;
+    return `<p>${pills(r)} <span class="small">${who}</span></p>${facts}${verdict}${broke}${recBox}${whoBox}${tried}${asset}${groups}`;
   }
   // The other interfaces it was refused on, on the same port, whose groups the chosen one does not cover: one group
   // each (only when that interface carries a single group, so the choice is not a guess).
