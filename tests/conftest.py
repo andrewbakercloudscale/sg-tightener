@@ -15,6 +15,8 @@ import pytest
 import sg_ipintel
 import sg_store
 
+os.environ["SG_NO_WARM"] = "1"  # the console's background report builder: tests build what they ask for
+
 TEST_DB = "sgtightener_test"
 
 

@@ -940,3 +940,19 @@ def test_open_to_everyone_narrows_except_on_a_public_load_balancers_web_ports(re
     snap = {"enis": {"e1": {"kind": "load balancer", "public": ""}, "e2": {"kind": "load balancer", "public": "1.2.3.4"}}}
     assert not sg_review.public_lb({"enis": ["e1"]}, snap)  # an internal load balancer
     assert sg_review.public_lb({"enis": ["e1", "e2"]}, snap)
+
+
+def test_needed_against_permitted_follows_what_remediate_leaves():
+    """Owner, 2026-11-25: the Risk overview shows IP addresses needed (estimate) against permitted."""
+    rules = [{"allowed": 16777216, "status": "tighten", "suggest_size": 4},
+             {"allowed": 65536, "status": "unused"},
+             {"allowed": 256, "status": "used"},
+             {"allowed": 4294967296, "status": "open"}]
+    assert sg_review.permitted_ips(rules) == 16777216 + 65536 + 256 + 4294967296
+    assert sg_review.needed_ips(rules) == 4 + 256 + 4294967296
+
+
+def test_the_macro_row_carries_needed_and_permitted(report):
+    _, rep = report
+    row = sg_review.macro_row(ACCT, "demo", rep)
+    assert 0 < row["needed"] < row["permitted"]

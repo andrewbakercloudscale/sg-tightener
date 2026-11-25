@@ -56,7 +56,10 @@ MIN_SPEND = 100.0  # US$ in the last 30 days: reading an OU skips accounts spend
 AGES = {"estimate": 3600}  # reports that depend on the time as well as the read: rebuilt (in the background) this often
 SETTLING = 600  # a read written to in the last ten minutes keeps its last report row (built in this window)
 REPORT_PROCS = max(1, min(8, (os.cpu_count() or 2) - 1))  # processes building report rows at once
-REPORT_CACHE_VERSION = 3
+REPORT_CACHE_VERSION = 4
+WARM = (("macro", "1m"), ("refused", "24h"), ("macro", "1w"), ("macro", "3m"), ("macro", "24h"), ("macro", "6m"),
+        ("macro", "1y"))  # built in the background, default views first, so a page opens from rows already built
+WARM_EVERY = 600
 DEFAULT_DAYS = 7  # a read's default look back: 30 days across an OU can cost hundreds of dollars in Logs Insights
 FIRST_PASS = 86400  # an OU read does the last day of every account first, then goes further back
 BATCH_WORKERS = 24  # accounts read at once when reading an OU: each runs its own Logs Insights queries (its own quota)
@@ -621,6 +624,29 @@ class Console:
         except Exception:  # processes not available here: build them one by one
             LOG.exception("building reports in parallel failed; building them one by one")
             return [sg_review.report_row(kind, a, n, range_key) for a, n in items]
+
+    def warm(self, stop: threading.Event | None = None) -> None:
+        """Keep every report view built in the background: at start, then every WARM_EVERY seconds for accounts
+        read since. A page then answers from rows already built instead of building 160 accounts while it waits."""
+        stop = stop or threading.Event()
+        while not stop.is_set():
+            names: dict = {}
+            try:
+                st = self.store()
+                try:
+                    names = st.account_names()
+                finally:
+                    st.close()
+            except Exception:  # noqa: BLE001 - names are a nicety
+                pass
+            for kind, range_key in WARM:
+                if stop.is_set():
+                    return
+                try:
+                    self._reports_now(kind, range_key, names if kind == "macro" else {}, False)
+                except Exception:  # noqa: BLE001 - the page builds what is missing
+                    LOG.exception("warming %s %s failed", kind, range_key)
+            stop.wait(WARM_EVERY)
 
     def _report_cache(self) -> dict:
         if self._reports_mem is None:
@@ -1832,6 +1858,8 @@ _plan_rule = sg_remediate.plan_rule
 def serve(console: Console, port: int = 8765, token: str | None = None) -> tuple[ThreadingHTTPServer, str]:
     token = token or secrets.token_urlsafe(24)
     httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(console, token, port))
+    if os.environ.get("SG_NO_WARM") != "1":
+        threading.Thread(target=console.warm, daemon=True, name="warm-reports").start()
     httpd.daemon_threads = True
     return httpd, token
 

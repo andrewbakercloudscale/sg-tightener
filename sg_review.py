@@ -4493,6 +4493,25 @@ def report_row(kind: str, account: str, name: str, range_key: str):
                         "by_type": ((rep.get("series") or {}).get("by_group") or {}).get("refused") or {}}}  # fmt: skip
 
 
+def permitted_ips(rules: list) -> int:
+    """IPv4 addresses the rules let in today, rule by rule."""
+    return sum(int(r.get("allowed") or 0) for r in rules)
+
+
+def needed_ips(rules: list) -> int:
+    """IPv4 addresses the rules would let in once tightened, as Remediate works it out: a narrowed rule keeps its
+    suggestion, an unused one goes, and the rest stay as they are."""
+    n = 0
+    for r in rules:
+        if r.get("status") == "unused":
+            continue
+        if r.get("status") == "tighten" and r.get("suggest_size") is not None:
+            n += int(r["suggest_size"])
+        else:
+            n += int(r.get("allowed") or 0)
+    return n
+
+
 def macro_row(account: str, name: str, rep: dict, mode: str = "") -> dict:
     """One account's numbers for the all-accounts risk overview: over-provisioning by owner, exposure, probing."""
     s = rep.get("summary") or {}
@@ -4533,6 +4552,7 @@ def macro_row(account: str, name: str, rep: dict, mode: str = "") -> dict:
     over_series_tot = [sum(v[i] for v in (se.get("over") or {}).values()) for i in range(len(bins))]
     return {
         "account": account, "name": name, "mode": mode, "end": rep.get("end"), "step": rep.get("step"),
+        "permitted": permitted_ips(v4), "needed": needed_ips(v4),
         "bins": bins, "covered": round(sum(cov) / len(cov), 2), "history_days": s.get("history_days", 0),
         "over_now": s.get("over_now", 0), "over_by_cat": s.get("over_by_cat", {}),
         "over_by_type": {k: (v[-1] if v else 0) for k, v in (se.get("over_by_group") or {}).items()},
