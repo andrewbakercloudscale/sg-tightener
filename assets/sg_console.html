@@ -297,15 +297,108 @@ td .cellrow .btn + .btn { margin-left: 0; }
 section.nodata .card:not(.empty-state) { display: none; }
 .empty-state { border: 1px dashed var(--control-line); background: color-mix(in srgb, var(--accent) 4%, var(--surface)); }
 .empty-state h3 { margin: 0 0 6px; } .empty-state ol { margin: 8px 0 0; padding-left: 20px; } .empty-state li { margin: 4px 0; }
-  .hero-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  /* ---- account at a glance (hero) ---- */
+  .eyebrow { font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+  .hero { padding: 20px 22px; }
+  .hero-head { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .hero-head h2 { margin: 2px 0 0; font-size: 22px; line-height: 1.2; }
+  .hero-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-2); background: var(--surface-2);
+          border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+  .chip.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .hero-head .btn { margin-left: auto; }
-  .hero-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
-  .hero-t { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
-  .hero-v { font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
-  .hero-l { font-size: .85rem; font-weight: 600; }
-  .hero-top { margin-top: 12px; }
-  .hero-top table { width: 100%; }
+  .hero-body { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 1100px) { .hero-body { grid-template-columns: 1fr; } }
+  .hero-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+  .hero-t { position: relative; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px;
+            padding: 12px 14px; min-height: 96px; display: flex; flex-direction: column; gap: 2px; }
+  .hero-t .ico { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; margin-bottom: 6px;
+                 color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent); }
+  .hero-t .ico svg { width: 17px; height: 17px; }
+  .hero-v { font-size: 26px; font-weight: 750; line-height: 1.1; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+  .hero-l { font-size: 13px; font-weight: 600; color: var(--ink-2); }
+  .hero-s { font-size: 12px; color: var(--muted); }
+  .hero-t.feature { grid-column: span 2; color: #fff; border: 0;
+                    background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #0b1b3a)); }
+  @media (max-width: 520px) { .hero-t.feature { grid-column: auto; } }
+  .hero-t.feature .ico { color: #fff; background: rgba(255,255,255,.18); }
+  .hero-t.feature .hero-v { font-size: 34px; }
+  .hero-t.feature .hero-l, .hero-t.feature .hero-s { color: rgba(255,255,255,.85); }
+  .pace { height: 6px; border-radius: 3px; background: rgba(255,255,255,.25); margin-top: 8px; overflow: hidden; }
+  .pace > i { display: block; height: 100%; background: #fff; border-radius: 3px; }
+  .hero-top { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .hero-top h3 { margin: 0 0 10px; font-size: 14px; }
+  .svc { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; padding: 6px 0;
+         border-top: 1px solid var(--border); font-size: 13px; }
+  .svc:first-of-type { border-top: 0; }
+  .svc .rk { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .svc .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .svc .amt { font-weight: 650; font-variant-numeric: tabular-nums; text-align: right; }
+  .svc .amt small { color: var(--muted); font-weight: 500; margin-left: 6px; }
+  .svc .bar { grid-column: 2 / 4; height: 5px; border-radius: 3px; background: var(--grid); overflow: hidden; }
+  .svc .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
   .hbar { height: 10px; border-radius: 5px; background: var(--accent); }
+  /* ---- before and after ---- */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin: 12px 0; }
+  .kpi { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+  .kpi .k-l { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+  .kpi .k-v { font-size: 28px; font-weight: 750; line-height: 1.15; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .kpi .k-was { font-size: 12.5px; color: var(--muted); }
+  .kpi .k-was s { text-decoration-thickness: 1px; }
+  .pill { display: inline-block; font-size: 12px; font-weight: 700; border-radius: 999px; padding: 2px 8px; margin-top: 8px; }
+  .pill.good { color: var(--good); background: color-mix(in srgb, var(--good) 14%, transparent); }
+  .pill.same { color: var(--muted); background: var(--surface); border: 1px solid var(--border); }
+  .kpi.win { border-color: color-mix(in srgb, var(--good) 35%, var(--border)); }
+  .evidence { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .range { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; background: var(--surface);
+           border: 1px solid var(--control-line); border-radius: 10px; padding: 4px 6px 4px 10px; }
+  .range b { font-size: 12.5px; }
+  .ba-viz { display: grid; gap: 3px; margin-top: 10px; }
+  .ba-viz .b { height: 7px; border-radius: 4px; }
+  .ba-viz .b.was { background: color-mix(in srgb, var(--bad) 55%, var(--grid)); }
+  .ba-viz .b.now { background: var(--good); min-width: 3px; }
+  .ex-legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin: 4px 0 10px; flex-wrap: wrap; }
+  .ex-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  .ex-row { display: grid; grid-template-columns: minmax(120px, 260px) minmax(0, 1fr) 150px; gap: 4px 14px; align-items: center;
+            padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
+  .ex-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .ex-row .nm small { display: block; font-weight: 400; color: var(--muted); }
+  .ex-row .bars { display: grid; gap: 3px; }
+  .ex-row .bars > i { display: block; height: 8px; border-radius: 4px; }
+  .ex-row .num2 { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .ex-row .num2 s { color: var(--muted); }
+  @media (max-width: 640px) { .ex-row { grid-template-columns: 1fr; } .ex-row .num2 { text-align: left; } }
+  /* ---- headings: page titles, card titles, card heads ---- */
+  main section > h2 { font-size: 24px; font-weight: 750; letter-spacing: -.015em; margin: 4px 0 8px; }
+  main section > h2::after { content: ""; display: block; width: 44px; height: 4px; border-radius: 2px; margin-top: 8px;
+                             background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 35%, transparent)); }
+  .card h3 { font-size: 16px; font-weight: 700; letter-spacing: -.005em; }
+  .card > h3:first-child, .card-head h3, .card > details > summary h3 { display: flex; align-items: center; gap: 10px; }
+  .card > h3:first-child::before, .card-head h3::before { content: ""; flex: none; width: 4px; height: 18px; border-radius: 2px;
+                                                          background: var(--accent); }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+               padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .seg { border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); padding: 3px; gap: 2px; }
+  .seg button { border-radius: 999px; background: transparent; padding: 5px 14px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+  .seg button[aria-pressed="true"] { background: var(--surface); color: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  .print-only { display: none; }
+  @media print {
+    @page { margin: 12mm; }
+    :root { --page: #fff; --surface: #fff; --surface-2: #f6f6f3; --ink: #0b0b0b; --ink-2: #3c3b38; --muted: #6b6a65;
+            --grid: #e6e5df; --border: rgba(0,0,0,.14); --shadow: none; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body { background: #fff !important; }
+    header, .tools, #xNote, #xRangeHelp, .btn, button, #tab-fix > h2, #tab-fix > p.lede, input[type=checkbox],
+    .grp th:first-child, .grp td:first-child, .seg { display: none !important; }
+    section { display: none !important; }
+    section.print-me { display: block !important; }
+    .print-only { display: block; }
+    .card, .kpi, .hero-t, .hero-top, .ex-row, tr { break-inside: avoid; }
+    .hero-body { grid-template-columns: 1fr; }
+    details > summary { list-style: none; }
+    .scroll { overflow: visible !important; max-height: none !important; }
+  }
+  .range input[type=date] { border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 13px; padding: 4px 2px; }
 </style>
 </head>
 <body>
@@ -508,10 +601,15 @@ section.nodata .card:not(.empty-state) { display: none; }
     <div class="tools">
       <input id="xFind" type="search" placeholder="Find an account (name or number)…" aria-label="Find an account to remediate">
       <select id="xAcct" aria-label="Account to remediate"></select>
-      <label class="small">Look back <select id="xDays"><option value="30">1 month</option><option value="90" selected>3 months</option><option value="180">6 months</option><option value="365">1 year</option></select></label>
+      <span class="range"><b>Evidence from</b><input type="date" id="xFrom" aria-label="Use flow logs from this date"><b>to</b><input type="date" id="xTo" aria-label="Use flow logs up to and including this date"><button class="btn sm quiet" type="button" id="xRangeWhy" aria-expanded="false">Explain</button></span>
       <label class="small"><input type="checkbox" id="xHide" checked> Hide accounts without flow logs</label>
     </div>
+    <p class="muted small" id="xRangeHelp" hidden>The plan is built only from flow logs already read, between these
+      two dates (both included, UTC). Nothing is read from AWS and nothing is charged. Move <b>To</b> back to leave out
+      days you do not trust, such as a day under attack: a source seen only then is not kept. Left empty, it uses the
+      last 90 days of what was read. To have more days to choose from, read them first.</p>
     <div class="flash" id="xNote" hidden></div>
+    <div class="print-only" id="xPrintHead"></div>
     <div id="xHero"></div>
     <div id="xBody"></div>
   </section>
@@ -522,7 +620,9 @@ section.nodata .card:not(.empty-state) { display: none; }
     <div class="tools">
       <select id="oRange" aria-label="Time window"><option value="1w">Last week</option><option value="1m" selected>Last month</option><option value="3m">Last 3 months</option><option value="6m">Last 6 months</option><option value="1y">Last year</option></select>
       <span class="muted small" id="oNote"></span>
+      <button class="btn sm primary" type="button" id="oPdf" style="margin-left:auto" title="Opens the print dialog: choose Save as PDF">Export to PDF</button>
     </div>
+    <div class="print-only" id="oPrintHead"></div>
     <p class="small muted" id="oRagNote"></p>
     <div class="card" id="oTrendCard"><div class="card-head"><h3 style="margin:0">Over-provisioning over time</h3>
       <div class="seg" id="oBy" role="group" aria-label="Break down by"><button data-oby="type" aria-pressed="true">By source type</button><button data-oby="cat" aria-pressed="false">By where it comes from</button></div></div>
@@ -1359,38 +1459,97 @@ section.nodata .card:not(.empty-state) { display: none; }
     }
     if ($("xAcct").value === a && p.totals) drawHero(p, false);
   }
+  const HERO_ICON = {
+    spend: '<path d="M12 2v20M17 6.5C17 4.6 14.8 3.5 12 3.5S7 4.6 7 6.5s2 2.8 5 3.5 5 1.6 5 3.6-2.2 3.4-5 3.4-5-1.2-5-3"/>',
+    ec2: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9zM9 1.5V4M15 1.5V4M9 20v2.5M15 20v2.5M1.5 9H4M1.5 15H4M20 9h2.5M20 15h2.5"/>',
+    rds: '<ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v13c0 1.7 3.6 3 8 3s8-1.3 8-3v-13M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+    s3: '<path d="M4 6c0 1.7 3.6 3 8 3s8-1.3 8-3-3.6-3-8-3-8 1.3-8 3zM4 6l2 13c.3 1.6 2.9 2.5 6 2.5s5.7-.9 6-2.5L20 6"/>',
+    link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+    lb: '<circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="12" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5v9M12 11l-7 5.5M12 11l7 5.5"/>',
+    lambda: '<path d="M6 21l6.5-12M9 3h2.5L19 21"/>',
+    eks: '<path d="M12 2.5l8.5 4.9v9.2L12 21.5l-8.5-4.9V7.4z"/><circle cx="12" cy="12" r="3"/>',
+  };
+  const heroIco = (k) => `<span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${HERO_ICON[k]}</svg></span>`;
+  const many = (n, one, more) => `${n === 1 ? one : more || `${one}s`}`;
   function drawHero(p, refreshing) {
     const t = p.totals || {}, s3 = p.s3 || {}, sp = p.spend || {};
+    const num = (k) => (t[k] ? t[k].n : null);
     const n = (k) => !t[k] ? "—" : `${t[k].n.toLocaleString()}${t[k].missing.length ? "*" : ""}`;
     const miss = Object.entries(t).filter(([, v]) => v.missing.length).map(([k, v]) => `${k}: ${v.missing.join(", ")}`);
-    const tile = (v, label, sub) => `<div class="hero-t"><div class="hero-v">${v}</div><div class="hero-l">${label}</div>${sub ? `<div class="muted small">${sub}</div>` : ""}</div>`;
+    const tile = (ico, v, label, sub, cls) => `<div class="hero-t${cls ? ` ${cls}` : ""}">${heroIco(ico)}<div class="hero-v">${v}</div><div class="hero-l">${label}</div>${sub ? `<div class="hero-s">${sub}</div>` : ""}</div>`;
     const month = sp.month ? new Date(sp.month + "-01T00:00:00Z").toLocaleDateString("en-GB", {month: "long", year: "numeric", timeZone: "UTC"}) : "";
+    const pace = sp.total && sp.this_month != null ? Math.min(100, (sp.this_month / sp.total) * 100) : null;
+    const spendSub = sp.error ? `Cost Explorer: ${esc(sp.error)}` : sp.this_month != null
+      ? `${usd0(sp.this_month)} so far this month${pace != null ? ` · ${Math.round(pace)}% of last month` : ""}${pace != null ? `<div class="pace"><i style="width:${pace.toFixed(1)}%"></i></div>` : ""}` : "";
+    const rdsC = num("rds_clusters"), gw = num("gateway_endpoints"), svcs = num("endpoint_services"), run = num("ec2_running"), vpcs = num("vpcs");
     const tiles = [
-      tile(sp.error || sp.total == null ? "—" : usd0(sp.total), `spent in ${esc(month || "last month")}`, sp.error ? `Cost Explorer: ${esc(sp.error)}` : sp.this_month != null ? `${usd0(sp.this_month)} this month so far` : ""),
-      tile(n("ec2"), "EC2 instances", t.ec2_running ? `${t.ec2_running.n.toLocaleString()} running` : ""),
-      tile(n("rds"), "RDS databases", t.rds_clusters ? `${t.rds_clusters.n.toLocaleString()} cluster(s)` : ""),
-      tile(s3.error || s3.buckets == null ? "—" : s3.buckets.toLocaleString(), "S3 buckets", s3.error ? esc(s3.error) : s3.bytes != null ? `${heroBytes(s3.bytes)} · ${Math.round((s3.objects || 0) / 1e6).toLocaleString()}M objects` : ""),
-      tile(n("privatelink"), "PrivateLink endpoints", t.gateway_endpoints ? `+ ${t.gateway_endpoints.n} gateway · ${t.endpoint_services ? t.endpoint_services.n : 0} service(s) offered` : ""),
-      tile(n("load_balancers"), "load balancers", ""),
-      tile(n("lambda"), "Lambda functions", ""),
-      tile(n("eks"), "EKS clusters", t.vpcs ? `${t.vpcs.n} VPC(s)` : ""),
+      tile("spend", sp.error || sp.total == null ? "—" : usd0(sp.total), `spent in ${esc(month || "last month")}`, spendSub, "feature"),
+      tile("ec2", n("ec2"), many(num("ec2"), "EC2 instance"), run != null ? `${run.toLocaleString()} running` : ""),
+      tile("rds", n("rds"), many(num("rds"), "RDS database"), rdsC ? `${rdsC.toLocaleString()} ${many(rdsC, "Aurora cluster")}` : ""),
+      tile("s3", s3.error || s3.buckets == null ? "—" : s3.buckets.toLocaleString(), many(s3.buckets, "S3 bucket"), s3.error ? esc(s3.error) : s3.bytes != null ? `${heroBytes(s3.bytes)} · ${fmtN(s3.objects || 0)} objects` : ""),
+      tile("link", n("privatelink"), "PrivateLink endpoints", [gw ? `${gw} gateway` : "", svcs ? `${svcs} ${many(svcs, "service")} offered` : ""].filter(Boolean).join(" · ")),
+      tile("lb", n("load_balancers"), many(num("load_balancers"), "load balancer"), ""),
+      tile("lambda", n("lambda"), many(num("lambda"), "Lambda function"), ""),
+      tile("eks", n("eks"), many(num("eks"), "EKS cluster"), vpcs != null ? `${vpcs} ${many(vpcs, "VPC")}` : ""),
     ];
     const top = sp.top || [];
     const max = top.length ? top[0].cost : 1;
+    const name = (fixPlan && fixPlan.account === p.account && fixPlan.name) || "";
+    const regions = Object.keys(p.regions || {}).length;
     $("xHero").innerHTML = `<div class="card hero">
-      <div class="hero-head"><b>${esc((fixPlan && fixPlan.account === p.account && fixPlan.name) || p.account)}</b> <span class="muted small">at a glance · read ${esc(when(p.at))}${refreshing ? " · reading again…" : ""} · ${Object.keys(p.regions || {}).length} region(s)</span>
-        <button class="btn sm quiet" id="heroRead" title="Read the summary from AWS again (Cost Explorer charges about US$0.02)">Read again</button></div>
-      <div class="hero-grid">${tiles.join("")}</div>
-      ${top.length ? `<details class="hero-top" open><summary>Top ${top.length} services by spend in ${esc(month)}</summary><table class="small">${top.map((x) => `<tr><td>${esc(x.service)}</td><td style="width:45%"><div class="hbar" style="width:${Math.max(1, (x.cost / max) * 100).toFixed(1)}%"></div></td><td class="num">${usd0(x.cost)}</td><td class="num muted">${(x.share * 100).toFixed(1)}%</td></tr>`).join("")}</table></details>` : ""}
+      <div class="hero-head"><div><div class="eyebrow">Account at a glance</div><h2>${esc(name || p.account)}</h2>
+        <div class="hero-meta">${name ? `<span class="chip mono">${esc(p.account)}</span>` : ""}<span class="chip">${regions} ${many(regions, "region")}</span><span class="chip">read ${esc(when(p.at))}${refreshing ? " · reading again…" : ""}</span></div></div>
+        <button class="btn sm" id="heroRead" title="Read the summary from AWS again (Cost Explorer charges about US$0.02)">Read again</button>
+        <button class="btn sm primary" id="heroPdf" title="Opens the print dialog: choose Save as PDF">Export to PDF</button></div>
+      <div class="hero-body">
+        <div class="hero-grid">${tiles.join("")}</div>
+        ${top.length ? `<div class="hero-top"><h3>Top ${top.length} services by spend · ${esc(month)}</h3>${top.map((x, i) => `<div class="svc"><span class="rk">${i + 1}</span><span class="nm" title="${esc(x.service)}">${esc(x.service)}</span><span class="amt">${usd0(x.cost)}<small>${(x.share * 100).toFixed(1)}%</small></span><span class="bar"><i style="width:${Math.max(1, (x.cost / max) * 100).toFixed(1)}%"></i></span></div>`).join("")}</div>` : ""}
+      </div>
       ${miss.length ? `<p class="muted small">* not read everywhere: ${esc(miss.join("; "))}</p>` : ""}</div>`;
     $("heroRead").addEventListener("click", () => loadHero(p.account, true).catch((e) => flash(e.message, true)));
+    $("heroPdf").addEventListener("click", () => exportFixPdf(name || p.account, p.account));
+  }
+  function logW(v, max) { return v <= 0 || max <= 0 ? 0 : Math.max(1, Math.min(100, (Math.log10(v + 1) / Math.log10(max + 1)) * 100)).toFixed(1); }
+  function printSection(id, title, before, after) {
+    // Chrome names the PDF after the page title; only the chosen section prints (see @media print)
+    const sec = $(id), t = document.title;
+    document.querySelectorAll("section.print-me").forEach((x) => x.classList.remove("print-me"));
+    sec.classList.add("print-me");
+    document.title = title;
+    const done = () => { document.title = t; sec.classList.remove("print-me"); if (after) after(); window.removeEventListener("afterprint", done); };
+    window.addEventListener("afterprint", done);
+    if (before) before();
+    window.print();
+  }
+  function exportOverPdf() {
+    const day = new Date().toISOString().slice(0, 10);
+    $("oPrintHead").innerHTML = `<div class="eyebrow">Security Tightener · over-provisioning report</div><h2 style="margin:2px 0 4px">Over-provisioning: every account, every asset</h2>
+      <p class="muted small">Exported ${day} · ${esc($("oRange").selectedOptions[0].textContent)} · ${esc($("oNote").textContent)}</p>`;
+    printSection("tab-over", `Security Tightener - over-provisioning - ${day}`);
+  }
+  function exportFixPdf(name, account) {
+    const day = new Date().toISOString().slice(0, 10);
+    const P = fixPlan && fixPlan.account === account ? fixPlan : null;
+    const ymd = (t) => new Date(t * 1000).toISOString().slice(0, 10);
+    $("xPrintHead").innerHTML = `<div class="eyebrow">Security Tightener · remediation report</div><h2 style="margin:2px 0 4px">${esc(name)} <span class="muted" style="font-weight:400">${esc(account)}</span></h2>
+      <p class="muted small">Exported ${day}${P && P.from != null ? ` · evidence ${ymd(P.from)} to ${ymd(P.to - 1)}` : ""}. Nothing here has been applied: each change needs a second person's approval.</p>`;
+    const g = $("xGroups"), wasOpen = g && g.open;
+    printSection("tab-fix", `Security Tightener - ${name} - ${day}`, () => { if (g) g.open = true; }, () => { if (g) g.open = wasOpen; });
   }
   async function loadFixPlan() {
     const a = $("xAcct").value;
     loadHero(a).catch(() => {});
     if (!a) { $("xBody").innerHTML = ""; return; }
     $("xBody").innerHTML = `<div class="card"><p>${loading("Working out what every group should let in…")}</p></div>`;
-    fixPlan = await api(`/api/remediation?account=${encodeURIComponent(a)}&days=${$("xDays").value}`);
+    const rng = `${$("xFrom").value ? `&from=${$("xFrom").value}` : ""}${$("xTo").value ? `&to=${$("xTo").value}` : ""}`;
+    fixPlan = await api(`/api/remediation?account=${encodeURIComponent(a)}&days=90${rng}`);
+    const ymd = (t) => new Date(t * 1000).toISOString().slice(0, 10);
+    if (fixPlan.from != null) {
+      $("xFrom").value = ymd(fixPlan.from); $("xTo").value = ymd(fixPlan.to - 1);
+      if (fixPlan.stored_from != null) {
+        for (const id of ["xFrom", "xTo"]) { $(id).min = ymd(fixPlan.stored_from); $(id).max = ymd(fixPlan.stored_to - 1); }
+      }
+    }
     fixOff = new Set(); fixMergeOff = new Set(); fixOpen = new Set();
     drawFix();
   }
@@ -1412,22 +1571,31 @@ section.nodata .card:not(.empty-state) { display: none; }
     const pBefore = P.groups.reduce((n, g) => n + g.ports, 0), pAfter = P.groups.reduce((n, g) => n + (cg.has(g.id) ? g.new_ports : g.ports), 0);
     const gAfter = T.groups - merges.reduce((n, m) => n + m.members.length - 1, 0);
     const nChanges = chosen.reduce((n, g) => n + g.changes, 0);
+    const ymd = (t) => new Date(t * 1000).toISOString().slice(0, 10);
     const short = P.have_days + 1 < P.days;
-    const row = (label, b, a, fmt, good) => `<tr><th scope="row">${label}</th><td class="num">${fmt(b)}</td><td class="num"><b>${fmt(a)}</b></td><td class="num">${b !== a ? `<span class="${good ? "cut" : "muted"}">${cutPct(b, a) || ""}</span>` : '<span class="muted">same</span>'}</td></tr>`;
+    const kpi = (label, b, a, fmt) => `<div class="kpi${b !== a ? " win" : ""}"><div class="k-l">${label}</div><div class="k-v">${fmt(a)}</div><div class="k-was">${b !== a ? `was <s>${fmt(b)}</s>` : "unchanged"}</div><span class="pill ${b !== a ? "good" : "same"}">${b !== a ? cutPct(b, a) || "" : "same"}</span>${b ? `<div class="ba-viz" title="Before (red) and after (green), log scale"><i class="b was" style="width:100%"></i><i class="b now" style="width:${logW(a, b)}%"></i></div>` : ""}</div>`;
+    const exposed = P.groups.filter((g) => g.addresses).sort((x, y) => y.addresses - x.addresses).slice(0, 15);
+    const exMax = exposed.length ? exposed[0].addresses : 1;
+    const exRow = (g) => { const a = after(g); return `<div class="ex-row"><span class="nm" title="${esc(g.name)}">${esc(g.name)}<small>${esc(g.region)} · ${g.enis} interface(s)</small></span>
+      <span class="bars"><i style="width:${logW(g.addresses, exMax)}%;background:color-mix(in srgb, var(--bad) 55%, var(--grid))"></i><i style="width:${logW(a, exMax)}%;min-width:3px;background:var(--good)"></i></span>
+      <span class="num2"><s>${fmtN(g.addresses)}</s> → <b>${fmtN(a)}</b></span></div>`; };
     $("xBody").innerHTML = `
-      ${short ? `<div class="flash">Only <b>${Math.round(P.have_days)} days</b> of flow logs read in this ${Math.round(P.days)}-day look back: rules are narrowed to the sources seen in it and rules nothing used are removed. Anything that runs less often (a monthly job, a DR test) will be refused: it shows on <b>Rejected traffic</b>, where <b>Propose allowing</b> opens it again. A longer read makes that less likely. <button class="btn sm" id="xRead">Read ${Math.round(P.days)} days for this account</button></div>` : ""}
+      ${short ? `<div class="flash">Only <b>${Math.round(P.have_days)} days</b> of flow logs read between these ${Math.round(P.days)} days: rules are narrowed to the sources seen in it and rules nothing used are removed. Anything that runs less often (a monthly job, a DR test) will be refused: it shows on <b>Rejected traffic</b>, where <b>Propose allowing</b> opens it again. A longer read makes that less likely. <button class="btn sm" id="xRead">Read ${Math.round(P.days)} days for this account</button></div>` : ""}
       <div class="fix-top">
-        <div class="card"><h3>Before and after</h3>
-          <p class="muted small">${esc(P.name || P.account)}, ${Math.round(P.have_days)} days of flow logs. Every source seen is kept, with headroom.</p>
-          <table class="ba"><thead><tr><th></th><th class="num">Before</th><th class="num">After</th><th class="num">Change</th></tr></thead><tbody>
-            ${row("Security groups", T.groups, gAfter, (n) => n.toLocaleString(), true)}
-            ${row("IPv4 addresses let in", aBefore, aAfter, fmtN, true)}
-            ${row("Ports open", pBefore, pAfter, fmtN, true)}
-            <tr><th scope="row">Interfaces protected</th><td class="num">${T.interfaces}</td><td class="num"><b>${T.interfaces}</b></td><td class="num"><span class="muted">same</span></td></tr>
-          </tbody></table>
+        <div class="card"><div class="eyebrow">The tightened account</div><h3 style="margin-top:2px">Before and after</h3>
+          <div class="evidence"><span class="chip">${Math.round(P.have_days)} ${many(Math.round(P.have_days), "day")} of flow logs used</span><span class="chip">${ymd(P.from)} → ${ymd(P.to - 1)}</span>${P.stored_from != null ? `<span class="chip">read: ${ymd(P.stored_from)} → ${ymd(P.stored_to - 1)}</span>` : ""}</div>
+          <div class="kpis">
+            ${kpi("IPv4 addresses let in", aBefore, aAfter, fmtN)}
+            ${kpi("Ports open", pBefore, pAfter, fmtN)}
+            ${kpi("Security groups", T.groups, gAfter, (n) => n.toLocaleString())}
+            ${kpi("Interfaces protected", T.interfaces, T.interfaces, (n) => n.toLocaleString())}
+          </div>
           <p class="small muted">${T.narrowed} rule(s) narrowed, ${T.removed} removed as unused, ${P.merges.length} merge(s).${T.open ? ` <b>${T.open} open to everyone on an internet-facing load balancer's web ports</b>: kept, since its users cannot be listed (not counted above).` : ""}${T.wait > 0 ? ` ${T.wait} with too little evidence: left as they are.` : ""}${T.incomplete ? ` <b>${T.incomplete} of these were narrowed on hours cut at 10,000 rows</b>: a source only in the missing rows is not kept; if one is refused it shows on <b>Rejected traffic</b>. Reading the account again fills those hours in (only the cut hours are charged again).` : ""}</p></div>
-        <div class="card"><h3>Where the traffic comes from</h3><p class="muted small">Connections let in over the look back, by source.</p>${mixBar(T.mix, true)}</div>
+        <div class="card"><div class="eyebrow">Evidence</div><h3 style="margin-top:2px">Where the traffic comes from</h3><p class="muted small">Connections let in between the two dates, by source.</p>${mixBar(T.mix, true)}</div>
       </div>
+      ${exposed.length ? `<div class="card"><div class="eyebrow">Visualised</div><h3 style="margin-top:2px">IPv4 exposure by group, before and after</h3>
+        <div class="ex-legend"><span><i style="background:color-mix(in srgb, var(--bad) 55%, var(--grid))"></i>Before</span><span><i style="background:var(--good)"></i>After (groups you untick stay as before)</span><span class="muted">Log scale: each step is ten times more addresses. The ${exposed.length} most exposed groups.</span></div>
+        ${exposed.map(exRow).join("")}</div>` : ""}
       ${P.merges.length ? `<div class="card"><h3>Groups to merge</h3><p class="muted small">Once tightened, these let in nearly the same traffic: each takes on at most a few more private IP addresses (256 in all), or one more port from sources it already lets in. Never a public IP address, a risky port or everyone. Their interfaces move onto one group; the emptied groups stay, on no interface, to delete later.</p>
         ${P.merges.map((m) => `<label class="merge"><input type="checkbox" data-xmerge="${esc(m.id)}"${fixMergeOff.has(m.id) || m.members.some((x) => fixOff.has(x.id)) ? "" : " checked"}${m.members.some((x) => fixOff.has(x.id)) ? " disabled" : ""}>
           <span>Merge ${m.members.map((x) => `<b>${esc(x.name)}</b>${x.extra.length ? ` <span class="muted small">(gains ${[...x.gain_ports.map((r) => esc(portTxt(r.proto, r.from, r.to))), x.gain_addresses ? `${x.gain_addresses.toLocaleString()} private IP address${x.gain_addresses === 1 ? "" : "es"}` : "", x.gain_v6 ? `${x.gain_v6} IPv6 /64${x.gain_v6 === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ")})</span>` : ""}`).join(" + ")} into <b>${esc(m.target_name)}</b> <span class="muted small">${esc(m.region)} · ${m.enis} interface(s) · ${m.rules} rule(s) after</span></span></label>`).join("")}</div>` : ""}
@@ -1447,7 +1615,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     for (const b of document.querySelectorAll("[data-xmerge]")) b.addEventListener("change", () => { b.checked ? fixMergeOff.delete(b.dataset.xmerge) : fixMergeOff.add(b.dataset.xmerge); drawFix(); });
     $("xGo").addEventListener("click", (e) => act(e.target, async () => {
       const c = fixChosen();
-      const res = await api("/api/remediate", {account: P.account, days: P.days, groups: c.groups.map((g) => g.id), merges: c.merges.map((m) => m.id)});
+      const res = await api("/api/remediate", {account: P.account, days: P.days, from: $("xFrom").value, to: $("xTo").value, groups: c.groups.map((g) => g.id), merges: c.merges.map((m) => m.id)});
       flash(`Proposed ${res.requests.map((r) => `#${r.id} (${r.kind === "merge" ? `merge, ${r.enis} interface(s)` : `${r.changes} rule change(s) in ${r.region}`})`).join(", ")}. A second person approves them under Change requests; apply the rule changes, then the merges.`);
       await loadState();
     }));
@@ -1472,7 +1640,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     for (const b of $("xRows").querySelectorAll("[data-xg]")) b.addEventListener("change", () => { b.checked ? fixOff.delete(b.dataset.xg) : fixOff.add(b.dataset.xg); drawFix(); });
     for (const b of $("xRows").querySelectorAll("[data-xd]")) b.addEventListener("click", () => { const id = b.dataset.xd; fixOpen.has(id) ? fixOpen.delete(id) : fixOpen.add(id); drawFixRows(); });
   }
-  $("xAcct").addEventListener("change", () => loadFixPlan().catch((e) => flash(e.message, true)));
+  $("xAcct").addEventListener("change", () => { $("xFrom").value = ""; $("xTo").value = ""; loadFixPlan().catch((e) => flash(e.message, true)); });
   let fixFindT = null;
   $("xFind").addEventListener("input", () => {
     if (!fixAccts) return;
@@ -1481,7 +1649,11 @@ section.nodata .card:not(.empty-state) { display: none; }
     clearTimeout(fixFindT);  // the plan of the first match, once typing pauses
     if ($("xAcct").value !== before) fixFindT = setTimeout(() => loadFixPlan().catch((e) => flash(e.message, true)), 500);
   });
-  $("xDays").addEventListener("change", () => loadFixPlan().catch((e) => flash(e.message, true)));
+  for (const id of ["xFrom", "xTo"]) $(id).addEventListener("change", () => loadFixPlan().catch((e) => flash(e.message, true)));
+  $("oPdf").addEventListener("click", exportOverPdf);
+  $("xRangeWhy").addEventListener("click", () => {
+    const h = $("xRangeHelp"); h.hidden = !h.hidden; $("xRangeWhy").setAttribute("aria-expanded", String(!h.hidden));
+  });
   $("xHide").addEventListener("change", () => { drawFixAccounts(); loadFixPlan().catch((e) => flash(e.message, true)); });
   document.addEventListener("click", (ev) => {
     const b = ev.target.closest("[data-fix]");

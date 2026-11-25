@@ -110,22 +110,42 @@ def flow_status(doc: dict | None) -> str:
     return "not-read" if looked else "unknown"
 
 
-def window(doc: dict, days: int) -> tuple[dict, float]:
-    """The read cut to the last ``days`` days, and how many days of flow logs that holds."""
+def stored(doc: dict) -> tuple[float, float] | None:
+    """The first and last moment of flow logs read, or None."""
     ok = [c for c in doc.get("chunks") or [] if c.get("st") in ("ok", "cut")]
-    if not ok:
+    return (min(c["s"] for c in ok), max(c["e"] for c in ok)) if ok else None
+
+
+def bounds(doc: dict, days: int, start: float | None = None, end: float | None = None) -> tuple[float, float]:
+    """The evidence window: ``start`` to ``end`` when given, else the last ``days`` days of what was read."""
+    have = stored(doc)
+    if end is None:
+        end = have[1] if have else 0.0
+    if start is None:
+        start = end - days * DAY
+    return float(start), float(end)
+
+
+def window(doc: dict, days: int, start: float | None = None, end: float | None = None) -> tuple[dict, float]:
+    """The read cut to the evidence window, and how many days of flow logs that holds. A slice is kept only when
+    it lies wholly inside the window, so a day left out (an attack, say) gives no evidence at all."""
+    if not stored(doc):
         return {**doc, "chunks": []}, 0.0
-    end = max(c["e"] for c in ok)
-    start = end - days * DAY
-    kept = [c for c in doc["chunks"] if c["e"] > start]
-    first = min((c["s"] for c in kept if c.get("st") in ("ok", "cut")), default=end)
-    return {**doc, "chunks": kept}, round(max(0.0, end - max(first, start)) / DAY, 1)
+    start, end = bounds(doc, days, start, end)
+    kept = [c for c in doc["chunks"] if c["s"] >= start and c["e"] <= end]
+    ok = [c for c in kept if c.get("st") in ("ok", "cut")]
+    if not ok:
+        return {**doc, "chunks": kept}, 0.0
+    return {**doc, "chunks": kept}, round((max(c["e"] for c in ok) - min(c["s"] for c in ok)) / DAY, 1)
 
 
-def plan(doc: dict, days: int, groups: dict, assets: dict) -> dict:
+def plan(doc: dict, days: int, groups: dict, assets: dict, start: float | None = None,
+         end: float | None = None) -> dict:
     """The remediation of one account. ``groups`` is {region: {gid: {name, vpc, description, in, out}}} with
     ``in`` and ``out`` {rule tuple: description} from the console's database, and ``assets`` {region: [asset]}."""
-    w, have = window(doc, days)
+    start, end = bounds(doc, days, start, end)
+    days = max(1, round((end - start) / DAY)) if stored(doc) else days
+    w, have = window(doc, days, start, end)
     rows = [plan_rule(r) for r in (sg_review.build(w, "24h", "", "", sg_review.load_names()).get("rules") or [])] if w["chunks"] else []
     by_group: dict = {}
     for r in rows:
@@ -160,7 +180,10 @@ def plan(doc: dict, days: int, groups: dict, assets: dict) -> dict:
                         "open": sum(1 for r in rs if r["action"] == "open"), "mix": mix})  # fmt: skip
     out.sort(key=lambda g: (-(g["addresses"] - g["new_addresses"]), -g["changes"], g["name"]))
     merges = find_merges(out, groups)
+    have_range = stored(doc)
     return {"days": days, "have_days": have, "status": flow_status(doc), "groups": out, "merges": merges,
+            "from": start, "to": end, "stored_from": have_range[0] if have_range else None,
+            "stored_to": have_range[1] if have_range else None,
             "totals": totals(out, merges, groups), "categories": [{"key": k, "name": sg_review.CAT_NAME[k]} for k in sg_review.CATS]}  # fmt: skip
 
 

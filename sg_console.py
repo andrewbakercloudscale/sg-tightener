@@ -82,6 +82,23 @@ def _keep_awake():
         return None
 
 
+def _date_range(frm, to) -> tuple[float | None, float | None]:
+    """From and To dates (YYYY-MM-DD, UTC) as epoch seconds: From at its start, To at its end, so To is included."""
+    import datetime as _dt
+
+    def day(v, name):
+        if not v:
+            return None
+        try:
+            d = _dt.datetime.strptime(str(v), "%Y-%m-%d").replace(tzinfo=_dt.timezone.utc)
+        except ValueError:
+            raise ConsoleError(400, f"{name} is a date, YYYY-MM-DD")
+        return d.timestamp()
+
+    start, end = day(frm, "From"), day(to, "To")
+    return start, (end + 86400 if end is not None else None)
+
+
 class ConsoleError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
@@ -1177,8 +1194,12 @@ class Console:
         never = {"status": sg_remediate.flow_status(None), "days": 0.0}
         return [{"account": a, "name": names.get(a, ""), **(known.get(a) or never)} for a in accounts]
 
-    def remediation(self, account: str, days: int = sg_remediate.DEFAULT_DAYS) -> dict:
-        """The remediation of one account over the last ``days`` days of its flow logs."""
+    def remediation(self, account: str, days: int = sg_remediate.DEFAULT_DAYS, start: float | None = None,
+                    end: float | None = None) -> dict:
+        """The remediation of one account over its flow logs from ``start`` to ``end`` (epoch seconds), or the
+        last ``days`` days of them."""
+        if start is not None and end is not None and start >= end:
+            raise ConsoleError(400, "the From date is after the To date")
         import sg_review
 
         try:
@@ -1189,7 +1210,7 @@ class Console:
             return {"status": "unknown", "days": days, "have_days": 0, "groups": [], "merges": [], "totals": {}}
         groups, assets = self._account_groups(account)
         # kept until the account's read or its groups change: building a plan takes seconds, opening it again none
-        key = (account, int(days), mtime, hashlib.sha1(repr((groups, assets)).encode()).hexdigest())
+        key = (account, int(days), start, end, mtime, hashlib.sha1(repr((groups, assets)).encode()).hexdigest())
         with self._report_lock:
             hit = self._plans.get(key)
         if hit is not None:
@@ -1197,7 +1218,7 @@ class Console:
         doc = sg_review.load(account)
         if not doc:
             return {"status": "unknown", "days": days, "have_days": 0, "groups": [], "merges": [], "totals": {}}
-        out = sg_remediate.plan(doc, int(days), groups, assets)
+        out = sg_remediate.plan(doc, int(days), groups, assets, start, end)
         out["account"], out["name"] = account, doc.get("name", "")
         with self._report_lock:
             self._plans[key] = out
@@ -1217,7 +1238,8 @@ class Console:
         if not doc:
             raise ConsoleError(409, f"read {account}'s flow logs first: the plan comes from them")
         groups, assets = self._account_groups(account)
-        p = sg_remediate.plan(doc, days, groups, assets)
+        start, end = _date_range(body.get("from"), body.get("to"))
+        p = sg_remediate.plan(doc, days, groups, assets, start, end)
         st = self.store()
         try:
             made = sg_remediate.propose(st, account, p, groups, assets, list(body.get("groups") or []),
@@ -1710,7 +1732,8 @@ def make_handler(console: Console, token: str, port: int):
                 if url.path == "/api/state":
                     return self._json(200, console.state())
                 if url.path == "/api/remediation":
-                    return self._json(200, console.remediation(_need(q, "account"), int(q.get("days") or sg_remediate.DEFAULT_DAYS)))
+                    return self._json(200, console.remediation(_need(q, "account"), int(q.get("days") or sg_remediate.DEFAULT_DAYS),
+                                                               *_date_range(q.get("from"), q.get("to"))))  # fmt: skip
                 if url.path == "/api/read/estimate":
                     return self._json(200, console.read_estimate())
                 if url.path == "/api/flow-accounts":

@@ -207,3 +207,19 @@ def test_a_merge_moves_the_interfaces_and_can_be_undone(world, monkeypatch):
 def test_flow_accounts_lists_read_accounts(world):
     rows = world["console"].flow_accounts()
     assert [r["account"] for r in rows] == [ACCOUNT] and rows[0]["status"] == "read"
+
+
+def test_a_date_range_leaves_out_the_days_after_it(world):
+    """Owner, 2026-11-25: evidence is From a date To a date, so a day under attack can be left out. A slice is used
+    only when it lies wholly inside the range, and the plan says which range it used."""
+    doc = world["doc"]
+    first, last = rem.stored(doc)
+    end = last - 2 * rem.DAY
+    w, days = rem.window(doc, 90, first, end)
+    assert w["chunks"] and all(c["e"] <= end and c["s"] >= first for c in w["chunks"])
+    assert not any(c["e"] > end for c in w["chunks"])
+    p = world["console"].remediation(ACCOUNT, 90, first, end)
+    assert (p["from"], p["to"], p["stored_to"]) == (first, end, last)
+    assert sg_console._date_range("2026-11-01", "2026-11-02") == (1793491200.0, 1793664000.0)  # To is included
+    with pytest.raises(sg_console.ConsoleError):
+        world["console"].remediation(ACCOUNT, 90, end, first)
