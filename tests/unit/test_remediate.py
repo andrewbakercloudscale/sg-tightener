@@ -105,6 +105,7 @@ def test_fits_rules():
     own = {("in", "tcp", 443, 443, "10.0.0.1/32")}
     assert rem._fits(own, own | {("in", "tcp", 443, 443, "10.0.0.2/32")})  # a private address on a port it has
     assert not rem._fits(own, own | {("in", "tcp", 443, 443, "52.95.3.5/32")})  # never a public one
+    assert not rem._fits(own, own | {("in", "tcp", 443, 443, "203.0.113.10/31")})  # documentation ranges are public too
     assert not rem._fits(own, own | {("in", "tcp", 443, 443, "0.0.0.0/0")})
     assert not rem._fits(own, own | {("in", "tcp", 443, 443, "10.1.0.0/16")})  # too many more addresses
     assert rem._fits(own, own | {("in", "tcp", 8443, 8443, "10.0.0.1/32")})  # one more port, same source

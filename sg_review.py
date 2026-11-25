@@ -3210,9 +3210,11 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
         days = max(0, (end - since) / DAY)
         rows = [r for e in g["enis"] for r in by_eni.get(e, [])]
         own6 = next((v.get("cidrs6") or [] for v in snap.get("vpcs") or [] if v["id"] == g["vpc"]), [])
+        lb_public = public_lb(g, snap)
         for rule in g["rules"]:
             for entry in rule.get("cidrs6") or []:
-                row = _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regions, since, days)
+                row = _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regions, since, days,
+                                 lb_public)  # fmt: skip
                 if row:
                     out.append(row)
             for entry in _entries(rule):
@@ -3255,7 +3257,7 @@ def _rules_table(doc, groups, enis, accepted_rows, seen, seen_iv, lab, region_fi
                               for s, h in sorted(here.items(), key=lambda kv: -kv[1][0])[:8]]  # fmt: skip
                 row["mix"] = _mix(here, lab)
                 row["ports_used"] = sorted(dports)[:200]  # (protocol, port) seen through the rule: narrows a port range
-                row["status"], row["note"] = _status(row, rule, entry, logged, g, cut_regions, days)
+                row["status"], row["note"] = _status(row, rule, entry, logged, g, cut_regions, days, lb_public)
                 _mark_cut(row, g, cut_regions)
                 if not entry.startswith("pl-"):  # for the Tighten panel: who used it, and when last
                     row["keep_src"] = [[s, h[1]] for s, h in here.items()] + [[s, None] for s in sorted(unattr - set(here))]
@@ -3369,7 +3371,8 @@ def _subnets(ips) -> set[int]:
     return {int(a) >> 64 for a in ips}
 
 
-def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regions, since, days) -> dict | None:
+def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regions, since, days,
+               lb_public=False) -> dict | None:
     """One IPv6 range of a rule, counted in /64 subnets (one client network each)."""
     net = _net6(entry)
     if net is None:
@@ -3397,8 +3400,8 @@ def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regi
     row["top"] = [{"src": s, **lab(s), "flows": h[0]} for s, h in sorted(here.items(), key=lambda kv: -kv[1][0])[:8]]
     row["mix"] = _mix(here, lab)
     private = net.subnet_of(sg_tightener.ULA) or any(_net6(o) and net.subnet_of(_net6(o)) for o in own6)
-    if entry.endswith("::/0") and net.prefixlen == 0:
-        row["status"], row["note"] = "open", "Open to every IPv6 address: the users are listed; a narrower range may do"
+    if entry.endswith("::/0") and net.prefixlen == 0 and lb_public and serves_web(rule):
+        row["status"], row["note"] = "open", OPEN_WEB_NOTE
     elif not logged:
         row["status"], row["note"] = "not logged", "Some of this group's interfaces have no flow log (accepted traffic) in CloudWatch Logs"
     elif days < EVIDENCE_DAYS:
@@ -3408,7 +3411,8 @@ def _rule_row6(g, rule, entry, rows, deleted, own6, seen6, lab, logged, cut_regi
     elif net.prefixlen < sg_tightener.DEFAULT_V6_PREFIX_THRESHOLD and row["never"]:
         row["status"] = "tighten"
         row["note"] = ("Wider than needed: the suggestion keeps the /64 of every IP address seen, with 30% headroom"
-                       if private else "Public IPv6 range: the suggestion keeps only the /64s seen; check with the partner first")
+                       if private else OPEN_NARROW_NOTE if net.prefixlen == 0
+                       else "Public IPv6 range: the suggestion keeps only the /64s seen; check with the partner first")
     else:
         row["status"] = "used"
     _mark_cut(row, g, cut_regions)
@@ -3435,9 +3439,30 @@ def _mark_cut(row, g, cut_regions) -> None:
         row["note"] = (row["note"] + ". " if row["note"] else "") + CUT_NOTE
 
 
-def _status(row, rule, entry, logged, g, cut_regions, days) -> tuple[str, str]:
-    if entry == "0.0.0.0/0":
-        return "open", "Open to every address: the users are listed; a prefix list or narrower range may do"
+WEB_PORTS = (80, 443)
+OPEN_WEB_NOTE = "Internet-facing load balancer on 80/443: kept open to everyone, since its users cannot be listed"
+OPEN_NARROW_NOTE = ("Open to every address, but not an internet-facing load balancer's web port: the suggestion keeps only the sources seen. "
+                    "Anyone else refused shows on Rejected traffic")
+
+
+def public_lb(g: dict, snap: dict) -> bool:
+    """Whether the group sits on an internet-facing load balancer: an ELB interface with a public address."""
+    enis = snap.get("enis") or {}
+    return any(str((enis.get(e) or {}).get("kind")).lower() == "load balancer" and (enis.get(e) or {}).get("public")
+               for e in g.get("enis") or [])  # fmt: skip
+
+
+def serves_web(rule: dict) -> bool:
+    """Whether a rule lets in TCP 80 or 443."""
+    proto, lo, hi = str(rule["proto"]), int(rule.get("from") or 0), int(rule.get("to") or 65535)
+    return proto == "-1" or (proto == "6" and any(lo <= p <= hi for p in WEB_PORTS))
+
+
+def _status(row, rule, entry, logged, g, cut_regions, days, lb_public=False) -> tuple[str, str]:
+    """Owner, 2026-11-25: 0.0.0.0/0 is kept only on an internet-facing load balancer's web ports, whose users
+    cannot be listed. Everywhere else it narrows to the sources seen, like any other public range."""
+    if entry == "0.0.0.0/0" and lb_public and serves_web(rule):
+        return "open", OPEN_WEB_NOTE
     if not logged:
         return "not logged", "Some of this group's interfaces have no flow log (accepted traffic) in CloudWatch Logs"
     if days < EVIDENCE_DAYS:
@@ -3452,7 +3477,8 @@ def _status(row, rule, entry, logged, g, cut_regions, days) -> tuple[str, str]:
     if private and plen < sg_tightener.DEFAULT_PREFIX_THRESHOLD and row["never"]:
         return "tighten", "Wider than needed: the suggested ranges keep every IP address seen, with 30% headroom"
     if not private and not entry.startswith("pl-") and plen < 32 and row["never"]:
-        return "tighten", "Public range: the suggestion keeps only the IP addresses seen; check with the partner first"
+        return "tighten", (OPEN_NARROW_NOTE if plen == 0
+                           else "Public range: the suggestion keeps only the IP addresses seen; check with the partner first")
     return "used", ""
 
 

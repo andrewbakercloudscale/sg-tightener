@@ -193,7 +193,9 @@ def test_demo_shows_ipv6_sources_named_with_verdicts(demo_report):
     assert rep["summary"]["refused_v6"] == 1 and rep["summary"]["active_v6"] == 3
     rule = next(r for r in rep["rules"] if r.get("v6") and r["source"] == demo.ONPREM6)
     assert rule["status"] == "tighten" and rule["suggest"] == ["fd12:3456:0:4::/64"] and rule["unit"] == "/64"
-    assert next(r for r in rep["rules"] if r["source"] == "::/0")["status"] == "open"
+    # ::/0 on the SFTP server (not a load balancer's web port) narrows to the /64s seen
+    anyone = next(r for r in rep["rules"] if r["source"] == "::/0")
+    assert anyone["status"] == "tighten" and anyone["suggest"] == ["2001:db8:acce:10::/64"]
     ips = sg_review.approved(doc, demo.REGION)["ips"]
     assert "fd12:3456:0:4::15" in ips and ips.index("203.0.113.10") < ips.index("2001:db8:acce:10::25")
 

@@ -217,6 +217,13 @@ def find_merges(plan_groups: list[dict], groups: dict, chosen: set | None = None
 OPEN = ("0.0.0.0/0", "::/0")
 
 
+def _private(net) -> bool:
+    """Inside the private ranges the product uses. Not ipaddress's is_private, which also counts documentation
+    and reserved ranges (203.0.113.0/24, 2001:db8::/32) that are public as far as a security group goes."""
+    pool = sg_review.PRIVATE_V4 if net.version == 4 else sg_review.PRIVATE_V6
+    return any(net.subnet_of(ipaddress.ip_network(c)) for c in pool)
+
+
 def _fits(own: set, union: set) -> bool:
     """Whether a member can take on the merged rules. Nearly identical is enough: on the ports it already has it may
     gain a few more private addresses (MERGE_EXTRA_ADDRESSES in all, an IPv6 /64 each at most; never a public one), and it may gain at most
@@ -242,7 +249,7 @@ def _fits(own: set, union: set) -> bool:
             net = ipaddress.ip_network(t[4], strict=False)
         except ValueError:
             return False  # a group or prefix-list source: merged only when it is already there
-        if not net.is_private:
+        if not _private(net):
             return False  # a merge never lets a group in from a new public address
         if net.version == 6:
             if net.prefixlen < 64:

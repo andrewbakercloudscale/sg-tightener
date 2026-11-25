@@ -925,3 +925,18 @@ def test_hours_cut_at_the_row_limit_still_narrow_the_rule():
     sftp = by[("partner-sftp", "203.0.113.0/24")]
     assert sftp["status"] == "tighten" and sftp["suggest"] and sftp["cut"] and "10,000" in sftp["note"]
     assert by[("payments-db", "172.16.0.0/12")]["status"] == "unused"
+
+
+def test_open_to_everyone_narrows_except_on_a_public_load_balancers_web_ports(report):
+    """Owner, 2026-11-25: 0.0.0.0/0 narrows to the sources seen, like any public range, except on an internet-facing
+    load balancer's 80/443, whose users cannot be listed (aws-prd-plrdoc's VPC endpoint group was left open)."""
+    _, rep = report
+    by = {(r["gname"], r["source"]): r for r in rep["rules"]}
+    assert by[("public-alb", "0.0.0.0/0")]["status"] == "open"
+    rdp = by[("legacy-admin", "0.0.0.0/0")]
+    assert rdp["status"] in ("tighten", "unused") and "0.0.0.0/0" not in rdp["suggest"]
+    assert sg_review.serves_web({"proto": "6", "from": 443, "to": 443}) and sg_review.serves_web({"proto": "-1"})
+    assert not sg_review.serves_web({"proto": "6", "from": 22, "to": 22})
+    snap = {"enis": {"e1": {"kind": "load balancer", "public": ""}, "e2": {"kind": "load balancer", "public": "1.2.3.4"}}}
+    assert not sg_review.public_lb({"enis": ["e1"]}, snap)  # an internal load balancer
+    assert sg_review.public_lb({"enis": ["e1", "e2"]}, snap)
