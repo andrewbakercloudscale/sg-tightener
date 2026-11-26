@@ -488,6 +488,7 @@ python sg_tightener.py revert --manifest manifest-<timestamp>.json
 | [Troubleshooting and support](docs/troubleshooting.md) | Something in the console is wrong: health checks, `doctor`, the activity log, symptoms and fixes, upgrading safely, what to send when asking for help |
 | [CLI reference](docs/cli-reference.md) | You need every flag and default for every tool |
 | [Flow-log requirements](docs/flow-logs.md) | Before your first `analyse`, especially behind a transit gateway |
+| [Flow logs in S3, read through Athena](docs/flow-logs-s3.md) | You are moving flow logs out of CloudWatch Logs: one organisation bucket in Log Archive, Parquet, the Athena table, permissions, costs, and moving over without counting flows twice |
 | [Security Group Review](docs/security-group-review.md) | You want the HTML report: its parameters, its graphs, port classes, and Extract rule |
 | [File formats](docs/file-formats.md) | You are reviewing a `plan.json`, editing an `approved.json` or reading `viz-data.json` |
 | [Permissions](docs/permissions.md) | You are creating the IAM role the tools run as |

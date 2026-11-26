@@ -683,7 +683,11 @@ def snapshot(session, region: str) -> dict:
         {"id": f.get("FlowLogId", ""), "resource": f.get("ResourceId", ""), "traffic": f.get("TrafficType", ""),
          "dest": f.get("LogDestinationType", "cloud-watch-logs"), "group": f.get("LogGroupName", ""),
          "format": f.get("LogFormat") or DEFAULT_FORMAT, "status": f.get("FlowLogStatus", ""),
-         "created": f["CreationTime"].timestamp() if hasattr(f.get("CreationTime"), "timestamp") else None}
+         "created": f["CreationTime"].timestamp() if hasattr(f.get("CreationTime"), "timestamp") else None,
+         **({"s3": f.get("LogDestination", ""), "file": (f.get("DestinationOptions") or {}).get("FileFormat", "plain-text"),
+             "hive": bool((f.get("DestinationOptions") or {}).get("HiveCompatiblePartitions")),
+             "hourly": bool((f.get("DestinationOptions") or {}).get("PerHourPartition"))}
+            if f.get("LogDestinationType") == "s3" else {})}
         for f in _pages(ec2, "describe_flow_logs", "FlowLogs")
     ]  # fmt: skip
     return out
@@ -1037,9 +1041,17 @@ def plan(now: float, days: int, have=()) -> list[tuple[int, int]]:
     return sorted(out, reverse=True)
 
 
-def query_sets(snap: dict) -> list[dict]:
+def query_sets(snap: dict, account: str = "") -> list[dict]:
     """The flow logs one region's queries read: CloudWatch Logs destinations, active, in a format that has
-    the fields needed, grouped by format (one query per format)."""
+    the fields needed, grouped by format (one query per format). With flow logs in S3 set up (sg_athena), the
+    flow logs delivered to that bucket too: one Athena query per format, from when the first was created."""
+    import sg_athena
+
+    cfg = sg_athena.load()
+    s3: dict[str, float] = {}
+    for f in snap.get("flow_logs") or []:
+        if account and f["status"] in ("ACTIVE", "") and readable(f["format"]) and sg_athena.covers(cfg, f):
+            s3[f["format"]] = min(s3.get(f["format"], f.get("created") or 0), f.get("created") or 0)
     by_fmt: dict[str, set] = {}
     for f in snap.get("flow_logs") or []:
         if (
@@ -1049,7 +1061,8 @@ def query_sets(snap: dict) -> list[dict]:
             and readable(f["format"])
         ):
             by_fmt.setdefault(f["format"], set()).add(f["group"])  # fmt: skip
-    return [{"format": k, "groups": sorted(v)} for k, v in sorted(by_fmt.items())]
+    return ([{"format": k, "groups": sorted(v)} for k, v in sorted(by_fmt.items())]
+            + [{"format": k, "s3": account, "since": v} for k, v in sorted(s3.items())])
 
 
 def _vpc_ranges(snap: dict) -> list[str]:
@@ -1079,11 +1092,14 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
                 *read_chunk(logs, region, s, mid, qsets, vpcs, cancelled, egress, tick, hint)]  # fmt: skip
     rows, pub, egr, nbytes, cut, pub_cut, errors = [], [], [], 0, False, False, []
     rst, has_rst = [], False  # connections reset: [source, target, interface, protocol, port, resets, "in" or "out"]
-    for q in qsets:
+    for q in slice_sets(qsets, s):
         rs, b, status = None, 0, ""
         for fold in (True, "high", False):
-            query = detail_query(q["format"], vpcs, fold=fold)
-            rs, b, status = run_query(logs, q["groups"], query, s, e, cancelled=cancelled)
+            if q.get("s3"):
+                rs, b, status = _athena(q, region, vpcs, s, e, cancelled, fold=fold)
+            else:
+                query = detail_query(q["format"], vpcs, fold=fold)
+                rs, b, status = run_query(logs, q["groups"], query, s, e, cancelled=cancelled)
             nbytes += b
             if rs is not None or status in ("Cancelled", "Timeout"):
                 break
@@ -1094,7 +1110,7 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
                 return []
             errors.append(f"detail query {status}")
             continue
-        if len(rs) >= ROWS:
+        if len(rs) >= (ROWS if not q.get("s3") else _athena_cap()):
             if e - s <= MIN_SPLIT and hint is not None:  # a minute still overflows: splitting cannot fit this region
                 hint.setdefault("_whole", set()).add(region)
             if e - s > MIN_SPLIT and not whole and region not in (hint or {}).get("_whole", ()):
@@ -1129,9 +1145,10 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
         rows += kept
         pub_cut = pub_cut or len(rs) >= ROWS
         pub += refused
-        eq = egress_query(q["format"], vpcs) if egress else None
+        eq = (egress_query(q["format"], vpcs) if not q.get("s3") else "s3") if egress else None
         if eq:
-            es, b, status = run_query(logs, q["groups"], eq, s, e, cancelled=cancelled)
+            es, b, status = (_athena(q, region, vpcs, s, e, cancelled, egress=True) if q.get("s3")
+                             else run_query(logs, q["groups"], eq, s, e, cancelled=cancelled))  # fmt: skip
             nbytes += b
             if es is None:
                 errors.append(f"outbound query {status}")
@@ -1156,6 +1173,49 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
     if egress:
         out["egr"] = egr
     return [out]
+
+
+def _read_from(flow_log: dict) -> bool:
+    """A flow log whose records this tool reads: CloudWatch Logs, or S3 with Athena set up for its bucket."""
+    if flow_log["dest"] == "cloud-watch-logs":
+        return True
+    import sg_athena
+
+    return sg_athena.covers(sg_athena.load(), flow_log)
+
+
+def slice_sets(qsets: list, s: int) -> list:
+    """The query sets that read the slice starting at ``s``. Where flow logs go to both CloudWatch Logs and S3
+    (while moving to S3), S3 is read from when its flow log was created and CloudWatch Logs before that: never
+    both, which would count every flow twice."""
+    s3 = [q for q in qsets if q.get("s3") and s >= (q.get("since") or 0)]
+    if s3:
+        return s3
+    cw = [q for q in qsets if not q.get("s3")]
+    return cw or [q for q in qsets if q.get("s3")]
+
+
+def _athena_cap() -> int:
+    import sg_athena
+
+    return sg_athena.ROW_CAP
+
+
+def _athena(q: dict, region: str, vpcs: list, s: int, e: int, cancelled, fold=True, egress: bool = False):
+    """(rows, bytes, status) of a slice read from S3 through Athena, the rows as Logs Insights gives them."""
+    import sg_athena
+
+    cfg = sg_athena.load()
+    if not cfg:
+        return None, 0, "flow logs in S3 are no longer set up (Settings)"
+    sql = (sg_athena.egress_sql(cfg, q["s3"], region, q["format"], vpcs, s, e) if egress
+           else sg_athena.detail_sql(cfg, q["s3"], region, q["format"], vpcs, s, e, fold=fold))  # fmt: skip
+    if not sql:
+        return [], 0, "Complete"
+    try:
+        return sg_athena.run(cfg, sql, cancelled=cancelled)
+    except sg_athena.AthenaError as exc:
+        return None, 0, str(exc)
 
 
 def _is_public(ip) -> bool:
@@ -1656,7 +1716,7 @@ def nacl_verdict(nacl: dict | None, src, proto: str, port: int) -> dict | None:
 def _coverage(snap: dict) -> dict:
     """Interface id -> (covered for accepted traffic, covered for refused, earliest such flow log)."""
     out = {}
-    logs = [f for f in snap.get("flow_logs") or [] if f["dest"] == "cloud-watch-logs" and f["status"] in ("ACTIVE", "")
+    logs = [f for f in snap.get("flow_logs") or [] if _read_from(f) and f["status"] in ("ACTIVE", "")
             and readable(f["format"])]  # fmt: skip
     for eid, e in (snap.get("enis") or {}).items():
         mine = [f for f in logs if f["resource"] in (eid, e.get("subnet"), e.get("vpc"))]
@@ -1975,7 +2035,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
             "query_sets": x.get("query_sets") or [],
             "flow_logs": len(snap.get("flow_logs") or []),
             "unreadable": [f["id"] for f in snap.get("flow_logs") or []
-                           if f["dest"] != "cloud-watch-logs" or not readable(f["format"])],
+                           if not _read_from(f) or not readable(f["format"])],
             "history": {"read": (x.get("history") or {}).get("read", False),
                         "since": (x.get("history") or {}).get("whole_since"),
                         "error": (x.get("history") or {}).get("error")},
@@ -3826,7 +3886,7 @@ def plan_read(sess, doc: dict, regions: Sequence[str], days: int, now: float, sa
             continue
         entry["snapshot"], entry["taken"], entry["history"] = snap, now, hist
         entry.pop("error", None)
-        qsets = query_sets(entry["snapshot"])
+        qsets = query_sets(entry["snapshot"], doc.get("account", ""))
         entry["query_sets"] = qsets
         if not qsets:
             LOG.warning("%s: no VPC flow log in CloudWatch Logs with source, target, port, action and interface", region)

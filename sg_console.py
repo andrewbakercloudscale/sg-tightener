@@ -1141,6 +1141,40 @@ class Console:
         })
         return f"sg-tightener-support-{stamp}.zip", data
 
+    # ------------------------------------------------------------------ flow logs in S3 (Athena)
+    def athena(self) -> dict:
+        """The S3 / Athena settings, the table to create for them, and where they are kept."""
+        import sg_athena
+
+        cfg = sg_athena.load(every=True)
+        ddl = sg_athena.ddl(cfg) if cfg.get("bucket") and cfg.get("database") and cfg.get("table") else ""
+        return {"settings": cfg, "ddl": ddl, "file": str(sg_athena.path())}
+
+    def athena_session(self, account: str):
+        """A session in the account that runs Athena (usually Log Archive): as chosen on Overview, else with the
+        role chosen for every account (Log Archive is often left out of a read, having nothing to tighten)."""
+        try:
+            return self.targets().session(account)
+        except Exception:  # noqa: BLE001 - not one of the accounts chosen
+            a = self.auth()
+            role = next((c["role"] for c in (a.chosen() if a is not None else []) if c.get("role")), "")
+            if a is None or not role or not hasattr(a, "role_session"):
+                raise
+            return a.role_session(account, role)
+
+    def set_athena(self, body: dict) -> dict:
+        """Save the S3 / Athena settings; with ``test``, run one cheap query to prove they work."""
+        import sg_athena
+
+        try:
+            cfg = sg_athena.save(body)
+        except sg_athena.AthenaError as exc:
+            raise ConsoleError(400, str(exc))
+        out = {**self.athena(), "saved": True}
+        if body.get("test") and cfg.get("on"):
+            out["test"] = sg_athena.test(cfg, str(body.get("test_account") or ""), str(body.get("test_region") or ""))
+        return out
+
     def _latest_release(self) -> dict:
         """The newest version tag on GitHub, asked at most every six hours; {} when it cannot be asked."""
         got = getattr(self, "_latest", None)
@@ -3302,6 +3336,8 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.tighten_prefs())
                 if url.path == "/api/jobs":
                     return self._json(200, console.job_list())
+                if url.path == "/api/athena":
+                    return self._json(200, console.athena())
                 if url.path == "/api/health":
                     return self._json(200, console.health())
                 if url.path == "/api/activity":
@@ -3345,7 +3381,7 @@ def make_handler(console: Console, token: str, port: int):
                      "/api/reports/retry": console.reports_retry, "/api/tighten": console.set_tighten_prefs,
                      "/api/settings": console.set_settings, "/api/backup": console.backup_now, "/api/dsn-test": console.test_dsn,
                      "/api/read/all/stop": console.read_all_stop, "/api/keys/use": console.keys_use,
-                     "/api/autostart": console.autostart,
+                     "/api/autostart": console.autostart, "/api/athena": console.set_athena,
                      "/api/database/start": console.database_start}.get(urlparse(self.path).path)  # fmt: skip
             if not route:
                 return self._json(404, {"error": "not found"})
@@ -3401,7 +3437,7 @@ ACTION_NAMES = {
     "/api/read/all/stop": "stopped reading many accounts", "/api/schedule": "changed the scheduled read",
     "/api/reports/retry": "retried reports", "/api/settings": "changed settings", "/api/backup": "backed up the database",
     "/api/dsn-test": "tested a database connection", "/api/keys/use": "signed in with keys on this computer",
-    "/api/autostart": "switched Always running", "/api/database/start": "started the database",
+    "/api/autostart": "switched Always running", "/api/athena": "changed flow logs in S3 (Athena)", "/api/database/start": "started the database",
 }  # fmt: skip
 
 
@@ -4044,6 +4080,9 @@ def _journal_start(console: Console, args) -> None:
                      interface=new.get("interface", ""), why=new.get("why", ""))  # fmt: skip
 
     _NET["hooks"].append(net)
+    import sg_athena
+
+    sg_athena.set_session_factory(console.athena_session)
 
     def uncaught(a):  # a background thread that dies: into the log and the activity log, not lost on stderr
         if a.exc_type is not SystemExit:

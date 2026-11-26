@@ -412,6 +412,14 @@ AWS scans the flow logs on its side: the gigabytes on the bill are not downloade
 
 ![Settings: Data use](images/sg-console-data-use.png)
 
+## Flow logs in S3
+
+**Settings, Flow logs in S3 (Athena)**: with the bucket, the account that runs Athena (usually Log Archive)
+and its region filled in, each read also reads flow logs delivered to that bucket, through Athena. In a
+region with both, S3 is read from when its flow log was created and CloudWatch Logs before that, so no flow
+is counted twice. **Show the table SQL** gives the statement that creates the Athena table, and **Test and
+save** runs one small query. The layout, permissions and costs are in [flow-logs-s3.md](flow-logs-s3.md).
+
 ## Support: health, activity log, support bundle
 
 The **Support** tab is where to look first when something seems wrong. Its tab shows a count when a

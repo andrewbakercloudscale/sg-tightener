@@ -15,7 +15,7 @@ assumes the default format), but it is faster to get it right first.
 | `${action}` in the format | To tell accepted from refused | The run aborts |
 | `${srcaddr}` or `${pkt-srcaddr}` in the format | The address being learned | The run aborts |
 | One format per destination | Records are parsed by position | The run aborts if formats are mixed |
-| Delivered to CloudWatch Logs, or to S3 as text (`.gz` is fine) | The two supported readers; Parquet is not read | |
+| Delivered to CloudWatch Logs, or to S3 | The console reads CloudWatch Logs with Logs Insights, and S3 (Parquet or text) with Athena once set up ([flow-logs-s3.md](flow-logs-s3.md)); `sg_tightener.py analyse` reads S3 text files directly | Not read: listed as not readable |
 
 ## Strongly recommended: `pkt-srcaddr`
 

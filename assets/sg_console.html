@@ -721,6 +721,27 @@ section.nodata .card:not(.empty-state) { display: none; }
         <p><b>Read flow logs only on Wi-Fi</b>: while this Mac is on a phone hotspot (macOS marks it as a metered connection, or it is an iPhone Personal Hotspot), Read all, Read one, Read and the scheduled read wait, and a read a restart stopped is carried on only once back on Wi-Fi. A read already running carries on. Reports, the Risk overview and everything already read work as normal: they use no internet.</p>
         <p><b>How much data</b>: AWS scans the flow logs on its side, so the gigabytes on the bill are not downloaded. What comes over the network is the security groups, interfaces and the query results: roughly 0.5 MB an account to price, a few MB an account to read.</p>
         <p><b>Keep prices when the console restarts</b>: a read of many accounts is priced account by account (spend, security groups, flow-log plan). On: each price is kept as it is worked out, so after a restart (an upgrade, a crash) only the accounts not yet reached are priced again. Off: every account is priced again from the start.</p></div></div>
+    <div class="card" id="stS3"><div class="card-head"><h3 style="margin:0">Flow logs in S3 (Athena)</h3><button class="btn sm" type="button" id="stS3Why" aria-expanded="false">Explain</button></div>
+      <div class="acts"><label class="switch"><input type="checkbox" id="s3On" role="switch"> Read flow logs delivered to S3, through Athena</label></div>
+      <div class="acts" style="flex-wrap:wrap">
+        <label class="small">Bucket <input id="s3Bucket" type="text" placeholder="org-vpc-flow-logs" aria-label="S3 bucket" autocomplete="off"></label>
+        <label class="small">Prefix <input id="s3Prefix" type="text" placeholder="(none)" aria-label="Prefix in the bucket" autocomplete="off" style="width:110px"></label>
+        <label class="small">Layout <select id="s3Layout" aria-label="Layout"><option value="hive">Parquet, Hive-compatible folders (recommended)</option><option value="plain">Plain text, default folders</option></select></label>
+        <label class="small"><input type="checkbox" id="s3Hourly"> Per-hour folders</label></div>
+      <div class="acts" style="flex-wrap:wrap">
+        <label class="small">Athena account <input id="s3Acct" type="text" placeholder="Log Archive account id" aria-label="Account that runs Athena" autocomplete="off" style="width:150px"></label>
+        <label class="small">Region <input id="s3Region" type="text" placeholder="eu-west-1" aria-label="Region of the bucket and table" autocomplete="off" style="width:110px"></label>
+        <label class="small">Database <input id="s3Db" type="text" aria-label="Glue database" autocomplete="off" style="width:130px"></label>
+        <label class="small">Table <input id="s3Table" type="text" aria-label="Glue table" autocomplete="off" style="width:110px"></label>
+        <label class="small">Workgroup <input id="s3Wg" type="text" aria-label="Athena workgroup" autocomplete="off" style="width:110px"></label>
+        <label class="small">Results <input id="s3Out" type="text" placeholder="s3://… (empty: the workgroup's)" aria-label="Query results location" autocomplete="off"></label></div>
+      <div class="acts"><button class="btn sm primary" type="button" id="s3Save">Save</button><button class="btn sm" type="button" id="s3Test">Test and save</button><button class="btn sm" type="button" id="s3Sql" aria-expanded="false">Show the table SQL</button><span class="muted small" id="s3Note"></span></div>
+      <div id="s3SqlBox" hidden><div class="acts"><button class="btn sm" type="button" id="s3Copy">Copy</button><span class="muted small">Run it once in Athena, in the account and region above.</span></div><pre class="small" id="s3SqlText" style="white-space:pre-wrap;max-height:320px;overflow:auto"></pre></div>
+      <div class="small" id="stS3Help" hidden style="margin:8px 0 0">
+        <p><b>What this is</b>: VPC flow logs can be delivered to S3 instead of (or as well as) CloudWatch Logs: much cheaper to keep, and with Parquet much cheaper to query. On: each read also reads the flow logs delivered to this bucket, with Amazon Athena, and everything after (reports, Tighten, Rejected traffic) is the same.</p>
+        <p><b>The usual layout</b>: one bucket for the whole organisation, in the Log Archive account, every account's flow logs in Parquet with Hive-compatible, per-hour folders. One Athena table covers every account (partition projection: no crawler, nothing to add as accounts join). <b>Show the table SQL</b> gives the statement to create it.</p>
+        <p><b>Moving over</b>: keep the CloudWatch Logs flow log while the S3 one builds up. For each region the read uses S3 from when its S3 flow log was created and CloudWatch Logs before that, never both, so no flow is counted twice.</p>
+        <p><b>Who runs the queries</b>: the account named here (usually Log Archive), with the role chosen on Overview. That role needs Athena, Glue (read) and S3 read on the bucket, and write to the results location. <b>Test and save</b> runs one small query on the newest hour. The guide: <code>docs/flow-logs-s3.md</code>.</p></div></div>
     <div class="card" id="stAccess"><div class="card-head"><h3 style="margin:0">Approvals and running</h3></div>
       <div class="acts"><label class="switch"><input type="checkbox" id="stTwo" role="switch"> Two-person approval</label></div>
       <p class="muted small" style="margin:4px 0 10px">On: a different person must approve each change request before it can be applied. Off suits one person running the console on their own laptop.</p>
@@ -2166,6 +2187,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <div><span class="muted small">Flow logs kept</span><b>${X.retention_days} days</b></div>
       <div><span class="muted small">Backups</span><b>${X.backups}</b><span class="muted small">${X.last_backup ? "last " + esc(when(X.last_backup)) : "none yet"} · newest ${X.backups_kept} kept</span></div></div>`;
     await loadPrefs().catch(() => {});
+    await loadS3().catch(() => {});
     await loadSchedule();
     drawService();
   }
@@ -2174,6 +2196,29 @@ section.nodata .card:not(.empty-state) { display: none; }
   $("stTwo").addEventListener("change", (e) => act(e.target, async () => { await api("/api/approvals", {on: e.target.checked}); await loadState(); }));
   $("stWifi").addEventListener("change", (e) => act(e.target, async () => { await api("/api/settings", {wifi_only: e.target.checked}); await loadSettings(); await loadState(); }));
   $("stKeep").addEventListener("change", (e) => act(e.target, async () => { await api("/api/settings", {keep_prices: e.target.checked}); await loadSettings(); }));
+  // ---- flow logs in S3 (Athena)
+  toggleHelp("stS3Why", "stS3Help");
+  const s3Fields = {on: "s3On", bucket: "s3Bucket", prefix: "s3Prefix", layout: "s3Layout", hourly: "s3Hourly", account: "s3Acct", region: "s3Region", database: "s3Db", table: "s3Table", workgroup: "s3Wg", output: "s3Out"};
+  let S3 = null;
+  function drawS3(x) {
+    S3 = x; const c = x.settings || {};
+    const dflt = {database: "vpc_flow_logs", table: "flow_logs", workgroup: "primary", layout: "hive", hourly: true};
+    for (const [k, id] of Object.entries(s3Fields)) { const v = c[k] ?? dflt[k] ?? ""; if ($(id).type === "checkbox") $(id).checked = !!v; else $(id).value = v; }
+    $("s3SqlText").textContent = x.ddl || "Fill in the bucket, then Save, to see the statement.";
+  }
+  const s3Body = () => Object.fromEntries(Object.entries(s3Fields).map(([k, id]) => [k, $(id).type === "checkbox" ? $(id).checked : $(id).value.trim()]));
+  async function loadS3() { drawS3(await api("/api/athena", undefined, true)); }
+  const s3Go = (test) => (e) => act(e.target, async () => {
+    $("s3Note").textContent = test ? "Saving and running a test query…" : "";
+    const r = await api("/api/athena", {...s3Body(), test});
+    drawS3(r);
+    const T = r.test;
+    $("s3Note").innerHTML = !T ? "Saved." : T.ok ? `<span style="color:var(--good)">Athena answered in ${T.seconds} s: ${T.flows.toLocaleString()} flows in the newest hour of ${esc(T.account)} ${esc(T.region)}, ${bSize(T.bytes)} scanned.</span>` : `<span style="color:var(--bad)">Saved, but the test failed: ${esc(T.error)}</span>`;
+  });
+  $("s3Save").addEventListener("click", s3Go(false));
+  $("s3Test").addEventListener("click", s3Go(true));
+  $("s3Sql").addEventListener("click", () => { const b = $("s3SqlBox"); b.hidden = !b.hidden; $("s3Sql").setAttribute("aria-expanded", String(!b.hidden)); });
+  $("s3Copy").addEventListener("click", (e) => act(e.target, async () => { await navigator.clipboard.writeText($("s3SqlText").textContent); flash("Table SQL copied."); }));
   const dsnGo = (save) => async (e) => act(e.target, async () => {
     const r = await api("/api/dsn-test", {dsn: $("stDsn").value.trim(), save});
     $("stDsnNote").innerHTML = r.ok ? `<span style="color:var(--good)">Connected: ${esc(r.version)}.</span>${r.saved ? " Saved: restart the console (Always running off and on, or <code>python sg_console.py install</code>) to use it." : ""}` : `<span style="color:var(--bad)">Could not connect: ${esc(r.error)}</span>`;
