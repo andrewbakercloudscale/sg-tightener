@@ -653,7 +653,10 @@ class Console:
             st = self.store()
             try:
                 names = st.account_names()
-                modes = {a: st.mode(a) for a, _ in st.regions()}
+                # one query, not one per region: 2,850 regions took 1.2 s on every Risk overview load
+                every = st.modes()
+                default = every.get(sg_db.ANY_ACCOUNT) or sg_db.SURVEILLANCE
+                modes = {a: every.get(a) or default for a in {a for a, _ in st.regions()}}
             finally:
                 st.close()
         except Exception:  # noqa: BLE001 - the overview still works from the reads alone
