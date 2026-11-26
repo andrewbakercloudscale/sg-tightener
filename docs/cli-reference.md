@@ -135,6 +135,17 @@ python sg_console.py serve [--port 8765] [--profile P] [--db FILE] [--role-name 
 
 It listens on 127.0.0.1 at http://127.0.0.1:8765/ and needs no sign-in of its own. It acts as the AWS identity it runs as.
 
+| Command | What it does |
+|---|---|
+| `serve` | Run the console in this terminal (Ctrl-C stops it) |
+| `install` | Always running: start it at login and restart it if it stops (launchd on macOS, systemd on Linux) |
+| `uninstall` | Stop running it in the background |
+| `open` | Open the console in the browser |
+| `doctor [--port 8765]` | Check everything the console needs (Python, packages, the data folder and disk space, the database, whether the console answers and its own health checks, Always running, the log's size) and print how to fix what is wrong. Works when the console does not start. Exit code 1 when something is wrong |
+| `support [--out PATH]` | Write a support bundle zip: health, settings, the activity log, the end of `console.log`, versions. Tokens, keys and passwords are replaced by `***`. From the running console when it answers, else built here |
+
+See [Troubleshooting and support](troubleshooting.md).
+
 ---
 
 ## `sg_tightener.py`

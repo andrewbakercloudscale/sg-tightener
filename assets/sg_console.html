@@ -591,6 +591,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     <button role="tab" data-tab="requests" aria-selected="false">Change requests<span class="count" id="pendingCount" hidden></span></button>
     <button role="tab" data-tab="audit" aria-selected="false">Audit trail</button>
     <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
+    <button role="tab" data-tab="support" aria-selected="false">Support<span class="count" id="supCount" hidden></span></button>
   </nav>
 </header>
 <main>
@@ -741,6 +742,31 @@ section.nodata .card:not(.empty-state) { display: none; }
       <div id="stDataBody" class="small"></div>
       <div class="acts" style="margin-top:8px"><button class="btn sm primary" type="button" id="stBackup">Back up now</button><span class="muted small" id="stBackupNote"></span></div>
       <p class="small" id="stDataHelp" hidden style="margin:8px 0 0"><b>Names file</b>: your own names for address ranges (data centres, partners, offices), so a source is named "Johannesburg DC" rather than "private address". <code>python sg_review.py names</code> writes an example. <b>Flow logs kept</b>: older reads are deleted; the audit trail is never deleted. <b>Back up now</b> dumps the whole database to the backups folder (the newest copies are kept); <code>python sg_store.py restore FILE --yes</code> puts one back.</p></div>
+  </section>
+
+  <section id="tab-support" hidden>
+    <h2>Support</h2>
+    <p class="lede">What to look at when something seems wrong: the console's health, everything it did and was asked to do, and a bundle to send to whoever helps you. Nothing here uses the internet.</p>
+    <div class="card" id="supHealth"><div class="card-head"><h3 style="margin:0">Health <span id="supWorst"></span></h3><span class="acts" style="margin:0"><button class="btn sm" type="button" id="supGo">Check again</button><button class="btn sm" type="button" id="supCopy">Copy summary</button><button class="btn sm" type="button" id="supHealthWhy" aria-expanded="false">Explain</button></span></div>
+      <div class="small" id="supHealthHelp" hidden style="margin:0 0 8px"><p>Each line is one thing the console needs, checked now: <span class="pill" style="--p:var(--good)">ok</span> is fine, <span class="pill" style="--p:var(--warn)">look</span> works but needs attention soon, <span class="pill" style="--p:var(--bad)">broken</span> stops something working, <span class="pill" style="--p:var(--muted)">note</span> is for information. Where something is wrong the line says what to do.</p>
+        <p><b>Copy summary</b> copies these lines as plain text, to paste into a chat or a ticket. The same checks run from a terminal, even when the console does not start: <code>python sg_console.py doctor</code>.</p></div>
+      <div class="scroll"><table class="small"><colgroup><col style="width:20%"><col style="width:10%"><col style="width:30%"><col style="width:40%"></colgroup><thead><tr><th>What</th><th>State</th><th>Now</th><th>Details and what to do</th></tr></thead><tbody id="supRows"><tr><td colspan="4" class="muted">Checking…</td></tr></tbody></table></div></div>
+    <div class="card" id="supBundle"><div class="card-head"><h3 style="margin:0">Support bundle</h3><button class="btn sm" type="button" id="supBundleWhy" aria-expanded="false">Explain</button></div>
+      <div class="acts"><button class="btn sm primary" type="button" id="supZip">Download support bundle</button><span class="muted small" id="supZipNote"></span></div>
+      <div class="small" id="supBundleHelp" hidden style="margin:8px 0 0"><p>A zip to send to whoever helps you: the health checks above, the console's settings, the activity log below, the end of the console's log file and the versions of everything it runs on. Tokens, AWS keys and passwords are replaced by <code>***</code>; connection strings are masked. Account and security group ids are kept, because they are needed to follow what happened. Look inside before sending it outside your company.</p>
+        <p>From a terminal: <code>python sg_console.py support</code> (it works when the console is down too).</p></div></div>
+    <div class="card" id="supLog"><div class="card-head"><h3 style="margin:0">Activity log</h3><button class="btn sm" type="button" id="supLogWhy" aria-expanded="false">Explain</button></div>
+      <div class="small" id="supLogHelp" hidden style="margin:0 0 8px"><p>Everything the console did and was asked to do, newest first: each button pressed (how long it took, and the error if it failed), each read as it is priced, confirmed, stopped and finished, the scheduled read, signing in and out, the network changing between Wi-Fi and a phone hotspot, the console starting and stopping (and whether the run before ended without stopping: a crash or a kill), and every warning and error it logged, with the traceback under <b>Details</b>.</p>
+        <p>This is for running and fixing the console. Security group changes are in the <b>Audit trail</b>, which is hash-chained and never deleted. The activity log is a file in the data folder (it works with the database down) and keeps about the last 4 MB.</p></div>
+      <div class="tools">
+        <input id="supQ" type="search" placeholder="Search messages, accounts, errors…" aria-label="Search the activity log">
+        <select id="supLevel" aria-label="Level"><option value="">Everything</option><option value="problems">Problems only</option><option value="error">Errors only</option></select>
+        <select id="supKind" aria-label="Kind"><option value="">Every kind</option></select>
+        <select id="supHours" aria-label="Since"><option value="1">Last hour</option><option value="24" selected>Last 24 hours</option><option value="168">Last 7 days</option><option value="">All kept</option></select>
+        <button class="btn sm" type="button" id="supRefresh">Refresh</button>
+        <span class="muted small" id="supN"></span>
+      </div>
+      <div class="scroll"><table class="trail-t small"><colgroup><col style="width:13%"><col style="width:9%"><col style="width:9%"><col style="width:12%"><col style="width:57%"></colgroup><thead><tr><th>When</th><th>Level</th><th>Kind</th><th>Account</th><th>What</th></tr></thead><tbody id="supActRows"></tbody></table></div></div>
   </section>
 
   <section id="tab-requests" hidden>
@@ -1101,7 +1127,7 @@ section.nodata .card:not(.empty-state) { display: none; }
           : "The console is not answering: it has stopped or is still starting. Wait a moment and reload the page; if it stays down, start it again (sg_console.py install) and look in ~/.sg-tightener/console.log.");
       }
       const j = await r.json().catch(() => ({error: r.status >= 500
-        ? `The console hit an error working this out (HTTP ${r.status}); the details are in ~/.sg-tightener/console.log.`
+        ? `The console hit an error working this out (HTTP ${r.status}); the details are on Support → Activity log (Problems only).`
         : `HTTP ${r.status}`}));
       if (r.status === 503 && j.database === false) dbDown();
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
@@ -1164,7 +1190,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
     for (const s of document.querySelectorAll("main > section")) s.hidden = s.id !== "tab-" + tab;
     if (location.hash.slice(1).split("/")[0] !== tab) history.pushState(null, "", "#" + tab);  // a bookmark opens this tab
-    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, outbound: loadOutbound, macro: loadMacro, over: loadOver, fix: loadFix, overview: loadState, settings: loadSettings, accounts: loadAccounts})[tab]?.())
+    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, outbound: loadOutbound, macro: loadMacro, over: loadOver, fix: loadFix, overview: loadState, settings: loadSettings, accounts: loadAccounts, support: loadSupport})[tab]?.())
       .catch((e) => flash(e.message, true));
   }
 
@@ -3032,6 +3058,59 @@ section.nodata .card:not(.empty-state) { display: none; }
   $("aQ").addEventListener("input", () => { clearTimeout(aT); aT = setTimeout(loadAudit, 250); });
   $("aSince").addEventListener("change", loadAudit);
   $("aOrigin").addEventListener("change", loadAudit);
+
+  // ---- support: health, bundle, activity log
+  let SUP = null;
+  const supPill = {ok: ["ok", "var(--good)"], warn: ["look", "var(--warn)"], bad: ["broken", "var(--bad)"], info: ["note", "var(--muted)"]};
+  for (const [b, h] of [["supHealthWhy", "supHealthHelp"], ["supBundleWhy", "supBundleHelp"], ["supLogWhy", "supLogHelp"]]) toggleHelp(b, h);
+  async function loadHealth() {
+    SUP = await api("/api/health");
+    const [wl, wc] = supPill[SUP.status] || supPill.info;
+    $("supWorst").innerHTML = `<span class="pill" style="--p:${wc}">${SUP.status === "ok" ? "all ok" : wl}</span>`;
+    $("supRows").innerHTML = SUP.checks.map((c) => { const [l, col] = supPill[c.status] || supPill.info;
+      return `<tr><td><b>${esc(c.name)}</b></td><td><span class="pill" style="--p:${col}">${l}</span></td><td>${esc(c.value)}</td><td>${c.detail ? `<div class="muted">${esc(c.detail)}</div>` : ""}${c.fix ? `<div>${esc(c.fix)}</div>` : ""}</td></tr>`; }).join("");
+    drawSupCount();
+  }
+  function drawSupCount() {
+    const n = SUP ? SUP.checks.filter((c) => c.status === "bad" || c.status === "warn").length : 0;
+    $("supCount").textContent = n; $("supCount").hidden = !n;
+  }
+  async function loadActivity() {
+    const q = new URLSearchParams({limit: "2000", level: $("supLevel").value, kind: $("supKind").value, hours: $("supHours").value, q: $("supQ").value});
+    const A = await api(`/api/activity?${q}`);
+    if ($("supKind").options.length === 1) $("supKind").insertAdjacentHTML("beforeend", Object.entries(A.kinds).map(([k, v]) => `<option value="${esc(k)}" title="${esc(v)}">${esc(k)}</option>`).join(""));
+    $("supN").textContent = `${A.rows.length.toLocaleString()} entries · ${esc(A.file)} (${bSize(A.bytes)})`;
+    const up = page("activity", A.rows.length, loadActivity);
+    const lv = {error: "var(--bad)", warning: "var(--warn)", info: "var(--muted)"};
+    $("supActRows").innerHTML = A.rows.slice(up.a, up.b).map((e) => {
+      const d = e.detail || {}, tb = d.traceback, rest = Object.fromEntries(Object.entries(d).filter(([k]) => k !== "traceback"));
+      const more = Object.keys(rest).length || tb ? `<details><summary>Details</summary>${Object.keys(rest).length ? `<pre class="small" style="white-space:pre-wrap;margin:4px 0">${esc(JSON.stringify(rest, null, 2))}</pre>` : ""}${tb ? `<pre class="small" style="white-space:pre-wrap;margin:4px 0">${esc(tb)}</pre>` : ""}</details>` : "";
+      return `<tr><td>${esc(new Date(e.at * 1000).toLocaleString())}</td><td><span class="pill" style="--p:${lv[e.level] || "var(--muted)"}">${esc(e.level)}</span></td><td>${esc(e.kind)}</td><td><code>${esc(e.account || "")}</code></td><td>${esc(e.message)}${more}</td></tr>`;
+    }).join("") || '<tr><td colspan="5" class="muted">Nothing in this window.</td></tr>';
+    pagerAfter($("supActRows"), up.bar);
+  }
+  async function loadSupport() { await Promise.all([loadHealth(), loadActivity()]); }
+  setTimeout(() => loadHealth().catch(() => {}), 4000);  // the Support tab shows how many things need a look
+  $("supGo").addEventListener("click", (e) => act(e.target, loadHealth));
+  $("supRefresh").addEventListener("click", (e) => act(e.target, loadActivity));
+  let supT = null;
+  $("supQ").addEventListener("input", () => { clearTimeout(supT); supT = setTimeout(() => loadActivity().catch((e) => flash(e.message, true)), 250); });
+  for (const id of ["supLevel", "supKind", "supHours"]) $(id).addEventListener("change", () => loadActivity().catch((e) => flash(e.message, true)));
+  $("supCopy").addEventListener("click", (e) => act(e.target, async () => {
+    if (!SUP) await loadHealth();
+    const text = `sg-tightener ${SUP.version} health, ${new Date(SUP.at * 1000).toLocaleString()}\n` + SUP.checks.map((c) => `${(supPill[c.status] || supPill.info)[0].padEnd(7)} ${c.name}: ${c.value}${c.detail ? ` (${c.detail})` : ""}${c.fix ? ` → ${c.fix}` : ""}`).join("\n");
+    await navigator.clipboard.writeText(text);
+    flash("Health summary copied.");
+  }));
+  $("supZip").addEventListener("click", (e) => act(e.target, async () => {
+    $("supZipNote").textContent = "Putting it together…";
+    const r = await fetch("/api/support/bundle");
+    if (!r.ok) { $("supZipNote").textContent = ""; throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`); }
+    const blob = await r.blob(), name = (r.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/)?.[1] || "sg-tightener-support.zip";
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    $("supZipNote").textContent = `Saved ${name} (${bSize(blob.size)}) to your downloads. Look inside before sending it.`;
+  }));
 
   // ---- rejected traffic
   // Read the newest flow logs from here: priced first, read on a yes, then this page refreshes

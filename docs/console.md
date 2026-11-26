@@ -105,7 +105,7 @@ Old bookmarks ending in `?token=…` still work.
 
 ![Overview, signed in: every account and region in the database](images/sg-console-overview.png)
 
-## The eight tabs
+## The tabs
 
 | Tab | What it shows and does |
 |---|---|
@@ -115,6 +115,7 @@ Old bookmarks ending in `?token=…` still work.
 | **Remediate** | Pick an account and the evidence dates: the account before and after (with % reduction, **Explain** and **Export to PDF**), where its traffic comes from, rules open to everyone that nothing outside used (**critical**, with **Propose this group**), a **Re-read from AWS** panel that prices only the hours never read, and every security group region by region (**Refresh from AWS**, **Apply approved changes** (first shows every rule it will add or remove, the groups and interfaces it touches, the request each came from, and which sources the flow logs saw that it would cut off; **Preview approved changes** in surveillance mode), **Propose a change by hand**); untick anything sensitive and propose ([below](#remediate-an-account)) |
 | **Outbound** | Every outbound rule, on a group some interface uses, that leaves the account, by risk class: **internet**, **SaaS and partners**, **on-premises**, **other AWS accounts**; which are **too wide** (all protocols, a port range, or more addresses than one destination needs), by account and rule, with the same account picker as Rejected traffic ([below](#outbound-rules-that-leave-the-account)) |
 | **Change requests** | Requests waiting for approval, approved, applied, rejected, withdrawn. Approve, or reject with a note, someone else's request; **Cancel request** on your own. **Two-person approval** can be unticked to approve your own on a single-user laptop (audited). Apply an approved one. An **asset request** (from `sg_db.py asset-propose`) shows the interface, the group it gets, the rules not carried over and what goes in their place, and once approved **Create the group and move** the interface |
+| **Support** | Health checks with what to do about each, the activity log (every action, read, sign-in, network change and error, with tracebacks), and a support bundle to send ([below](#support-health-activity-log-support-bundle)) |
 | **Audit trail** | Every entry, newest first, searchable (who, why, ticket, group, rule) and filtered by time and origin. Changes made outside the tool are red, with who made them from CloudTrail |
 | **Rejected traffic** | A line chart of the distinct addresses refused over time, one line per kind of source, then every source the security groups and network ACLs refused, in every account `sg_review.py` has read, worst verdict first. Each source is marked **internal** or **external**, **IPv6**, **scanning**, and **new** (first seen in the last 7 days, never before in at least 14 days of flow logs), with when it was first seen. Filter by account, severity, risky ports, new addresses only, internal / external / IPv6 / scanning, and text. **Fix…** opens everything known about the source (internal or external, IPv6, port scanning, new, threat lists, who it is, every interface, address and port it tried and what refused it, why, and any change in the audit trail that cut it off) and recommends where a rule letting it in belongs: the group on that interface that already serves the port, a group on that interface alone, a group of its own when every group there is shared, or to keep refusing it (scans, threat lists, Tor) or change the network ACL. **Propose this rule** sends it as a change request |
 
@@ -410,6 +411,33 @@ AWS scans the flow logs on its side: the gigabytes on the bill are not downloade
 0.5 MB an account, reading a few MB an account.
 
 ![Settings: Data use](images/sg-console-data-use.png)
+
+## Support: health, activity log, support bundle
+
+The **Support** tab is where to look first when something seems wrong. Its tab shows a count when a
+check needs a look.
+
+- **Health**: every thing the console needs, checked now, each **ok**, **look**, **broken** or **note**,
+  with what to do: the console's version and how long it has run, the database, the audit trail's hash
+  chain, the AWS sign-in (and how long it has left), the network (Wi-Fi or a phone hotspot), the read of
+  many accounts under way (and how many accounts failed), the scheduled read, report builds, Always
+  running, disk space, errors in the last 24 hours, and the size of the console's log. **Copy summary**
+  copies it as text for a chat or a ticket. `python sg_console.py doctor` runs the same checks from a
+  terminal, even when the console does not start.
+- **Activity log**: everything the console did and was asked to do, newest first: each button pressed
+  (how long it took, the error if it failed), each read as it is priced, confirmed, stopped and finished,
+  the scheduled read, signing in and out, the network changing, the console starting and stopping (and a
+  warning when the run before ended without stopping: a crash or a kill), and every warning and error the
+  console logged, with its traceback under **Details**. Filter by problems, kind, time and text. It is a
+  file in the data folder, so it works with the database down. Security group changes stay in the
+  **Audit trail**.
+- **Support bundle**: a zip for whoever helps you (health, settings, the activity log, the end of the
+  console's log, versions), with tokens, keys and passwords replaced by `***`.
+  `python sg_console.py support` writes the same from a terminal.
+
+Symptoms and their fixes are in [Troubleshooting and support](troubleshooting.md).
+
+![Support: health checks, the support bundle and the activity log](images/sg-console-support.png)
 
 ## When the database is not running
 

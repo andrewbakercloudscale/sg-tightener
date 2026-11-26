@@ -146,7 +146,7 @@ PASS_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy"
 RESUME_FOR = 3 * 86400  # a read interrupted longer ago than this is not carried on
 
 
-_NET: dict = {"at": 0.0, "v": None}
+_NET: dict = {"at": 0.0, "v": None, "hooks": []}  # hooks: called with (before, now) when metered changes
 HOTSPOT_GATEWAY = "172.20.10."  # an iPhone Personal Hotspot always hands out this range
 
 
@@ -183,8 +183,35 @@ def _network(fresh: bool = False) -> dict:
                 out = {"metered": False, "interface": ", ".join(ifaces) or iface, "why": "Wi-Fi or a wired network"}
         except Exception as exc:  # noqa: BLE001 - not known
             out["why"] = f"not known ({exc})"[:200]
+    before = _NET["v"]
     _NET.update(at=time.time(), v=out)
+    if before and before.get("metered") != out.get("metered"):
+        for hook in list(_NET["hooks"]):
+            try:
+                hook(before, out)
+            except Exception:  # noqa: BLE001
+                pass
     return out
+
+
+def _ago(secs: float | None) -> str:
+    """A span as people say it: 40 s, 12 min, 3 h, 2 days."""
+    s = max(0.0, float(secs or 0))
+    if s < 90:
+        return f"{round(s)} s"
+    if s < 5400:
+        return f"{round(s / 60)} min"
+    if s < 172800:
+        return f"{round(s / 3600)} h"
+    return f"{round(s / 86400)} days"
+
+
+def _has_dist(md, name: str) -> bool:
+    try:
+        md.version(name)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _keep_awake():
@@ -908,6 +935,209 @@ class Console:
                      "last_backup": backups[-1].stat().st_mtime if backups else None, "backups_kept": sg_store.BACKUP_KEEP},
         }
 
+    # ------------------------------------------------------------------ support: activity log, health, bundle
+    @property
+    def journal(self):
+        """The activity log (sg_journal), in the data folder in use: a file, so it works with the database down."""
+        import sg_ipintel
+        import sg_journal
+
+        path = Path(sg_ipintel.DATA_DIR) / "journal.jsonl"
+        j = getattr(self, "_journal", None)
+        if j is None or j.path != path:
+            j = self._journal = sg_journal.Journal(path)
+        return j
+
+    def _rec(self, kind: str, message: str, level: str = "info", account: str = "", **detail) -> None:
+        try:
+            self.journal.record(kind, message, level, account, **detail)
+        except Exception:  # noqa: BLE001 - recording must never stop what it records
+            pass
+
+    def activity(self, q: dict) -> dict:
+        """The activity log, newest first, filtered as the Support tab asks."""
+        import sg_journal
+
+        hours = float(q.get("hours") or 0)
+        rows = self.journal.recent(int(q.get("limit") or 500), str(q.get("level") or ""), str(q.get("kind") or ""),
+                                   str(q.get("q") or ""), time.time() - hours * 3600 if hours else 0,
+                                   str(q.get("account") or ""))  # fmt: skip
+        return {"rows": rows, "kinds": sg_journal.KINDS, "file": str(self.journal.path), "bytes": self.journal.size()}
+
+    def _log_file(self) -> Path:
+        import sg_ipintel
+
+        return Path(sg_ipintel.DATA_DIR) / "console.log"
+
+    def health(self) -> dict:
+        """Every check the Support tab shows, each {"key", "name", "status" (ok, warn, bad, info), "value",
+        "detail", "fix"}: what to look at first when something seems wrong. Uses no internet."""
+        import shutil
+
+        import sg_ipintel
+        import sg_store
+        import sg_tightener
+
+        checks: list[dict] = []
+
+        def add(key, name, status, value, detail="", fix=""):
+            checks.append({"key": key, "name": name, "status": status, "value": value, "detail": detail, "fix": fix})
+
+        started = getattr(self, "started", None) or time.time()
+        up = time.time() - started
+        add("version", "Console", "ok", f"{sg_tightener.__version__}, running {_ago(up)}",
+            f"process {os.getpid()} · Python {sys.version.split()[0]} · {platform.system()} {platform.release()}"
+            + (" · started by the background service" if self.service and self.service.running_as_service else ""))
+        db_ok, why = False, ""
+        try:
+            db_ok, why = sg_store.reachable()
+        except Exception as exc:  # noqa: BLE001
+            why = str(exc)
+        if db_ok:
+            try:
+                st = self.store()
+                try:
+                    intact, n, broken = st.verify()
+                finally:
+                    st.close()
+                add("database", "Database", "ok", "answering", why or "")
+                add("audit", "Audit trail", "ok" if intact else "bad",
+                    f"{n:,} entries, intact" if intact else f"{n:,} entries, BROKEN", broken,
+                    "" if intact else "An entry was changed or removed outside the tool. Keep a backup and report it.")
+            except Exception as exc:  # noqa: BLE001
+                add("database", "Database", "bad", "answers, but reading failed", plain_error(exc),
+                    "Look at the activity log below for the error.")
+        else:
+            add("database", "Database", "bad", "not answering", why,
+                "Start Docker (or Colima), then press Start the database on the banner, or run "
+                "python sg_store.py setup.")
+        try:
+            a = self.auth()
+            s = a.status() if a is not None else {}
+            if a is None:
+                add("signin", "AWS sign-in", "info", "not set up", "", "Sign in on Overview.")
+            elif s.get("signed_in") or (a is self.keys and s.get("active")):
+                exp = s.get("expires", "")
+                left = None
+                if exp:
+                    try:
+                        import datetime as _dt
+
+                        left = _dt.datetime.fromisoformat(exp.replace("Z", "+00:00")).timestamp() - time.time()
+                    except ValueError:
+                        left = None
+                status = "warn" if left is not None and left < 3600 else "ok"
+                add("signin", "AWS sign-in", status, "signed in" + (f", {_ago(left)} left" if left and left > 0 else ""),
+                    f"{len(s.get('chosen') or [])} account(s) chosen" + (f" · until {exp}" if exp else ""),
+                    "Renew the sign-in on Overview before a long read." if status == "warn" else "")  # fmt: skip
+            else:
+                add("signin", "AWS sign-in", "warn", "not signed in", s.get("error") or "",
+                    "Sign in on Overview. Behind Zscaler, Zscaler must be on for the company sign-in.")
+        except Exception as exc:  # noqa: BLE001
+            add("signin", "AWS sign-in", "warn", "not known", plain_error(exc))
+        n = _network()
+        add("network", "Network", "warn" if n.get("metered") else "ok" if n.get("metered") is False else "info",
+            "phone hotspot" if n.get("metered") else "Wi-Fi or wired" if n.get("metered") is False else "not known",
+            f"{n.get('why', '')}{(' on ' + n['interface']) if n.get('interface') else ''}",
+            "Reads use a little data (about 0.5 MB an account to price). Settings → Data use can make them wait for Wi-Fi."
+            if n.get("metered") else "")  # fmt: skip
+        b = self.batch_status() if self.batch else None
+        if b:
+            c = b.get("count") or {}
+            failed = c.get("failed", 0)
+            add("batch", "Read of many accounts", "warn" if failed else "ok" if b["status"] != "confirm" else "info",
+                {"pricing": "pricing", "confirm": "waiting for your yes", "running": "reading", "done": "finished",
+                 "stopped": "stopped"}.get(b["status"], b["status"]),
+                f"{b['accounts']} accounts: " + ", ".join(f"{v} {k}" for k, v in sorted(c.items()))
+                + (f" · about US${b['cost']:.2f}" if b.get("cost") else ""),
+                f"{failed} account(s) failed: their reason is in the activity log (kind: read)." if failed else "")  # fmt: skip
+        else:
+            add("batch", "Read of many accounts", "info", "none under way")
+        try:
+            sch = self.schedule()
+            last = (sch.get("runs") or [{}])[-1] if sch.get("runs") else {}
+            wait = self._sched_wait
+            add("schedule", "Scheduled read", "warn" if last.get("status") == "failed" else "ok" if sch.get("on") else "info",
+                ("on" if sch.get("on") else "off") + (f", waiting: {wait}" if wait else ""),
+                (f"last: {last.get('status', '')} {last.get('why', '')}".strip() if last else "not run yet"),
+                "Look at the reason above; the next run is tried at the next scheduled time." if last.get("status") == "failed" else "")  # fmt: skip
+        except Exception as exc:  # noqa: BLE001
+            add("schedule", "Scheduled read", "info", "not known", plain_error(exc))
+        bad = [f"{k.replace('|', ' ')}: {v['failed']} failed" for k in list(self._builds)
+               for v in [self.build_status(*k.split("|"))] if v and v.get("failed")]  # fmt: skip
+        add("reports", "Report builds", "warn" if bad else "ok", "some accounts failed" if bad else "no failures",
+            "; ".join(bad), "The failures are in the activity log (kind: error)." if bad else "")
+        if self.service:
+            s = self.service.status()
+            add("service", "Always running", "ok" if s.get("installed") else "info",
+                "on" if s.get("installed") else "off", s.get("file", "") if s.get("installed") else "",
+                "" if s.get("installed") else "Settings → Approvals and running → Always running keeps it up after a restart.")
+        try:
+            where = Path(sg_ipintel.DATA_DIR)
+            while not where.exists() and where != where.parent:  # not made yet: the disk it will be on
+                where = where.parent
+            du = shutil.disk_usage(where)
+            free = du.free / 1e9
+            add("disk", "Disk space", "bad" if free < 2 else "warn" if free < 10 else "ok", f"{free:.0f} GB free",
+                str(sg_ipintel.DATA_DIR), "Free some space: the database and reports need room to grow." if free < 10 else "")
+        except OSError:
+            pass
+        c = self.journal.counts(time.time() - 86400)
+        last = c["last_error"]
+        add("errors", "Errors, last 24 hours", "warn" if c["error"] else "ok",
+            f"{c['error']} error(s), {c['warning']} warning(s)",
+            (f"latest {time.strftime('%H:%M', time.localtime(last['at']))}: {last['message']}" if last else ""),
+            "Open the activity log below with Problems only." if c["error"] else "")
+        logf = self._log_file()
+        size = logf.stat().st_size if logf.exists() else 0
+        add("log", "Console log", "warn" if size > 500e6 else "ok", f"{size / 1e6:.0f} MB" if size else "none",
+            str(logf), "It is large: python sg_console.py install starts a new one." if size > 500e6 else "")
+        if self.journal.failed:
+            add("journal", "Activity log", "bad", "cannot be written", self.journal.failed,
+                f"Check {self.journal.path.parent} is writable.")
+        worst = "bad" if any(x["status"] == "bad" for x in checks) else "warn" if any(x["status"] == "warn" for x in checks) else "ok"
+        return {"at": time.time(), "status": worst, "checks": checks, "journal": str(self.journal.path),
+                "log": str(logf), "version": sg_tightener.__version__}
+
+    def support_bundle(self) -> tuple[str, bytes]:
+        """(file name, zip) for whoever helps: health, versions, settings, the activity log and the end of the
+        console's log, every secret taken out. Nothing about the security groups themselves."""
+        import sg_journal
+        import sg_tightener
+
+        h = self.health()
+        try:
+            cfg = self.settings()
+            cfg["about"].pop("latest", None)
+        except Exception as exc:  # noqa: BLE001 - the database may be the very problem
+            cfg = {"error": plain_error(exc)}
+        env = {k: ("set" if os.environ.get(k) else "") for k in PASS_ENV + ("SG_REPORT_PROCS", "SG_NO_SCHEDULE")}
+        try:
+            import importlib.metadata as md
+
+            pkgs = {p: md.version(p) for p in ("boto3", "botocore", "psycopg", "PyYAML") if _has_dist(md, p)}
+        except Exception:  # noqa: BLE001
+            pkgs = {}
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        self._rec("action", "support bundle downloaded")
+        data = sg_journal.bundle({
+            "README.txt": ("sg-tightener support bundle\n\nhealth.json    what the Support tab showed\n"
+                           "settings.json  the console's settings (connection strings masked)\n"
+                           "activity.json  the activity log, newest first\nconsole.log    the end of the console's log\n"
+                           "versions.json  versions of the tool, Python and its packages, and which environment "
+                           "variables are set (not their values)\n\nTokens, keys and passwords are replaced by ***. "
+                           "Account ids and security group ids are kept: they are needed to follow what happened.\n"),
+            "health.json": h,
+            "settings.json": cfg,
+            "activity.json": self.journal.recent(5000),
+            "console.log": sg_journal.tail(self._log_file()),
+            "versions.json": {"sg_tightener": sg_tightener.__version__, "python": sys.version, "platform": platform.platform(),
+                              "packages": pkgs, "environment": env, "batch": self.batch_status() if self.batch else None,
+                              "jobs": [{k: j.get(k) for k in ("id", "account", "status", "lines", "cost", "done", "total")}
+                                       for j in list(self.jobs.values())[-300:]]},  # fmt: skip
+        })
+        return f"sg-tightener-support-{stamp}.zip", data
+
     def _latest_release(self) -> dict:
         """The newest version tag on GitHub, asked at most every six hours; {} when it cannot be asked."""
         got = getattr(self, "_latest", None)
@@ -1076,6 +1306,9 @@ class Console:
                 st.meta_set("schedule_runs", runs + [{"at": time.time(), **entry}])
         finally:
             st.close()
+            self._rec("schedule", f"scheduled read {entry.get('slot', '')}: {entry.get('status', '')}"
+                      + (f", {entry['why']}" if entry.get("why") else ""),
+                      "warning" if entry.get("status") == "failed" else "info", **entry)  # fmt: skip
 
     def scheduler(self, stop: threading.Event | None = None, now=time.time) -> None:
         """Each scheduled time of day, read every chosen account's flow logs since they were last read: priced
@@ -1647,6 +1880,8 @@ class Console:
 
     def _say(self, job: dict, line: str) -> None:
         job["lines"] = (job["lines"] + [line])[-60:]
+        self._rec("read", line, "error" if line.startswith("failed") else "info", job.get("account", ""),
+                  job=job.get("id"), batch=job.get("batch"), status=job.get("status"))  # fmt: skip
 
     def _prepare(self, job: dict) -> None:
         import sg_assets
@@ -2012,6 +2247,7 @@ class Console:
                 j["status"] = "cancelled"
                 self._say(j, "not read")
         b["status"] = "stopped" if b["stop"].is_set() else ("confirm" if any(j["status"] == "confirm" for j in jobs) else "done")
+        self._rec_batch(b, jobs, "priced")
 
     def read_all_confirm(self, body: dict) -> dict:
         b = self.batch
@@ -2082,6 +2318,7 @@ class Console:
                     self._read_settled(j)
                     self._say(j, "not read")
             b["status"] = "stopped" if b["stop"].is_set() else "done"
+            self._rec_batch(b, jobs, "read")
             self.warm_reports()
 
         threading.Thread(target=go, daemon=True).start()
@@ -2108,6 +2345,16 @@ class Console:
         if b["status"] in ("confirm", "pricing"):  # pricing reads no flow logs: what is still finishing costs nothing
             b["status"] = "stopped"
         return self.batch_status()
+
+    def _rec_batch(self, b: dict, jobs: list[dict], stage: str) -> None:
+        count: dict[str, int] = {}
+        for j in jobs:
+            count[j["status"]] = count.get(j["status"], 0) + 1
+        cost = sum(j.get("cost") or 0 for j in jobs if j["status"] in ("confirm", "done", "stopped"))
+        self._rec("read", f"read of {len(jobs)} accounts {stage}: {b['status']} ("
+                  + ", ".join(f"{v} {k}" for k, v in sorted(count.items())) + (f", about US${cost:.2f}" if cost else "") + ")",
+                  "warning" if count.get("failed") else "info", batch=b.get("id"), count=count,
+                  minutes=round((time.time() - b.get("started", time.time())) / 60, 1))  # fmt: skip
 
     def _batch_stopped(self, job: dict) -> bool:
         b = self.batch
@@ -3041,6 +3288,13 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.tighten_prefs())
                 if url.path == "/api/jobs":
                     return self._json(200, console.job_list())
+                if url.path == "/api/health":
+                    return self._json(200, console.health())
+                if url.path == "/api/activity":
+                    return self._json(200, console.activity(q))
+                if url.path == "/api/support/bundle":
+                    name, data = console.support_bundle()
+                    return self._send(200, data, "application/zip", {"Content-Disposition": f'attachment; filename="{name}"'})
                 return self._json(404, {"error": "not found"})
             except ConsoleError as exc:
                 return self._json(exc.status, {"error": str(exc)})
@@ -3081,16 +3335,32 @@ def make_handler(console: Console, token: str, port: int):
                      "/api/database/start": console.database_start}.get(urlparse(self.path).path)  # fmt: skip
             if not route:
                 return self._json(404, {"error": "not found"})
+            path, t0 = urlparse(self.path).path, time.time()
+
+            def rec(status: int, error: str = ""):
+                if path in QUIET_POSTS and status < 400:
+                    return
+                console._rec("action", f"{ACTION_NAMES.get(path, path)}" + (f": {error}" if error else ""),
+                             "info" if status < 400 else "warning" if status < 500 else "error",
+                             str(body.get("account") or ""), path=path, status=status,
+                             ms=round((time.time() - t0) * 1000), asked=_asked(body))  # fmt: skip
+
             try:
-                return self._json(200, route(body))
+                out = route(body)
+                rec(200)
+                return self._json(200, out)
             except ConsoleError as exc:
+                rec(exc.status, str(exc))
                 return self._json(exc.status, {"error": str(exc)})
             except sg_db.Refused as exc:
+                rec(409, str(exc))
                 return self._json(409, {"error": str(exc)})
             except Exception as exc:
                 if _database_down(exc):
+                    rec(503, f"the database is not running: {exc}")
                     return self._json(503, {"error": f"the database is not running: {exc}", "database": False})
                 LOG.exception("POST %s failed", self.path)
+                rec(500, plain_error(exc))
                 return self._json(500, {"error": plain_error(exc)})
 
     return Handler
@@ -3099,6 +3369,38 @@ def make_handler(console: Console, token: str, port: int):
 
 PLAN_PROCS = 2  # remediation plans built at once, each in its own process
 PLAN_TIMEOUT = 600  # a request waits this long for a plan; the build carries on after it
+
+
+QUIET_POSTS = {"/api/net-check"}  # asked by the page on its own: only a failure is worth a line
+ACTION_NAMES = {
+    "/api/propose": "proposed a change", "/api/tighten": "tighten plan", "/api/remediate": "remediation plan",
+    "/api/merge-apply": "merged and applied", "/api/block": "proposed a block", "/api/block-apply": "applied a block",
+    "/api/decide": "decided a change request", "/api/approvals": "two-person approval switched",
+    "/api/apply": "applied changes in AWS", "/api/apply-preview": "previewed an apply",
+    "/api/refused-fix": "let rejected traffic in", "/api/reconcile": "reconciled with AWS", "/api/adopt": "adopted AWS's rules",
+    "/api/check": "checked permissions", "/api/profile": "read an account's profile", "/api/asset-apply": "changed an interface's groups",
+    "/api/asset-revert": "reverted an interface's groups", "/api/sso/start": "started signing in to AWS",
+    "/api/sso/choose": "chose accounts", "/api/sso/signout": "signed out of AWS", "/api/net-reset": "reset the network check",
+    "/api/read": "read one account", "/api/read/confirm": "confirmed a read", "/api/read/stop": "stopped a read",
+    "/api/read/all": "read many accounts", "/api/read/all/confirm": "confirmed reading many accounts",
+    "/api/read/all/stop": "stopped reading many accounts", "/api/schedule": "changed the scheduled read",
+    "/api/reports/retry": "retried reports", "/api/settings": "changed settings", "/api/backup": "backed up the database",
+    "/api/dsn-test": "tested a database connection", "/api/keys/use": "signed in with keys on this computer",
+    "/api/autostart": "switched Always running", "/api/database/start": "started the database",
+}  # fmt: skip
+
+
+def _asked(body: dict) -> dict:
+    """What a request asked, small and with no secrets: which account, group and the like, not the rules."""
+    keep = {}
+    for k, v in body.items():
+        if isinstance(v, (str, int, float, bool)) or v is None:
+            keep[k] = v if not isinstance(v, str) else v[:200]
+        elif isinstance(v, list):
+            keep[k] = f"{len(v)} item(s)"
+        elif isinstance(v, dict):
+            keep[k] = f"{len(v)} field(s)"
+    return keep
 
 
 def multiprocessing_timeout():
@@ -3204,7 +3506,7 @@ def plain_error(exc: BaseException) -> str:
         return f"AWS could not be reached ({type(exc).__name__}): check the network or VPN, then try again."
     if code:
         return f"AWS refused this ({code}): {msg or exc}"
-    return f"Something went wrong here ({type(exc).__name__}: {exc}). The details are in ~/.sg-tightener/console.log."
+    return f"Something went wrong here ({type(exc).__name__}: {exc}). The details are on Support → Activity log, and in ~/.sg-tightener/console.log."
 
 
 ACTIONABLE = sg_remediate.ACTIONABLE
@@ -3489,7 +3791,121 @@ def _build_parser() -> argparse.ArgumentParser:
     o = sub.add_parser("open", help="open the console in the browser")
     o.add_argument("--port", type=int, default=8765)
     o.add_argument("--data-dir", help=argparse.SUPPRESS)
+    d = sub.add_parser("doctor", help="check everything the console needs, even when it does not start, and say how to fix what is wrong")
+    b = sub.add_parser("support", help="write a support bundle (health, settings, activity log, the end of the log; secrets taken out)")
+    b.add_argument("--out", help="where to write the zip (default: the current folder)")
+    for q in (d, b):
+        q.add_argument("--port", type=int, default=8765)
+        q.add_argument("--db", help=argparse.SUPPRESS)
+        q.add_argument("--data-dir", help="the data folder to look at (default ~/.sg-tightener)")
     return p
+
+
+def _get_running(port: int, path: str, timeout: float = 30) -> tuple[int, bytes]:
+    """(status, body) of a GET to the console on this computer; (0, why) when nothing answers."""
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=timeout) as r:  # noqa: S310 - loopback
+            return r.status, r.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+    except Exception as exc:  # noqa: BLE001
+        return 0, str(exc).encode()
+
+
+def doctor(port: int = 8765, db: str | None = None, out=None) -> int:
+    """Check, in order, what the console needs, print each with how to fix it; 0 when nothing is wrong."""
+    import importlib
+    import shutil
+
+    import sg_ipintel
+    import sg_journal
+    import sg_store
+
+    out = out or sys.stdout
+    bad = 0
+
+    def line(ok, name, value, fix=""):
+        nonlocal bad
+        mark = {True: "ok  ", False: "FAIL", None: "note"}[ok]
+        bad += ok is False
+        print(f"  {mark}  {name:<24} {value}", file=out)
+        if fix and ok is not True:
+            print(f"        {'':<24} → {fix}", file=out)
+
+    print("sg-tightener doctor\n", file=out)
+    v = sys.version_info
+    line(v >= (3, 9), "Python", sys.version.split()[0], "Python 3.9 or newer is needed.")
+    for mod, pkg in (("boto3", "boto3"), ("yaml", "pyyaml"), ("psycopg", "psycopg[binary]")):
+        try:
+            importlib.import_module(mod)
+            line(True, f"package {pkg}", "installed")
+        except ImportError:
+            line(False, f"package {pkg}", "missing", "pip install -r requirements.txt")
+    data = Path(sg_ipintel.DATA_DIR)
+    try:
+        data.mkdir(parents=True, exist_ok=True)
+        probe = data / ".doctor"
+        probe.write_text("x")
+        probe.unlink()
+        free = shutil.disk_usage(data).free / 1e9
+        line(True if free >= 10 else None if free >= 2 else False, "data folder", f"{data} ({free:.0f} GB free)",
+             "Free some disk space: the database and reports need room.")
+    except OSError as exc:
+        line(False, "data folder", f"{data}: {exc}", f"Make {data} writable by you.")
+    try:
+        ok, why = sg_store.reachable()
+        line(ok, "database", "answering" if ok else f"not answering: {why}",
+             "Start Docker (or Colima), then: python sg_store.py setup")
+    except Exception as exc:  # noqa: BLE001
+        line(False, "database", f"not set up: {exc}", "python sg_store.py setup")
+    svc = Service([]).status()
+    if svc["supported"]:
+        line(True if svc["installed"] else None, "always running", "on" if svc["installed"] else "off",
+             "python sg_console.py install keeps it running and starts it at login.")
+    code, body = _get_running(port, "/api/health")
+    if code == 200:
+        h = json.loads(body)
+        line(True, "console", f"answering on {_url(port)} (version {h.get('version')})")
+        for c in h["checks"]:
+            if c["key"] in ("database", "version"):
+                continue
+            line({"ok": True, "info": None, "warn": None, "bad": False}[c["status"]], c["name"],
+                 c["value"] + (f" ({c['detail']})" if c.get("detail") and c["status"] != "ok" else ""), c.get("fix", ""))
+    elif code:
+        line(False, "console", f"answers on port {port} but /api/health gave {code}: {body[:200].decode(errors='replace')}",
+             "An older version is running: python sg_console.py install")
+    else:
+        line(False, "console", f"not answering on port {port} ({body.decode(errors='replace')[:120]})",
+             "Start it: python sg_console.py install (or serve). If it does not stay up, the reason is at the end "
+             f"of {data / 'console.log'}")
+        j = sg_journal.Journal(data / "journal.jsonl")
+        for e in j.recent(5, level="problems"):
+            print(f"        {time.strftime('%Y-%m-%d %H:%M', time.localtime(e['at']))}  {e['message'][:160]}", file=out)
+    logf = data / "console.log"
+    if logf.exists():
+        mb = logf.stat().st_size / 1e6
+        line(mb < 500, "console log", f"{logf} ({mb:.0f} MB)", "Large: move it aside; the console starts a new one.")
+    print(f"\n{'Nothing wrong found.' if not bad else f'{bad} problem(s) found.'} For help: python sg_console.py support "
+          f"writes a bundle to send (secrets are taken out).", file=out)  # fmt: skip
+    return 1 if bad else 0
+
+
+def write_support(port: int = 8765, db: str | None = None, dest: str | None = None) -> int:
+    """Write a support bundle: from the running console (it knows the reads under way), else built here."""
+    code, body = _get_running(port, "/api/support/bundle", timeout=120)
+    name = f"sg-tightener-support-{time.strftime('%Y%m%d-%H%M%S')}.zip"
+    if code != 200:
+        print(f"The console is not answering on port {port}: building the bundle here (no reads under way in it).")
+        name, body = Console(db).support_bundle()
+    path = Path(dest).expanduser() if dest else Path.cwd() / name
+    if path.is_dir():
+        path = path / name
+    path.write_bytes(body)
+    print(f"Wrote {path} ({len(body) / 1e3:.0f} kB). Tokens, keys and passwords are replaced by ***; look inside before sending.")
+    return 0
 
 
 def _service_cmd(args) -> list[str]:
@@ -3537,6 +3953,10 @@ def main(argv=None) -> int:
         webbrowser.open(_url(args.port))
         print(f"Opened {_url(args.port)}")
         return 0
+    if args.cmd == "doctor":
+        return doctor(args.port, args.db)
+    if args.cmd == "support":
+        return write_support(args.port, args.db, args.out)
     if args.cmd == "install":
         Service(_service_cmd(args)).install()
         url = _url(args.port)
@@ -3554,6 +3974,7 @@ def main(argv=None) -> int:
     console = Console(args.db, args.profile, args.role_name, args.external_id, sso=sso, keys=keys,
                       service=Service(_service_cmd(args), running_as_service=args.service))  # fmt: skip
     token = lasting_token(args.new_token)
+    _journal_start(console, args)
     httpd = _bind(console, args.port, token, 120 if args.service else 0)
     console.httpd = httpd
     try:
@@ -3575,7 +3996,49 @@ def main(argv=None) -> int:
         pass
     finally:
         httpd.server_close()
+        console._rec("system", "console stopped", stopped=True)
     return 0
+
+
+def _journal_start(console: Console, args) -> None:
+    """Record the start in the activity log (and whether the run before ended without stopping: a crash, a
+    kill, the Mac losing power), send every warning and error logged to it, note network changes, and stop
+    cleanly on SIGTERM (what launchd sends on an upgrade) so that stop is recorded too."""
+    import signal
+
+    import sg_journal
+    import sg_tightener
+
+    console.started = time.time()
+    before = [e for e in console.journal.recent(50, kind="system")]
+    last = before[0] if before else None
+    if last and last.get("message", "").startswith("console started"):
+        console._rec("system", "the console before this one ended without stopping (a crash, a kill or the Mac "
+                     "losing power): look at the entries just before this one", "warning",
+                     previous_start=last.get("at"))  # fmt: skip
+    console._rec("system", f"console started: version {sg_tightener.__version__}, port {args.port}"
+                 + (", as the background service" if args.service else ""), pid=os.getpid(),
+                 python=sys.version.split()[0], platform=platform.platform(), data_dir=str(console.journal.path.parent))  # fmt: skip
+    root = logging.getLogger()
+    if not any(isinstance(h, sg_journal.JournalHandler) for h in root.handlers):
+        root.addHandler(sg_journal.JournalHandler(console.journal))
+
+    def net(old, new):
+        console._rec("network", f"network changed: {('phone hotspot' if new.get('metered') else 'Wi-Fi or wired' if new.get('metered') is False else 'not known')}"
+                     f" (was {'phone hotspot' if old.get('metered') else 'Wi-Fi or wired' if old.get('metered') is False else 'not known'})",
+                     interface=new.get("interface", ""), why=new.get("why", ""))  # fmt: skip
+
+    _NET["hooks"].append(net)
+
+    def term(signum, _frame):  # as quick as before: recorded, then gone (reads carry on at the next start)
+        console._rec("system", "console stopped: asked to by the system (an upgrade, Always running switched off, "
+                     "or logging out)", stopped=True, signal=signum)  # fmt: skip
+        os._exit(0)
+
+    try:
+        signal.signal(signal.SIGTERM, term)
+    except (ValueError, OSError):  # not the main thread
+        pass
 
 
 if __name__ == "__main__":
