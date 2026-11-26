@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import time
 import zipfile
 
 import pytest
@@ -115,5 +116,9 @@ def test_a_slow_answer_is_noted(console, monkeypatch):  # noqa: F811
     monkeypatch.setattr(sg_console, "SLOW_GET", 0)
     p = console["port"]
     assert _req(p, "GET", "/api/state")[0] == 200
-    rows = _req(p, "GET", "/api/activity?level=problems")[1]["rows"]
-    assert any(r["message"].startswith("slow answer: /api/state took") for r in rows)
+    for _ in range(50):  # noted just after the answer is sent
+        rows = _req(p, "GET", "/api/activity?level=problems")[1]["rows"]
+        if any(r["message"].startswith("slow answer: /api/state took") for r in rows):
+            return
+        time.sleep(0.05)
+    raise AssertionError(rows)
