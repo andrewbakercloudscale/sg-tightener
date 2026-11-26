@@ -3217,6 +3217,17 @@ def make_handler(console: Console, token: str, port: int):
 
         # ---- routes
         def do_GET(self):
+            t0 = time.time()
+            try:
+                return self._get()
+            finally:
+                secs = time.time() - t0
+                path = urlparse(self.path).path
+                if secs >= SLOW_GET and path != "/api/support/bundle":
+                    console._rec("system", f"slow answer: {path} took {secs:.0f} s", "warning", path=path,
+                                 seconds=round(secs, 1), query=urlparse(self.path).query[:300])  # fmt: skip
+
+        def _get(self):
             if not self._host_ok():
                 return self._send(421, b"wrong host", "text/plain")
             url = urlparse(self.path)
@@ -3371,6 +3382,7 @@ PLAN_PROCS = 2  # remediation plans built at once, each in its own process
 PLAN_TIMEOUT = 600  # a request waits this long for a plan; the build carries on after it
 
 
+SLOW_GET = 20  # seconds: a page answer slower than this is noted in the activity log
 QUIET_POSTS = {"/api/net-check"}  # asked by the page on its own: only a failure is worth a line
 ACTION_NAMES = {
     "/api/propose": "proposed a change", "/api/tighten": "tighten plan", "/api/remediate": "remediation plan",
@@ -4029,6 +4041,13 @@ def _journal_start(console: Console, args) -> None:
                      interface=new.get("interface", ""), why=new.get("why", ""))  # fmt: skip
 
     _NET["hooks"].append(net)
+
+    def uncaught(a):  # a background thread that dies: into the log and the activity log, not lost on stderr
+        if a.exc_type is not SystemExit:
+            LOG.error("background thread %s stopped: %s", getattr(a.thread, "name", "?"), a.exc_value,
+                      exc_info=(a.exc_type, a.exc_value, a.exc_traceback))  # fmt: skip
+
+    threading.excepthook = uncaught
 
     def term(signum, _frame):  # as quick as before: recorded, then gone (reads carry on at the next start)
         console._rec("system", "console stopped: asked to by the system (an upgrade, Always running switched off, "

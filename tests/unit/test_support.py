@@ -109,3 +109,11 @@ def test_doctor_says_what_is_wrong_and_how_to_fix_it(monkeypatch):
 @pytest.mark.parametrize("secs,said", [(30, "30 s"), (600, "10 min"), (7200, "2 h"), (3 * 86400, "3 days")])
 def test_spans_are_said_plainly(secs, said):
     assert sg_console._ago(secs) == said
+
+
+def test_a_slow_answer_is_noted(console, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(sg_console, "SLOW_GET", 0)
+    p = console["port"]
+    assert _req(p, "GET", "/api/state")[0] == 200
+    rows = _req(p, "GET", "/api/activity?level=problems")[1]["rows"]
+    assert any(r["message"].startswith("slow answer: /api/state took") for r in rows)
