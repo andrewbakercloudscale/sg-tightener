@@ -273,6 +273,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.58.0** | **Support** tab: health checks with what to do, an activity log of every action and error, a support bundle with secrets removed; `doctor` and `support` commands; **flow logs in S3** read through Athena |
 | **5.57.0** | **Outbound** tab: rules leaving the account by risk class (internet, SaaS, on-premises, other accounts), too-wide flagged; **connection resets** from flow-log TCP flags with **Block** at the network ACL; Zscaler check before SSO sign-in; **Data use** settings: read only on Wi-Fi, keep prices across restarts |
 | **5.23.0** | Rules tightened on whatever was read (no 30-day wait); Rejected traffic and Propose allowing undo a premature change |
 | **5.22.0** | Slices that hit 10,000 rows are split down to minutes, and earlier cut hours read again, so busy VPCs can be tightened |

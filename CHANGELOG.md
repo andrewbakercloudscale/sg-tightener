@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.58.0 - 2026-11-26
+
+- **Support tab**: health checks (version, database, audit, sign-in, network, reads, schedule, reports, service, disk, recent errors, log) each with what to do; **Copy summary**; a **support bundle** (zip) with secrets taken out.
+- **Activity log**: every action, read, scheduled read, network change, slow page answer and error (with tracebacks, including background threads that die), with filters and details; kept in `journal.jsonl`, rotated at 2 MB.
+- **CLI**: `sg_console.py doctor` (the health checks) and `sg_console.py support [--out]` (the bundle); troubleshooting guide.
+- **Flow logs in S3**: read through Athena (one organisation table with partition projection, Parquet or text); S3 from when its flow log was created and CloudWatch Logs before, never both; Settings card with the table SQL and **Test and save**; architecture guide (`docs/flow-logs-s3.md`).
+- Risk overview and Accounts load about 1.2 s faster (every account's mode in one query).
+
 ## 5.57.0 - 2026-11-26
 
 - **Outbound tab**: every outbound rule leaving the account by risk class (internet, SaaS and partners, on-premises, other AWS accounts), too-wide rules flagged (all protocols, port ranges, more addresses than needed); the default all-traffic rule hidden unless asked for; the same account picker as Rejected traffic; also on each account.
