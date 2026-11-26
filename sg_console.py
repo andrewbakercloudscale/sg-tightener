@@ -252,6 +252,9 @@ class ConsoleError(Exception):
         self.status = status
 
 
+_OUT_FIXES: dict = {}  # account -> (when, outbound fixes)
+
+
 class Console:
     """What the HTTP handler calls: every read and write, against the database and AWS."""
 
@@ -454,6 +457,21 @@ class Console:
         finally:
             st.close()
 
+    def outbound_fixes(self, account: str) -> dict:
+        """Every too-wide outbound rule of one account, with its group, the assets using it, why it is too wide
+        and what it should be (sg_review.egress_fixes). Kept two minutes: the doc is large to load."""
+        import sg_review
+
+        got = _OUT_FIXES.get(account)
+        if got and time.time() - got[0] < 120:
+            return got[1]
+        doc = sg_review.load(account)
+        if not doc:
+            raise ConsoleError(404, f"account {account} has not been read yet")
+        out = sg_review.egress_fixes(doc, sg_review.load_names())
+        _OUT_FIXES[account] = (time.time(), out)
+        return out
+
     def profile(self, account: str, read: bool = False) -> dict:
         """The account at a glance (sg_profile): kept a day; ``read`` reads it from AWS now."""
         import sg_profile
@@ -578,7 +596,7 @@ class Console:
         try:
             got = subprocess.run(["ps", "-o", "rss=,%cpu=", "-p", str(os.getpid())], capture_output=True, text=True,
                                  timeout=5).stdout.split()  # fmt: skip
-            rss, cpu = int(got[0]) * 1024, float(got[1])
+            rss, cpu = int(got[0]) * 1024, float(got[1].replace(",", "."))  # a comma where the locale says so
         except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
             pass
         try:
@@ -972,6 +990,38 @@ class Console:
 
         return Path(sg_ipintel.DATA_DIR) / "console.log"
 
+    def _db_figures(self, why: str = "") -> tuple[str, str]:
+        """(value, detail) for the Database check: version, the machine it runs on (CPUs, memory), what it uses
+        of them now, and its storage."""
+        import sg_store
+
+        gb = lambda n: f"{n / 1e9:.1f} GB" if n >= 1e8 else f"{n / 1e6:.0f} MB"  # noqa: E731
+        bits, value = [], "answering"
+        try:
+            st = self.store()
+            try:
+                m = sg_store.metrics(st.db)
+            finally:
+                st.close()
+            value = f"PostgreSQL {m['version'].split()[0]} · {gb(m['db_bytes'])} stored"
+            bits.append(f"{m['rows']:,} rows · {m['connections']} of {m['max_connections']} connections "
+                        f"({m['active']} busy)" + (f" · cache hits {m['cache_hit']:.0%}" if m.get("cache_hit") else ""))
+        except Exception as exc:  # noqa: BLE001 - the figures are extra
+            bits.append(f"figures not read: {plain_error(exc)[:120]}")
+        c = sg_store.container_stats()
+        if c:
+            mem = c.get("MemUsage", "")
+            used, _, limit = mem.partition(" / ")
+            cpus = sg_store.engine_cpus()
+            bits.append(f"machine: {cpus or '?'} CPU(s), {limit or '?'} memory · using CPU {c.get('CPUPerc', '?')}"
+                        f"{f' of {cpus * 100}%' if cpus else ''}, memory {used or '?'} ({c.get('MemPerc', '?')})"
+                        f" · disk reads/writes {c.get('BlockIO', '?')}")
+        else:
+            bits.append("not running in Docker on this computer: its CPU and memory are not known here")
+        if why:
+            bits.append(why)
+        return value, " · ".join(bits)
+
     def health(self) -> dict:
         """Every check the Support tab shows, each {"key", "name", "status" (ok, warn, bad, info), "value",
         "detail", "fix"}: what to look at first when something seems wrong. Uses no internet."""
@@ -990,6 +1040,7 @@ class Console:
         up = time.time() - started
         add("version", "Console", "ok", f"{sg_tightener.__version__}, running {_ago(up)}",
             f"process {os.getpid()} · Python {sys.version.split()[0]} · {platform.system()} {platform.release()}"
+            + _proc_figures()
             + (" · started by the background service" if self.service and self.service.running_as_service else ""))
         db_ok, why = False, ""
         try:
@@ -1003,7 +1054,7 @@ class Console:
                     intact, n, broken = st.verify()
                 finally:
                     st.close()
-                add("database", "Database", "ok", "answering", why or "")
+                add("database", "Database", "ok", *self._db_figures(why))
                 add("audit", "Audit trail", "ok" if intact else "bad",
                     f"{n:,} entries, intact" if intact else f"{n:,} entries, BROKEN", broken,
                     "" if intact else "An entry was changed or removed outside the tool. Keep a backup and report it.")
@@ -2115,7 +2166,7 @@ class Console:
             raise ConsoleError(400, "min_spend is a number of US dollars a month")
         b = {"id": (self.batch["id"] if self.batch else 0) + 1, "status": "pricing", "jobs": [j["id"] for j in jobs],
              "days": jobs[0]["days"], "regions": jobs[0]["regions"], "started": time.time(), "stop": threading.Event(),
-             "min_spend": min_spend, "spend_from": ""}  # fmt: skip
+             "min_spend": min_spend, "spend_from": "", "confirmed": bool(body.get("_confirmed"))}  # fmt: skip
         ask_at = float(body.get("_resume_at") or time.time())
         keep = bool(self._pref("keep_prices", True))
         if not body.get("_resume_at"):
@@ -2125,7 +2176,8 @@ class Console:
             j["resume_at"] = ask_at if keep else None
         self.batch = b
         self._batch_keep({"accounts": [j["account"] for j in jobs], "regions": body.get("regions") or "all",
-                          "days": jobs[0]["days"], "min_spend": min_spend, "at": ask_at})
+                          "days": jobs[0]["days"], "min_spend": min_spend, "at": ask_at,
+                          "confirmed": bool(body.get("_confirmed"))})
         threading.Thread(target=self._batch_price, args=(b, jobs), daemon=True).start()
         return self.batch_status()
 
@@ -2133,6 +2185,15 @@ class Console:
     # back to "Read all" as if nothing had been asked. What was asked is kept in the database until it finishes
     # or is stopped, and a restarted console prices it again (spending still waits for a yes).
     BATCH_KEY = "batch_resume"
+
+    def _batch_confirmed(self) -> None:
+        """Note the yes, so a restart reads on (pricing again, but not asking again: it was agreed)."""
+        try:
+            ask = json.loads(self._pref(self.BATCH_KEY, "") or "null")
+        except (TypeError, ValueError):
+            ask = None
+        if ask:
+            self._batch_keep({**ask, "confirmed": True})
 
     def _batch_keep(self, ask: dict | None) -> None:
         try:
@@ -2234,7 +2295,8 @@ class Console:
             return
         try:
             self.read_all({"accounts": ask["accounts"], "regions": ask["regions"], "days": ask["days"],
-                           "min_spend": ask["min_spend"], "_resume_at": ask.get("at")})
+                           "min_spend": ask["min_spend"], "_resume_at": ask.get("at"),
+                           "_confirmed": bool(ask.get("confirmed"))})
             self.batch["resumed"] = True
             LOG.info("resumed the read of %d account(s) that a restart stopped", len(ask["accounts"]))
         except ConsoleError as exc:
@@ -2285,6 +2347,11 @@ class Console:
                 self._say(j, "not read")
         b["status"] = "stopped" if b["stop"].is_set() else ("confirm" if any(j["status"] == "confirm" for j in jobs) else "done")
         self._rec_batch(b, jobs, "priced")
+        if b["status"] == "confirm" and b.get("confirmed"):  # said yes to before a restart: carries on without asking
+            try:
+                self.read_all_confirm({})
+            except ConsoleError as exc:
+                LOG.warning("read of many accounts not carried on: %s", exc)
 
     def read_all_confirm(self, body: dict) -> dict:
         b = self.batch
@@ -2292,6 +2359,7 @@ class Console:
             raise ConsoleError(409, "no read of many accounts is waiting for confirmation")
         self._refuse_metered()
         self._priced_clear()  # confirmed reads carry on after a restart on their own (resume_reads)
+        self._batch_confirmed()
         jobs = [self.jobs[i] for i in b["jobs"] if self.jobs[i]["status"] == "confirm" and self._job_extra.get(i)]
         for j in jobs:
             j["status"] = "queued"
@@ -3299,6 +3367,8 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.assets(_need(q, "account"), _need(q, "region")))
                 if url.path == "/api/asset-history":
                     return self._json(200, console.asset_history(_need(q, "eni")))
+                if url.path == "/api/outbound-fixes":
+                    return self._json(200, console.outbound_fixes(_need(q, "account")))
                 if url.path == "/api/profile":
                     return self._json(200, console.profile(_need(q, "account")))
                 if url.path == "/api/drift":
@@ -4051,6 +4121,19 @@ def main(argv=None) -> int:
     return 0
 
 
+def _proc_figures() -> str:
+    """ · this computer's CPUs and memory, and what the console uses of them."""
+    try:
+        got = subprocess.run(["ps", "-o", "rss=,%cpu=", "-p", str(os.getpid())], capture_output=True, text=True,
+                             timeout=5).stdout.split()  # fmt: skip
+        rss, cpu = int(got[0]) * 1024, float(got[1].replace(",", "."))  # a comma where the locale says so
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return ""
+    mem = _mem_bytes()
+    return (f" · this computer: {os.cpu_count()} CPU(s), {mem / 1e9:.0f} GB memory" if mem else "") + \
+        f" · the console uses CPU {cpu:.0f}% (100% is one CPU), memory {rss / 1e9:.1f} GB, {threading.active_count()} threads"
+
+
 def _journal_start(console: Console, args) -> None:
     """Record the start in the activity log (and whether the run before ended without stopping: a crash, a
     kill, the Mac losing power), send every warning and error logged to it, note network changes, and stop
@@ -4090,6 +4173,19 @@ def _journal_start(console: Console, args) -> None:
                       exc_info=(a.exc_type, a.exc_value, a.exc_traceback))  # fmt: skip
 
     threading.excepthook = uncaught
+
+    def sample(_signum, _frame):  # kill -USR1 <pid>: where the time goes, into profile.txt beside the activity log
+        def go():
+            out = console.journal.path.parent / "profile.txt"
+            out.write_text(sg_journal.profile(30))
+            LOG.info("profile written to %s", out)
+
+        threading.Thread(target=go, daemon=True, name="profile").start()
+
+    try:
+        signal.signal(signal.SIGUSR1, sample)
+    except (ValueError, AttributeError):  # not the main thread, or no SIGUSR1 (Windows)
+        pass
 
     def term(signum, _frame):  # as quick as before: recorded, then gone (reads carry on at the next start)
         console._rec("system", "console stopped: asked to by the system (an upgrade, Always running switched off, "

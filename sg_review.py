@@ -5029,7 +5029,7 @@ def _dest_class(cidr: str, lab, own: list, sibs: dict) -> tuple[str | None, str,
     return "internet", lo.get("name") if lo.get("name") and lo.get("name") != str(ipaddress.ip_address(iv[0])) else "Internet", accts
 
 
-def egress_summary(doc: dict, names: list | None = None) -> dict:
+def egress_summary(doc: dict, names: list | None = None, top: int | None = EGRESS_TOP) -> dict:
     """Every outbound rule, on a group some interface uses, that reaches outside the account: its class, how
     wide it is (addresses and ports) and so whether it is wider than needed, worst first; with counts by class."""
     acct = doc.get("account", "")
@@ -5086,8 +5086,9 @@ def egress_summary(doc: dict, names: list | None = None) -> dict:
                     wide.append(f"{len(accts)} accounts")
                 sev = {"internet": "high" if wide else "medium", "saas": "medium" if wide else "low",
                        "datacentre": "medium" if wide else "low", "account": "low"}[cls]  # fmt: skip
-                rows.append({"region": region, "group": gid, "gname": g.get("name") or gid, "vpc": g.get("vpc", ""),
-                             "proto": str(r["proto"]), "ports": ports_label(r), "dest": dest, "cls": cls, "name": name,
+                allow_all = str(r["proto"]) == "-1" and dest in ("0.0.0.0/0", "::/0")  # the rule AWS puts on every new group
+                rows.append({"region": region, "group": gid, "gname": g.get("name") or gid, "vpc": g.get("vpc", ""), "allow_all": allow_all,
+                             "proto": str(r["proto"]), "from": r.get("from"), "to": r.get("to"), "ports": ports_label(r), "dest": dest, "cls": cls, "name": name,
                              "addrs": addrs, "nports": ports, "accounts": list(accts)[:6], "wide": wide, "sev": sev,
                              "enis": len(used), "kinds": kinds, "note": note,
                              "db": any(e.get("kind") == "RDS database" for e in used)})  # fmt: skip
@@ -5133,16 +5134,128 @@ def egress_summary(doc: dict, names: list | None = None) -> dict:
     rank = {c: i for i, c in enumerate(EGRESS_CLASSES)}
     sevr = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     rows.sort(key=lambda r: (rank[r["cls"]], not r["wide"], sevr[r["sev"]], -r["enis"] * (2 if r["db"] else 1), -r["addrs"]))
-    by = {c: {"rules": 0, "wide": 0, "groups": set(), "enis": 0} for c in EGRESS_CLASSES}
+    # why: how many rules are too wide for each reason (all traffic, a port range, too many addresses); allow_all:
+    # how many of them are the allow-everything rule AWS gives every new group, counted apart as it is on most groups
+    by = {c: {"rules": 0, "wide": 0, "allow_all": 0, "why": {"all": 0, "ports": 0, "addresses": 0, "accounts": 0},
+              "groups": set(), "enis": 0} for c in EGRESS_CLASSES}  # fmt: skip
     for r in rows:
         b = by[r["cls"]]
         b["rules"] += 1
         b["wide"] += bool(r["wide"])
+        b["allow_all"] += bool(r.get("allow_all"))
+        for w in r["wide"]:
+            b["why"]["all" if w.startswith("all protocols") else "ports" if w.endswith(" ports") else
+                     "accounts" if w.endswith(" accounts") else "addresses"] += 1  # fmt: skip
         if r["group"] not in b["groups"]:
             b["groups"].add(r["group"])
             b["enis"] += r["enis"]
-    return {"by": {c: {**b, "groups": len(b["groups"])} for c, b in by.items()}, "rules": rows[:EGRESS_TOP],
+    return {"by": {c: {**b, "groups": len(b["groups"])} for c, b in by.items()}, "rules": rows[:top] if top else rows,
             "total": len(rows), "wide": sum(1 for r in rows if r["wide"]), "unattached": unattached}
+
+
+def egress_fixes(doc: dict, names: list | None = None) -> dict:
+    """Every too-wide outbound rule of an account in full, for fixing it: the group and the assets that use it,
+    the rule today, why it is too wide, and what it should be. What it should be comes from the outbound flow
+    logs (`read --egress`) of the group's interfaces when they were read, else from what the rule reaches."""
+    summ = egress_summary(doc, names, top=None)
+    pf = tighten_prefs()
+    egress_read = any("egr" in c for c in doc.get("chunks") or [])
+    seen: dict[str, dict] = {}  # eni -> (proto, port) -> destination -> flows
+    for c in doc.get("chunks") or []:
+        for _src, dst, eni, proto, dport, flows in c.get("egr") or []:
+            if dst and eni:
+                d = seen.setdefault(eni, {}).setdefault((str(proto), int(dport)), {})
+                d[dst] = d.get(dst, 0) + flows
+    members: dict[tuple, list] = {}
+    assets: dict[str, dict] = {}
+    for region, x in doc["regions"].items():
+        snap = x.get("snapshot") or {}
+        insts = snap.get("instances") or {}
+        for eid, e in (snap.get("enis") or {}).items():
+            if e.get("kind") == "transit gateway":
+                continue
+            inst = insts.get(e.get("instance") or "") or {}
+            assets[eid] = {"eni": eid, "kind": e.get("kind", ""), "instance": e.get("instance", ""),
+                           "name": inst.get("name", "") or e.get("desc", ""), "ip": (e.get("ips") or [""])[0],
+                           "public": e.get("public", ""), "subnet": e.get("subnet", "")}  # fmt: skip
+            for g in e.get("groups") or []:
+                members.setdefault((region, g), []).append(eid)
+    advice = {"internet": "Allow only the ports and hosts it calls (for example tcp 443 to the services it uses); "
+                          "traffic to AWS services can go through VPC endpoints instead of the internet.",
+              "saas": "Allow only the ports the service uses, to that service's published ranges.",
+              "datacentre": "Allow only the on-premises hosts and ports it talks to, not the whole private range.",
+              "account": "Allow only the other account's hosts or group it needs, on the ports it uses."}  # fmt: skip
+    groups: dict[tuple, dict] = {}
+    for r in summ["rules"]:
+        if not r["wide"]:
+            continue
+        key = (r["region"], r["group"])
+        mine = members.get(key, [])
+        g = groups.setdefault(key, {"region": r["region"], "group": r["group"], "gname": r["gname"], "vpc": r["vpc"],
+                                    "assets": [assets[e] for e in mine[:50]], "nassets": len(mine),
+                                    "rules": []})  # fmt: skip
+        lo, hi = r.get("from"), r.get("to")
+        iv = sg_ipintel.cidr_iv(r["dest"]) if "/" in r["dest"] else None
+        used: dict[tuple, dict] = {}
+        for eid in mine:
+            for (proto, port), dsts in (seen.get(eid) or {}).items():
+                if r["proto"] != "-1" and (proto != r["proto"] or lo is None or not (lo <= port <= hi)):
+                    continue
+                for d, n in dsts.items():
+                    ip = _ip(d)
+                    if iv and (ip is None or not (iv[0] <= ip <= iv[1])) and not (r["dest"] == "::/0" and ":" in d):
+                        continue
+                    u = used.setdefault((proto, port), {})
+                    u[d] = u.get(d, 0) + n
+        should = []
+        for (proto, port), dsts in sorted(used.items(), key=lambda kv: (-sum(kv[1].values()), kv[0])):
+            v4 = sorted(d for d in dsts if _ip(d) is not None)
+            pub = [d for d in v4 if not any(a <= _ip(d) <= b for a, b in PRIVATE)]
+            if r["cls"] == "internet" and port in (80, 443) and len(pub) > 10:
+                cidrs = ["0.0.0.0/0"]
+            else:
+                cidrs = sg_tightener.collapse_ips_to_cidrs(v4, pf["out_rules"], pf["tolerance"]) if v4 else []
+                cidrs += sorted(d for d in dsts if _ip(d) is None)[:pf["out_rules"]]
+            should.append({"proto": PROTO_NAME.get(proto, proto), "port": port, "cidrs": cidrs, "dests": len(dsts),
+                           "flows": sum(dsts.values())})  # fmt: skip
+        ref = r["dest"] if r["dest"].startswith("sg-") else ""
+        cidr = r["dest"] if "/" in r["dest"] else ""
+        revoke = (_revoke_cli(r["region"], r["group"], {"proto": r["proto"], "from": lo if lo is not None else -1,
+                                                        "to": hi if hi is not None else -1}, cidr, ref, egress=True,
+                              reason="sg_review: outbound narrowed to what is used")
+                  if (cidr or ref) else "")  # fmt: skip
+        add = [db_exec(f"aws ec2 authorize-security-group-egress --region {r['region']} --group-id {r['group']} "
+                       f"--ip-permissions '{_perm_arg({'tcp': '6', 'udp': '17'}.get(u['proto'], u['proto']), u['port'], u['port'], c)}'",
+                       "sg_review: outbound narrowed to what is used")
+               for u in should for c in u["cidrs"]]  # fmt: skip
+        if should:
+            what = "Replace it with what the flow logs saw it use: " + "; ".join(
+                f"{u['proto']} {u['port']} to {', '.join(u['cidrs'][:4])}{' …' if len(u['cidrs']) > 4 else ''}" for u in should[:8]) \
+                + (f"; and {len(should) - 8} more port(s)" if len(should) > 8 else "") + "."
+            how = "narrow"
+        elif egress_read and mine:
+            what = "Nothing used it in the outbound flow logs read: remove it (after checking a full business cycle was read, such as month-end jobs and backups)."
+            how = "remove"
+        else:
+            what = ("Not known yet what it uses: outbound flow logs were not read for this account. Re-read it with "
+                    "outbound traffic (read --egress), then this shows the exact rules. Meanwhile: " + advice[r["cls"]])
+            how = "read"
+        why = {"all protocols and ports": "it allows every protocol and every port",
+               "everywhere": "it reaches every address on the internet"}  # fmt: skip
+        reasons = [why.get(w) or (f"it opens {w} where one is usually enough" if w.endswith(" ports") else
+                                  f"it reaches {w} where one destination needs a few" if w.endswith(" addresses") else
+                                  f"it reaches {w}") for w in r["wide"]]  # fmt: skip
+        risk = {"internet": "Malware or an attacker on any of these assets can send data out or call home to anywhere.",
+                "saas": "More of the partner's or provider's addresses are reachable than the service needs.",
+                "datacentre": "A compromised asset can reach on-premises systems it never talks to.",
+                "account": "A compromised asset can reach other accounts' systems it never talks to."}[r["cls"]]  # fmt: skip
+        g["rules"].append({**{k: r[k] for k in ("cls", "sev", "proto", "ports", "dest", "name", "note", "wide", "allow_all", "db")},
+                           "why": "Too wide: " + "; ".join(reasons) + ". " + risk, "should": should, "fix": what, "how": how,
+                           "cli": "\n".join([*add, revoke] if revoke else add)})  # fmt: skip
+    sevr = {"high": 0, "medium": 1, "low": 2}
+    out = sorted(groups.values(), key=lambda g: (min(sevr.get(r["sev"], 3) for r in g["rules"]), -g["nassets"], g["gname"]))
+    return {"account": doc.get("account", ""), "name": doc.get("name", ""), "egress_read": egress_read,
+            "groups": out, "rules": sum(len(g["rules"]) for g in out), "by": summ["by"]}
 
 
 RESET_TOP = 15  # sources listed per account

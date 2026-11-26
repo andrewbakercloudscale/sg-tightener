@@ -228,18 +228,37 @@ _ready: set = set()
 _ready_lock = threading.Lock()
 
 
+_ddl_lock = threading.Lock()
+
+
 def _ensure(conn, schema: str) -> None:
+    """Create or update the tables, once per process. Skipped when the schema already has this version of
+    them: the DDL replaces the audit trail's triggers (an exclusive lock on it), and a restart with many
+    threads opening connections at once deadlocked against a thread writing to the audit trail."""
     key = (os.getpid(), conn.info.dsn, schema)
     with _ready_lock:
         if key in _ready:
             return
-    with conn.transaction():  # one creator at a time, across processes
-        conn.execute("SELECT pg_advisory_xact_lock(hashtext('sg-tightener-ddl'))")
-        conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-        conn.execute(f'SET LOCAL search_path TO "{schema}"')
-        conn.execute(DDL)
-    with _ready_lock:
-        _ready.add(key)
+    with _ddl_lock:  # one thread of this process at a time; the others then find it done
+        with _ready_lock:
+            if key in _ready:
+                return
+        digest = hashlib.sha256(DDL.encode()).hexdigest()
+        try:
+            row = conn.execute(f'SELECT value FROM "{schema}".meta WHERE key = %s', ("ddl_version",)).fetchone()
+            current = bool(row) and row[0] == json.dumps(digest)
+        except Exception:  # noqa: BLE001 - no schema or no meta table yet
+            current = False
+        if not current:
+            with conn.transaction():  # one creator at a time, across processes
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext('sg-tightener-ddl'))")
+                conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+                conn.execute(f'SET LOCAL search_path TO "{schema}"')
+                conn.execute(DDL)
+                conn.execute(f'INSERT INTO "{schema}".meta (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE '
+                             "SET value = excluded.value", ("ddl_version", json.dumps(digest)))  # fmt: skip
+        with _ready_lock:
+            _ready.add(key)
 
 
 class Db:
@@ -255,7 +274,7 @@ class Db:
     def _open(self) -> None:
         psycopg = _psycopg()
         try:
-            self.conn = psycopg.connect(self.conninfo, autocommit=True, connect_timeout=10,
+            self.conn = psycopg.connect(self.conninfo, autocommit=True, connect_timeout=30,
                                         application_name="sg-tightener")  # fmt: skip
         except psycopg.OperationalError as exc:
             raise NotConfigured(f"cannot reach the sg-tightener database ({str(exc).strip()[:200]}): is it running? "
@@ -670,6 +689,17 @@ def container_stats() -> dict | None:
         out = _run([docker, "stats", "--no-stream", "--format", "{{json .}}", ids[0]], 20).stdout.strip()
         return json.loads(out.splitlines()[0]) if out else None
     except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return None
+
+
+def engine_cpus() -> int | None:
+    """The CPUs Docker's engine has (colima's virtual machine), or None."""
+    docker = _bin("docker")
+    if not docker:
+        return None
+    try:
+        return int(_run([docker, "info", "--format", "{{.NCPU}}"], 20).stdout.strip())
+    except (OSError, subprocess.TimeoutExpired, ValueError):
         return None
 
 

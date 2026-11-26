@@ -213,3 +213,37 @@ def bundle(files: dict[str, object]) -> bytes:
                                                                            value, indent=2, default=str)  # fmt: skip
             z.writestr(name, text)
     return buf.getvalue()
+
+
+# ------------------------------------------------------------------------------------------- where the time goes
+def profile(seconds: float = 30.0, every: float = 0.05, skip: tuple = ("wait", "_wait_for_tstate_lock", "select", "poll",
+                                                                      "accept", "readinto", "recv_into", "sleep")) -> str:
+    """Sample every thread's Python stack for ``seconds``: what each busy thread spends its time on (a thread
+    waiting on a lock, a socket or a sleep is left out). Plain text, heaviest first."""
+    import collections
+    import sys
+
+    me = threading.get_ident()
+    names = {}
+    leaf: collections.Counter = collections.Counter()
+    stacks: collections.Counter = collections.Counter()
+    n = 0
+    end = time.time() + seconds
+    while time.time() < end:
+        names.update({t.ident: t.name for t in threading.enumerate()})
+        for ident, frame in sys._current_frames().items():
+            if ident == me or frame.f_code.co_name in skip:
+                continue
+            fr, path = frame, []
+            while fr is not None and len(path) < 40:
+                path.append(f"{os.path.basename(fr.f_code.co_filename)}:{fr.f_code.co_name}:{fr.f_lineno}")
+                fr = fr.f_back
+            leaf[path[0]] += 1
+            stacks[" < ".join(path[:12])] += 1
+        n += 1
+        time.sleep(every)
+    out = [f"{n} samples over {seconds:.0f} s, {len(names)} threads", "", "busiest lines (samples):"]
+    out += [f"{c:6d}  {k}" for k, c in leaf.most_common(40)]
+    out += ["", "busiest stacks:"]
+    out += [f"{c:6d}  {k}" for k, c in stacks.most_common(25)]
+    return "\n".join(out)

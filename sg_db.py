@@ -368,7 +368,21 @@ class Store:
                         ":detail, :reason, :ticket, :prev, :hash)", entry)  # fmt: skip
 
     def verify(self) -> tuple[bool, int, str]:
-        """(intact, entries, what is wrong). Recomputes every hash and link."""
+        """(intact, entries, what is wrong). Recomputes every hash and link, unless the table is exactly as it was
+        at the last check (a digest PostgreSQL works out of every row): the page asks every few seconds, and
+        rechecking thousands of entries in Python each time slowed every page while reads were running."""
+        try:
+            seen = self.db.execute("SELECT count(*), md5(string_agg(audit::text, '|' ORDER BY seq)) FROM audit").fetchone()
+        except Exception:  # noqa: BLE001 - not PostgreSQL: always checked in full
+            seen = None
+        if seen is not None and _VERIFIED.get(self.path, (None,))[0] == tuple(seen):
+            return _VERIFIED[self.path][1]
+        got = self._verify()
+        if seen is not None:
+            _VERIFIED[self.path] = (tuple(seen), got)
+        return got
+
+    def _verify(self) -> tuple[bool, int, str]:
         prev, n = GENESIS, 0
         cols = ("seq", "at", "actor", "origin", "action", "account", "region", "group_id", "detail", "reason",
                 "ticket", "prev", "hash")  # fmt: skip
@@ -849,6 +863,9 @@ def plan_changes(plan: dict, account: str) -> list[tuple[str, str, Rule, str]]:
         for r, d in rules_from_permissions(g.get("authorise") or [], IN, account).items():
             out.append((g["group_id"], "add", r, d))
     return out
+
+
+_VERIFIED: dict = {}  # database: (its audit table's digest, the result of checking it)
 
 
 def _hash(entry: dict) -> str:

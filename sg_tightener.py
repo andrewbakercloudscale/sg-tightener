@@ -71,6 +71,39 @@ except ImportError:
 
 LOG = logging.getLogger("sg_tightener")
 
+
+def _share_botocore_loader() -> None:
+    """One botocore data loader for every session in this process. Each new session (one per account, per
+    sign-in) otherwise lists botocore's data folders and un-gzips each service's model again when it makes its
+    first client: reading 24 accounts at once spent most of the console's CPU there."""
+    if botocore is None:
+        return
+    import threading
+
+    from botocore import loaders as bl
+    from botocore import session as bs
+
+    if getattr(bs.Session, "_sg_shared_loader", False):
+        return
+    loaders: dict = {}
+    lock = threading.Lock()
+
+    def register(self):
+        def make():
+            path = self.get_config_variable("data_path")
+            with lock:
+                if path not in loaders:
+                    loaders[path] = bl.create_loader(path)
+                return loaders[path]
+
+        self._components.lazy_register_component("data_loader", make)
+
+    bs.Session._register_data_loader = register
+    bs.Session._sg_shared_loader = True
+
+
+_share_botocore_loader()
+
 # --------------------------------------------------------------------------- #
 # Credentials: profiles, IAM Identity Center (SSO), and friendly login errors
 # --------------------------------------------------------------------------- #

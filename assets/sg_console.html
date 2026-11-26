@@ -480,7 +480,17 @@ section.nodata .card:not(.empty-state) { display: none; }
   @media print { .reread { display: none !important; } }
   #auditDlg { width: min(1280px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
               background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
-  #auditDlg::backdrop, #fixDlg::backdrop, #resolveDlg::backdrop { background: rgba(10,12,20,.45); }
+  #auditDlg::backdrop, #fixDlg::backdrop, #resolveDlg::backdrop, #ofixDlg::backdrop { background: rgba(10,12,20,.45); }
+  #ofixDlg { width: min(1280px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
+                background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
+  #ofixDlg .au-head { display: flex; gap: 16px; align-items: flex-start; padding: 18px 22px 10px; border-bottom: 1px solid var(--grid); }
+  #ofixDlg .au-tools { margin-left: auto; display: flex; gap: 8px; }
+  #ofixDlg .au-body { overflow: auto; max-height: calc(92vh - 110px); padding: 6px 22px 20px; }
+  #ofixDlg h3 { margin: 18px 0 6px; font-size: 15px; }
+  .ofix-rule { border-top: 1px solid var(--grid); padding: 10px 0; display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 14px; }
+  .ofix-rule h4 { margin: 0 0 4px; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+  .ofix-rule pre { white-space: pre-wrap; word-break: break-all; font-size: 11.5px; margin: 6px 0 0; }
+  @media (max-width: 800px) { .ofix-rule { grid-template-columns: 1fr; } }
   #resolveDlg { width: min(1280px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
                 background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
   #resolveDlg .au-head { display: flex; gap: 16px; align-items: flex-start; padding: 18px 22px 10px; border-bottom: 1px solid var(--grid); }
@@ -785,6 +795,7 @@ section.nodata .card:not(.empty-state) { display: none; }
         <select id="supKind" aria-label="Kind"><option value="">Every kind</option></select>
         <select id="supHours" aria-label="Since"><option value="1">Last hour</option><option value="24" selected>Last 24 hours</option><option value="168">Last 7 days</option><option value="">All kept</option></select>
         <button class="btn sm" type="button" id="supRefresh">Refresh</button>
+        <button class="btn sm" type="button" id="supCopyAll" title="Every entry shown (all pages), with its details and tracebacks, as text">Copy what is shown</button>
         <span class="muted small" id="supN"></span>
       </div>
       <div class="scroll"><table class="trail-t small"><colgroup><col style="width:13%"><col style="width:9%"><col style="width:9%"><col style="width:12%"><col style="width:57%"></colgroup><thead><tr><th>When</th><th>Level</th><th>Kind</th><th>Account</th><th>What</th></tr></thead><tbody id="supActRows"></tbody></table></div></div>
@@ -825,7 +836,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     <p class="small muted" id="oHelp" hidden>Read from each account's security groups as last refreshed with its flow logs (Read more data on an account refreshes them). Left out: destinations inside the account's own VPCs, AWS's own service ranges and prefix lists (S3, DynamoDB, CloudFront), transit gateway interfaces, and groups no interface uses. <b>Internet</b>: any public range not known as a SaaS or partner, including AWS EC2 ranges wider than a /24 (anyone's servers). <b>SaaS and partners</b>: ranges named in the IP lists or your names file, and single hosts on AWS. <b>On-premises data centres</b>: private ranges outside every VPC read; a range such as 10.0.0.0/8 that also covers other accounts' VPCs is counted here, as its riskiest reach. <b>Other AWS accounts</b>: another account's VPC range, a group in another account, or a PrivateLink endpoint (in this account) to another account's service. The default rule every new group gets (all traffic to 0.0.0.0/0, and to ::/0 in IPv6 VPCs) is hidden unless ticked, as it is on almost every group: it still counts in the totals. Severity: internet and too wide is high; SaaS or on-premises and too wide is medium. To narrow a rule to what is actually used, read the account with outbound flow logs (<code>read --egress</code>) and use its review's "Outbound wider than used".</p>
     <div class="facts" id="oFacts"></div>
     <h3>Accounts, riskiest outbound first</h3>
-    <div class="scroll"><table class="small"><thead><tr><th>Account</th><th class="num">Internet (too wide)</th><th class="num">SaaS</th><th class="num">On-premises</th><th class="num">Other accounts</th><th></th></tr></thead><tbody id="oAccts"></tbody></table></div>
+    <div class="scroll"><table class="small"><thead><tr><th>Account</th><th class="num" title="Outbound rules too wide, of all its outbound rules to that destination">Internet: rules too wide</th><th class="num">SaaS: too wide</th><th class="num">On-premises: too wide</th><th class="num">Other accounts: too wide</th><th></th></tr></thead><tbody id="oAccts"></tbody></table></div>
     <h3>Rules <span class="muted small" id="obN"></span></h3>
     <div class="scroll"><table class="small"><thead><tr><th>Reaches</th><th>Account</th><th>Group</th><th>Ports</th><th>Destination</th><th class="num">Interfaces</th><th>Why too wide</th></tr></thead><tbody id="oRows"></tbody></table></div>
   </section>
@@ -1060,8 +1071,16 @@ section.nodata .card:not(.empty-state) { display: none; }
     <dialog id="resolveDlg" aria-labelledby="resolveTitle">
       <div class="au-head"><div><div class="eyebrow">Resolve rejected traffic</div><h2 id="resolveTitle" style="margin:2px 0 4px">Resolve</h2>
         <div class="muted small" id="resolveSub"></div></div>
-        <div class="au-tools"><button class="btn sm" type="button" id="resolveRemediate">Open in Remediate</button><button class="btn sm primary" type="button" id="resolveClose">Close</button></div></div>
+        <div class="au-tools"><button class="btn sm" type="button" id="resolveRemediate">Open in Remediate</button><button class="btn sm" type="button" id="resolvePdf">Export PDF</button><button class="btn sm" type="button" id="resolvePdfWhy" aria-expanded="false">Explain</button><button class="btn sm primary" type="button" id="resolveClose">Close</button></div></div>
+      <p class="small muted" id="resolvePdfHelp" hidden style="margin:0;padding:8px 22px;border-bottom:1px solid var(--grid)"><b>Export PDF</b> opens the print dialog with only this page: the figures, where the refused traffic comes from and goes to (top 10 of each), and the list as narrowed now. Choose “Save as PDF” as the printer; the file is named after what is shown and today's date. Forms and buttons are left out.</p>
       <div class="au-body" id="resolveBody"></div>
+    </dialog>
+    <dialog id="ofixDlg" aria-labelledby="ofixTitle">
+      <div class="au-head"><div><div class="eyebrow">Outbound fixes</div><h2 id="ofixTitle" style="margin:2px 0 4px">Outbound fixes</h2>
+        <div class="muted small" id="ofixSub"></div></div>
+        <div class="au-tools"><button class="btn sm" type="button" id="ofixPdf">Export PDF</button><button class="btn sm" type="button" id="ofixWhy" aria-expanded="false">Explain</button><button class="btn sm primary" type="button" id="ofixClose">Close</button></div></div>
+      <p class="small muted" id="ofixHelp" hidden style="margin:0;padding:8px 22px;border-bottom:1px solid var(--grid)">Every outbound rule of this account that is <b>too wide</b>: it allows every protocol, a range of ports, or more addresses than one destination needs. They are grouped by security group, worst first. Each group lists the <b>assets that use it</b> (they all get the rule). Each rule shows <b>today</b> (what it allows now), <b>why it is bad</b>, and <b>what it should be</b>. What it should be comes from the account's outbound flow logs when they were read (re-read with outbound traffic, <code>read --egress</code>); without them it says what to allow instead. <b>Commands</b> are the exact changes, run through the database so they are recorded. <b>Export PDF</b> prints only this list: choose “Save as PDF”.</p>
+      <div class="au-body" id="ofixBody"></div>
     </dialog>
   </section>
 </main>
@@ -1762,7 +1781,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     for (const [k, sev, what] of [["internet", "high", "reach the internet"], ["saas", "medium", "reach SaaS or partners"], ["datacentre", "medium", "reach on-premises data centres"]]) {
       if (!ob[k]?.wide) continue;
       const rs = obOnly(k), dbs = rs.filter((r) => r.db).length, nonDef = rs.filter((r) => !isDefaultOut(r)).length;
-      out.push({sev: k === "internet" && !nonDef && !dbs ? "medium" : sev, what: `${ob[k].wide} outbound rule(s) on ${ob[k].groups} group(s) ${what} wider than one destination needs${dbs ? `, ${dbs} on databases` : ""}${k === "internet" && !nonDef && rs.length ? " (the default all-traffic rule)" : ""}`, how: k === "internet" ? "Narrow them to the hosts and ports used, starting with databases" : "Narrow them to the ranges and ports used", key: "o:" + k, btn: '<button class="btn sm" data-atab="outbound">Outbound</button>'});
+      out.push({sev: k === "internet" && !nonDef && !dbs ? "medium" : sev, what: `${ob[k].wide} outbound rule(s) on ${ob[k].groups} group(s) ${what} wider than one destination needs${dbs ? `, ${dbs} on databases` : ""}${k === "internet" && !nonDef && rs.length ? " (the default all-traffic rule)" : ""}`, how: k === "internet" ? "Narrow them to the hosts and ports used, starting with databases" : "Narrow them to the ranges and ports used", key: "o:" + k, btn: `<button class="btn sm" data-ofix="${esc(a.account)}">View fixes</button>`});
     }
     if (a.egress_bad) out.push({sev: "critical", what: `${a.egress_bad} connection(s) out to known malicious addresses`, how: "Investigate the host that made them", btn: review});
     const back = ref.filter((r) => r.restore);
@@ -1797,12 +1816,12 @@ section.nodata .card:not(.empty-state) { display: none; }
       <td>${r.wide.length ? r.wide.map((w) => `<span class="pill" style="--p:var(--bad)">${esc(w)}</span>`).join(" ") : '<span class="muted">one destination and port</span>'}</td></tr>`;
   function outboundHtml(a, nOf) {
     const e = a.egress;
-    const help = `<p class="small muted" id="obHelp" hidden style="margin:4px 0 6px">Outbound rules on groups this account's interfaces use that reach outside the account, riskiest first: <b>internet</b>, <b>SaaS and partners</b>, <b>on-premises data centres</b>, <b>other AWS accounts</b> (their VPCs, groups across a peering, PrivateLink to another account's service). Destinations in its own VPCs, AWS's service ranges and prefix lists and transit gateways are left out. <b>Too wide</b>: every protocol, a range of ports, or more addresses than one destination. The <b>Outbound</b> tab shows every account's.</p>`;
-    const head = `<h3 style="display:flex;gap:8px;align-items:center">Outbound rules that leave the account <button class="btn sm" type="button" data-ahelp="obHelp" aria-expanded="false">Explain</button></h3>${help}`;
+    const help = `<p class="small muted" id="obHelp" hidden style="margin:4px 0 6px">Outbound rules on groups this account's interfaces use that reach outside the account, riskiest first: <b>internet</b>, <b>SaaS and partners</b>, <b>on-premises data centres</b>, <b>other AWS accounts</b> (their VPCs, groups across a peering, PrivateLink to another account's service). Destinations in its own VPCs, AWS's service ranges and prefix lists and transit gateways are left out. <b>Too wide</b>: every protocol, a range of ports, or more addresses than one destination. <b>View fixes</b> lists every too-wide rule of this account with the assets using it, why it is bad and what it should be. The <b>Outbound</b> tab shows every account's.</p>`;
+    const head = `<h3 style="display:flex;gap:8px;align-items:center">Outbound rules that leave the account <button class="btn sm primary" type="button" data-ofix="${esc(a.account)}">View fixes</button> <button class="btn sm" type="button" data-ahelp="obHelp" aria-expanded="false">Explain</button></h3>${help}`;
     if (!e || e.error || e.by == null) return head + `<p class="small muted">${e?.error ? esc(e.error) : "Not worked out yet for this account."}</p>`;
-    const tiles = Object.entries(OCLS).map(([k, [n, c]]) => { const b = e.by[k] || {rules: 0, wide: 0, groups: 0}; return `<div><span class="muted small">${esc(n)}</span><b style="color:${b.wide ? c : ""}">${b.wide.toLocaleString()} too wide</b><span class="muted small">of ${b.rules.toLocaleString()} rule(s) on ${b.groups} group(s)</span></div>`; }).join("");
+    const tiles = Object.entries(OCLS).map(([k, [n, c]]) => { const b = e.by[k] || {rules: 0, wide: 0, groups: 0}; return `<div><span class="muted small">${esc(n)}</span><b style="color:${b.wide ? c : ""}">${b.wide.toLocaleString()} rules too wide</b><span class="muted small">of ${b.rules.toLocaleString()} outbound rule(s) on ${b.groups} group(s)${b.allow_all ? ` · ${b.allow_all} the allow-all default` : ""}</span></div>`; }).join("");
     const rows = e.rules || [];
-    return head + `<div class="facts">${tiles}</div>${rows.length ? `<div class="scroll"><table class="small"><thead><tr><th>Reaches</th><th>Group</th><th>Ports</th><th>Destination</th><th class="num">Interfaces</th><th>Why too wide</th></tr></thead><tbody>${rows.map((r) => { const g = nOf("o:" + r.cls); return oRow(r, null, g.n ? [nxRow(g.n, g.sev), nxBadge(g.n, g.sev)] : ""); }).join("")}</tbody></table></div>${e.total > rows.length ? `<p class="muted small">The ${rows.length} riskiest of ${e.total.toLocaleString()}: the Outbound tab lists them all for this account.</p>` : ""}` : '<p class="small" style="color:var(--good)">No outbound rule reaches outside the account.</p>'}${e.unattached ? `<p class="muted small">${e.unattached} more outbound rule(s) on groups no interface uses: not counted.</p>` : ""}`;
+    return head + `<div class="facts">${tiles}</div>${rows.length ? `<div class="scroll"><table class="small"><thead><tr><th>Reaches</th><th>Group</th><th>Ports</th><th>Destination</th><th class="num">Interfaces</th><th>Why too wide</th></tr></thead><tbody>${rows.map((r) => { const g = nOf("o:" + r.cls); return oRow(r, null, g.n ? [nxRow(g.n, g.sev), nxBadge(g.n, g.sev)] : ""); }).join("")}</tbody></table></div>${e.total > rows.length ? `<p class="muted small">The ${rows.length} riskiest of ${e.total.toLocaleString()}: View fixes lists them all, with what each should be.</p>` : ""}` : '<p class="small" style="color:var(--good)">No outbound rule reaches outside the account.</p>'}${e.unattached ? `<p class="muted small">${e.unattached} more outbound rule(s) on groups no interface uses: not counted.</p>` : ""}`;
   }
   // An account filter like Rejected traffic's: type a name or number, pick from the list (busiest first);
   // empty is every account. Returns {get, set}.
@@ -1852,14 +1871,19 @@ section.nodata .card:not(.empty-state) { display: none; }
     const pickA = obAcct?.get() || "";
     const A = (M?.accounts || []).filter((a) => a.egress?.by && (!pickA || a.account === pickA));
     const q = $("obQ").value.toLowerCase().trim(), cls = $("oCls").value, wide = $("oWide").checked, dflt = $("oDefault").checked;
-    const tot = {}; for (const k of Object.keys(OCLS)) tot[k] = {rules: 0, wide: 0, accts: 0};
-    for (const a of A) for (const k of Object.keys(OCLS)) { const b = a.egress.by[k] || {}; tot[k].rules += b.rules || 0; tot[k].wide += b.wide || 0; tot[k].accts += b.wide ? 1 : 0; }
-    $("oFacts").innerHTML = Object.entries(OCLS).map(([k, [n, c]]) => `<div><span class="muted small">${esc(n)}</span><b style="color:${tot[k].wide ? c : ""}">${tot[k].wide.toLocaleString()} too wide</b><span class="muted small">of ${tot[k].rules.toLocaleString()} rules · ${tot[k].accts} account(s)</span></div>`).join("");
+    const tot = {}; for (const k of Object.keys(OCLS)) tot[k] = {rules: 0, wide: 0, accts: 0, allow_all: 0, why: {all: 0, ports: 0, addresses: 0, accounts: 0}};
+    for (const a of A) for (const k of Object.keys(OCLS)) {
+      const b = a.egress.by[k] || {}; tot[k].rules += b.rules || 0; tot[k].wide += b.wide || 0; tot[k].accts += b.wide ? 1 : 0; tot[k].allow_all += b.allow_all || 0;
+      for (const [w, n] of Object.entries(b.why || {})) tot[k].why[w] = (tot[k].why[w] || 0) + n;
+    }
+    const whyText = (t) => [["all", "allow all traffic"], ["ports", "open a range of ports"], ["addresses", "reach more addresses than one destination needs"], ["accounts", "reach several accounts"]]
+      .filter(([w]) => t.why[w]).map(([w, n]) => `${t.why[w].toLocaleString()} ${n}`).join(" · ");
+    $("oFacts").innerHTML = Object.entries(OCLS).map(([k, [n, c]]) => `<div title="A rule is too wide when it allows every protocol, a range of ports, or more addresses than one destination needs"><span class="muted small">${esc(n)}</span><b style="color:${tot[k].wide ? c : ""}">${tot[k].wide.toLocaleString()} rules too wide</b><span class="muted small">of ${tot[k].rules.toLocaleString()} outbound security group rules · ${tot[k].accts} account(s)</span>${whyText(tot[k]) ? `<span class="muted small">${esc(whyText(tot[k]))}</span>` : ""}${tot[k].allow_all ? `<span class="muted small">${tot[k].allow_all.toLocaleString()} of them the allow-all rule AWS puts on every new group</span>` : ""}</div>`).join("");
     const w = (a, k) => a.egress.by[k]?.wide || 0;
     const accts = [...A].sort((x, y) => w(y, "internet") - w(x, "internet") || w(y, "saas") - w(x, "saas") || w(y, "datacentre") - w(x, "datacentre") || w(y, "account") - w(x, "account"));
-    const cell = (a, k) => { const b = a.egress.by[k] || {rules: 0, wide: 0}; return `<td class="num"><b style="color:${b.wide ? OCLS[k][1] : "var(--muted)"}">${b.wide}</b> <span class="muted">/ ${b.rules}</span></td>`; };
+    const cell = (a, k) => { const b = a.egress.by[k] || {rules: 0, wide: 0}; return `<td class="num" title="${b.wide} of this account's ${b.rules} outbound security group rule(s) to ${esc(OCLS[k][0])} are too wide${b.allow_all ? ` (${b.allow_all} the allow-all default)` : ""}"><b style="color:${b.wide ? OCLS[k][1] : "var(--muted)"}">${b.wide}</b> <span class="muted">of ${b.rules} rules</span></td>`; };
     const ap = page("outA", accts.length, drawOutbound);
-    $("oAccts").innerHTML = accts.slice(ap.a, ap.b).map((a) => `<tr><td>${esc(a.name || a.account)}<div class="muted"><code>${esc(a.account)}</code></div></td>${Object.keys(OCLS).map((k) => cell(a, k)).join("")}<td><button class="btn sm" data-oacct="${esc(a.account)}">Open account</button></td></tr>`).join("") || '<tr><td colspan="6" class="muted">No account worked out yet.</td></tr>';
+    $("oAccts").innerHTML = accts.slice(ap.a, ap.b).map((a) => `<tr><td>${esc(a.name || a.account)}<div class="muted"><code>${esc(a.account)}</code></div></td>${Object.keys(OCLS).map((k) => cell(a, k)).join("")}<td><button class="btn sm" data-ofix="${esc(a.account)}">View fixes</button></td></tr>`).join("") || '<tr><td colspan="6" class="muted">No account worked out yet.</td></tr>';
     pagerAfter($("oAccts"), ap.bar);
     const rows = A.flatMap((a) => (a.egress.rules || []).map((r) => ({r, a}))).filter(({r, a}) => (!cls || r.cls === cls) && (!wide || r.wide.length) && (dflt || !isDefaultOut(r))
       && (!q || `${r.gname} ${r.group} ${r.dest} ${r.name} ${r.ports} ${r.region}`.toLowerCase().includes(q)));
@@ -1869,7 +1893,6 @@ section.nodata .card:not(.empty-state) { display: none; }
     const rp = page("outR", rows.length, drawOutbound);
     $("oRows").innerHTML = rows.slice(rp.a, rp.b).map(({r, a}) => oRow(r, a)).join("") || '<tr><td colspan="7" class="muted">Nothing matches.</td></tr>';
     pagerAfter($("oRows"), rp.bar);
-    for (const b of document.querySelectorAll("[data-oacct]")) b.addEventListener("click", () => { AV.pick = {k: "account", v: b.dataset.oacct}; show("accounts").then(() => { $("acAcct").value = b.dataset.oacct; drawAccountView(); }); });
   }
   const blockBtn = (a, x) => x.internal ? "" : `<button class="btn sm primary" data-ablock="${esc(JSON.stringify({account: a.account, region: x.region, src: x.src, subnets: x.subnets, detail: {lbs: x.lbs, vpc: x.vpc, resets: x.resets, share: x.share, name: x.name, why: x.why}}))}">Block</button>`;
   const helpBtn = (id) => `<button class="btn sm" type="button" data-ahelp="${id}" aria-expanded="false">Explain</button>`;
@@ -1969,7 +1992,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       const oAll = mine.flatMap((a, ai) => aNext(a, (refusedData?.rows || []).filter((r) => r.account === a.account)).map((x) => ({...x, a, ai}))).sort((x, y) => rk[x.sev] - rk[y.sev] || x.ai - y.ai || x.i - y.i);
       const oNext = oAll.slice(0, 5), oNum = new Map();
       oNext.forEach((x, i) => { const g = oNum.get(x.a.account) || []; g.push([i + 1, x.sev]); oNum.set(x.a.account, g); });
-      const oBtn = (x) => `<button class="btn sm primary" data-aacct="${esc(x.a.account)}">Open account</button>`;
+      const oBtn = (x) => `<button class="btn sm primary" data-aacct="${esc(x.a.account)}">View account</button>`;
       const oList = (xs, num) => `<ol class="next5 small">${xs.map((x, i) => `<li style="--nx:${SEVCOL[x.sev]}">${num ? nxBadge(i + 1, x.sev) : ""}<div class="nx-what"><span class="pill" style="--p:${SEVCOL[x.sev]}">${x.sev}</span> <b>${esc(x.a.name || x.a.account)}</b>: ${x.what}. ${esc(x.how)}.</div>${oBtn(x)}</li>`).join("")}</ol>`;
       $("aBody").innerHTML = `<div class="card"><div class="card-head"><h3 style="margin:0">${esc(owner)}</h3><span class="muted small">${esc(tag || "owner")} · ${mine.length} account${mine.length === 1 ? "" : "s"}</span></div>
         <div class="facts"><div><span class="muted small">Risk points</span><b style="color:${me.pts >= 100 ? "var(--bad)" : ""}">${me.pts.toLocaleString()}</b><span class="muted small">rank ${r} of ${all.length} owners: riskier than ${pctBelow(r, all.length)}%</span></div>
@@ -2531,7 +2554,8 @@ section.nodata .card:not(.empty-state) { display: none; }
     const q = $("xFind").value.trim().toLowerCase();
     const shown = (hide ? ok : fixAccts).filter((a) => !q || `${a.name} ${a.account}`.toLowerCase().includes(q));
     const label = (a) => `${a.name || a.account} (${a.account}) · ${a.status === "read" ? `${Math.round(a.days)} day${Math.round(a.days) === 1 ? "" : "s"} of flow logs` : a.status === "no-flow-logs" ? "no flow logs" : "flow logs not read"}`;
-    $("xAcct").innerHTML = shown.map((a) => `<option value="${esc(a.account)}"${a.account === cur ? " selected" : ""}>${esc(label(a))}</option>`).join("") || `<option value="">${q ? "No account matches" : "No account with flow logs read"}</option>`;
+    const pick = cur && shown.some((a) => a.account === cur) ? cur : "";  // never pick an account for the user: blank until they choose
+    $("xAcct").innerHTML = shown.length ? `<option value=""${pick ? "" : " selected"}>Pick an account…</option>` + shown.map((a) => `<option value="${esc(a.account)}"${a.account === pick ? " selected" : ""}>${esc(label(a))}</option>`).join("") : `<option value="">${q ? "No account matches" : "No account with flow logs read"}</option>`;
     const msg = [];
     if (noLogs.length) msg.push(`<b>${noLogs.length} account${noLogs.length === 1 ? " has" : "s have"} no VPC flow logs</b> in CloudWatch Logs${hide ? " (hidden)" : ""}: turn them on for every VPC, to CloudWatch Logs, with a format that has the interface, source, destination, port and action (the default format does), then read the account.`);
     if (notRead.length) msg.push(`<b>${notRead.length} account${notRead.length === 1 ? "'s" : "s'"} flow logs not read yet</b>${hide ? " (hidden)" : ""}: on the Overview, Read all (or Read one), with How far back at 30 days or more.`);
@@ -2679,7 +2703,8 @@ section.nodata .card:not(.empty-state) { display: none; }
   async function watchReread(a) {
     clearTimeout(rrTimer);
     $("xrGo").disabled = !a;
-    if (!a || $("xAcct").value !== a) return;
+    if (!a) { $("xrGo").textContent = "Re-read this account"; $("xrGo").title = "Pick an account first"; $("xrNote").innerHTML = RR_NOTE; return; }
+    if ($("xAcct").value !== a) return;
     const jobs = await api("/api/jobs", undefined, true).catch(() => []);
     if ($("xAcct").value !== a) return;
     const j = jobs.find((x) => x.account === a);
@@ -2981,7 +3006,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     if (!fixAccts) return;
     const before = $("xAcct").value;
     drawFixAccounts();
-    clearTimeout(fixFindT);  // the plan of the first match, once typing pauses
+    clearTimeout(fixFindT);  // the list narrows; the account stays blank until one is picked
     if ($("xAcct").value !== before) fixFindT = setTimeout(() => loadFixPlan().catch((e) => flash(e.message, true)), 500);
   });
   for (const id of ["xFrom", "xTo"]) $(id).addEventListener("change", () => loadFixPlan().catch((e) => flash(e.message, true)));
@@ -3127,13 +3152,29 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("supN").textContent = `${A.rows.length.toLocaleString()} entries · ${esc(A.file)} (${bSize(A.bytes)})`;
     const up = page("activity", A.rows.length, loadActivity);
     const lv = {error: "var(--bad)", warning: "var(--warn)", info: "var(--muted)"};
-    $("supActRows").innerHTML = A.rows.slice(up.a, up.b).map((e) => {
+    SUPACT = A.rows;
+    $("supActRows").innerHTML = A.rows.slice(up.a, up.b).map((e, i) => {
       const d = e.detail || {}, tb = d.traceback, rest = Object.fromEntries(Object.entries(d).filter(([k]) => k !== "traceback"));
-      const more = Object.keys(rest).length || tb ? `<details><summary>Details</summary>${Object.keys(rest).length ? `<pre class="small" style="white-space:pre-wrap;margin:4px 0">${esc(JSON.stringify(rest, null, 2))}</pre>` : ""}${tb ? `<pre class="small" style="white-space:pre-wrap;margin:4px 0">${esc(tb)}</pre>` : ""}</details>` : "";
+      const more = Object.keys(rest).length || tb ? `<details><summary>Details</summary><button class="btn sm" type="button" data-actcopy="${up.a + i}" style="margin:4px 0">Copy to clipboard</button>${Object.keys(rest).length ? `<pre class="small" style="white-space:pre-wrap;margin:4px 0">${esc(JSON.stringify(rest, null, 2))}</pre>` : ""}${tb ? `<pre class="small" style="white-space:pre-wrap;margin:4px 0">${esc(tb)}</pre>` : ""}</details>` : "";
       return `<tr><td>${esc(new Date(e.at * 1000).toLocaleString())}</td><td><span class="pill" style="--p:${lv[e.level] || "var(--muted)"}">${esc(e.level)}</span></td><td>${esc(e.kind)}</td><td><code>${esc(e.account || "")}</code></td><td>${esc(e.message)}${more}</td></tr>`;
     }).join("") || '<tr><td colspan="5" class="muted">Nothing in this window.</td></tr>';
     pagerAfter($("supActRows"), up.bar);
   }
+  let SUPACT = [];
+  const actText = (e) => {
+    const d = e.detail || {}, tb = d.traceback, rest = Object.fromEntries(Object.entries(d).filter(([k]) => k !== "traceback"));
+    return `${new Date(e.at * 1000).toLocaleString()}  ${e.level}  ${e.kind}${e.account ? `  ${e.account}` : ""}\n${e.message}`
+      + (Object.keys(rest).length ? `\n${JSON.stringify(rest, null, 2)}` : "") + (tb ? `\n${tb}` : "");
+  };
+  $("supActRows").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-actcopy]");
+    if (b) act(b, async () => { await navigator.clipboard.writeText(actText(SUPACT[+b.dataset.actcopy])); flash("Entry copied."); });
+  });
+  $("supCopyAll").addEventListener("click", (e) => act(e.target, async () => {
+    if (!SUPACT.length) throw new Error("Nothing shown to copy.");
+    await navigator.clipboard.writeText(SUPACT.map(actText).join("\n\n"));
+    flash(`${SUPACT.length.toLocaleString()} entries copied.`);
+  }));
   async function loadSupport() { await Promise.all([loadHealth(), loadActivity()]); }
   setTimeout(() => loadHealth().catch(() => {}), 4000);  // the Support tab shows how many things need a look
   $("supGo").addEventListener("click", (e) => act(e.target, loadHealth));
@@ -3196,6 +3237,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     if (!S) await loadState();
     $("refusedRows").innerHTML = `<tr><td colspan="8" class="muted">${loading("Reading…")}</td></tr>`;
     refusedData = await api(`/api/refused?range=${encodeURIComponent($("fRange").value)}`);
+    if (!M) api("/api/macro?range=1m", undefined, true).then((m) => { if (!M) { M = m; drawRefused(); } }).catch(() => {});  // owners' names, when ready
     const fa = $("fAcct"), keep = fa.value;
     fa.innerHTML = '<option value="">Every account</option>' + refusedData.accounts.map((a) => `<option value="${esc(a.account)}">${esc(a.name || a.account)}</option>`).join("");
     fa.value = keep;
@@ -3339,7 +3381,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     drawScanners(shown);
     const fp = page("refused", shown.length, drawRefused);
     $("refusedRows").innerHTML = shown.slice(fp.a, fp.b).map((r, i) => `<tr><td><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span></td>
-      <td>${esc(r.account_name || r.account)}<div class="muted small"><code style="white-space:nowrap">${esc(r.account)}</code></div></td>
+      <td>${esc(r.account_name || r.account)}<div class="muted small"><code style="white-space:nowrap">${esc(r.account)}</code></div>${ownerLine(r.account)}</td>
       <td><code>${esc(r.src)}</code> ${r.new ? '<span class="pill" style="--p:var(--bad)" title="First seen in the last 7 days; never before in the flow logs read">new</span>' : ""}${r.v6 ? ' <span class="pill" style="--p:var(--accent)">IPv6</span>' : ""} <span class="pill" style="--p:${r.internal ? "var(--good)" : "var(--warn)"}">${r.internal ? "internal" : "external"}</span>${r.scan ? ' <span class="pill" style="--p:var(--high)">scanning</span>' : ""}${r.threat ? ' <span class="pill" style="--p:var(--bad)" title="On a threat list: botnet command server, criminal netblock, compromised host or recent attacker">known malicious</span>' : ""}${r.tor ? ' <span class="pill" style="--p:var(--bad)" title="On the Tor Project\'s exit list">Tor</span>' : ""}
         <div class="muted small">${esc(r.name)}${r.type ? " · " + esc(r.type) : ""}${r.first_ever ? ` · first seen ${esc(when(r.first_ever))}${r.seen_before ? "" : r.new ? ", never before" : ""}` : ""}</div></td>
       <td><code>${esc(PROTO[r.proto] || r.proto)} ${esc(r.port)}</code>${r.risky ? " ⚠" : ""} <span class="muted small">${esc(r.port_class)}</span>
@@ -3353,13 +3395,17 @@ section.nodata .card:not(.empty-state) { display: none; }
   }
   // IPs of Interest: the sources refused on the most ports and addresses, added up across the accounts shown
   // Our addresses a source was refused at: listed when 5 or fewer, behind View when more
+  // A list opened stays open when the table is drawn again (it is, as reads finish): it closed under the click
+  const KEEP_OPEN = new Set();
+  document.addEventListener("toggle", (ev) => { const k = ev.target.dataset && ev.target.dataset.keep; if (k) ev.target.open ? KEEP_OPEN.add(k) : KEEP_OPEN.delete(k); }, true);
   function ipsCell(x) {
     const ips = [...x.dsts].filter(Boolean).sort((a, b) => a.localeCompare(b, undefined, {numeric: true}));
     const more = x.nd > ips.length ? `<div class="muted">+${(x.nd - ips.length).toLocaleString()} counted, not named</div>` : "";
     const list = ips.map((d) => `<code>${esc(d)}</code>`).join("<br>");
     if (ips.length <= 5) return `<b>${x.nd.toLocaleString()}</b>${ips.length ? `<div class="small" style="text-align:left">${list}</div>` : ""}${more}`;
     const top5 = ips.slice(0, 5).map((d) => `<code>${esc(d)}</code>`).join("<br>");
-    return `<b>${x.nd.toLocaleString()}</b><details class="small screen-only" style="text-align:left"><summary class="btn sm" style="margin:4px 0 0">View ${ips.length.toLocaleString()} IPs</summary><div style="max-height:240px;overflow:auto;margin-top:4px">${list}</div></details><div class="small print-only" style="text-align:left">${top5}<div class="muted">+${(x.nd - 5).toLocaleString()} more</div></div>`;
+    const k = `ips:${x.src}`;
+    return `<b>${x.nd.toLocaleString()}</b><details class="small screen-only" style="text-align:left" data-keep="${esc(k)}"${KEEP_OPEN.has(k) ? " open" : ""}><summary class="btn sm" style="margin:4px 0 0">View ${ips.length.toLocaleString()} IPs</summary><div style="max-height:240px;overflow:auto;margin-top:4px">${list}</div></details><div class="small print-only" style="text-align:left">${top5}<div class="muted">+${(x.nd - 5).toLocaleString()} more</div></div>`;
   }
   function drawScanners(shown) {
     const by = new Map();
@@ -3454,7 +3500,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     }
     return [...m.values()].sort((a, b) => b.flows - a.flows || b.srcs.size - a.srcs.size);
   }
-  function insightsHtml(rows, {accounts = true, click = false, top = 8} = {}) {
+  function insightsHtml(rows, {accounts = true, click = false, top = 10} = {}) {
     if (!rows.length) return '<p class="muted">Nothing refused matches.</p>';
     const panel = (title, k, items, color = "var(--accent)") => {
       if (!items.length) return "";
@@ -3523,7 +3569,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       <div><span class="muted small">Scanning</span><b>${n((r) => r.scan)}</b></div>
       <div><span class="muted small">New this week</span><b>${n((r) => r.new)}</b></div></div>`;
     const chart = a ? `<h3>Rejected IP addresses over time, by kind of source</h3>${refusedChartHtml([a])}` : "";
-    $("resolveBody").innerHTML = `${facts}${chart}<h3>Where they come from and go to</h3><p class="muted small">Click a line to narrow the list below to it.</p><div class="insights" id="rsInsights">${insightsHtml(rows, {accounts: !acct, click: true, top: 6})}</div>
+    $("resolveBody").innerHTML = `${facts}${chart}<h3>Where they come from and go to</h3><p class="muted small">Click a line to narrow the list below to it.</p><div class="insights" id="rsInsights">${insightsHtml(rows, {accounts: !acct, click: true, top: 10})}</div>
       <h3 id="rsListHead">Every refused source, worst first</h3><div id="rsFilter"></div><div class="scroll"><table class="small"><thead><tr><th>Severity</th>${acct ? "" : "<th>Account</th>"}<th>Source</th><th>Refused on</th><th class="num">Flows</th><th>Verdict and what to do</th><th></th></tr></thead><tbody id="rsRows"></tbody></table></div><div id="rsMore"></div>`;
     $("rsInsights").addEventListener("click", (ev) => {
       const el = ev.target.closest("[data-ik]");
@@ -3540,7 +3586,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const {rows, filter, n, acct} = resolveState;
     const shown = filter ? rows.filter((r) => matchInsight(r, filter.k, filter.v)) : rows;
     $("rsFilter").innerHTML = filter ? `<p class="small">Only <b>${esc(filter.label)}</b>: ${shown.length.toLocaleString()} of ${rows.length.toLocaleString()} <button class="btn sm" id="rsAll">Show all</button></p>` : "";
-    $("rsRows").innerHTML = shown.slice(0, n).map((r, i) => `<tr><td><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span></td>${acct ? "" : `<td>${esc(r.account_name || r.account)}</td>`}
+    $("rsRows").innerHTML = shown.slice(0, n).map((r, i) => `<tr><td><span class="pill" style="--p:${SEV[r.sev]}">${esc(r.sev)}</span></td>${acct ? "" : `<td>${esc(r.account_name || r.account)}${ownerLine(r.account)}</td>`}
       <td><code>${esc(r.src)}</code> ${pills(r)}<div class="muted">${esc(r.name)}${r.cat ? " · " + esc(tname(r.cat)) : ""}</div></td>
       <td><code>${esc(portOf(r))}</code>${r.risky ? " ⚠" : ""} <span class="muted">${esc(r.port_class)}</span><div class="muted">${esc(r.kind)} ${esc(r.dst)}${r.ports > 1 ? ` · ${r.ports} ports` : ""}${r.dsts > 1 ? ` · ${r.dsts} addresses` : ""}</div></td>
       <td class="num">${Number(r.flows).toLocaleString()}</td>
@@ -3552,6 +3598,71 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("rsMoreBtn")?.addEventListener("click", () => { resolveState.n += 200; drawResolveRows(); });
   }
   $("resolveClose").addEventListener("click", () => $("resolveDlg").close());
+  // ---- Outbound fixes: one account's too-wide outbound rules, group by group, with what each should be
+  const OHOW = {narrow: ["Narrow it", "var(--accent)"], remove: ["Remove it", "var(--bad)"], read: ["Read outbound first", "var(--warn)"]};
+  async function openOutFixes(account) {
+    const nm = (M?.accounts || []).find((a) => a.account === account)?.name || account;
+    $("ofixTitle").textContent = `Outbound fixes: ${nm}`; $("ofixSub").textContent = account;
+    $("ofixBody").innerHTML = `<p>${loading("Working out every outbound fix…")}</p>`;
+    if (!$("ofixDlg").open) $("ofixDlg").showModal();
+    let F;
+    try { F = await api(`/api/outbound-fixes?account=${encodeURIComponent(account)}`); }
+    catch (e) { $("ofixBody").innerHTML = `<div class="flash err"><b>The fixes could not be worked out.</b> ${esc(e.message)}</div>`; return; }
+    $("ofixSub").textContent = `${account} · ${F.rules.toLocaleString()} rule(s) too wide on ${F.groups.length} group(s) · ${F.egress_read ? "fixes from the outbound flow logs read" : "outbound flow logs not read yet: the exact rules are known after a read with outbound traffic"}`;
+    const asset = (x) => `<tr><td><code>${esc(x.instance || x.eni)}</code> ${esc(x.name || "")}</td><td>${esc(x.kind)}</td><td><code>${esc(x.ip)}</code>${x.public ? ` <span class="pill" style="--p:var(--warn)">public ${esc(x.public)}</span>` : ""}</td></tr>`;
+    const rule = (r) => `<div class="ofix-rule">
+      <div><h4>Today</h4><span class="pill" style="--p:${OCLS[r.cls][1]}">${esc(OCLS[r.cls][0])}</span> <span class="pill" style="--p:${OSEV[r.sev]}">${esc(r.sev)}</span>
+        <div style="margin-top:4px">Allows <code>${esc(r.ports)}</code> to <code>${esc(r.dest)}</code></div><div class="muted small">${esc(r.name)}${r.note ? ` · ${esc(r.note)}` : ""}${r.allow_all ? " · the allow-all rule AWS puts on every new group" : ""}</div></div>
+      <div><h4>Why it is bad</h4>${esc(r.why)}${r.db ? ' <span class="pill" style="--p:var(--bad)">database</span>' : ""}</div>
+      <div><h4>What it should be</h4><span class="pill" style="--p:${OHOW[r.how][1]}">${OHOW[r.how][0]}</span> ${esc(r.fix)}
+        ${r.should.length ? `<table class="small" style="margin-top:6px"><thead><tr><th>Allow</th><th>To</th><th class="num">Seen</th></tr></thead><tbody>${r.should.map((u) => `<tr><td><code>${esc(u.proto)} ${u.port}</code></td><td>${u.cidrs.map((c) => `<code>${esc(c)}</code>`).join(" ")}</td><td class="num">${u.dests} dest · ${big(u.flows)} flows</td></tr>`).join("")}</tbody></table>` : ""}
+        ${r.cli ? `<details><summary>Commands</summary><pre>${esc(r.cli)}</pre></details>` : ""}</div></div>`;
+    $("ofixBody").innerHTML = F.groups.length ? F.groups.map((g) => `<div class="card" style="margin-top:12px"><h3 style="margin-top:0">${esc(g.gname)} <code>${esc(g.group)}</code> <span class="muted small">${esc(g.region)} · ${esc(g.vpc)} · ${g.rules.length} rule(s) to fix</span></h3>
+      <details${g.nassets <= 5 ? " open" : ""}><summary>Used by ${g.nassets} asset(s)</summary><div class="scroll"><table class="small"><thead><tr><th>Asset</th><th>Kind</th><th>Address</th></tr></thead><tbody>${g.assets.map(asset).join("")}</tbody></table></div>${g.nassets > g.assets.length ? `<p class="muted small">and ${g.nassets - g.assets.length} more</p>` : ""}</details>
+      ${g.rules.map(rule).join("")}</div>`).join("") : '<p style="color:var(--good)">No outbound rule of this account is too wide.</p>';
+  }
+  document.addEventListener("click", (ev) => { const b = ev.target.closest("[data-ofix]"); if (b) { ev.preventDefault(); openOutFixes(b.dataset.ofix).catch((e) => flash(e.message, true)); } });
+  $("ofixClose").addEventListener("click", () => $("ofixDlg").close());
+  $("ofixWhy").addEventListener("click", () => { const h = $("ofixHelp"); h.hidden = !h.hidden; $("ofixWhy").setAttribute("aria-expanded", String(!h.hidden)); });
+  $("ofixPdf").addEventListener("click", () => {
+    const day = new Date().toISOString().slice(0, 10);
+    let box = $("fixPrint");
+    if (!box) { box = document.createElement("div"); box.id = "fixPrint"; document.body.appendChild(box); }
+    const body = $("ofixBody").cloneNode(true);
+    body.querySelectorAll("button, input, select, label").forEach((x) => x.remove());
+    body.querySelectorAll("details").forEach((x) => x.setAttribute("open", ""));
+    body.querySelectorAll("[id]").forEach((x) => x.removeAttribute("id"));
+    box.innerHTML = `<div class="eyebrow">Security Tightener · outbound fixes</div><h2 style="margin:2px 0 4px">${esc($("ofixTitle").textContent)}</h2>
+      <p class="muted small">${esc($("ofixSub").textContent)} · exported ${esc(when(Date.now() / 1000))}</p>${body.innerHTML}`;
+    const t = document.title;
+    document.title = `Security Tightener - outbound fixes ${$("ofixSub").textContent.split(" ")[0]} - ${day}`;
+    const done = () => { document.title = t; document.body.classList.remove("print-fix"); box.innerHTML = ""; window.removeEventListener("afterprint", done); };
+    window.addEventListener("afterprint", done);
+    document.body.classList.add("print-fix");
+    $("ofixDlg").close();
+    window.print();
+    $("ofixDlg").showModal();
+  });
+  $("resolvePdfWhy").addEventListener("click", () => { const h = $("resolvePdfHelp"); h.hidden = !h.hidden; $("resolvePdfWhy").setAttribute("aria-expanded", String(!h.hidden)); });
+  $("resolvePdf").addEventListener("click", () => {  // the same print-only box as a source's Export PDF
+    const day = new Date().toISOString().slice(0, 10);
+    let box = $("fixPrint");
+    if (!box) { box = document.createElement("div"); box.id = "fixPrint"; document.body.appendChild(box); }
+    const body = $("resolveBody").cloneNode(true);
+    body.querySelectorAll("button, input, select, label, .acts").forEach((x) => x.remove());
+    body.querySelectorAll("details").forEach((x) => x.setAttribute("open", ""));
+    body.querySelectorAll("[id]").forEach((x) => x.removeAttribute("id"));
+    box.innerHTML = `<div class="eyebrow">Security Tightener · resolve rejected traffic</div><h2 style="margin:2px 0 4px">${esc($("resolveTitle").textContent)}</h2>
+      <p class="muted small">${esc($("resolveSub").textContent)} · exported ${esc(when(Date.now() / 1000))}</p>${body.innerHTML}`;
+    const t = document.title;
+    document.title = `Security Tightener - ${$("resolveTitle").textContent.replace(/[\\/:*?"<>|]/g, "-")} - ${day}`;
+    const done = () => { document.title = t; document.body.classList.remove("print-fix"); box.innerHTML = ""; window.removeEventListener("afterprint", done); };
+    window.addEventListener("afterprint", done);
+    document.body.classList.add("print-fix");
+    $("resolveDlg").close();
+    window.print();
+    $("resolveDlg").showModal();
+  });
   $("resolveRemediate").addEventListener("click", () => $("resolveDlg").close());  // the page-wide [data-fix] handler opens Remediate
 
   // ---- the search box: type to search, pick an account, source, destination, port or verdict from what is there
@@ -3848,6 +3959,13 @@ section.nodata .card:not(.empty-state) { display: none; }
     const named = keys.find((x) => x.k === "Product Head") || keys.find((x) => /owner/i.test(x.k));  // Product Head by default
     const fit = keys.filter((x) => x.n > 1 && x.n <= 40).sort((p, q) => q.on - p.on || q.n - p.n);
     return (named || fit[0] || keys[0] || {}).k || null;
+  }
+  // The account owner's name under an account, from the owner tag (Product Head by default): blank until read
+  function ownerLine(account) {
+    const a = (M?.accounts || []).find((x) => x.account === account);
+    if (!a || (a.owner == null && !Object.keys(a.tags || {}).length)) return "";
+    const tag = ownerTag(M.accounts), o = (tag && (a.tags || {})[tag]) || a.owner;
+    return o ? `<div class="small" title="${esc(tag || "Owner")}">Owner: <b>${esc(o)}</b></div>` : "";
   }
   function ownerOf(a, tag) {
     if (a.owner == null && !Object.keys(a.tags || {}).length) return "Owner not looked up yet";
