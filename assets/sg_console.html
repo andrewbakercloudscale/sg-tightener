@@ -712,6 +712,14 @@ section.nodata .card:not(.empty-state) { display: none; }
       <div class="acts"><label class="small">Worker processes for reports <select id="stProcs" aria-label="Worker processes"></select></label><button class="btn sm primary" type="button" id="stPerfSave">Save</button><span class="muted small" id="stPerfNote"></span></div>
       <p class="small" id="stPerfHelp" hidden style="margin:8px 0 0">Reports (Risk overview, Rejected traffic, the address book) are worked out per account in background processes, each holding one account's flow logs (often 1 to 3 GB). More workers finish sooner and use more memory; too many push the Mac into swap and slow everything. <b>Automatic</b> uses at most a quarter of the cores and one worker per 6 GB of memory, at low priority, one report at a time.</p>
       <div id="stBuilds" class="small"></div></div>
+    <div class="card" id="stNet"><div class="card-head"><h3 style="margin:0">Data use</h3><button class="btn sm" type="button" id="stNetWhy" aria-expanded="false">Explain</button></div>
+      <p class="small" id="stNetNow" style="margin:0 0 8px"></p>
+      <div class="acts"><label class="switch"><input type="checkbox" id="stWifi" role="switch"> Read flow logs only on Wi-Fi (wait while on a phone hotspot)</label></div>
+      <div class="acts"><label class="switch"><input type="checkbox" id="stKeep" role="switch"> Keep prices when the console restarts</label></div>
+      <div class="small" id="stNetHelp" hidden style="margin:8px 0 0">
+        <p><b>Read flow logs only on Wi-Fi</b>: while this Mac is on a phone hotspot (macOS marks it as a metered connection, or it is an iPhone Personal Hotspot), Read all, Read one, Read and the scheduled read wait, and a read a restart stopped is carried on only once back on Wi-Fi. A read already running carries on. Reports, the Risk overview and everything already read work as normal: they use no internet.</p>
+        <p><b>How much data</b>: AWS scans the flow logs on its side, so the gigabytes on the bill are not downloaded. What comes over the network is the security groups, interfaces and the query results: roughly 0.5 MB an account to price, a few MB an account to read.</p>
+        <p><b>Keep prices when the console restarts</b>: a read of many accounts is priced account by account (spend, security groups, flow-log plan). On: each price is kept as it is worked out, so after a restart (an upgrade, a crash) only the accounts not yet reached are priced again. Off: every account is priced again from the start.</p></div></div>
     <div class="card" id="stAccess"><div class="card-head"><h3 style="margin:0">Approvals and running</h3></div>
       <div class="acts"><label class="switch"><input type="checkbox" id="stTwo" role="switch"> Two-person approval</label></div>
       <p class="muted small" style="margin:4px 0 10px">On: a different person must approve each change request before it can be applied. Off suits one person running the console on their own laptop.</p>
@@ -1425,6 +1433,8 @@ section.nodata .card:not(.empty-state) { display: none; }
       const pct = b.slices ? Math.round(100 * b.done / b.slices) : 0;
       h = `<p>${loading(`Reading flow logs: ${b.read} of ${b.to_read} accounts done, ${k("running")} reading now · ${bytesTxt(b.bytes)} read, about ${money2(b.bytes / 1e9 * (EST ? EST.per_gb : 0.005))} of ${money2(b.cost)} spent${eta(b)}`)}</p><div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><div class="tools"><button class="btn danger" id="bStop">Stop</button></div>`;
     }
+    const NW = S.network || {};
+    if (NW.metered) h = `<p class="small"><span class="pill" style="--p:var(--warn)">phone hotspot</span> ${NW.wifi_only ? "<b>Reads wait for Wi-Fi</b> (Settings, Data use). A read already running carries on." : "Pricing uses about 0.5 MB an account and reading a few MB an account (AWS scans the logs on its side). To wait for Wi-Fi, turn on <b>Read flow logs only on Wi-Fi</b> in Settings, Data use."}</p>` + h;
     $("batch").innerHTML = h;
     const idle = !b || ["done", "stopped"].includes(b.status);
     if (idle && (b ? b.id : 0) !== estFor) { estFor = b ? b.id : 0; loadEstimate(); }  // once, and again after each read
@@ -2065,7 +2075,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   // ---- Settings
   let SET = null;
   const toggleHelp = (btn, box) => $(btn).addEventListener("click", () => { const h = $(box); h.hidden = !h.hidden; $(btn).setAttribute("aria-expanded", String(!h.hidden)); });
-  for (const [b, h] of [["stApplyWhy", "stApplyHelp"], ["stPerfWhy", "stPerfHelp"], ["stDbWhy", "stDbHelp"], ["stDataWhy", "stDataHelp"]]) toggleHelp(b, h);
+  for (const [b, h] of [["stApplyWhy", "stApplyHelp"], ["stPerfWhy", "stPerfHelp"], ["stDbWhy", "stDbHelp"], ["stDataWhy", "stDataHelp"], ["stNetWhy", "stNetHelp"]]) toggleHelp(b, h);
   // Database and computer figures, refreshed while Settings is open
   let mxPoll = null;
   const bSize = (n) => n == null ? "—" : n >= 1e9 ? `${(n / 1e9).toFixed(n >= 1e10 ? 0 : 1)} GB` : n >= 1e6 ? `${Math.round(n / 1e6)} MB` : n >= 1e3 ? `${Math.round(n / 1e3)} kB` : `${n} B`;
@@ -2117,6 +2127,10 @@ section.nodata .card:not(.empty-state) { display: none; }
     const B = Object.entries(P.builds || {}).filter(([, b]) => b);
     $("stBuilds").innerHTML = B.length ? `<p style="margin:8px 0 0">Latest builds: ${B.map(([k, b]) => `${esc(k.replace("|", " "))} ${b.running ? `running, ${b.done} of ${b.todo}` : `${b.done} of ${b.todo} in ${Math.round((b.finished - b.started) / 60)} min`}${b.failed ? `, <span style="color:var(--bad)">${b.failed} failed</span>` : ""}`).join(" · ")}</p>` : "";
     $("stTwo").checked = !!SET.approvals;
+    const U = SET.data_use, N = U.network || {};
+    $("stWifi").checked = !!U.wifi_only;
+    $("stKeep").checked = !!U.keep_prices;
+    $("stNetNow").innerHTML = `Now: <span class="pill" style="--p:${N.metered ? "var(--warn)" : N.metered === false ? "var(--good)" : "var(--muted)"}">${N.metered ? "phone hotspot" : N.metered === false ? "Wi-Fi or wired" : "not known"}</span> <span class="muted">${esc(N.why || "")}${N.interface ? ` (${esc(N.interface)})` : ""}</span>${N.metered && U.wifi_only ? " · <b>reads are waiting for Wi-Fi</b>" : ""}`;
     const D = SET.database;
     $("stDbBody").innerHTML = `<p style="margin:0"><span class="pill" style="--p:${D.ok ? "var(--good)" : "var(--bad)"}">${D.ok ? "connected" : "not answering"}</span> <code>${esc(D.dsn || "not set up")}</code></p>
       <p class="muted" style="margin:4px 0 0">${D.from_env ? "From the environment variable SG_TIGHTENER_PG_DSN." : `From <code>${esc(D.file)}</code>.`} ${D.local ? "A local database in Docker on this Mac." : "A database elsewhere."}${D.ok ? "" : " " + esc(D.why || "")}</p>`;
@@ -2132,6 +2146,8 @@ section.nodata .card:not(.empty-state) { display: none; }
   $("stApplySave").addEventListener("click", (e) => act(e.target, async () => { await api("/api/settings", {strategy: $("stStrategy").value}); $("gStrategy").value = $("stStrategy").value; $("stApplyNote").textContent = "Saved."; }));
   $("stPerfSave").addEventListener("click", (e) => act(e.target, async () => { await api("/api/settings", {procs: Number($("stProcs").value)}); await loadSettings(); $("stPerfNote").textContent += " · saved"; }));
   $("stTwo").addEventListener("change", (e) => act(e.target, async () => { await api("/api/approvals", {on: e.target.checked}); await loadState(); }));
+  $("stWifi").addEventListener("change", (e) => act(e.target, async () => { await api("/api/settings", {wifi_only: e.target.checked}); await loadSettings(); await loadState(); }));
+  $("stKeep").addEventListener("change", (e) => act(e.target, async () => { await api("/api/settings", {keep_prices: e.target.checked}); await loadSettings(); }));
   const dsnGo = (save) => async (e) => act(e.target, async () => {
     const r = await api("/api/dsn-test", {dsn: $("stDsn").value.trim(), save});
     $("stDsnNote").innerHTML = r.ok ? `<span style="color:var(--good)">Connected: ${esc(r.version)}.</span>${r.saved ? " Saved: restart the console (Always running off and on, or <code>python sg_console.py install</code>) to use it." : ""}` : `<span style="color:var(--bad)">Could not connect: ${esc(r.error)}</span>`;

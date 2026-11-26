@@ -146,6 +146,47 @@ PASS_ENV = ("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy"
 RESUME_FOR = 3 * 86400  # a read interrupted longer ago than this is not carried on
 
 
+_NET: dict = {"at": 0.0, "v": None}
+HOTSPOT_GATEWAY = "172.20.10."  # an iPhone Personal Hotspot always hands out this range
+
+
+def _ifsummary(iface: str) -> str:
+    try:
+        return subprocess.run(["ipconfig", "getsummary", iface], capture_output=True, text=True, timeout=3, check=False).stdout
+    except Exception:  # noqa: BLE001 - not known
+        return ""
+
+
+def _network(fresh: bool = False) -> dict:
+    """How this Mac reaches AWS: {"metered": True/False/None, "interface", "why"}. macOS marks a phone hotspot
+    (and Low Data Mode) as expensive; an iPhone hotspot is also known by its gateway. Asked at most every 20 s."""
+    if not fresh and _NET["v"] and time.time() - _NET["at"] < 20:
+        return _NET["v"]
+    out = {"metered": None, "interface": "", "why": "not known on this system"}
+    if sys.platform == "darwin":
+        try:
+            r = subprocess.run(["route", "-n", "get", "default"], capture_output=True, text=True, timeout=3, check=False).stdout
+            m_if, m_gw = re.search(r"interface:\s*(\S+)", r), re.search(r"gateway:\s*(\S+)", r)
+            iface, gw = (m_if.group(1) if m_if else ""), (m_gw.group(1) if m_gw else "")
+            ifaces = [iface] if iface and not iface.startswith(("utun", "ipsec", "ppp")) else []
+            if not ifaces:  # a VPN (Zscaler) owns the default route: look at the links with an address underneath
+                lst = subprocess.run(["ipconfig", "getiflist"], capture_output=True, text=True, timeout=3, check=False).stdout.split()
+                ifaces = [i for i in lst if i.startswith("en") and subprocess.run(
+                    ["ipconfig", "getifaddr", i], capture_output=True, text=True, timeout=3, check=False).stdout.strip()]  # fmt: skip
+            exp = [bool(re.search(r"IsExpensive\s*:\s*TRUE", _ifsummary(i))) for i in ifaces]
+            if not ifaces and not gw:
+                out = {"metered": None, "interface": "", "why": "no network"}
+            elif gw.startswith(HOTSPOT_GATEWAY) or (exp and all(exp)):
+                out = {"metered": True, "interface": ", ".join(ifaces) or iface,
+                       "why": "a phone hotspot" if gw.startswith(HOTSPOT_GATEWAY) else "macOS marks this connection as metered (a phone hotspot or Low Data Mode)"}
+            else:
+                out = {"metered": False, "interface": ", ".join(ifaces) or iface, "why": "Wi-Fi or a wired network"}
+        except Exception as exc:  # noqa: BLE001 - not known
+            out["why"] = f"not known ({exc})"[:200]
+    _NET.update(at=time.time(), v=out)
+    return out
+
+
 def _keep_awake():
     """On macOS, stop the machine sleeping while a long read runs (sleep drops every query and the SSO
     session runs out meanwhile). Returns the process to terminate afterwards, or None."""
@@ -327,6 +368,7 @@ class Console:
                     "sso": bool(self.sso), "jobs": self.job_list(), "batch": self.batch_status(),
                     "approvals": st.approvals(), "db": str(st.path),
                     "apply_strategy": st.meta_get("apply_strategy", "room") or "room",
+                    "network": {**_network(), "wifi_only": bool(st.meta_get("wifi_only", False))},
                     "verify": {"ok": ok, "entries": n, "why": why}, "accounts": list(accounts.values()),
                     "pending_requests": len(st.requests("pending"))}  # fmt: skip
         finally:
@@ -837,6 +879,7 @@ class Console:
         try:
             approvals = st.approvals()
             strategy = st.meta_get("apply_strategy", "room") or "room"
+            data_use = {"wifi_only": bool(st.meta_get("wifi_only", False)), "keep_prices": bool(st.meta_get("keep_prices", True))}
         finally:
             st.close()
         try:
@@ -857,6 +900,7 @@ class Console:
                             "memory_gb": round(_mem_bytes() / 2**30), "from_env": bool(os.environ.get("SG_REPORT_PROCS")),
                             "builds": {k: self.build_status(*k.split("|")) for k in list(self._builds)}},
             "approvals": approvals, "service": self.service.status() if self.service else None,
+            "data_use": {**data_use, "network": _network(fresh=True)},
             "database": {"dsn": _mask_dsn(dsn), "from_env": bool(os.environ.get(sg_store.DSN_ENV)),
                          "file": str(sg_store.dsn_file()), **sg_store.server_status()},
             "data": {"dir": str(sg_ipintel.DATA_DIR), "names": str(names), "names_exists": Path(names).exists(),
@@ -911,6 +955,10 @@ class Console:
                     if body["strategy"] not in sg_db.APPLY_STRATEGIES:
                         raise ConsoleError(400, "strategy is one of " + ", ".join(sg_db.APPLY_STRATEGIES))
                     st.meta_set("apply_strategy", body["strategy"])
+                for k in ("wifi_only", "keep_prices"):
+                    if k in body:
+                        st.meta_set(k, bool(body[k]))
+                        LOG.info("setting %s now %s", k, bool(body[k]))
                 if "procs" in body:
                     try:
                         n = int(body["procs"] or 0)
@@ -1061,6 +1109,11 @@ class Console:
             if self._sched_wait != "sign-in":
                 self._sched_log({"slot": slot, "status": "waiting", "why": "not signed in to AWS: it runs once you sign in"})
             self._sched_wait = "sign-in"
+            return ""
+        if self.metered_hold():
+            if self._sched_wait != "wifi":
+                self._sched_log({"slot": slot, "status": "waiting", "why": "on a phone hotspot: it runs once on Wi-Fi"})
+            self._sched_wait = "wifi"
             return ""
         self._sched_wait = ""
         st = self.store()
@@ -1487,6 +1540,8 @@ class Console:
         def go():
             from concurrent.futures import ThreadPoolExecutor
 
+            if not self._wait_unmetered(f"carrying on with {len(jobs)} read(s)"):
+                return
             awake = _keep_awake()
             try:
                 with ThreadPoolExecutor(max_workers=BATCH_WORKERS) as pool:
@@ -1506,6 +1561,40 @@ class Console:
             raise ConsoleError(404, "no such read")
         return job
 
+    def _pref(self, key: str, default):
+        try:
+            st = self.store()
+            try:
+                return st.meta_get(key, default)
+            finally:
+                st.close()
+        except Exception:  # noqa: BLE001 - the default
+            return default
+
+    def metered_hold(self) -> str:
+        """Why reads wait now: on a phone hotspot with "Read only on Wi-Fi" on ('' when they may go)."""
+        if not self._pref("wifi_only", False):
+            return ""
+        n = _network()
+        return (f"on {n['why']}: reads wait for Wi-Fi (Settings, Data use, Read only on Wi-Fi)") if n["metered"] else ""
+
+    def _refuse_metered(self) -> None:
+        why = self.metered_hold()
+        if why:
+            raise ConsoleError(409, why)
+
+    def _wait_unmetered(self, what: str, limit: float = 12 * 3600) -> bool:
+        """Block a background read (a resume, the schedule) until off the hotspot; False when it never was."""
+        said, t0 = False, time.time()
+        while self.metered_hold():
+            if not said:
+                LOG.info("%s waits for Wi-Fi: on a metered connection", what)
+                said = True
+            if time.time() - t0 > limit:
+                return False
+            time.sleep(60)
+        return True
+
     def read_start(self, body: dict, start: bool = True) -> dict:
         """Read an account: its security groups into the database, then plan the flow-log read and price it.
         Nothing is spent until ``read_confirm``."""
@@ -1522,6 +1611,8 @@ class Console:
         regions = raw if isinstance(raw, list) else [r.strip() for r in str(raw).split(",") if r.strip()]
         if any(j["account"] == account and j["status"] in ("starting", "running", "confirm") for j in self.jobs.values()):
             raise ConsoleError(409, f"{account} is already being read")
+        if start:
+            self._refuse_metered()
         jid = max(self.jobs, default=0) + 1
         name = next((c["name"] for c in (self.auth().chosen() if self.auth() else []) if c["account"] == account), "")
         job = {"id": jid, "account": account, "name": name, "days": days, "regions": regions, "status": "starting",
@@ -1564,7 +1655,10 @@ class Console:
         try:
             t = self.targets()  # not fresh: that signed in again (one STS call, under the lock) for every account
             sess = sg_review.SafeSession(t.session(job["account"]))  # its regions are read at once
+            if self._priced_restore(job, sess):
+                return
             if job.get("min_spend") and self._too_small(job, sess):
+                self._priced_put(job)
                 return
             regions = job["regions"]
             doc = sg_review.load(job["account"])  # loaded once
@@ -1614,6 +1708,7 @@ class Console:
             with_logs = [r for r in regions if (doc["regions"].get(r) or {}).get("query_sets")]
             if not tasks:
                 job["status"] = "done"
+                self._priced_put(job)
                 self._read_settled(job)
                 self._say(job, f"flow logs already read for the last {job['days']} day(s) in {', '.join(with_logs)}"
                           if with_logs else "no VPC flow logs in CloudWatch Logs in these regions: the security groups "
@@ -1631,6 +1726,7 @@ class Console:
             del doc
             self._say(job, f"flow logs in {', '.join(with_logs)}: {len(tasks)} slice(s), {round(hours)} hours to read, "
                            + (f"about US${cost:.2f}" if cost is not None else "cost not known until a first 1-day read"))  # fmt: skip
+            self._priced_put(job, self._job_extra[job["id"]])
         except Exception as exc:
             LOG.exception("reading %s failed", job["account"])
             job["status"] = "failed"
@@ -1641,6 +1737,7 @@ class Console:
         extra = self._job_extra.get(job["id"])
         if job["status"] != "confirm" or not extra:
             raise ConsoleError(409, "this read is not waiting for confirmation")
+        self._refuse_metered()
         job["status"] = "running"
         self._read_asked(job, True)
         threading.Thread(target=self._run, args=(job, extra), daemon=True).start()
@@ -1711,6 +1808,7 @@ class Console:
         if b["status"] in ("done", "stopped") and not b.get("forgotten"):
             b["forgotten"] = True
             self._batch_keep(None)
+            self._priced_clear()
         return {"id": b["id"], "status": b["status"], "accounts": len(jobs), "count": count, "days": b["days"],
                 "resumed": bool(b.get("resumed")),
                 "min_spend": b.get("min_spend", 0), "spend_from": b.get("spend_from", ""),
@@ -1726,6 +1824,7 @@ class Console:
         the database, then one total for their flow logs. Nothing is spent until ``read_all_confirm``."""
         if self.batch and self.batch["status"] in ("pricing", "running"):
             raise ConsoleError(409, "a read of many accounts is already under way")
+        self._refuse_metered()
         chosen = (self.auth().chosen() if self.auth() else [])
         want = body.get("accounts")
         accounts = [c["account"] for c in chosen if not want or c["account"] in set(want)]
@@ -1745,11 +1844,16 @@ class Console:
         b = {"id": (self.batch["id"] if self.batch else 0) + 1, "status": "pricing", "jobs": [j["id"] for j in jobs],
              "days": jobs[0]["days"], "regions": jobs[0]["regions"], "started": time.time(), "stop": threading.Event(),
              "min_spend": min_spend, "spend_from": ""}  # fmt: skip
+        ask_at = float(body.get("_resume_at") or time.time())
+        keep = bool(self._pref("keep_prices", True))
+        if not body.get("_resume_at"):
+            self._priced_clear()  # a new read: prices kept for an earlier one are not used
         for j in jobs:
             j["batch"], j["min_spend"] = b["id"], min_spend
+            j["resume_at"] = ask_at if keep else None
         self.batch = b
         self._batch_keep({"accounts": [j["account"] for j in jobs], "regions": body.get("regions") or "all",
-                          "days": jobs[0]["days"], "min_spend": min_spend, "at": time.time()})
+                          "days": jobs[0]["days"], "min_spend": min_spend, "at": ask_at})
         threading.Thread(target=self._batch_price, args=(b, jobs), daemon=True).start()
         return self.batch_status()
 
@@ -1768,6 +1872,69 @@ class Console:
                 st.close()
         except Exception as exc:  # noqa: BLE001 - only the resume after a restart is lost
             LOG.warning("read of many accounts not remembered: %s", exc)
+
+    # The price of each account of that read is kept as it is worked out, so a restart does not price all of
+    # them again (five minutes and tens of MB of AWS calls for 167 accounts): only those not reached are.
+    PRICED_KEY = "batch_priced:"
+
+    def _priced_put(self, job: dict, extra: dict | None = None) -> None:
+        if not job.get("resume_at"):
+            return
+        v = {"at": job["resume_at"], "days": job["days"], "status": job["status"], "spend": job.get("spend"),
+             "regions": job.get("regions"), "lines": job["lines"][-3:]}  # fmt: skip
+        if extra:
+            v.update(tasks=extra["tasks"], now=extra["now"], hours_total=extra.get("hours_total"), total=job.get("total"),
+                     cost=job.get("cost"), hours=job.get("hours"), logs_in=job.get("logs_in"))  # fmt: skip
+        try:
+            st = self.store()
+            try:
+                with st:
+                    st.meta_set(self.PRICED_KEY + job["account"], v)
+            finally:
+                st.close()
+        except Exception as exc:  # noqa: BLE001 - priced again after a restart
+            LOG.warning("price of %s not kept: %s", job["account"], exc)
+
+    def _priced_get(self, job: dict) -> dict | None:
+        if not job.get("resume_at"):
+            return None
+        v = self._pref(self.PRICED_KEY + job["account"], None)
+        if not isinstance(v, dict) or v.get("at") != job["resume_at"] or v.get("days") != job["days"]:
+            return None
+        return v
+
+    def _priced_clear(self) -> None:
+        try:
+            st = self.store()
+            try:
+                with st:
+                    st.db.execute("DELETE FROM meta WHERE key LIKE ?", (self.PRICED_KEY + "%",))
+            finally:
+                st.close()
+        except Exception as exc:  # noqa: BLE001 - left over prices are ignored (they name an older read)
+            LOG.warning("kept prices not cleared: %s", exc)
+
+    def _priced_restore(self, job: dict, sess) -> bool:
+        """True when the job got back the price worked out before a restart."""
+        v = self._priced_get(job)
+        if not v or v["status"] not in ("skipped", "done", "confirm") or (v["status"] == "confirm" and not v.get("tasks")):
+            return False
+        job["spend"], job["regions"] = v.get("spend"), v.get("regions") or job["regions"]
+        if v["status"] in ("skipped", "done"):
+            job["status"] = v["status"]
+            self._read_settled(job)
+            for line in v.get("lines") or []:
+                self._say(job, line)
+            self._say(job, "(from before the console restarted)")
+            return True
+        tasks = [tuple(t) for t in v["tasks"]]
+        job.update(status="confirm", total=v.get("total") or len(tasks), cost=v.get("cost"), hours=v.get("hours"),
+                   logs_in=v.get("logs_in") or [])  # fmt: skip
+        self._job_extra[job["id"]] = {"sess": sess, "tasks": tasks, "now": v["now"], "stop": threading.Event(),
+                                      "hours_total": v.get("hours_total")}  # fmt: skip
+        self._say(job, f"{len(tasks)} slice(s), about US${v['cost']:.2f}" if v.get("cost") is not None else f"{len(tasks)} slice(s)")
+        self._say(job, "priced before the console restarted: kept, not priced again")
+        return True
 
     def resume_batch(self) -> None:
         """After a restart: price again the read of many accounts that was under way (asked within 12 hours)."""
@@ -1791,9 +1958,11 @@ class Console:
         else:
             LOG.warning("read of many accounts not resumed: not signed in to AWS")
             return
+        if not self._wait_unmetered("the read of many accounts a restart stopped"):
+            return
         try:
             self.read_all({"accounts": ask["accounts"], "regions": ask["regions"], "days": ask["days"],
-                           "min_spend": ask["min_spend"]})
+                           "min_spend": ask["min_spend"], "_resume_at": ask.get("at")})
             self.batch["resumed"] = True
             LOG.info("resumed the read of %d account(s) that a restart stopped", len(ask["accounts"]))
         except ConsoleError as exc:
@@ -1848,6 +2017,8 @@ class Console:
         b = self.batch
         if not b or b["status"] != "confirm":
             raise ConsoleError(409, "no read of many accounts is waiting for confirmation")
+        self._refuse_metered()
+        self._priced_clear()  # confirmed reads carry on after a restart on their own (resume_reads)
         jobs = [self.jobs[i] for i in b["jobs"] if self.jobs[i]["status"] == "confirm" and self._job_extra.get(i)]
         for j in jobs:
             j["status"] = "queued"
