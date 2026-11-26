@@ -759,7 +759,9 @@ section.nodata .card:not(.empty-state) { display: none; }
     <h2>Outbound rules that leave the account</h2>
     <p class="lede">Every outbound security group rule, on a group some interface uses, that reaches outside its own account, riskiest first: <b>internet</b>, then <b>SaaS and partners</b>, then <b>on-premises data centres</b>, then <b>your other AWS accounts</b> (their VPCs, groups across a peering, PrivateLink endpoints to another account's service). A rule is <b>too wide</b> when it allows every protocol, a range of ports, or more addresses than one destination needs.</p>
     <div class="tools">
-      <input id="obQ" type="search" placeholder="Search: account, group, destination…" aria-label="Search outbound rules" autocomplete="off" style="flex:1;min-width:260px">
+      <div class="combo" id="obAcctCombo" style="flex:1;min-width:260px"><input id="obAcctQ" type="search" placeholder="Every account: type to filter" aria-label="Account: type to filter, pick from the list" role="combobox" aria-expanded="false" aria-controls="obAcctList" autocomplete="off">
+        <div class="combo-list" id="obAcctList" role="listbox" hidden></div></div>
+      <input id="obQ" type="search" placeholder="Search: group, port, destination…" aria-label="Search outbound rules" autocomplete="off" style="min-width:220px">
       <label class="small">Reaches <select id="oCls"><option value="">anything outside</option><option value="internet">the internet</option><option value="saas">SaaS and partners</option><option value="datacentre">on-premises data centres</option><option value="account">other AWS accounts</option></select></label>
       <label class="small"><input type="checkbox" id="oWide" checked> Too wide only</label>
       <label class="small"><input type="checkbox" id="oDefault"> Include the default "all traffic to 0.0.0.0/0"</label>
@@ -1745,14 +1747,53 @@ section.nodata .card:not(.empty-state) { display: none; }
     const rows = e.rules || [];
     return head + `<div class="facts">${tiles}</div>${rows.length ? `<div class="scroll"><table class="small"><thead><tr><th>Reaches</th><th>Group</th><th>Ports</th><th>Destination</th><th class="num">Interfaces</th><th>Why too wide</th></tr></thead><tbody>${rows.map((r) => { const g = nOf("o:" + r.cls); return oRow(r, null, g.n ? [nxRow(g.n, g.sev), nxBadge(g.n, g.sev)] : ""); }).join("")}</tbody></table></div>${e.total > rows.length ? `<p class="muted small">The ${rows.length} riskiest of ${e.total.toLocaleString()}: the Outbound tab lists them all for this account.</p>` : ""}` : '<p class="small" style="color:var(--good)">No outbound rule reaches outside the account.</p>'}${e.unattached ? `<p class="muted small">${e.unattached} more outbound rule(s) on groups no interface uses: not counted.</p>` : ""}`;
   }
+  // An account filter like Rejected traffic's: type a name or number, pick from the list (busiest first);
+  // empty is every account. Returns {get, set}.
+  function acctCombo(prefix, items, unit, onPick) {
+    const q = $(prefix + "Q"), list = $(prefix + "List"), wrap = $(prefix + "Combo");
+    let cur = "", at = -1;
+    const label = (id) => { const a = items().find((x) => x.id === id); return id ? (a?.name ? `${a.name} (${id})` : id) : ""; };
+    const sync = () => { if (document.activeElement !== q) q.value = label(cur); };
+    function draw() {
+      const t = q.value.toLowerCase().trim(), c = label(cur).toLowerCase(), all = items();
+      const hit = (t && t !== c ? all.filter((a) => (a.name + " " + a.id).toLowerCase().includes(t)) : all).sort((x, y) => y.n - x.n || x.name.localeCompare(y.name));
+      at = hit.length && t && t !== c ? 0 : -1;
+      list.innerHTML = `<div class="co" role="option" data-v=""><span>Every account</span><span class="n">${all.length.toLocaleString()}</span></div>`
+        + (hit.length ? `<div class="cg">${t && t !== c ? `${hit.length} matching` : `Accounts, most ${unit} first`}</div>` : `<div class="cg">No account matches "${esc(t)}"</div>`)
+        + hit.slice(0, 200).map((a, j) => `<div class="co${j === at ? " act" : ""}" role="option" data-v="${esc(a.id)}"><span>${esc(a.name || a.id)} <span class="muted small">${esc(a.id)}</span></span><span class="n">${a.n.toLocaleString()} ${esc(unit)}</span></div>`).join("");
+      list.hidden = false; q.setAttribute("aria-expanded", "true");
+    }
+    const close = () => { if (list.hidden) return; list.hidden = true; q.setAttribute("aria-expanded", "false"); sync(); };
+    function pick(el) {
+      if (!el?.classList.contains("co")) return;
+      cur = el.dataset.v; list.hidden = true; q.setAttribute("aria-expanded", "false"); q.value = label(cur); q.blur(); onPick(cur);
+    }
+    q.addEventListener("focus", () => { q.select(); draw(); });
+    q.addEventListener("input", () => { if (!q.value && cur) { cur = ""; onPick(""); } draw(); });
+    q.addEventListener("keydown", (ev) => {
+      const os = [...list.querySelectorAll(".co[data-v]")].slice(1);
+      if (ev.key === "Escape") { close(); q.blur(); return; }
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+        ev.preventDefault(); if (list.hidden) draw();
+        at = Math.max(-1, Math.min(os.length - 1, at + (ev.key === "ArrowDown" ? 1 : -1)));
+        os.forEach((o, j) => o.classList.toggle("act", j === at)); os[at]?.scrollIntoView({block: "nearest"});
+      } else if (ev.key === "Enter") { ev.preventDefault(); pick(at >= 0 ? os[at] : list.querySelector(".co")); }
+    });
+    list.addEventListener("mousedown", (ev) => { ev.preventDefault(); pick(ev.target.closest(".co")); });
+    document.addEventListener("click", (ev) => { if (!ev.target.closest("#" + wrap.id)) close(); });
+    return {get: () => cur, set: (v) => { cur = v || ""; sync(); }};
+  }
+  let obAcct = null;
   async function loadOutbound() {
     if (!M) M = await api("/api/macro?range=1m");
+    if (!obAcct) obAcct = acctCombo("obAcct", () => (M?.accounts || []).filter((a) => a.egress?.by).map((a) => ({id: a.account, name: a.name || "", n: Object.values(a.egress.by).reduce((s, b) => s + (b.wide || 0), 0)})), "too wide", drawOutbound);
     for (const id of ["obQ", "oCls", "oWide", "oDefault"]) { const el = $(id); if (!el.dataset.on) { el.dataset.on = "1"; el.addEventListener(id === "obQ" ? "input" : "change", drawOutbound); } }
     for (const b of document.querySelectorAll("[data-ohelp]")) if (!b.dataset.on) { b.dataset.on = "1"; b.addEventListener("click", () => { const h = $(b.dataset.ohelp); h.hidden = !h.hidden; b.setAttribute("aria-expanded", String(!h.hidden)); }); }
     drawOutbound();
   }
   function drawOutbound() {
-    const A = (M?.accounts || []).filter((a) => a.egress?.by);
+    const pickA = obAcct?.get() || "";
+    const A = (M?.accounts || []).filter((a) => a.egress?.by && (!pickA || a.account === pickA));
     const q = $("obQ").value.toLowerCase().trim(), cls = $("oCls").value, wide = $("oWide").checked, dflt = $("oDefault").checked;
     const tot = {}; for (const k of Object.keys(OCLS)) tot[k] = {rules: 0, wide: 0, accts: 0};
     for (const a of A) for (const k of Object.keys(OCLS)) { const b = a.egress.by[k] || {}; tot[k].rules += b.rules || 0; tot[k].wide += b.wide || 0; tot[k].accts += b.wide ? 1 : 0; }
@@ -1764,10 +1805,10 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("oAccts").innerHTML = accts.slice(ap.a, ap.b).map((a) => `<tr><td>${esc(a.name || a.account)}<div class="muted"><code>${esc(a.account)}</code></div></td>${Object.keys(OCLS).map((k) => cell(a, k)).join("")}<td><button class="btn sm" data-oacct="${esc(a.account)}">Open account</button></td></tr>`).join("") || '<tr><td colspan="6" class="muted">No account worked out yet.</td></tr>';
     pagerAfter($("oAccts"), ap.bar);
     const rows = A.flatMap((a) => (a.egress.rules || []).map((r) => ({r, a}))).filter(({r, a}) => (!cls || r.cls === cls) && (!wide || r.wide.length) && (dflt || !isDefaultOut(r))
-      && (!q || `${a.name} ${a.account} ${r.gname} ${r.group} ${r.dest} ${r.name} ${r.ports}`.toLowerCase().includes(q)));
+      && (!q || `${r.gname} ${r.group} ${r.dest} ${r.name} ${r.ports} ${r.region}`.toLowerCase().includes(q)));
     const rank = {internet: 0, saas: 1, datacentre: 2, account: 3}, sv = {high: 0, medium: 1, low: 2};
     rows.sort((x, y) => rank[x.r.cls] - rank[y.r.cls] || sv[x.r.sev] - sv[y.r.sev] || (y.r.db - x.r.db) || y.r.enis - x.r.enis);
-    $("obN").textContent = `${rows.length.toLocaleString()} shown${dflt ? "" : " (default all-traffic rules hidden)"}; up to 20 per account`;
+    $("obN").textContent = `${rows.length.toLocaleString()} shown${pickA ? "" : ` in ${A.length} accounts`}${dflt ? "" : " (default all-traffic rules hidden)"}; up to 20 per account`;
     const rp = page("outR", rows.length, drawOutbound);
     $("oRows").innerHTML = rows.slice(rp.a, rp.b).map(({r, a}) => oRow(r, a)).join("") || '<tr><td colspan="7" class="muted">Nothing matches.</td></tr>';
     pagerAfter($("oRows"), rp.bar);
