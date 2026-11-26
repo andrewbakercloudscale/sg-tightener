@@ -32,7 +32,9 @@ def test_a_slice_keeps_resets_apart_from_the_connections(monkeypatch):
         return [{"src": "198.51.100.9", "dst": "10.0.0.5", "eni": "eni-lb", "proto": "6", "dport": "443",
                  "action": "ACCEPT", "flows": "10", "resets": "8", "dir": "ingress"},
                 {"src": "10.0.0.5", "dst": "198.51.100.9", "eni": "eni-lb", "proto": "6", "dport": "51000",
-                 "action": "ACCEPT", "flows": "4", "resets": "4", "dir": "egress"}], 10, "Complete"  # fmt: skip
+                 "action": "ACCEPT", "flows": "4", "resets": "4", "dir": "egress"},
+                {"src": "10.0.0.5", "dst": "203.0.113.50", "eni": "eni-app", "proto": "6", "dport": "443",
+                 "action": "ACCEPT", "flows": "2", "resets": "2", "dir": "egress"}], 10, "Complete"  # fmt: skip
 
     monkeypatch.setattr(sg_review, "run_query", fake)
     (c,) = sg_review.read_chunk(None, "eu-west-1", 0, 3600, [{"format": FMT, "groups": ["g"]}], ["10.0.0.0/16"])

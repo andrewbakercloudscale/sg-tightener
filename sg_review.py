@@ -1116,6 +1116,8 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
         got = []
         for r in rs:
             if r.get("dir") == "egress":  # the interface reset the connection: source and target swap round
+                if (_int(r.get("dport")) or 0) < 1024:
+                    continue  # to a service port: the interface is the client, resetting its own call out
                 rst.append([r.get("dst"), r.get("src"), r.get("eni"), r.get("proto"), None, _int(r.get("resets")), "out"])
                 continue
             got.append([r.get("src"), r.get("dst"), r.get("eni"), r.get("proto"), _int(r.get("dport")), r.get("action"),
