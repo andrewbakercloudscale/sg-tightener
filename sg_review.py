@@ -381,15 +381,30 @@ def detail_query(log_format: str | None, vpc_ranges: list[str], fold: bool | str
     b = _base(log_format, vpc_ranges)
     if not b:
         return None
-    head, src, dst, _ = b
-    port = (fold is True and reply_port(fields_of(log_format))) or (f"least(f_dstport, {EPHEMERAL})" if fold else "f_dstport")
+    head, src, dst, by_dir = b
+    fields = fields_of(log_format)
+    port = (fold is True and reply_port(fields)) or (f"least(f_dstport, {EPHEMERAL})" if fold else "f_dstport")
     # every connection, refused internet ones included: one scan of the log gives both who connected and who
-    # was turned away (``public_rows`` splits those out), where a second query would scan it all again
+    # was turned away (``public_rows`` splits those out), where a second query would scan it all again.
+    # With tcp-flags, the same scan counts connections reset (RST): sent by the source (inbound records), and with
+    # a flow direction also those the interface reset (outbound records carrying RST, a few rows each slice)
+    if "tcp_flags" not in fields:
+        return (
+            f"{head}"
+            f" | fields {port} as dport"
+            f" | stats count(*) as flows, sum(f_bytes) as bytes by {src} as src, {dst} as dst,"
+            f" f_interface_id as eni, f_protocol as proto, dport, f_action as action | sort flows desc | limit {ROWS}"
+        )
+    rst = "floor(f_tcp_flags / 4) % 2"
+    direction = ""
+    if by_dir:
+        head = head.replace('f_flow_direction = "ingress"', f'(f_flow_direction = "ingress" or (f_flow_direction = "egress" and {rst} = 1))')
+        direction = ", f_flow_direction as dir"
     return (
         f"{head}"
-        f" | fields {port} as dport"
-        f" | stats count(*) as flows, sum(f_bytes) as bytes by {src} as src, {dst} as dst,"
-        f" f_interface_id as eni, f_protocol as proto, dport, f_action as action | sort flows desc | limit {ROWS}"
+        f" | fields {port} as dport, {rst} as rst"
+        f" | stats count(*) as flows, sum(f_bytes) as bytes, sum(rst) as resets by {src} as src, {dst} as dst,"
+        f" f_interface_id as eni, f_protocol as proto, dport, f_action as action{direction} | sort flows desc | limit {ROWS}"
     )
 
 
@@ -1055,6 +1070,7 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
         return [*read_chunk(logs, region, mid, e, qsets, vpcs, cancelled, egress, tick, hint),
                 *read_chunk(logs, region, s, mid, qsets, vpcs, cancelled, egress, tick, hint)]  # fmt: skip
     rows, pub, egr, nbytes, cut, pub_cut, errors = [], [], [], 0, False, False, []
+    rst, has_rst = [], False  # connections reset: [source, target, interface, protocol, port, resets, "in" or "out"]
     for q in qsets:
         rs, b, status = None, 0, ""
         for fold in (True, "high", False):
@@ -1087,8 +1103,18 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
                     parts[0]["b"] += nbytes  # the full slice's query was billed too
                 return parts  # fmt: skip
             cut = True
-        got = [[r.get("src"), r.get("dst"), r.get("eni"), r.get("proto"), _int(r.get("dport")), r.get("action"),
-                _int(r.get("flows"))] for r in rs]  # fmt: skip
+        resets = "tcp_flags" in fields_of(q["format"])
+        has_rst = has_rst or resets
+        got = []
+        for r in rs:
+            if r.get("dir") == "egress":  # the interface reset the connection: source and target swap round
+                rst.append([r.get("dst"), r.get("src"), r.get("eni"), r.get("proto"), None, _int(r.get("resets")), "out"])
+                continue
+            got.append([r.get("src"), r.get("dst"), r.get("eni"), r.get("proto"), _int(r.get("dport")), r.get("action"),
+                        _int(r.get("flows"))])  # fmt: skip
+            if resets and _int(r.get("resets")):
+                rst.append([r.get("src"), r.get("dst"), r.get("eni"), r.get("proto"), _int(r.get("dport")),
+                            _int(r.get("resets")), "in"])  # fmt: skip
         kept, refused = public_rows(got)
         rows += kept
         pub_cut = pub_cut or len(rs) >= ROWS
@@ -1113,6 +1139,8 @@ def read_chunk(logs, region: str, s: int, e: int, qsets: list, vpcs: list, cance
     out = {"r": region, "s": s, "e": e, "st": st, "b": nbytes, "rows": rows, "pub": pub, "pc": pub_cut,
            "err": "; ".join(errors)}
     out["q1"] = 1  # one scan per slice (before, a second query scanned it all again for refused internet sources)
+    if has_rst:
+        out["rst"] = rst  # connection resets were counted in this slice (its format has tcp-flags)
     if top:
         out["top"] = 1  # the busiest 10,000 rows of a slice no split can fit: not read again finer
     if egress:
@@ -4832,8 +4860,15 @@ def report_row(kind: str, account: str, name: str, range_key: str):
     if not doc or not any(c["st"] in ("ok", "cut") for c in doc["chunks"]):
         return None
     if kind == "macro":
-        rep = build(doc, range_key, names=load_names(), assets=True)
-        return macro_row(account, doc.get("name") or name, rep)
+        names = load_names()
+        rep = build(doc, range_key, names=names, assets=True)
+        row = macro_row(account, doc.get("name") or name, rep)
+        try:
+            row["resets"] = resets_summary(doc, range_key, names)
+        except Exception as exc:  # noqa: BLE001 - the rest of the row still counts
+            log.warning("resets for %s: %s", account, exc)
+            row["resets"] = {"read": 0, "slices": 0, "error": str(exc)[:200]}
+        return row
     rep = build(doc, range_key)
     name = doc.get("name", "")
     cov = rep.get("covered") or [1.0]
@@ -4863,6 +4898,120 @@ def needed_ips(rules: list) -> int:
         else:
             n += int(r.get("allowed") or 0)
     return n
+
+
+RESET_TOP = 15  # sources listed per account
+RESET_SHARE = 0.5  # an internet source with at least this share of its connections reset, and RESET_MIN resets, is suspect
+RESET_MIN = 20
+
+
+def lb_of(e: dict) -> str:
+    """A load balancer interface's balancer as CloudWatch names it ("app/name/id", "net/name/id"), else ""."""
+    d = str((e or {}).get("desc") or "")
+    return d[4:] if d.startswith("ELB ") else ""
+
+
+def resets_summary(doc: dict, range_key: str = "1m", names: list | None = None) -> dict:
+    """Connections reset (TCP RST) in the window, from slices read with tcp-flags: the sources reset at load
+    balancers, and internet sources reset anywhere, with what to do about each (block, investigate, check);
+    each load balancer's resets; and resets over time, sent by the source ("in") or by the interface ("out")."""
+    span, step = RANGES.get(range_key, RANGES["1m"])
+    step = max(step, HOUR)
+    chunks = [c for c in doc["chunks"] if c["st"] in ("ok", "cut")]
+    if not chunks:
+        return {"read": 0, "slices": 0}
+    end = max(c["e"] for c in chunks)
+    start = _floor(end - span, step)
+    nb = max(1, -(-(end - start) // step))
+    win = [c for c in chunks if c["e"] > start]
+    with_rst = [c for c in win if "rst" in c]
+    out = {"read": len(with_rst), "slices": len(win), "since": min((c["s"] for c in with_rst), default=None),
+           "bins": [start + i * step for i in range(nb)], "series": {"in": [0] * nb, "out": [0] * nb},
+           "total": {"in": 0, "out": 0, "sources": 0}, "lbs": [], "sources": []}  # fmt: skip
+    if not with_rst:
+        return out
+    enis = {}
+    for region, x in doc["regions"].items():
+        for eid, e in ((x.get("snapshot") or {}).get("enis") or {}).items():
+            enis[eid] = {**e, "region": region}
+    lab = Labeller(doc, names=names)
+    src_of: dict[str, dict] = {}
+    lbs: dict[str, dict] = {}
+    for c in with_rst:
+        b = (c["s"] - start) // step
+        for src, own, eni, proto, port, n, way in c["rst"]:
+            if not src or not n:
+                continue
+            e = enis.get(eni) or {}
+            lb = lb_of(e)
+            public = _is_public(src)
+            if not lb and not public:
+                continue  # resets between the account's own services: not something to block
+            if 0 <= b < nb:
+                out["series"][way][b] += n
+            out["total"][way] += n
+            s = src_of.setdefault(src, {"src": src, "in": 0, "out": 0, "enis": {}, "ports": {}, "lbs": set(),
+                                        "last": 0, "first": c["s"]})  # fmt: skip
+            s[way] += n
+            s["enis"][eni] = s["enis"].get(eni, 0) + n
+            if port is not None:
+                s["ports"][(str(proto), port)] = s["ports"].get((str(proto), port), 0) + n
+            s["last"], s["first"] = max(s["last"], c["e"]), min(s["first"], c["s"])
+            if lb:
+                s["lbs"].add(lb)
+                x = lbs.setdefault(lb, {"lb": lb, "type": lb.split("/")[0], "name": lb.split("/")[1] if "/" in lb else lb,
+                                        "region": e.get("region", ""), "vpc": e.get("vpc", ""), "public": bool(e.get("public")),
+                                        "in": 0, "out": 0, "srcs": set(), "series": [0] * nb})  # fmt: skip
+                x[way] += n
+                x["srcs"].add(src)
+                if 0 <= b < nb:
+                    x["series"][b] += n
+    # each source's connections to the interfaces it was reset on, for the share reset
+    flows: dict[tuple, int] = {}
+    for c in win:
+        for src, _dst, eni, _p, _port, action, f in c.get("rows") or []:
+            if src in src_of and eni in src_of[src]["enis"]:
+                flows[(src, eni)] = flows.get((src, eni), 0) + (f or 0)
+        for src, f, *_rest in c.get("pub") or []:
+            if src in src_of:
+                flows[(src, "-")] = flows.get((src, "-"), 0) + (f or 0)
+    rows = []
+    for src, s in src_of.items():
+        who = lab(src)
+        eni = max(s["enis"], key=s["enis"].get)
+        e = enis.get(eni) or {}
+        total = sum(v for (x, _), v in flows.items() if x == src)
+        n = s["in"] + s["out"]
+        share = min(1.0, n / total) if total else None
+        internal = who.get("cat") in ("internal", "datacentre") or not _is_public(src)
+        hostile = who.get("group") in HIGH_RISK_TYPES
+        known = who.get("cat") in ("saas", "aws", "cdn") or who.get("group") in ("aws", "cdn", "saas", "security", "partner")
+        if internal:
+            act, sev, why = "investigate", "medium", "Inside your network: find the caller and why its connections are reset; do not block it"
+        elif hostile:
+            act, sev, why = "block", "high", f"{who.get('what') or who.get('name') or 'A high-risk source'}: block it at the network ACL"
+        elif known:
+            act, sev, why = "check", "low", f"A known provider ({who.get('name')}): check before blocking, it may be a real client"
+        elif share is not None and share >= RESET_SHARE and n >= RESET_MIN:
+            act, sev, why = "block", "medium", f"{round(share * 100)}% of its connections were reset: block it unless it is a known client"
+        else:
+            act, sev, why = "watch", "low", "Some resets, as any client has: watch it"
+        port = max(s["ports"], key=s["ports"].get) if s["ports"] else None
+        rows.append({"src": src, "name": who.get("name", ""), "cat": who.get("cat", ""), "type": who.get("group", ""),
+                     "cc": who.get("cc", ""), "in": s["in"], "out": s["out"], "resets": n, "flows": total, "share": share,
+                     "lbs": sorted(s["lbs"]), "eni": eni, "kind": e.get("kind", ""), "region": e.get("region", ""),
+                     "subnet": e.get("subnet", ""), "vpc": e.get("vpc", ""), "enis": len(s["enis"]),
+                     "subnets": sorted({(enis.get(x) or {}).get("subnet", "") for x in s["enis"]} - {""}),
+                     "proto": port[0] if port else "", "port": port[1] if port else None,
+                     "first": s["first"], "last": s["last"], "action": act, "sev": sev, "why": why,
+                     "internal": internal})  # fmt: skip
+    rank = {"high": 0, "medium": 1, "low": 2}
+    rows.sort(key=lambda r: (rank[r["sev"]], r["action"] != "block", -r["resets"]))
+    out["total"]["sources"] = len(rows)
+    out["sources"] = rows[:RESET_TOP]
+    out["block"] = sum(1 for r in rows if r["action"] == "block")
+    out["lbs"] = sorted(({**x, "srcs": len(x["srcs"])} for x in lbs.values()), key=lambda x: -(x["in"] + x["out"]))[:12]
+    return out
 
 
 def macro_row(account: str, name: str, rep: dict, mode: str = "") -> dict:

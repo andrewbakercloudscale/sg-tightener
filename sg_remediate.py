@@ -437,6 +437,94 @@ def propose(store: sg_db.Store, account: str, p: dict, groups: dict, assets: dic
 
 
 # ------------------------------------------------------------------------------------------- applying a merge
+def propose_block(store: sg_db.Store, account: str, region: str, src: str, subnets: list, actor: str,
+                  reason: str = "", ticket: str = "", detail: dict | None = None) -> dict:
+    """A change request to block one internet source at the network ACLs of the subnets it reached (a load
+    balancer's): a deny for all traffic from it, ahead of the ACL's allows. Approved like any other request; on
+    Apply each subnet's ACL gets the entry. Addresses inside your network are refused: find the host instead."""
+    try:
+        ip = ipaddress.ip_address(src)
+    except ValueError:
+        raise RemediateError(f"{src!r} is not an IP address")
+    if not sg_review._is_public(str(ip)):
+        raise RemediateError(f"{src} is inside your network (or reserved): find the host and why it misbehaves, do not block it")
+    subnets = sorted({str(s) for s in subnets if str(s).startswith("subnet-")})
+    if not subnets:
+        raise RemediateError("no subnet to block it at: read the account's flow logs again")
+    cidr = f"{ip}/{32 if ip.version == 4 else 128}"
+    for r in store.requests(account=account, region=region):
+        c = r["changes"]
+        if r["kind"] == "block" and c.get("cidr") == cidr and r["status"] in ("pending", "approved"):
+            raise RemediateError(f"request #{r['id']} already blocks {cidr} ({r['status']})")
+    body = {"kind": "block", "cidr": cidr, "subnets": subnets, **{k: v for k, v in (detail or {}).items()
+                                                                 if k in ("lbs", "vpc", "resets", "share", "name", "why")}}  # fmt: skip
+    reason = reason.strip() or (f"Block {cidr} at the network ACL of {len(subnets)} subnet(s) in {region}: "
+                                f"{(detail or {}).get('why') or 'connections reset'}")  # fmt: skip
+    with store:
+        rid = store.db.execute("INSERT INTO requests (at, account, region, proposer, reason, ticket, changes, status) "
+                               "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending') RETURNING id",
+                               (sg_db._now(), account, region, actor, reason, ticket, json.dumps(body, sort_keys=True))).fetchone()[0]  # fmt: skip
+        store.audit(actor, "tool", "block-request-proposed", account, region, ",".join(subnets),
+                    {"request": rid, **body}, reason, ticket)  # fmt: skip
+        if not store.approvals():
+            store._approve(rid, actor, "approvals are off")
+    return {"id": rid, "kind": "block", "region": region, "cidr": cidr, "subnets": subnets,
+            "status": store._request(rid)["status"]}  # fmt: skip
+
+
+NACL_FIRST = 1  # deny entries go in at the lowest free rule number below the ACL's first inbound allow
+
+
+def _free_rule_number(entries: list) -> int | None:
+    """The lowest unused inbound rule number that sorts before every inbound allow (ACLs stop at the first
+    match), or None when the allows start at 1 with no gap."""
+    inbound = [e for e in entries if not e.get("Egress") and e.get("RuleNumber", 32767) < 32767]
+    used = {e["RuleNumber"] for e in inbound}
+    first_allow = min((e["RuleNumber"] for e in inbound if e.get("RuleAction") == "allow"), default=32767)
+    return next((n for n in range(NACL_FIRST, first_allow) if n not in used), None)
+
+
+def apply_block(store: sg_db.Store, ec2, account: str, rid: int, actor: str) -> dict:
+    """Carry out an approved block: each subnet's network ACL gets an inbound deny for the source, numbered
+    ahead of its allows. An ACL that already denies it is left alone; one shared by several subnets is changed
+    once. The ACL entries can be deleted in AWS to undo it (each one is in the audit trail)."""
+    r = store._request(rid)
+    if r.get("kind") != "block":
+        raise RemediateError(f"request #{rid} is not a block")
+    if r["status"] != "approved":
+        raise RemediateError(f"request #{rid} is {r['status']}: it must be approved by a second person first")
+    region, b = r["region"], r["changes"]
+    store.require_enforce(account, "block a source at the network ACL")
+    acls = ec2.describe_network_acls(Filters=[{"Name": "association.subnet-id", "Values": b["subnets"]}]).get("NetworkAcls", [])
+    if not acls:
+        raise RemediateError(f"no network ACL found for {', '.join(b['subnets'])}: the subnets may be gone")
+    v6 = ":" in b["cidr"]
+    done, skipped = [], []
+    for acl in acls:
+        aid, entries = acl["NetworkAclId"], acl.get("Entries") or []
+        if any(not e.get("Egress") and e.get("RuleAction") == "deny" and (e.get("Ipv6CidrBlock") if v6 else e.get("CidrBlock")) == b["cidr"]
+               for e in entries):  # fmt: skip
+            skipped.append(f"{aid}: already denies {b['cidr']}")
+            continue
+        n = _free_rule_number(entries)
+        if n is None:
+            skipped.append(f"{aid}: no free rule number ahead of its allows; renumber its entries first")
+            continue
+        ec2.create_network_acl_entry(NetworkAclId=aid, RuleNumber=n, Protocol="-1", RuleAction="deny", Egress=False,
+                                     **({"Ipv6CidrBlock": b["cidr"]} if v6 else {"CidrBlock": b["cidr"]}))  # fmt: skip
+        subs = sorted(a["SubnetId"] for a in acl.get("Associations") or [] if a.get("SubnetId") in b["subnets"])
+        done.append({"acl": aid, "rule": n, "subnets": subs})
+    with store:
+        for d in done:
+            store.audit(actor, "apply", "nacl-deny-added", account, region, d["acl"],
+                        {"request": rid, "cidr": b["cidr"], "rule": d["rule"], "subnets": d["subnets"],
+                         "undo": f"aws ec2 delete-network-acl-entry --network-acl-id {d['acl']} --rule-number {d['rule']} --ingress --region {region}"},
+                        f"request #{rid}: {r['reason']}", r["ticket"])  # fmt: skip
+        if done or not skipped or all("already denies" in s for s in skipped):
+            store.db.execute("UPDATE requests SET status = 'applied', applied_at = ? WHERE id = ?", (sg_db._now(), rid))
+    return {"cidr": b["cidr"], "added": done, "skipped": skipped}
+
+
 def apply_merge(store: sg_db.Store, ec2, account: str, rid: int, actor: str) -> dict:
     """Carry out an approved merge: the target must already hold every rule the members need (apply the rule
     request first); then each member's interfaces carry the target instead. The emptied groups are left in place

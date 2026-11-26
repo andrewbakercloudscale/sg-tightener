@@ -829,7 +829,7 @@ def _groups_of(changes) -> str:
 
 def _groups_of_json(changes) -> str:
     if isinstance(changes, dict):  # an asset request, or a merge of groups
-        return ",".join(changes.get("from_groups") or changes.get("members") or [])
+        return ",".join(changes.get("from_groups") or changes.get("members") or changes.get("subnets") or [])
     return ",".join(sorted({c["group"] for c in changes}))
 
 

@@ -434,7 +434,7 @@ def review_load(account: str, schema: str | None = None, doc_schema: int = 1, ro
             return None
         regions = dict(d.execute("SELECT region, data FROM review_regions WHERE account = ?", (account,)))
         chunks = []
-        cols = "data" if rows else "data - 'rows' - 'pub'"
+        cols = "data" if rows else "data - 'rows' - 'pub' - 'rst'"
         sql = f"SELECT id, {cols} FROM review_slices WHERE account = ? AND e >= ? ORDER BY id"
         for k, data in _stream(d, sql, (account, cutoff)) if rows else d.execute(sql, (account, cutoff)):
             data["k"] = k

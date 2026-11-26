@@ -79,7 +79,7 @@ REPORT_PROCS = int(os.environ.get("SG_REPORT_PROCS") or _report_procs())
 REPORT_GATE = threading.BoundedSemaphore(1)  # one parallel report build at a time, whichever report asks
 # A report kind whose rows changed shape since REPORT_CACHE_VERSION: only that kind is rebuilt (a single global bump
 # rebuilt every report of every account at once). 9: own interfaces carry launch time, image and VPC.
-KIND_VERSIONS = {"seen": 9}
+KIND_VERSIONS = {"seen": 9, "macro": 9}  # macro 9: connection resets
 
 
 def _kind_version(kind: str) -> int:
@@ -2059,6 +2059,99 @@ class Console:
             st.close()
         return {"requests": made}
 
+    def block_propose(self, body: dict) -> dict:
+        """Propose blocking an internet source at the network ACLs of the subnets it was reset in."""
+        account, region, src = _need(body, "account"), _need(body, "region"), _need(body, "src")
+        st = self.store()
+        try:
+            return sg_remediate.propose_block(st, account, region, src, list(body.get("subnets") or []), self.actor(),
+                                              str(body.get("reason") or ""), str(body.get("ticket") or ""),
+                                              body.get("detail") if isinstance(body.get("detail"), dict) else None)  # fmt: skip
+        except sg_remediate.RemediateError as exc:
+            raise ConsoleError(400, str(exc))
+        finally:
+            st.close()
+
+    def block_apply(self, body: dict) -> dict:
+        try:
+            rid = int(body.get("id"))
+        except (TypeError, ValueError):
+            raise ConsoleError(400, "id is a request number")
+        st = self.store()
+        try:
+            r = st._request(rid)
+            t, ec2 = self._ec2(r["account"], r["region"])
+            return sg_remediate.apply_block(st, ec2, r["account"], rid, t.actor)
+        except sg_remediate.RemediateError as exc:
+            raise ConsoleError(409, str(exc))
+        finally:
+            st.close()
+
+    LB_METRICS = {"net": ("AWS/NetworkELB", (("TCP_Client_Reset_Count", "client"), ("TCP_ELB_Reset_Count", "lb"),
+                                             ("TCP_Target_Reset_Count", "target"))),
+                  "app": ("AWS/ApplicationELB", (("RejectedConnectionCount", "rejected"),
+                                                 ("ClientTLSNegotiationErrorCount", "tls"), ("HTTPCode_ELB_5XX_Count", "elb5xx")))}  # fmt: skip
+
+    def lb_metrics(self, account: str, days: int = 7) -> dict:
+        """Each load balancer's resets as CloudWatch counts them, hourly for the last ``days``: for network load
+        balancers the resets sent by clients, by the balancer and by targets; for application load balancers the
+        connections rejected, failed TLS handshakes and the balancer's own 5xx. Cached ten minutes."""
+        days = max(1, min(14, int(days)))
+        key = (account, days)
+        hit = self._lbm.get(key) if hasattr(self, "_lbm") else None
+        if hit and time.time() - hit[0] < 600:
+            return hit[1]
+        import sg_review
+
+        doc = sg_review.load(account)
+        regions = sorted({r for r, x in (doc or {}).get("regions", {}).items()
+                          if any(e.get("kind") == "load balancer" for e in ((x.get("snapshot") or {}).get("enis") or {}).values())})  # fmt: skip
+        if not regions:
+            return {"account": account, "lbs": [], "note": "no load balancers seen in its flow-log read"}
+        sess = self.targets(fresh=True).session(account)
+        end = int(time.time()) // 3600 * 3600
+        start = end - days * 86400
+        out, errors = [], []
+        for region in regions:
+            try:
+                lbs = []
+                for page in sess.client("elbv2", region_name=region).get_paginator("describe_load_balancers").paginate():
+                    lbs += page.get("LoadBalancers", [])
+                cw = sess.client("cloudwatch", region_name=region)
+                lbs = [x for x in lbs if x.get("Type") in ("network", "application")]
+                for i in range(0, len(lbs), 50):  # get_metric_data takes 500 queries; three metrics each
+                    batch, qs = lbs[i : i + 50], []
+                    for j, lb in enumerate(batch):
+                        dim = lb["LoadBalancerArn"].split(":loadbalancer/", 1)[-1]
+                        ns, mets = self.LB_METRICS["net" if lb["Type"] == "network" else "app"]
+                        for k, (m, short) in enumerate(mets):
+                            qs.append({"Id": f"m{j}_{k}", "Label": short, "ReturnData": True,
+                                       "MetricStat": {"Metric": {"Namespace": ns, "MetricName": m,
+                                                                 "Dimensions": [{"Name": "LoadBalancer", "Value": dim}]},
+                                                      "Period": 3600, "Stat": "Sum"}})  # fmt: skip
+                    got: dict[str, dict] = {}
+                    for page in cw.get_paginator("get_metric_data").paginate(MetricDataQueries=qs, StartTime=start, EndTime=end):
+                        for res in page.get("MetricDataResults", []):
+                            d = got.setdefault(res["Id"], {})
+                            for t, v in zip(res.get("Timestamps", []), res.get("Values", [])):
+                                d[int(t.timestamp())] = d.get(int(t.timestamp()), 0) + v
+                    for j, lb in enumerate(batch):
+                        _, mets = self.LB_METRICS["net" if lb["Type"] == "network" else "app"]
+                        series = {short: [int(got.get(f"m{j}_{k}", {}).get(t, 0)) for t in range(start, end, 3600)]
+                                  for k, (_, short) in enumerate(mets)}  # fmt: skip
+                        out.append({"name": lb["LoadBalancerName"], "type": "net" if lb["Type"] == "network" else "app",
+                                    "region": region, "scheme": lb.get("Scheme", ""), "vpc": lb.get("VpcId", ""),
+                                    "lb": lb["LoadBalancerArn"].split(":loadbalancer/", 1)[-1], "series": series,
+                                    "total": {k: sum(v) for k, v in series.items()}})  # fmt: skip
+            except Exception as exc:  # noqa: BLE001 - one region's failure leaves the others
+                errors.append(f"{region}: {plain_error(exc)}")
+        out.sort(key=lambda x: -sum(x["total"].values()))
+        res = {"account": account, "days": days, "start": start, "step": 3600, "lbs": out, "errors": errors}
+        if not hasattr(self, "_lbm"):
+            self._lbm = {}
+        self._lbm[key] = (time.time(), res)
+        return res
+
     def merge_apply(self, body: dict) -> dict:
         try:
             rid = int(body.get("id"))
@@ -2713,6 +2806,8 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.requests(q.get("status", "")))
                 if url.path == "/api/macro":
                     return self._json(200, console.macro(q.get("range", "1m")))
+                if url.path == "/api/lb-metrics":
+                    return self._json(200, console.lb_metrics(_need(q, "account"), int(q.get("days") or 7)))
                 if url.path == "/api/ip":
                     return self._json(200, console.ip_profile(_need(q, "ip"), q.get("proto", ""), q.get("port"),
                                                               q.get("account", "")))  # fmt: skip
@@ -2761,7 +2856,7 @@ def make_handler(console: Console, token: str, port: int):
                 return self._json(400, {"error": f"bad JSON: {exc}"})
             if not isinstance(body, dict):
                 return self._json(400, {"error": "bad JSON: an object is expected"})
-            route = {"/api/propose": console.propose, "/api/tighten": console.tighten, "/api/remediate": console.remediate, "/api/merge-apply": console.merge_apply, "/api/decide": console.decide, "/api/approvals": console.set_approvals, "/api/apply": console.apply, "/api/apply-preview": console.apply_preview, "/api/refused-fix": console.fix_refused,
+            route = {"/api/propose": console.propose, "/api/tighten": console.tighten, "/api/remediate": console.remediate, "/api/merge-apply": console.merge_apply, "/api/block": console.block_propose, "/api/block-apply": console.block_apply, "/api/decide": console.decide, "/api/approvals": console.set_approvals, "/api/apply": console.apply, "/api/apply-preview": console.apply_preview, "/api/refused-fix": console.fix_refused,
                      "/api/reconcile": console.reconcile, "/api/adopt": console.adopt, "/api/check": console.check,
                      "/api/profile": lambda body: console.profile(_need(body, "account"), read=True),
                      "/api/asset-apply": console.asset_apply, "/api/asset-revert": console.asset_revert,

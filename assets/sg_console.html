@@ -1656,6 +1656,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     if (a.high_active) out.push({sev: "critical", what: `${a.high_active} high-risk source(s) (scanners, threat lists or Tor) were let in by a rule`, how: "Close the rule that lets them in", btn: '<button class="btn sm primary" data-aact="all">Fix these now</button>'});
     for (const x of ext.filter((x) => x.open && x.risky)) rule("critical", x, `<code>${esc(x.ports)}</code> on ${esc(x.group)} is open to everyone on a risky port`, "Narrow it to the callers seen, or put it behind a load balancer or VPN");
     for (const x of scans.filter((x) => x.internal)) out.push({sev: "critical", what: `<code>${esc(x.src)}</code> inside the network is scanning ${x.ports || 1} port(s)`, how: "Find what runs there; isolate it if nothing should scan", key: "s:" + x.src, btn: resolve});
+    for (const x of (a.resets?.sources || []).filter((x) => x.action === "block")) out.push({sev: x.sev === "high" ? "high" : "medium", what: `<code>${esc(x.src)}</code>${x.name && x.name !== x.src ? ` (${esc(x.name)})` : ""} had ${big(x.resets)} connection(s) reset${x.lbs.length ? ` at ${esc(x.lbs.map((l) => l.split("/")[1] || l).join(", "))}` : ""}`, how: x.why, key: "x:" + x.src, btn: blockBtn(a, x)});
     if (a.egress_bad) out.push({sev: "critical", what: `${a.egress_bad} connection(s) out to known malicious addresses`, how: "Investigate the host that made them", btn: review});
     const back = ref.filter((r) => r.restore);
     if (back.length) out.push({sev: "high", what: `${back.length} source(s) refused since a change removed the rule that let them in`, how: "Put the rule back for those sources", btn: resolve});
@@ -1676,6 +1677,42 @@ section.nodata .card:not(.empty-state) { display: none; }
     const li = (x, n) => `<li style="--nx:${SEVCOL[x.sev]}">${n ? nxBadge(n, x.sev) : ""}<div class="nx-what"><span class="pill" style="--p:${SEVCOL[x.sev]}">${x.sev}</span> <b>${x.what}.</b> ${esc(x.how)}.</div>${x.btn || ""}</li>`;
     return `<ol class="next5 small">${items.map((x, i) => li(x, i + 1)).join("")}</ol>`
       + (rest.length ? `<details class="more-x small"><summary>${rest.length} more after these</summary><ol class="next5">${rest.map((x) => li(x, 0)).join("")}</ol></details>` : "");
+  }
+  const blockBtn = (a, x) => x.internal ? "" : `<button class="btn sm primary" data-ablock="${esc(JSON.stringify({account: a.account, region: x.region, src: x.src, subnets: x.subnets, detail: {lbs: x.lbs, vpc: x.vpc, resets: x.resets, share: x.share, name: x.name, why: x.why}}))}">Block</button>`;
+  const helpBtn = (id) => `<button class="btn sm" type="button" data-ahelp="${id}" aria-expanded="false">Explain</button>`;
+  const ACTCOL = {block: "var(--bad)", investigate: "var(--high)", check: "var(--warn)", watch: "var(--muted)"};
+  function resetsHtml(a, rowOf) {
+    const rs = a.resets;
+    const help = `<p class="small muted" id="rsHelp" hidden style="margin:4px 0 6px">A <b>reset</b> (TCP RST) ends a connection at once instead of closing it. The flow logs count them in the same read as everything else (only where the flow-log format includes <code>tcp-flags</code>): <b>by the source</b> when the caller sent it, <b>by your side</b> when your load balancer or server did, which it does to connections it will not serve, half-open scans and broken clients. A source most of whose connections are reset is usually a scanner, a bot or a broken client. <b>Block</b> raises a change request: once approved (by a second person when two-person approval is on), applying it adds a deny for that address, all ports, to the network ACL of each subnet it reached, ahead of the ACL's allows. That stops it at the subnet for application and network load balancers alike; undo it by deleting the entry (the audit trail has the command). Addresses inside your network are never blocked: <b>investigate</b> finds the caller instead. Resets between your own services are left out.</p>`;
+    const head = `<h3 style="display:flex;gap:8px;align-items:center">Connection resets ${helpBtn("rsHelp")}</h3>${help}`;
+    if (!rs || !rs.read) return head + `<p class="small muted">${rs?.slices ? "Not counted yet: the flow logs read so far were read before resets were counted, or their format has no <code>tcp-flags</code>. The next read (Read more data above) counts them." : "No flow logs read in this window."}</p>${lbmHtml()}`;
+    const ts = rs.bins, rows = ts.map((_, i) => ({in: rs.series.in[i] || 0, out: rs.series.out[i] || 0}));
+    const chart = svgLines(ts, rows, ["in", "out"], {in: "var(--bad)", out: "var(--warn)"}, {in: "Reset by the source", out: "Reset by your side"}, 180);
+    const lbs = rs.lbs.length ? `<div class="scroll"><table class="small"><thead><tr><th>Load balancer</th><th class="num">Reset by the source</th><th class="num">Reset by it</th><th class="num">Sources</th></tr></thead><tbody>${rs.lbs.map((l) => `<tr><td>${esc(l.name)} <span class="pill" style="--p:var(--accent)">${l.type === "net" ? "network" : l.type === "app" ? "application" : esc(l.type)}</span>${l.public ? ' <span class="pill" style="--p:var(--warn)">internet-facing</span>' : ""}<div class="muted">${esc(l.region)} · ${esc(l.vpc)}</div></td><td class="num">${big(l.in)}</td><td class="num">${big(l.out)}</td><td class="num">${l.srcs.toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : "";
+    const src = rs.sources.length ? `<div class="scroll"><table class="small"><thead><tr><th>Source</th><th>Who</th><th>Where</th><th class="num">Resets (source · your side)</th><th class="num">Share of its connections</th><th>Last seen</th><th>What to do</th></tr></thead><tbody>${rs.sources.map((x) => { const [rc, rb] = rowOf("x:" + x.src); return `<tr${rc}><td>${rb}<code>${esc(x.src)}</code>${x.cc ? ` <span class="muted">${esc(x.cc)}</span>` : ""}</td>
+      <td>${esc(x.name && x.name !== x.src ? x.name : "unknown")}${x.type && x.type !== x.cat ? ` <span class="pill" style="--p:${["scanner", "anon", "threat"].includes(x.type) ? "var(--bad)" : "var(--muted)"}">${esc(x.type)}</span>` : ""}</td>
+      <td>${x.lbs.length ? esc(x.lbs.map((l) => l.split("/")[1] || l).join(", ")) : esc(x.kind || x.eni)}${x.port != null ? ` <code>${esc(x.proto === "6" ? "tcp" : x.proto === "17" ? "udp" : x.proto)} ${x.port}</code>` : ""}<div class="muted">${esc(x.region)} · ${x.subnets.length} subnet(s)</div></td>
+      <td class="num"><b>${big(x.resets)}</b><div class="muted">${big(x.in)} · ${big(x.out)}</div></td>
+      <td class="num">${x.share == null ? '<span class="muted">not known</span>' : `<b style="color:${x.share >= 0.5 ? "var(--bad)" : ""}">${Math.round(x.share * 100)}%</b>`}<div class="muted">${big(x.flows)} connections</div></td>
+      <td>${esc(when(x.last))}</td>
+      <td><span class="pill" style="--p:${ACTCOL[x.action]}">${esc(x.action)}</span> <span class="muted">${esc(x.why)}</span><div style="margin-top:4px">${blockBtn(a, x)}</div></td></tr>`; }).join("")}</tbody></table></div>${rs.total.sources > rs.sources.length ? `<p class="muted small">The ${rs.sources.length} that matter most of ${rs.total.sources.toLocaleString()} sources reset.</p>` : ""}` : '<p class="small" style="color:var(--good)">No internet source and nothing at a load balancer was reset.</p>';
+    const cov = rs.read < rs.slices ? ` Counted in ${rs.read.toLocaleString()} of ${rs.slices.toLocaleString()} slices read: read again to count the rest.` : "";
+    return head + `<p class="small" style="margin:0 0 6px">${big(rs.total.in)} reset by sources and ${big(rs.total.out)} by your side, from ${rs.total.sources.toLocaleString()} source(s)${rs.block ? `; <b style="color:var(--bad)">${rs.block} to block</b>` : ""}.${cov}</p>${chart}${lbs}${src}${lbmHtml()}`;
+  }
+  const lbmHtml = () => `<div class="acts" style="margin:8px 0 0;align-items:center"><button class="btn sm" type="button" id="avLbm">Load balancer reset counts (CloudWatch, 7 days)</button>${helpBtn("lbmHelp")}<span class="small muted" id="avLbmNote"></span></div>
+      <p class="small muted" id="lbmHelp" hidden style="margin:4px 0 0">Reads each load balancer's own counts from CloudWatch, hourly for the last 7 days (free within normal use, nothing read until pressed). <b>Network</b> load balancers: resets sent by clients, by the load balancer itself and by its targets. <b>Application</b> load balancers: connections rejected (at its connection limit), failed TLS handshakes and its own 5xx errors. CloudWatch says how many and when but not who: the table above (from the flow logs) says which sources to block.</p><div id="avLbmBody"></div>`;
+  async function loadLbm(account) {
+    const note = $("avLbmNote"), body = $("avLbmBody");
+    note.textContent = "Reading CloudWatch…";
+    const res = await api(`/api/lb-metrics?account=${encodeURIComponent(account)}&days=7`);
+    const NM = {client: "Reset by clients", lb: "Reset by the load balancer", target: "Reset by targets", rejected: "Connections rejected", tls: "TLS handshakes failed", elb5xx: "Load balancer 5xx"};
+    const CL = {client: "var(--warn)", lb: "var(--bad)", target: "var(--high)", rejected: "var(--bad)", tls: "var(--warn)", elb5xx: "var(--high)"};
+    const lbs = res.lbs || [];
+    note.textContent = `${lbs.length} load balancer(s)${res.errors?.length ? `; not read: ${res.errors.join("; ")}` : ""}${res.note ? `: ${res.note}` : ""}`;
+    const busy = lbs.filter((l) => Object.values(l.total).some((v) => v > 0));
+    const ts = lbs.length ? lbs[0].series[Object.keys(lbs[0].series)[0]].map((_, i) => res.start + i * res.step) : [];
+    body.innerHTML = (busy.slice(0, 6).map((l) => { const keys = Object.keys(l.series); const rows = ts.map((_, i) => Object.fromEntries(keys.map((k) => [k, l.series[k][i] || 0]))); return `<h4 style="margin:10px 0 2px">${esc(l.name)} <span class="muted small">${l.type === "net" ? "network" : "application"} · ${esc(l.scheme)} · ${esc(l.region)}</span></h4>${svgLines(ts, rows, keys, CL, NM, 150)}`; }).join(""))
+      + (lbs.length ? `<div class="scroll"><table class="small"><thead><tr><th>Load balancer</th><th>Type</th><th class="num">7-day totals</th></tr></thead><tbody>${lbs.map((l) => `<tr><td>${esc(l.name)}<div class="muted">${esc(l.region)} · ${esc(l.scheme)}</div></td><td>${l.type === "net" ? "network" : "application"}</td><td class="num">${Object.entries(l.total).map(([k, v]) => `${esc(NM[k] || k)} <b>${big(v)}</b>`).join(" · ")}</td></tr>`).join("")}</tbody></table></div>` : "");
   }
   function aCard(a, peers) {
     const P = points(a), ranks = peers.map(points), r = rankOf(ranks, P), tag = aTagNow(), owner = ownerOf(a, tag);
@@ -1713,6 +1750,7 @@ section.nodata .card:not(.empty-state) { display: none; }
         <td class="num">${neverPct(x.never_ext, x.allowed)}</td><td class="num">${x.enis}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
       ${top.length ? `<h3>Biggest rules to tighten</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Ports</th><th>Source</th><th class="num">Never-seen addresses (share of the rule)</th><th>What to do</th></tr></thead><tbody>${top.map((x) => { const [rc, rb] = rowOf("r:" + rKey(x)); return `<tr${rc}><td>${rb}${esc(x.group)}<div class="muted">${esc(x.region)} · ${x.enis} interface(s)</div></td><td><code>${esc(x.ports)}</code></td><td><code>${esc(x.source)}</code></td><td class="num">${neverPct(x.never, cidrSize(x.source))}</td><td>${["unused", "tighten"].includes(x.status) ? `<button class="btn sm primary" data-arule="${esc(JSON.stringify({g: x.group, r: x.region, p: x.ports, s: x.source}))}">${x.status === "unused" ? "Rule not needed: remove it…" : "Narrow it…"}</button><div class="muted small">${x.status === "unused" ? "no traffic that fits it was ever seen" : "only some of the addresses it allows were seen: keep those"}</div>` : RULE_DO[x.status] || esc(x.status)}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
       ${scans.length ? `<h3>Scanning sources refused (24 h)</h3><div class="scroll"><table class="small"><thead><tr><th>Source</th><th class="num">Ports</th><th class="num">Addresses</th><th class="num">Flows</th><th>Verdict</th></tr></thead><tbody>${scans.map((x) => { const [rc, rb] = rowOf("s:" + x.src); return `<tr${rc}><td>${rb}<code>${esc(x.src)}</code> ${x.internal ? '<span class="pill" style="--p:var(--bad)">internal</span>' : ""}<div class="muted">${esc(x.name || "")}</div></td><td class="num">${x.ports || 1}</td><td class="num">${x.dsts || 1}</td><td class="num">${Number(x.flows).toLocaleString()}</td><td>${esc(x.title || x.verdict)}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
+      ${resetsHtml(a, rowOf)}
       <div class="acts" style="margin-top:10px">${go.fix}${go.resolve}${go.review}</div></div>`;
   }
   function drawAccountView() {
@@ -1753,6 +1791,15 @@ section.nodata .card:not(.empty-state) { display: none; }
     for (const b of $("aBody").querySelectorAll("[data-aact]")) b.addEventListener("click", () => openAct(AV.pick.v, b.dataset.aact === "open" ? (r) => ["0.0.0.0/0", "::/0"].includes(r.source) : () => true, b.dataset.aact === "open" ? "the rules open to the internet" : "every rule the flow logs say to change"));
     for (const b of $("aBody").querySelectorAll("[data-aresolve]")) b.addEventListener("click", async () => { await show("refused"); openResolve(b.dataset.aresolve); });
     for (const b of $("aBody").querySelectorAll("[data-atab]")) b.addEventListener("click", () => show(b.dataset.atab));
+    for (const b of $("aBody").querySelectorAll("[data-ahelp]")) b.addEventListener("click", () => { const h = $(b.dataset.ahelp); h.hidden = !h.hidden; b.setAttribute("aria-expanded", String(!h.hidden)); });
+    for (const b of $("aBody").querySelectorAll("[data-ablock]")) b.addEventListener("click", () => act(b, async () => {
+      const x = JSON.parse(b.dataset.ablock);
+      if (!confirmInline(b, `Press again to ask to block ${x.src}`)) return;
+      const res = await api("/api/block", x);
+      flash(`Change request #${res.id}: block ${res.cidr} at the network ACL of ${res.subnets.length} subnet(s). ${res.status === "approved" ? "Approved (two-person approval is off): apply it under Change requests." : "A second person approves it under Change requests, then it is applied there."}`);
+      b.disabled = true; b.textContent = `Requested (#${res.id})`;
+    }));
+    if ($("avLbm")) $("avLbm").addEventListener("click", (e) => act(e.target, () => loadLbm(AV.pick.v)));
     for (const b of $("aBody").querySelectorAll("[data-aread]")) b.addEventListener("click", () => { $("avRead")?.scrollIntoView({behavior: "smooth", block: "center"}); $("avRead")?.focus(); });
     if ($("avRead")) {
       $("avReadWhy").addEventListener("click", () => { const h = $("avReadHelp"); h.hidden = !h.hidden; $("avReadWhy").setAttribute("aria-expanded", String(!h.hidden)); });
@@ -2734,7 +2781,9 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("requestList").innerHTML = rows.map((r) => {
       const mine = r.proposer.split(" (")[0] === S.me_principal;
       const ruleLine = (c) => `<code>${esc(c.direction === "in" ? "in" : "out")} ${esc(c.proto === "-1" ? "all" : `${c.proto} ${c.from === c.to ? c.from : c.from + "-" + c.to}`)} ${esc(c.source)}</code>`;
-      const changes = r.kind === "merge"
+      const changes = r.kind === "block"
+        ? `<li><span class="pill" style="--p:var(--bad)">deny</span> all traffic from <code>${esc(r.changes.cidr)}</code> at the network ACL of ${r.changes.subnets.map((s) => `<code>${esc(s)}</code>`).join(", ")}${r.changes.lbs?.length ? ` (in front of ${esc(r.changes.lbs.map((l) => l.split("/")[1] || l).join(", "))})` : ""}, numbered ahead of the ACL's allows${r.changes.resets ? `; ${big(r.changes.resets)} connection(s) reset${r.changes.share != null ? `, ${Math.round(r.changes.share * 100)}% of its connections` : ""}` : ""}</li>`
+        : r.kind === "merge"
         ? `<li>Merge ${r.changes.members.map((g) => `<code>${esc((r.changes.names || {})[g] || g)}</code>`).join(", ")} into <code>${esc(r.changes.target_name)}</code> (<code>${esc(r.changes.target)}</code>): ${Object.keys(r.changes.enis).length} interface(s) move onto it, which by then lets in the ${r.changes.need.length} rule(s) they need. The emptied groups stay, on no interface.</li>`
         : r.kind === "asset"
         ? `<li>A group of its own, <code>${esc(r.changes.group_name)}</code>, for <code>${esc(r.changes.eni)}</code>${r.changes.instance ? ` (<code>${esc(r.changes.instance)}</code>)` : ""} in place of ${r.changes.from_groups.map((g) => `<code>${esc(g)}</code>`).join(", ")}, from ${r.changes.evidence.flows} flow(s) of ${r.changes.evidence.sources} source(s)</li>
@@ -2745,6 +2794,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       const buttons = r.status === "pending" ? (mine && S.approvals
         ? `<span class="muted small">A different person must approve it, or cancel it at the top. On your own laptop? Untick Two-person approval above to approve it yourself.</span>`
         : `<input placeholder="Note (required to reject)" data-note="${r.id}"><button class="btn primary" data-dec="approve|${r.id}">Approve</button><button class="btn danger" data-dec="reject|${r.id}">Reject</button>`)
+        : r.status === "approved" && r.kind === "block" ? `<button class="btn primary" data-applyblock="${r.id}">Add the deny to the network ACL</button><span class="muted small">Needs enforce mode for ${esc(r.account)}. Undo by deleting the ACL entry; the audit trail has the command.</span>`
         : r.status === "approved" && r.kind === "merge" ? `<button class="btn primary" data-applymerge="${r.id}">Move ${Object.keys(r.changes.enis).length} interface(s) onto ${esc(r.changes.target_name)}</button><span class="muted small">Apply the rule changes for ${esc(r.region)} first.</span>`
         : r.status === "approved" && r.kind === "asset" ? `<button class="btn primary" data-applyasset="${r.id}">Create the group and move ${esc(r.changes.eni)}</button>`
         : r.status === "approved" ? `<button class="btn primary" data-applyreq="${esc(r.account)}|${esc(r.region)}">Apply in ${esc(r.region)}</button>` : "";
@@ -2766,6 +2816,12 @@ section.nodata .card:not(.empty-state) { display: none; }
       if (!confirmInline(b)) return;
       const res = await api("/api/merge-apply", {id: +b.dataset.applymerge});
       flash(`Merged: ${res.moved} interface(s) now carry ${res.target}.${res.skipped.length ? ` Not moved: ${res.skipped.join("; ")}` : ""} Undo any one from its History.`, !!res.skipped.length);
+      await loadState(); await loadRequests();
+    }));
+    for (const b of document.querySelectorAll("[data-applyblock]")) b.addEventListener("click", () => act(b, async () => {
+      if (!confirmInline(b)) return;
+      const res = await api("/api/block-apply", {id: +b.dataset.applyblock});
+      flash(`${res.cidr}: ${res.added.length ? `denied at ${res.added.map((d) => `${d.acl} (rule ${d.rule})`).join(", ")}` : "no ACL changed"}.${res.skipped.length ? ` ${res.skipped.join("; ")}` : ""}`, !res.added.length);
       await loadState(); await loadRequests();
     }));
     for (const b of document.querySelectorAll("[data-applyasset]")) b.addEventListener("click", () => act(b, async () => {
