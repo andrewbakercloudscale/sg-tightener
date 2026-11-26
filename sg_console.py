@@ -79,7 +79,7 @@ REPORT_PROCS = int(os.environ.get("SG_REPORT_PROCS") or _report_procs())
 REPORT_GATE = threading.BoundedSemaphore(1)  # one parallel report build at a time, whichever report asks
 # A report kind whose rows changed shape since REPORT_CACHE_VERSION: only that kind is rebuilt (a single global bump
 # rebuilt every report of every account at once). 9: own interfaces carry launch time, image and VPC.
-KIND_VERSIONS = {"seen": 9, "macro": 9}  # macro 9: connection resets
+KIND_VERSIONS = {"seen": 9, "macro": 11}  # macro 9: connection resets; 10: outbound rules by class
 
 
 def _kind_version(kind: str) -> int:
@@ -1322,6 +1322,43 @@ class Console:
             self.keys.state["active"] = False
             self.keys._save()
         return out
+
+    ZSCALER_CHECK = "http://ip.zscaler.com/"  # plain HTTP: no certificate trouble under TLS inspection
+
+    def net_check(self, _body: dict | None = None) -> dict:
+        """Whether this computer's traffic goes out through Zscaler now, on a new connection, and from which IP
+        address: a company sign-in that allows only Zscaler's addresses fails without it."""
+        import re
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(self.ZSCALER_CHECK, timeout=6) as r:  # noqa: S310 - a fixed http URL
+                text = re.sub(r"<[^>]+>", " ", r.read(200_000).decode("utf-8", "replace"))
+        except Exception as exc:  # noqa: BLE001 - offline, or the check site blocked: not known
+            return {"zscaler": None, "ip": "", "error": plain_error(exc)}
+        ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
+        on = True if re.search(r"via\s+(?:(?:a|the)\s+)?Zscaler", text, re.I) else False if re.search(r"not going through", text, re.I) else None
+        return {"zscaler": on, "ip": ips[0] if ips else ""}
+
+    def net_reset(self, _body: dict | None = None) -> dict:
+        """After turning Zscaler on: the browser keeps using connections it opened before (to Microsoft's and AWS's
+        sign-in pages), so sign-in still arrives from the old address for minutes. Clears this computer's DNS
+        cache and opens Chrome's connection page, where Flush socket pools closes them at once."""
+        import shutil
+        import subprocess
+
+        done, failed = [], []
+        for cmd, what in ((["dscacheutil", "-flushcache"], "DNS cache cleared"),
+                          (["killall", "-HUP", "mDNSResponder"], "DNS resolver restarted")):  # fmt: skip
+            if not shutil.which(cmd[0]):
+                continue
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)  # noqa: S603 - fixed commands
+            (done if r.returncode == 0 else failed).append(what if r.returncode == 0 else f"{what.split(' ')[0]} resolver not restarted (needs an administrator)")
+        opened = False
+        if sys.platform == "darwin" and shutil.which("open"):
+            r = subprocess.run(["open", "-a", "Google Chrome", "chrome://net-internals/#sockets"], capture_output=True, timeout=10)  # noqa: S603, S607
+            opened = r.returncode == 0
+        return {"done": done, "failed": failed, "chrome": opened, **self.net_check()}
 
     def keys_use(self, body: dict) -> dict:
         if self.keys is None:
@@ -2815,6 +2852,8 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.refused(q.get("range", "24h")))
                 if url.path == "/api/sso":
                     return self._json(200, console.sso_status())
+                if url.path == "/api/net-check":
+                    return self._json(200, console.net_check())
                 if url.path == "/api/sso/accounts":
                     return self._json(200, console.sso_accounts(q.get("fresh") == "1", q.get("roles") != "0"))
                 if url.path == "/api/sso/roles":
@@ -2861,7 +2900,7 @@ def make_handler(console: Console, token: str, port: int):
                      "/api/profile": lambda body: console.profile(_need(body, "account"), read=True),
                      "/api/asset-apply": console.asset_apply, "/api/asset-revert": console.asset_revert,
                      "/api/sso/start": console.sso_start, "/api/sso/choose": console.sso_choose,
-                     "/api/sso/signout": console.sso_sign_out, "/api/read": console.read_start,
+                     "/api/sso/signout": console.sso_sign_out, "/api/net-reset": console.net_reset, "/api/read": console.read_start,
                      "/api/read/confirm": console.read_confirm, "/api/read/stop": console.read_stop,
                      "/api/read/all": console.read_all, "/api/read/all/confirm": console.read_all_confirm, "/api/schedule": console.set_schedule,
                      "/api/reports/retry": console.reports_retry, "/api/tighten": console.set_tighten_prefs,

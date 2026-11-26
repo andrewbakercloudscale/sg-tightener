@@ -587,6 +587,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     <button role="tab" data-tab="over" aria-selected="false">Over-provisioning</button>
     <button role="tab" data-tab="fix" aria-selected="false">Remediate</button>
     <button role="tab" data-tab="refused" aria-selected="false">Rejected traffic</button>
+    <button role="tab" data-tab="outbound" aria-selected="false">Outbound</button>
     <button role="tab" data-tab="requests" aria-selected="false">Change requests<span class="count" id="pendingCount" hidden></span></button>
     <button role="tab" data-tab="audit" aria-selected="false">Audit trail</button>
     <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
@@ -616,7 +617,8 @@ section.nodata .card:not(.empty-state) { display: none; }
               <label>Identity Center region<input id="ssoRegion" placeholder="eu-west-1"></label></div></div>
           </div>
           <p class="small" id="ssoHint"></p>
-          <div class="tools"><button class="btn primary" id="ssoGo">Sign in</button><button class="btn" id="ssoAddBtn">Add a portal…</button></div>
+          <div class="tools"><button class="btn primary" id="ssoGo">Sign in</button><button class="btn" id="ssoAddBtn">Add a portal…</button><button class="btn" data-netreset>Reset sign-in network</button><button class="btn" data-nethelp aria-expanded="false">Explain</button><span class="small" data-netnote></span></div>
+          <p class="muted small" id="netHelp" hidden style="margin:4px 0 0">Your company allows sign-in only from Zscaler's addresses. <b>Sign in</b> and <b>Renew</b> first check, on a new connection, that this computer goes out through Zscaler, and stop if it does not (press again to sign in anyway). Turned Zscaler on but sign-in still says <b>you cannot access this right now</b>? The browser is still using connections it opened before, from your own address, for several minutes. <b>Reset sign-in network</b> clears this computer's DNS cache and opens Chrome's connections page: press <b>Flush socket pools</b> there, then sign in again. A private (incognito) window also starts with new connections.</p>
         </div>
         <div id="mKeys" hidden>
           <p class="muted small">Uses a profile or access key in <code>~/.aws</code> on this computer: it acts as that identity. In other accounts it assumes one role you name (OrganizationAccountAccessRole unless you choose another); the organisation's accounts and OUs are read with the profile, so use the management account or a delegated administrator to see them all. Keys never leave this computer.</p>
@@ -628,11 +630,11 @@ section.nodata .card:not(.empty-state) { display: none; }
       <div id="ssoWait" hidden>
         <p>An AWS sign-in page has opened in a new tab. Check it shows this code, then approve:</p>
         <div class="code" id="ssoCode"></div>
-        <div class="tools"><a class="btn primary" id="ssoLink" target="_blank" rel="noopener">Open the AWS sign-in page again</a><button class="btn" id="ssoCopy">Copy sign-in link</button><button class="btn" id="ssoCancel">Cancel</button></div>
+        <div class="tools"><a class="btn primary" id="ssoLink" target="_blank" rel="noopener">Open the AWS sign-in page again</a><button class="btn" id="ssoCopy">Copy sign-in link</button><button class="btn" data-netreset>Reset sign-in network</button><button class="btn" id="ssoCancel">Cancel</button></div>
         <p class="muted small">Your company's sign-in says <b>you cannot access this right now</b> after you changed network or turned on a VPN such as Zscaler? The browser is still using its earlier sign-in and connection. Select <b>Copy sign-in link</b> and paste it into a private (incognito) window, or quit and reopen the browser, then approve the same code.</p>
       </div>
       <div id="ssoIn" hidden>
-        <div class="acct-bar"><span class="pill" style="--p:var(--good)">signed in</span> <span id="ssoWho" class="who-line"></span> <button class="btn sm" id="ssoRenew" title="Sign in again on AWS's page, for a fresh session; reads keep going meanwhile">Renew</button><button class="btn sm" id="ssoOutBtn" title="Forget this sign-in on this computer: reads stop until you sign in again">Sign out</button></div>
+        <div class="acct-bar"><span class="pill" style="--p:var(--good)">signed in</span> <span id="ssoWho" class="who-line"></span> <button class="btn sm" id="ssoRenew" title="Sign in again on AWS's page, for a fresh session; reads keep going meanwhile">Renew</button><button class="btn sm" id="ssoOutBtn" title="Forget this sign-in on this computer: reads stop until you sign in again">Sign out</button><button class="btn sm" data-netreset>Reset sign-in network</button><span class="small" data-netnote></span></div>
         <div id="ssoPick">
           <div class="form">
             <label id="pRoleWrap">Role in every account<select id="pRole"></select></label>
@@ -751,6 +753,24 @@ section.nodata .card:not(.empty-state) { display: none; }
       <span class="muted small" id="aN"></span>
     </div>
     <div class="card scroll"><table class="trail-t"><colgroup><col style="width:5%"><col style="width:10%"><col style="width:15%"><col style="width:33%"><col style="width:17%"><col style="width:20%"></colgroup><thead><tr><th>#</th><th>When</th><th>Who</th><th>What</th><th>Where</th><th>Why</th></tr></thead><tbody id="auditRows"></tbody></table></div>
+  </section>
+
+  <section id="tab-outbound" hidden>
+    <h2>Outbound rules that leave the account</h2>
+    <p class="lede">Every outbound security group rule, on a group some interface uses, that reaches outside its own account, riskiest first: <b>internet</b>, then <b>SaaS and partners</b>, then <b>on-premises data centres</b>, then <b>your other AWS accounts</b> (their VPCs, groups across a peering, PrivateLink endpoints to another account's service). A rule is <b>too wide</b> when it allows every protocol, a range of ports, or more addresses than one destination needs.</p>
+    <div class="tools">
+      <input id="obQ" type="search" placeholder="Search: account, group, destination…" aria-label="Search outbound rules" autocomplete="off" style="flex:1;min-width:260px">
+      <label class="small">Reaches <select id="oCls"><option value="">anything outside</option><option value="internet">the internet</option><option value="saas">SaaS and partners</option><option value="datacentre">on-premises data centres</option><option value="account">other AWS accounts</option></select></label>
+      <label class="small"><input type="checkbox" id="oWide" checked> Too wide only</label>
+      <label class="small"><input type="checkbox" id="oDefault"> Include the default "all traffic to 0.0.0.0/0"</label>
+      <button class="btn sm" type="button" data-ohelp="oHelp" aria-expanded="false">Explain</button>
+    </div>
+    <p class="small muted" id="oHelp" hidden>Read from each account's security groups as last refreshed with its flow logs (Read more data on an account refreshes them). Left out: destinations inside the account's own VPCs, AWS's own service ranges and prefix lists (S3, DynamoDB, CloudFront), transit gateway interfaces, and groups no interface uses. <b>Internet</b>: any public range not known as a SaaS or partner, including AWS EC2 ranges wider than a /24 (anyone's servers). <b>SaaS and partners</b>: ranges named in the IP lists or your names file, and single hosts on AWS. <b>On-premises data centres</b>: private ranges outside every VPC read; a range such as 10.0.0.0/8 that also covers other accounts' VPCs is counted here, as its riskiest reach. <b>Other AWS accounts</b>: another account's VPC range, a group in another account, or a PrivateLink endpoint (in this account) to another account's service. The default rule every new group gets (all traffic to 0.0.0.0/0, and to ::/0 in IPv6 VPCs) is hidden unless ticked, as it is on almost every group: it still counts in the totals. Severity: internet and too wide is high; SaaS or on-premises and too wide is medium. To narrow a rule to what is actually used, read the account with outbound flow logs (<code>read --egress</code>) and use its review's "Outbound wider than used".</p>
+    <div class="facts" id="oFacts"></div>
+    <h3>Accounts, riskiest outbound first</h3>
+    <div class="scroll"><table class="small"><thead><tr><th>Account</th><th class="num">Internet (too wide)</th><th class="num">SaaS</th><th class="num">On-premises</th><th class="num">Other accounts</th><th></th></tr></thead><tbody id="oAccts"></tbody></table></div>
+    <h3>Rules <span class="muted small" id="obN"></span></h3>
+    <div class="scroll"><table class="small"><thead><tr><th>Reaches</th><th>Account</th><th>Group</th><th>Ports</th><th>Destination</th><th class="num">Interfaces</th><th>Why too wide</th></tr></thead><tbody id="oRows"></tbody></table></div>
   </section>
 
   <section id="tab-accounts" hidden>
@@ -1134,7 +1154,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
     for (const s of document.querySelectorAll("main > section")) s.hidden = s.id !== "tab-" + tab;
     if (location.hash.slice(1).split("/")[0] !== tab) history.pushState(null, "", "#" + tab);  // a bookmark opens this tab
-    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, macro: loadMacro, over: loadOver, fix: loadFix, overview: loadState, settings: loadSettings, accounts: loadAccounts})[tab]?.())
+    return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, outbound: loadOutbound, macro: loadMacro, over: loadOver, fix: loadFix, overview: loadState, settings: loadSettings, accounts: loadAccounts})[tab]?.())
       .catch((e) => flash(e.message, true));
   }
 
@@ -1468,10 +1488,31 @@ section.nodata .card:not(.empty-state) { display: none; }
   for (const b of document.querySelectorAll("[data-by]")) b.addEventListener("click", () => setBy(b.dataset.by));
   $("ssoPortal").addEventListener("change", () => { const p = (SSO.portals || [])[+$("ssoPortal").value]; if (p) $("ssoHint").textContent = `Not signed in · region ${p.region}`; $("ssoAdd").hidden = true; });
   $("ssoAddBtn").addEventListener("click", () => { $("ssoAdd").hidden = false; $("ssoUrl").focus(); });
+  // Sign-in only works through Zscaler: check on a new connection first; a second press signs in anyway
+  async function zsOk(btn, tab) {
+    if (btn.dataset.anyway === "1") { delete btn.dataset.anyway; return true; }
+    const n = await api("/api/net-check", undefined, true).catch(() => ({zscaler: null}));
+    netNote(n);
+    if (n.zscaler !== false) return true;
+    if (tab) tab.close();
+    btn.dataset.anyway = "1"; setTimeout(() => { delete btn.dataset.anyway; }, 15000);
+    flash(`Zscaler looks off: this computer goes out from ${n.ip || "its own address"}, and your company's sign-in allows only Zscaler. Turn Zscaler on, press Reset sign-in network, then sign in. Press again to sign in anyway.`, true);
+    return false;
+  }
+  function netNote(n) {
+    for (const el of document.querySelectorAll("[data-netnote]")) el.innerHTML = n.zscaler === true ? `<span class="pill" style="--p:var(--good)">through Zscaler</span> <span class="muted">${esc(n.ip || "")}</span>` : n.zscaler === false ? `<span class="pill" style="--p:var(--bad)">not through Zscaler</span> <span class="muted">${esc(n.ip || "")}</span>` : "";
+  }
+  for (const b of document.querySelectorAll("[data-nethelp]")) b.addEventListener("click", () => { const h = $("netHelp"); h.hidden = !h.hidden; b.setAttribute("aria-expanded", String(!h.hidden)); });
+  for (const b of document.querySelectorAll("[data-netreset]")) b.addEventListener("click", () => act(b, async () => {
+    const r = await api("/api/net-reset", {});
+    netNote(r);
+    flash(`${r.done.join(", ") || "Nothing cleared"}${r.failed.length ? ` (${r.failed.join("; ")})` : ""}.${r.chrome ? " In the Chrome tab that opened, press Flush socket pools, then sign in again." : " Quit and reopen the browser, or use a private window, then sign in again."}${r.zscaler === false ? ` Zscaler still looks off (${r.ip}).` : r.zscaler ? " Zscaler is on." : ""}`, r.zscaler === false);
+  }));
   $("ssoGo").addEventListener("click", () => act($("ssoGo"), async () => {
     const p = (SSO.portals || [])[+$("ssoPortal").value];
     const adding = !$("ssoAdd").hidden || !p;
     const tab = window.open("about:blank", "_blank");  // opened in the click, so the browser allows it
+    if (!await zsOk($("ssoGo"), tab)) return;
     try {
       const r = await api("/api/sso/start", adding ? {start_url: $("ssoUrl").value, region: $("ssoRegion").value} : {start_url: p.start_url, region: p.region});
       if (r.signed_in) { if (tab) tab.close(); } else if (tab) { tab.opener = null; tab.location.href = r.url; }
@@ -1493,6 +1534,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   $("ssoCancel").addEventListener("click", () => act($("ssoCancel"), async () => { await api("/api/sso/signout", {}); clearInterval(ssoTimer); ssoTimer = null; await loadState(); }));
   $("ssoRenew").addEventListener("click", () => act($("ssoRenew"), async () => {
     const tab = window.open("about:blank", "_blank");  // opened in the click, so the browser allows it
+    if (!await zsOk($("ssoRenew"), tab)) return;
     try {
       const r = await api("/api/sso/start", {start_url: SSO.start_url, region: SSO.region, renew: true});
       if (r.signed_in) { if (tab) tab.close(); } else if (tab) { tab.opener = null; tab.location.href = r.url; }
@@ -1657,6 +1699,12 @@ section.nodata .card:not(.empty-state) { display: none; }
     for (const x of ext.filter((x) => x.open && x.risky)) rule("critical", x, `<code>${esc(x.ports)}</code> on ${esc(x.group)} is open to everyone on a risky port`, "Narrow it to the callers seen, or put it behind a load balancer or VPN");
     for (const x of scans.filter((x) => x.internal)) out.push({sev: "critical", what: `<code>${esc(x.src)}</code> inside the network is scanning ${x.ports || 1} port(s)`, how: "Find what runs there; isolate it if nothing should scan", key: "s:" + x.src, btn: resolve});
     for (const x of (a.resets?.sources || []).filter((x) => x.action === "block")) out.push({sev: x.sev === "high" ? "high" : "medium", what: `<code>${esc(x.src)}</code>${x.name && x.name !== x.src ? ` (${esc(x.name)})` : ""} had ${big(x.resets)} connection(s) reset${x.lbs.length ? ` at ${esc(x.lbs.map((l) => l.split("/")[1] || l).join(", "))}` : ""}`, how: x.why, key: "x:" + x.src, btn: blockBtn(a, x)});
+    const ob = a.egress?.by || {}, obOnly = (k) => (a.egress?.rules || []).filter((r) => r.cls === k && r.wide.length);
+    for (const [k, sev, what] of [["internet", "high", "reach the internet"], ["saas", "medium", "reach SaaS or partners"], ["datacentre", "medium", "reach on-premises data centres"]]) {
+      if (!ob[k]?.wide) continue;
+      const rs = obOnly(k), dbs = rs.filter((r) => r.db).length, nonDef = rs.filter((r) => !isDefaultOut(r)).length;
+      out.push({sev: k === "internet" && !nonDef && !dbs ? "medium" : sev, what: `${ob[k].wide} outbound rule(s) on ${ob[k].groups} group(s) ${what} wider than one destination needs${dbs ? `, ${dbs} on databases` : ""}${k === "internet" && !nonDef && rs.length ? " (the default all-traffic rule)" : ""}`, how: k === "internet" ? "Narrow them to the hosts and ports used, starting with databases" : "Narrow them to the ranges and ports used", key: "o:" + k, btn: '<button class="btn sm" data-atab="outbound">Outbound</button>'});
+    }
     if (a.egress_bad) out.push({sev: "critical", what: `${a.egress_bad} connection(s) out to known malicious addresses`, how: "Investigate the host that made them", btn: review});
     const back = ref.filter((r) => r.restore);
     if (back.length) out.push({sev: "high", what: `${back.length} source(s) refused since a change removed the rule that let them in`, how: "Put the rule back for those sources", btn: resolve});
@@ -1677,6 +1725,53 @@ section.nodata .card:not(.empty-state) { display: none; }
     const li = (x, n) => `<li style="--nx:${SEVCOL[x.sev]}">${n ? nxBadge(n, x.sev) : ""}<div class="nx-what"><span class="pill" style="--p:${SEVCOL[x.sev]}">${x.sev}</span> <b>${x.what}.</b> ${esc(x.how)}.</div>${x.btn || ""}</li>`;
     return `<ol class="next5 small">${items.map((x, i) => li(x, i + 1)).join("")}</ol>`
       + (rest.length ? `<details class="more-x small"><summary>${rest.length} more after these</summary><ol class="next5">${rest.map((x) => li(x, 0)).join("")}</ol></details>` : "");
+  }
+  const OCLS = {internet: ["Internet", "var(--bad)"], saas: ["SaaS and partners", "var(--high)"], datacentre: ["On-premises", "var(--warn)"], account: ["Other AWS accounts", "var(--accent)"]};
+  const OSEV = {high: "var(--bad)", medium: "var(--warn)", low: "var(--muted)"};
+  const isDefaultOut = (r) => ["0.0.0.0/0", "::/0"].includes(r.dest) && r.proto === "-1";
+  const oRow = (r, a, num = "") => `<tr${num ? num[0] : ""}><td>${num ? num[1] : ""}<span class="pill" style="--p:${OCLS[r.cls][1]}">${esc(OCLS[r.cls][0])}</span> <span class="pill" style="--p:${OSEV[r.sev]}">${esc(r.sev)}</span></td>
+      ${a ? `<td>${esc(a.name || a.account)}<div class="muted"><code>${esc(a.account)}</code></div></td>` : ""}
+      <td>${esc(r.gname)}<div class="muted">${esc(r.region)} · <code>${esc(r.group)}</code></div></td>
+      <td><code>${esc(r.ports)}</code></td>
+      <td><code>${esc(r.dest)}</code><div class="muted">${esc(r.name)}${r.note ? ` · ${esc(r.note)}` : ""}${r.accounts?.length && r.cls !== "account" ? ` · covers ${r.accounts.length} other account(s)` : ""}</div></td>
+      <td class="num">${r.enis}${r.db ? ' <span class="pill" style="--p:var(--bad)" title="A database uses this group">database</span>' : ""}<div class="muted">${esc((r.kinds || []).slice(0, 3).join(", "))}</div></td>
+      <td>${r.wide.length ? r.wide.map((w) => `<span class="pill" style="--p:var(--bad)">${esc(w)}</span>`).join(" ") : '<span class="muted">one destination and port</span>'}</td></tr>`;
+  function outboundHtml(a, nOf) {
+    const e = a.egress;
+    const help = `<p class="small muted" id="obHelp" hidden style="margin:4px 0 6px">Outbound rules on groups this account's interfaces use that reach outside the account, riskiest first: <b>internet</b>, <b>SaaS and partners</b>, <b>on-premises data centres</b>, <b>other AWS accounts</b> (their VPCs, groups across a peering, PrivateLink to another account's service). Destinations in its own VPCs, AWS's service ranges and prefix lists and transit gateways are left out. <b>Too wide</b>: every protocol, a range of ports, or more addresses than one destination. The <b>Outbound</b> tab shows every account's.</p>`;
+    const head = `<h3 style="display:flex;gap:8px;align-items:center">Outbound rules that leave the account <button class="btn sm" type="button" data-ahelp="obHelp" aria-expanded="false">Explain</button></h3>${help}`;
+    if (!e || e.error || e.by == null) return head + `<p class="small muted">${e?.error ? esc(e.error) : "Not worked out yet for this account."}</p>`;
+    const tiles = Object.entries(OCLS).map(([k, [n, c]]) => { const b = e.by[k] || {rules: 0, wide: 0, groups: 0}; return `<div><span class="muted small">${esc(n)}</span><b style="color:${b.wide ? c : ""}">${b.wide.toLocaleString()} too wide</b><span class="muted small">of ${b.rules.toLocaleString()} rule(s) on ${b.groups} group(s)</span></div>`; }).join("");
+    const rows = e.rules || [];
+    return head + `<div class="facts">${tiles}</div>${rows.length ? `<div class="scroll"><table class="small"><thead><tr><th>Reaches</th><th>Group</th><th>Ports</th><th>Destination</th><th class="num">Interfaces</th><th>Why too wide</th></tr></thead><tbody>${rows.map((r) => { const g = nOf("o:" + r.cls); return oRow(r, null, g.n ? [nxRow(g.n, g.sev), nxBadge(g.n, g.sev)] : ""); }).join("")}</tbody></table></div>${e.total > rows.length ? `<p class="muted small">The ${rows.length} riskiest of ${e.total.toLocaleString()}: the Outbound tab lists them all for this account.</p>` : ""}` : '<p class="small" style="color:var(--good)">No outbound rule reaches outside the account.</p>'}${e.unattached ? `<p class="muted small">${e.unattached} more outbound rule(s) on groups no interface uses: not counted.</p>` : ""}`;
+  }
+  async function loadOutbound() {
+    if (!M) M = await api("/api/macro?range=1m");
+    for (const id of ["obQ", "oCls", "oWide", "oDefault"]) { const el = $(id); if (!el.dataset.on) { el.dataset.on = "1"; el.addEventListener(id === "obQ" ? "input" : "change", drawOutbound); } }
+    for (const b of document.querySelectorAll("[data-ohelp]")) if (!b.dataset.on) { b.dataset.on = "1"; b.addEventListener("click", () => { const h = $(b.dataset.ohelp); h.hidden = !h.hidden; b.setAttribute("aria-expanded", String(!h.hidden)); }); }
+    drawOutbound();
+  }
+  function drawOutbound() {
+    const A = (M?.accounts || []).filter((a) => a.egress?.by);
+    const q = $("obQ").value.toLowerCase().trim(), cls = $("oCls").value, wide = $("oWide").checked, dflt = $("oDefault").checked;
+    const tot = {}; for (const k of Object.keys(OCLS)) tot[k] = {rules: 0, wide: 0, accts: 0};
+    for (const a of A) for (const k of Object.keys(OCLS)) { const b = a.egress.by[k] || {}; tot[k].rules += b.rules || 0; tot[k].wide += b.wide || 0; tot[k].accts += b.wide ? 1 : 0; }
+    $("oFacts").innerHTML = Object.entries(OCLS).map(([k, [n, c]]) => `<div><span class="muted small">${esc(n)}</span><b style="color:${tot[k].wide ? c : ""}">${tot[k].wide.toLocaleString()} too wide</b><span class="muted small">of ${tot[k].rules.toLocaleString()} rules · ${tot[k].accts} account(s)</span></div>`).join("");
+    const w = (a, k) => a.egress.by[k]?.wide || 0;
+    const accts = [...A].sort((x, y) => w(y, "internet") - w(x, "internet") || w(y, "saas") - w(x, "saas") || w(y, "datacentre") - w(x, "datacentre") || w(y, "account") - w(x, "account"));
+    const cell = (a, k) => { const b = a.egress.by[k] || {rules: 0, wide: 0}; return `<td class="num"><b style="color:${b.wide ? OCLS[k][1] : "var(--muted)"}">${b.wide}</b> <span class="muted">/ ${b.rules}</span></td>`; };
+    const ap = page("outA", accts.length, drawOutbound);
+    $("oAccts").innerHTML = accts.slice(ap.a, ap.b).map((a) => `<tr><td>${esc(a.name || a.account)}<div class="muted"><code>${esc(a.account)}</code></div></td>${Object.keys(OCLS).map((k) => cell(a, k)).join("")}<td><button class="btn sm" data-oacct="${esc(a.account)}">Open account</button></td></tr>`).join("") || '<tr><td colspan="6" class="muted">No account worked out yet.</td></tr>';
+    pagerAfter($("oAccts"), ap.bar);
+    const rows = A.flatMap((a) => (a.egress.rules || []).map((r) => ({r, a}))).filter(({r, a}) => (!cls || r.cls === cls) && (!wide || r.wide.length) && (dflt || !isDefaultOut(r))
+      && (!q || `${a.name} ${a.account} ${r.gname} ${r.group} ${r.dest} ${r.name} ${r.ports}`.toLowerCase().includes(q)));
+    const rank = {internet: 0, saas: 1, datacentre: 2, account: 3}, sv = {high: 0, medium: 1, low: 2};
+    rows.sort((x, y) => rank[x.r.cls] - rank[y.r.cls] || sv[x.r.sev] - sv[y.r.sev] || (y.r.db - x.r.db) || y.r.enis - x.r.enis);
+    $("obN").textContent = `${rows.length.toLocaleString()} shown${dflt ? "" : " (default all-traffic rules hidden)"}; up to 20 per account`;
+    const rp = page("outR", rows.length, drawOutbound);
+    $("oRows").innerHTML = rows.slice(rp.a, rp.b).map(({r, a}) => oRow(r, a)).join("") || '<tr><td colspan="7" class="muted">Nothing matches.</td></tr>';
+    pagerAfter($("oRows"), rp.bar);
+    for (const b of document.querySelectorAll("[data-oacct]")) b.addEventListener("click", () => { AV.pick = {k: "account", v: b.dataset.oacct}; show("accounts").then(() => { $("acAcct").value = b.dataset.oacct; drawAccountView(); }); });
   }
   const blockBtn = (a, x) => x.internal ? "" : `<button class="btn sm primary" data-ablock="${esc(JSON.stringify({account: a.account, region: x.region, src: x.src, subnets: x.subnets, detail: {lbs: x.lbs, vpc: x.vpc, resets: x.resets, share: x.share, name: x.name, why: x.why}}))}">Block</button>`;
   const helpBtn = (id) => `<button class="btn sm" type="button" data-ahelp="${id}" aria-expanded="false">Explain</button>`;
@@ -1750,6 +1845,7 @@ section.nodata .card:not(.empty-state) { display: none; }
         <td class="num">${neverPct(x.never_ext, x.allowed)}</td><td class="num">${x.enis}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
       ${top.length ? `<h3>Biggest rules to tighten</h3><div class="scroll"><table class="small"><thead><tr><th>Group</th><th>Ports</th><th>Source</th><th class="num">Never-seen addresses (share of the rule)</th><th>What to do</th></tr></thead><tbody>${top.map((x) => { const [rc, rb] = rowOf("r:" + rKey(x)); return `<tr${rc}><td>${rb}${esc(x.group)}<div class="muted">${esc(x.region)} · ${x.enis} interface(s)</div></td><td><code>${esc(x.ports)}</code></td><td><code>${esc(x.source)}</code></td><td class="num">${neverPct(x.never, cidrSize(x.source))}</td><td>${["unused", "tighten"].includes(x.status) ? `<button class="btn sm primary" data-arule="${esc(JSON.stringify({g: x.group, r: x.region, p: x.ports, s: x.source}))}">${x.status === "unused" ? "Rule not needed: remove it…" : "Narrow it…"}</button><div class="muted small">${x.status === "unused" ? "no traffic that fits it was ever seen" : "only some of the addresses it allows were seen: keep those"}</div>` : RULE_DO[x.status] || esc(x.status)}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
       ${scans.length ? `<h3>Scanning sources refused (24 h)</h3><div class="scroll"><table class="small"><thead><tr><th>Source</th><th class="num">Ports</th><th class="num">Addresses</th><th class="num">Flows</th><th>Verdict</th></tr></thead><tbody>${scans.map((x) => { const [rc, rb] = rowOf("s:" + x.src); return `<tr${rc}><td>${rb}<code>${esc(x.src)}</code> ${x.internal ? '<span class="pill" style="--p:var(--bad)">internal</span>' : ""}<div class="muted">${esc(x.name || "")}</div></td><td class="num">${x.ports || 1}</td><td class="num">${x.dsts || 1}</td><td class="num">${Number(x.flows).toLocaleString()}</td><td>${esc(x.title || x.verdict)}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
+      ${outboundHtml(a, nOf)}
       ${resetsHtml(a, rowOf)}
       <div class="acts" style="margin-top:10px">${go.fix}${go.resolve}${go.review}</div></div>`;
   }

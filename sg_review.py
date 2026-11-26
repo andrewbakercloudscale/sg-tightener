@@ -629,7 +629,15 @@ def snapshot(session, region: str) -> dict:
     out["stale"] = _stale_refs(ec2, [v["id"] for v in out["vpcs"]], out["errors"])
     pls: dict = {}
     pls6: dict = {}
-    for pid in sorted({p for g in out["groups"].values() for r in g["rules"] for p in r["pls"]}):
+    pl_ids = sorted({p for g in out["groups"].values() for r in (g["rules"] + (g.get("egress") or [])) for p in r["pls"]})
+    try:
+        out["prefix_list_meta"] = {x["PrefixListId"]: {"name": x.get("PrefixListName", ""), "owner": x.get("OwnerId", "")}
+                                   for x in _pages(ec2, "describe_managed_prefix_lists", "PrefixLists")
+                                   if x.get("PrefixListId") in set(pl_ids)}  # fmt: skip
+    except (ClientError, BotoCoreError) as exc:
+        out["prefix_list_meta"] = {}
+        out["errors"].append(f"prefix list names: {exc}")
+    for pid in pl_ids:
         try:
             got = [x["Cidr"] for x in _pages(ec2, "get_managed_prefix_list_entries", "Entries", PrefixListId=pid)
                    if x.get("Cidr")]  # fmt: skip
@@ -4864,6 +4872,11 @@ def report_row(kind: str, account: str, name: str, range_key: str):
         rep = build(doc, range_key, names=names, assets=True)
         row = macro_row(account, doc.get("name") or name, rep)
         try:
+            row["egress"] = egress_summary(doc, names)
+        except Exception as exc:  # noqa: BLE001 - the rest of the row still counts
+            log.warning("outbound rules for %s: %s", account, exc)
+            row["egress"] = {"error": str(exc)[:200]}
+        try:
             row["resets"] = resets_summary(doc, range_key, names)
         except Exception as exc:  # noqa: BLE001 - the rest of the row still counts
             log.warning("resets for %s: %s", account, exc)
@@ -4898,6 +4911,176 @@ def needed_ips(rules: list) -> int:
         else:
             n += int(r.get("allowed") or 0)
     return n
+
+
+# ---------------------------------------------------------------------------------------- outbound rules
+# Outbound rules to anywhere outside the account, by what they reach, riskiest first: the internet, SaaS and
+# partners, on-premises data centres (and other private ranges), your other AWS accounts (their VPCs, groups
+# across a peering, PrivateLink endpoints to another account's service). Same-account destinations, AWS's own
+# service prefix lists and transit gateways are left out.
+EGRESS_CLASSES = ("internet", "saas", "datacentre", "account")
+EGRESS_CLASS_NAME = {"internet": "Internet", "saas": "SaaS and partners", "datacentre": "On-premises data centres",
+                     "account": "Other AWS accounts"}  # fmt: skip
+EGRESS_WIDE = {"internet": 1, "saas": 256, "datacentre": 65536, "account": 65536}  # more addresses than this is wide
+EGRESS_TOP = 20  # rules listed per account
+
+
+def _within(iv, ivs) -> bool:
+    return any(a <= iv[0] and iv[1] <= b for a, b in ivs)
+
+
+def _overlaps(iv, ivs) -> bool:
+    return any(a <= iv[1] and iv[0] <= b for a, b in ivs)
+
+
+def _dest_class(cidr: str, lab, own: list, sibs: dict) -> tuple[str | None, str, list]:
+    """What an outbound IPv4 range reaches: (class, name, other accounts it covers); class None when it stays
+    inside this account's own VPCs."""
+    iv = sg_ipintel.cidr_iv(cidr)
+    if not iv:
+        return None, "", []
+    if _within(iv, own):
+        return None, "", []
+    accts = sorted(a for a, ivs in sibs.items() if _overlaps(iv, ivs))
+    if _within(iv, PRIVATE):
+        if accts and any(_within(iv, sibs[a]) for a in accts):
+            who = lab(str(ipaddress.ip_address(iv[0])))
+            return "account", who.get("name") or f"account {accts[0]}", accts
+        who = lab(str(ipaddress.ip_address(iv[0])))
+        named = (who.get("cat") == "datacentre" and not who.get("name", "").startswith("Private IP address outside")
+                 and _within(iv, [sg_ipintel.cidr_iv(who.get("range") or "") or (0, -1)]))
+        name = who.get("name") if named else "On-premises and other private ranges"
+        if accts:
+            name += f", and the VPCs of {len(accts)} of your other accounts"
+        return "datacentre", name, accts
+    if iv[1] - iv[0] + 1 > 65536:
+        return "internet", "The whole internet" if iv == (0, 2**32 - 1) else f"{iv[1] - iv[0] + 1:,} internet addresses", []
+    lo, hi = lab(str(ipaddress.ip_address(iv[0]))), lab(str(ipaddress.ip_address(iv[1])))
+    if lo.get("cat") == "aws" and hi.get("cat") == "aws" and "EC2" not in (lo.get("name") or "") + (hi.get("name") or ""):
+        return None, lo.get("name", "AWS"), []  # an AWS service's own range (S3, DynamoDB …): not a risk class here
+    if lo.get("cat") == "saas" and lo.get("name") == hi.get("name"):
+        return "saas", lo.get("name", "SaaS"), accts
+    if lo.get("cat") == "aws" and iv[1] - iv[0] < 256:
+        return "saas", f"{lo.get('name') or 'AWS'} (a service hosted on AWS)", accts
+    if lo.get("cat") == "internal" and lo.get("account"):
+        return "account", lo.get("name", ""), accts
+    return "internet", lo.get("name") if lo.get("name") and lo.get("name") != str(ipaddress.ip_address(iv[0])) else "Internet", accts
+
+
+def egress_summary(doc: dict, names: list | None = None) -> dict:
+    """Every outbound rule, on a group some interface uses, that reaches outside the account: its class, how
+    wide it is (addresses and ports) and so whether it is wider than needed, worst first; with counts by class."""
+    acct = doc.get("account", "")
+    lab = Labeller(doc, names=names)
+    sibs: dict[str, list] = {}
+    for a in siblings(doc):
+        for _r, _v, _n, cidrs, _c6 in a.get("vpcs") or []:
+            sibs.setdefault(a["account"], []).extend(iv for iv in map(sg_ipintel.cidr_iv, cidrs) if iv)
+    rows = []
+    unattached = 0
+    for region, x in doc["regions"].items():
+        snap = x.get("snapshot") or {}
+        groups, enis = snap.get("groups") or {}, snap.get("enis") or {}
+        own = [iv for v in snap.get("vpcs") or [] for iv in map(sg_ipintel.cidr_iv, v.get("cidrs") or []) if iv]
+        users: dict[str, list] = {}
+        for eid, e in enis.items():
+            if e.get("kind") == "transit gateway":
+                continue
+            for g in e.get("groups") or []:
+                users.setdefault(g, []).append(e)
+        pl = snap.get("privatelink") or {}
+        mine_svc = {s.get("service") for s in pl.get("services") or []}
+        third = [ep for ep in pl.get("endpoints") or [] if ep.get("service") and ep["service"] not in mine_svc  # another account's service
+                 and (ep["service"].startswith("com.amazonaws.vpce.") or not ep["service"].startswith(("com.amazonaws.", "aws.")))]  # fmt: skip
+        ep_by_group: dict[str, list] = {}
+        ep_ips: list = []
+        for ep in third:
+            for g in ep.get("groups") or []:
+                ep_by_group.setdefault(g, []).append(ep)
+            for eni in ep.get("enis") or []:
+                for ip in (enis.get(eni) or {}).get("ips") or []:
+                    ep_ips.append((_ip(ip), ep))
+        meta, pls = snap.get("prefix_list_meta") or {}, snap.get("prefix_lists") or {}
+        for gid, g in groups.items():
+            eg = g.get("egress") or []
+            if not eg:
+                continue
+            used = users.get(gid) or []
+            if not used:
+                unattached += sum(1 for _ in eg)
+                continue
+            kinds = sorted({e.get("kind", "") for e in used})
+
+            def add(r, dest, cls, name, addrs, accts=(), note=""):
+                ports = r["to"] - r["from"] + 1 if str(r["proto"]) != "-1" else 65536
+                wide = []
+                if str(r["proto"]) == "-1":
+                    wide.append("all protocols and ports")
+                elif ports > 1:
+                    wide.append(f"{ports:,} ports")
+                if addrs > EGRESS_WIDE[cls]:
+                    wide.append("everywhere" if addrs >= 2**32 else f"{addrs:,} addresses")
+                if cls == "account" and len(accts) > 1:
+                    wide.append(f"{len(accts)} accounts")
+                sev = {"internet": "high" if wide else "medium", "saas": "medium" if wide else "low",
+                       "datacentre": "medium" if wide else "low", "account": "low"}[cls]  # fmt: skip
+                rows.append({"region": region, "group": gid, "gname": g.get("name") or gid, "vpc": g.get("vpc", ""),
+                             "proto": str(r["proto"]), "ports": ports_label(r), "dest": dest, "cls": cls, "name": name,
+                             "addrs": addrs, "nports": ports, "accounts": list(accts)[:6], "wide": wide, "sev": sev,
+                             "enis": len(used), "kinds": kinds, "note": note,
+                             "db": any(e.get("kind") == "RDS database" for e in used)})  # fmt: skip
+
+            for r in eg:
+                for c in r.get("cidrs") or []:
+                    iv = sg_ipintel.cidr_iv(c)
+                    cls, name, accts = _dest_class(c, lab, own, sibs)
+                    if cls:
+                        add(r, c, cls, name, iv[1] - iv[0] + 1, accts)
+                    elif iv and ep_ips:
+                        hit = sorted({ep["id"] for n, ep in ep_ips if n is not None and iv[0] <= n <= iv[1]})
+                        if hit:
+                            eps = [ep for ep in third if ep["id"] in hit]
+                            add(r, c, "account", f"PrivateLink to another account: {', '.join(ep['service'].rsplit('.', 1)[-1] for ep in eps[:3])}",
+                                len(hit), [], f"{c} in this account also reaches {len(hit)} endpoint(s) of another account's service")  # fmt: skip
+                for c in r.get("cidrs6") or []:
+                    if c == "::/0":
+                        add(r, c, "internet", "The whole IPv6 internet", 2**64)
+                for x in r.get("xrefs") or []:
+                    if x.get("account") and x["account"] != acct:
+                        add(r, x.get("group", ""), "account", f"A group in account {x['account']}"
+                            + (f" over {x['peering']}" if x.get("peering") else ""), 1, [x["account"]])  # fmt: skip
+                for ref in r.get("refs") or []:
+                    for ep in ep_by_group.get(ref, []):
+                        add(r, ref, "account", f"PrivateLink to another account: {ep['service'].rsplit('.', 1)[-1]}", 1, [],
+                            f"{ref} is the group of endpoint {ep['id']} ({ep['service']})")  # fmt: skip
+                for pid in r.get("pls") or []:
+                    m = meta.get(pid) or {}
+                    if m.get("owner") == "AWS" or (m.get("name") or "").startswith("com.amazonaws."):
+                        continue  # an AWS service's own list (S3, DynamoDB, CloudFront): not a risk class here
+                    if not m and pls.get(pid) and all(lab(c.split("/")[0]).get("cat") == "aws" for c in pls[pid]):
+                        continue  # read before list names were: all AWS ranges, so taken for an AWS-managed list
+                    worst = None
+                    for c in pls.get(pid) or []:
+                        cls, name, accts = _dest_class(c, lab, own, sibs)
+                        if cls and (worst is None or EGRESS_CLASSES.index(cls) < EGRESS_CLASSES.index(worst[0])):
+                            worst = (cls, name, accts)
+                    if worst:
+                        n = sum((iv[1] - iv[0] + 1) for iv in map(sg_ipintel.cidr_iv, pls.get(pid) or []) if iv)
+                        add(r, pid, worst[0], f"{m.get('name') or pid}: {worst[1]}", n, worst[2],
+                            f"prefix list of {len(pls.get(pid) or [])} range(s)")  # fmt: skip
+    rank = {c: i for i, c in enumerate(EGRESS_CLASSES)}
+    sevr = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    rows.sort(key=lambda r: (rank[r["cls"]], not r["wide"], sevr[r["sev"]], -r["enis"] * (2 if r["db"] else 1), -r["addrs"]))
+    by = {c: {"rules": 0, "wide": 0, "groups": set(), "enis": 0} for c in EGRESS_CLASSES}
+    for r in rows:
+        b = by[r["cls"]]
+        b["rules"] += 1
+        b["wide"] += bool(r["wide"])
+        if r["group"] not in b["groups"]:
+            b["groups"].add(r["group"])
+            b["enis"] += r["enis"]
+    return {"by": {c: {**b, "groups": len(b["groups"])} for c, b in by.items()}, "rules": rows[:EGRESS_TOP],
+            "total": len(rows), "wide": sum(1 for r in rows if r["wide"]), "unattached": unattached}
 
 
 RESET_TOP = 15  # sources listed per account
