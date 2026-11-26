@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.57.0 - 2026-11-26
+
+- **Outbound tab**: every outbound rule leaving the account by risk class (internet, SaaS and partners, on-premises, other AWS accounts), too-wide rules flagged (all protocols, port ranges, more addresses than needed); the default all-traffic rule hidden unless asked for; the same account picker as Rejected traffic; also on each account.
+- **Connection resets**: counted from flow-log TCP flags in the same read; per account a chart, load balancers and the sources reset most, with **Block** (a network ACL deny, audited, undoable) for threat-list and scanning sources; CloudWatch load balancer reset counts on request.
+- **Accounts**: "Your next 5" / "Their next 5", numbered and coloured to match the table rows.
+- **SSO behind Zscaler**: Sign in and Renew check Zscaler is on first; **Reset sign-in network** clears stale connections.
+- **Data use** (Settings): read flow logs only on Wi-Fi (waits while on a phone hotspot); a restarted read of many accounts keeps the prices already worked out instead of pricing every account again.
+- Demo data includes outbound rules and connection resets.
+
 ## 5.56.0 - 2026-11-25
 
 - **Read more from an account**: the account view reads its flow logs for the last 24 hours, 7, 30 or 90 days (priced first, Read or Stop), then refreshes its figures; the Fix dialog's short-history warning points to it.

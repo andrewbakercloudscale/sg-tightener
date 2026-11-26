@@ -113,6 +113,7 @@ Old bookmarks ending in `?token=…` still work.
 | **Risk overview** | Every account `sg_review.py` has read, side by side: headline tiles, a risk heatmap, over-provisioning by owner and over time, internet exposure, high-risk sources let in, the biggest rules to tighten, and blind spots ([below](#risk-overview-every-account)) |
 | **Over-provisioning** | For leaders: over-provisioned addresses by account and per asset, rated red, amber or green, led by a chart of over-provisioning over time by source type, with KPIs and **Remediate** for each account ([below](#over-provisioning-by-account-and-asset)) |
 | **Remediate** | Pick an account and the evidence dates: the account before and after (with % reduction, **Explain** and **Export to PDF**), where its traffic comes from, rules open to everyone that nothing outside used (**critical**, with **Propose this group**), a **Re-read from AWS** panel that prices only the hours never read, and every security group region by region (**Refresh from AWS**, **Apply approved changes** (first shows every rule it will add or remove, the groups and interfaces it touches, the request each came from, and which sources the flow logs saw that it would cut off; **Preview approved changes** in surveillance mode), **Propose a change by hand**); untick anything sensitive and propose ([below](#remediate-an-account)) |
+| **Outbound** | Every outbound rule, on a group some interface uses, that leaves the account, by risk class: **internet**, **SaaS and partners**, **on-premises**, **other AWS accounts**; which are **too wide** (all protocols, a port range, or more addresses than one destination needs), by account and rule, with the same account picker as Rejected traffic ([below](#outbound-rules-that-leave-the-account)) |
 | **Change requests** | Requests waiting for approval, approved, applied, rejected, withdrawn. Approve, or reject with a note, someone else's request; **Cancel request** on your own. **Two-person approval** can be unticked to approve your own on a single-user laptop (audited). Apply an approved one. An **asset request** (from `sg_db.py asset-propose`) shows the interface, the group it gets, the rules not carried over and what goes in their place, and once approved **Create the group and move** the interface |
 | **Audit trail** | Every entry, newest first, searchable (who, why, ticket, group, rule) and filtered by time and origin. Changes made outside the tool are red, with who made them from CloudTrail |
 | **Rejected traffic** | A line chart of the distinct addresses refused over time, one line per kind of source, then every source the security groups and network ACLs refused, in every account `sg_review.py` has read, worst verdict first. Each source is marked **internal** or **external**, **IPv6**, **scanning**, and **new** (first seen in the last 7 days, never before in at least 14 days of flow logs), with when it was first seen. Filter by account, severity, risky ports, new addresses only, internal / external / IPv6 / scanning, and text. **Fix…** opens everything known about the source (internal or external, IPv6, port scanning, new, threat lists, who it is, every interface, address and port it tried and what refused it, why, and any change in the audit trail that cut it off) and recommends where a rule letting it in belongs: the group on that interface that already serves the port, a group on that interface alone, a group of its own when every group there is shared, or to keep refusing it (scans, threat lists, Tor) or change the network ACL. **Propose this rule** sends it as a change request |
@@ -347,6 +348,68 @@ target; rules to tighten or remove.
   change in the window, and risky ports open to the internet; filter by account, rating and text.
 
 ![Every asset in an account, rated](images/sg-console-over-per-asset.png)
+
+## Outbound rules that leave the account
+
+The **Outbound** tab, and a section of the same name on each account, list every outbound rule that
+reaches outside the account, riskiest class first:
+
+| Class | What it reaches | Too wide when it allows more than |
+|---|---|---|
+| **Internet** | public addresses that are not a named SaaS or AWS service | one address |
+| **SaaS and partners** | a named provider (from public lists or your names file), or a small range on AWS | 256 addresses |
+| **On-premises** | private ranges outside the account (the data centre over VPN or Direct Connect) | 65,536 addresses |
+| **Other AWS accounts** | another account's VPC, a group across a peering, a PrivateLink endpoint to another account's service | 65,536 addresses |
+
+All protocols, or a range of ports, is always too wide. Left out, because they are not a way out of
+the account: the account's own VPCs, AWS service ranges and AWS-managed prefix lists (S3, DynamoDB),
+transit gateway interfaces and groups no interface uses. The default **all traffic to 0.0.0.0/0** (and
+**::/0**) is on almost every group, so it is hidden until **Include the default** is ticked; a rule that
+changes it (a database group allowed everywhere, all of `100.0.0.0/8` when `100.64.0.0/10` was meant) is
+always shown. **Explain** says how each number is worked out.
+
+![Outbound: rules leaving the account by risk class, too wide only](images/sg-console-outbound.png)
+
+![The same rules on an account](images/sg-console-outbound-account.png)
+
+## Connection resets
+
+Flow logs record the TCP flags of each flow, so the same read counts the connections that were
+**reset** (RST): by the source, or by your side. Each account shows them over time, each load balancer's
+resets, and the sources reset the most, with what to do:
+
+- **block**: a threat list, scanner or Tor address resetting connections, or most of an internet
+  source's connections reset. **Block** proposes a network ACL inbound deny ahead of the allows (in
+  enforce mode, audited, with the command to undo it). Internal addresses are never blocked.
+- **investigate** or **check**: a named provider or partner, which may be a real client.
+- **Load balancer reset counts (CloudWatch, 7 days)** adds the load balancers' own counters
+  (NLB TCP resets; ALB rejected connections, TLS errors and 5XX).
+
+Slices read before this was added carry no resets: they appear as accounts are read again.
+
+![Connection resets: chart, load balancers and sources to block](images/sg-console-resets.png)
+
+## Signing in behind Zscaler
+
+**Sign in** and **Renew** first check that Zscaler is on (the AWS access portal is reached through it);
+if it is off they stop and say so (press again to sign in anyway). A sign-in that fails after
+switching Zscaler on is usually the browser reusing connections it opened before: **Reset sign-in
+network** flushes DNS and opens Chrome's socket page, where **Flush socket pools** finishes the job.
+
+## Data use on a phone hotspot
+
+**Settings, Data use** shows how this Mac is connected (macOS marks a phone hotspot as a metered
+connection; an iPhone Personal Hotspot is also known by its address).
+
+- **Read flow logs only on Wi-Fi**: on a hotspot, Read all, Read one, Read and the scheduled read wait,
+  and a read a restart stopped carries on only once back on Wi-Fi. Reports work as normal.
+- **Keep prices when the console restarts** (on): a read of many accounts keeps each account's price
+  as it is worked out, so after a restart only the accounts not yet reached are priced again.
+
+AWS scans the flow logs on its side: the gigabytes on the bill are not downloaded. Pricing takes roughly
+0.5 MB an account, reading a few MB an account.
+
+![Settings: Data use](images/sg-console-data-use.png)
 
 ## When the database is not running
 

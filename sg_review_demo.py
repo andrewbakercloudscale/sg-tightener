@@ -31,6 +31,7 @@ NAMES = [{"name": "Acme payroll", "type": "partner", "ranges": ["203.0.113.0/24"
          # stand-ins for the threat lists (sg_ipintel.THREAT_FEEDS), whose real addresses change daily
          {"name": "blocklist.de attacker", "type": "threat", "ranges": ["198.51.100.66/32"],
           "note": "Reported attacking SSH, mail or web servers in the last 48 hours (blocklist.de; a made-up address)"},
+         {"name": "Metrics SaaS", "type": "saas", "ranges": ["192.0.2.0/24"], "note": "monitoring intake (a made-up range)"},
          {"name": "Feodo Tracker botnet C2", "type": "threat", "ranges": ["198.51.100.99/32"],
           "note": "Botnet command and control server (abuse.ch Feodo Tracker; a made-up address)"}]  # fmt: skip
 
@@ -110,6 +111,12 @@ def snapshot(region: str, vpc: str, now: float) -> dict:
     for g in groups.values():
         g["owner"] = ACCOUNT
         g["egress"] = out_all
+    # outbound rules that leave the account (the Outbound tab): the database may call anything in the data centre,
+    # the batch workers a monitoring SaaS, and legacy-admin all of 100.0.0.0/8 (public: meant 100.64.0.0/10)
+    groups["sg-0db00000000000002"]["egress"] = [rule("-1", 0, 65535, ["10.0.0.0/8"], {"10.0.0.0/8": "replication, backups"})]
+    groups["sg-0bat0000000000005"]["egress"] = [rule("6", 443, 443, ["192.0.2.0/24"], {"192.0.2.0/24": "metrics intake"}),
+                                                rule("6", 0, 65535, ["10.0.0.0/8"])]
+    groups["sg-0leg0000000000008"]["egress"] = [*out_all, rule("-1", 0, 65535, ["100.0.0.0/8"], {"100.0.0.0/8": "carrier NAT"})]
 
     def eni(ip, groups_, subnet, kind="EC2 instance", desc="", public=""):
         inst = f"i-0{ip.replace('.', '')[-8:]}{'0' * 8}"[:19] if kind == "EC2 instance" else ""
@@ -373,7 +380,21 @@ def chunk(region: str, s: int, e: int, pats: list, now: float, rnd: random.Rando
     eni, dst = pats[0]["to"]
     rows.append(["52.95.110.1", dst, eni, "6", 32768, "ACCEPT", max(1, int(50 * hours))])
     return {"r": region, "s": s, "e": e, "st": "ok", "b": int(DEMO_BYTES_PER_HOUR * hours), "rows": rows, "pub": pub,
-            "pc": False, "err": "", "egr": _egress(s, e, now, rnd)}  # fmt: skip
+            "pc": False, "err": "", "egr": _egress(s, e, now, rnd), "rst": _resets(s, e, now, rnd)}  # fmt: skip
+
+
+def _resets(s: int, e: int, now: float, rnd: random.Random) -> list:
+    """Connections reset (TCP RST): a scanner hammering the public load balancer, the partner's new address
+    reset at the SFTP host since it was refused, and the app servers resetting slow callers now and then."""
+    h = lambda o: _host(VPC, o)
+    hours = (e - s) / HOUR
+    n = lambda rate: max(1, int(rate * hours * rnd.uniform(0.6, 1.4)))
+    out = [["10.40.3.21", h(2 * 256 + 11), "eni-0app1", "6", 443, n(3), "out"]]
+    if now - e < 10 * DAY:
+        out.append(["198.51.100.66", h(1 * 256 + 30), "eni-0alb1", "6", 443, n(60), "in"])
+    if now - e < 6 * DAY:
+        out.append(["203.0.113.250", h(1 * 256 + 40), "eni-0sftp", "6", 22, n(8), "out"])
+    return out
 
 
 def _egress(s: int, e: int, now: float, rnd: random.Random) -> list:

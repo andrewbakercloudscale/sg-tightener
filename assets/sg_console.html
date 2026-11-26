@@ -2130,7 +2130,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const U = SET.data_use, N = U.network || {};
     $("stWifi").checked = !!U.wifi_only;
     $("stKeep").checked = !!U.keep_prices;
-    $("stNetNow").innerHTML = `Now: <span class="pill" style="--p:${N.metered ? "var(--warn)" : N.metered === false ? "var(--good)" : "var(--muted)"}">${N.metered ? "phone hotspot" : N.metered === false ? "Wi-Fi or wired" : "not known"}</span> <span class="muted">${esc(N.why || "")}${N.interface ? ` (${esc(N.interface)})` : ""}</span>${N.metered && U.wifi_only ? " · <b>reads are waiting for Wi-Fi</b>" : ""}`;
+    $("stNetNow").innerHTML = `Now: <span class="pill" style="--p:${N.metered ? "var(--warn)" : N.metered === false ? "var(--good)" : "var(--muted)"}">${N.metered ? "phone hotspot" : N.metered === false ? "Wi-Fi or wired" : "not known"}</span> <span class="muted">${N.metered === false || N.why === "a phone hotspot" ? "" : esc(N.why || "")}${N.interface ? ` on ${esc(N.interface)}` : ""}</span>${N.metered && U.wifi_only ? " · <b>reads are waiting for Wi-Fi</b>" : ""}`;
     const D = SET.database;
     $("stDbBody").innerHTML = `<p style="margin:0"><span class="pill" style="--p:${D.ok ? "var(--good)" : "var(--bad)"}">${D.ok ? "connected" : "not answering"}</span> <code>${esc(D.dsn || "not set up")}</code></p>
       <p class="muted" style="margin:4px 0 0">${D.from_env ? "From the environment variable SG_TIGHTENER_PG_DSN." : `From <code>${esc(D.file)}</code>.`} ${D.local ? "A local database in Docker on this Mac." : "A database elsewhere."}${D.ok ? "" : " " + esc(D.why || "")}</p>`;

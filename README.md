@@ -206,6 +206,10 @@ See [the console](docs/console.md).
 
 ![The console: every rejected flow across the accounts](docs/images/sg-console-rejected-traffic.png)
 
+![Outbound rules that leave the account, by risk class](docs/images/sg-console-outbound.png)
+
+![Connection resets: sources to block at the network ACL](docs/images/sg-console-resets.png)
+
 ### Surveillance first, then apply per account, per group or per asset
 
 Every account starts in **surveillance** mode: sg-tightener reads, reports what is over-provisioned and
@@ -269,6 +273,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.57.0** | **Outbound** tab: rules leaving the account by risk class (internet, SaaS, on-premises, other accounts), too-wide flagged; **connection resets** from flow-log TCP flags with **Block** at the network ACL; Zscaler check before SSO sign-in; **Data use** settings: read only on Wi-Fi, keep prices across restarts |
 | **5.23.0** | Rules tightened on whatever was read (no 30-day wait); Rejected traffic and Propose allowing undo a premature change |
 | **5.22.0** | Slices that hit 10,000 rows are split down to minutes, and earlier cut hours read again, so busy VPCs can be tightened |
 | **5.21.1** | Stop works at once while pricing a read of many accounts; find an account on Remediate, which opens faster |
