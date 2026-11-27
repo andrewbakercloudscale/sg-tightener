@@ -418,7 +418,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   .ba-viz .b.now { background: var(--good); min-width: 3px; }
   .ex-legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin: 4px 0 10px; flex-wrap: wrap; }
   .ex-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
-  .ex-row { display: grid; grid-template-columns: minmax(120px, 260px) minmax(0, 1fr) 260px; gap: 4px 14px; align-items: center;
+  .ex-row { display: grid; grid-template-columns: minmax(120px, 260px) minmax(0, 1fr) 260px auto; gap: 4px 14px; align-items: center;
             padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
   .ex-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
   .ex-row .nm small { display: block; font-weight: 400; color: var(--muted); }
@@ -480,13 +480,13 @@ section.nodata .card:not(.empty-state) { display: none; }
   @media print { .reread { display: none !important; } }
   #auditDlg { width: min(1280px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
               background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
-  #auditDlg::backdrop, #fixDlg::backdrop, #resolveDlg::backdrop, #ofixDlg::backdrop, #rdDlg::backdrop { background: rgba(10,12,20,.45); }
-  #ofixDlg, #rdDlg { width: min(1280px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
+  #auditDlg::backdrop, #fixDlg::backdrop, #resolveDlg::backdrop, #ofixDlg::backdrop, #rdDlg::backdrop, #gdDlg::backdrop { background: rgba(10,12,20,.45); }
+  #ofixDlg, #rdDlg, #gdDlg { width: min(1280px, 96vw); max-height: 92vh; border: 1px solid var(--border); border-radius: 14px; padding: 0;
                 background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
-  #ofixDlg .au-head, #rdDlg .au-head { display: flex; gap: 16px; align-items: flex-start; padding: 18px 22px 10px; border-bottom: 1px solid var(--grid); }
-  #ofixDlg .au-tools, #rdDlg .au-tools { margin-left: auto; display: flex; gap: 8px; }
-  #ofixDlg .au-body, #rdDlg .au-body { overflow: auto; max-height: calc(92vh - 110px); padding: 6px 22px 20px; }
-  #ofixDlg h3, #rdDlg h3 { margin: 18px 0 6px; font-size: 15px; }
+  #ofixDlg .au-head, #rdDlg .au-head, #gdDlg .au-head { display: flex; gap: 16px; align-items: flex-start; padding: 18px 22px 10px; border-bottom: 1px solid var(--grid); }
+  #ofixDlg .au-tools, #rdDlg .au-tools, #gdDlg .au-tools { margin-left: auto; display: flex; gap: 8px; }
+  #ofixDlg .au-body, #rdDlg .au-body, #gdDlg .au-body { overflow: auto; max-height: calc(92vh - 110px); padding: 6px 22px 20px; }
+  #ofixDlg h3, #rdDlg h3, #gdDlg h3 { margin: 18px 0 6px; font-size: 15px; }
   .ofix-rule { border-top: 1px solid var(--grid); padding: 10px 0; display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 14px; }
   .ofix-rule h4 { margin: 0 0 4px; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
   .ofix-rule pre { white-space: pre-wrap; word-break: break-all; font-size: 11.5px; margin: 6px 0 0; }
@@ -1092,6 +1092,13 @@ section.nodata .card:not(.empty-state) { display: none; }
   <p class="small muted" id="rdHelp" hidden style="margin:0;padding:8px 22px;border-bottom:1px solid var(--grid)">Everything the flow logs read say about this one source in the window, to work out why its connections are reset. A <b>connection</b> is one flow-log record: one source talking to one address and port, summed over the record's time (usually up to a minute), so a long-lived or chatty caller makes many. <b>Reset by the source</b>: the caller ended the connection abruptly (TCP RST); <b>by your side</b>: your load balancer, pod or server did. <b>What it suggests</b> reads the pattern. <b>Hour by hour</b> is the audit trail, newest first: resets, connections accepted and refused, the ports and what it reached. <b>Where it was reset</b> lists each interface (load balancer, node, database) with its security groups. <b>Security group changes</b> lists every change, from CloudTrail, to those groups in the window, so you can see whether one lines up with the resets.</p>
   <div class="au-body" id="rdBody"></div>
 </dialog>
+<dialog id="gdDlg" aria-labelledby="gdTitle">
+  <div class="au-head"><div><div class="eyebrow" id="gdEye">Details</div><h2 id="gdTitle" style="margin:2px 0 4px">Details</h2>
+    <div class="muted small" id="gdSub"></div></div>
+    <div class="au-tools"><button class="btn sm" type="button" id="gdPdf">Export PDF</button><button class="btn sm" type="button" id="gdWhy" aria-expanded="false">Explain</button><button class="btn sm primary" type="button" id="gdClose">Close</button></div></div>
+  <p class="small muted" id="gdHelp" hidden style="margin:0;padding:8px 22px;border-bottom:1px solid var(--grid)"></p>
+  <div class="au-body" id="gdBody"></div>
+</dialog>
 <dialog id="actDlg" aria-labelledby="actTitle">
       <div class="au-head"><div><div class="eyebrow">Accounts</div><h2 id="actTitle" style="margin:2px 0 4px">Fix</h2><div class="muted small" id="actSub"></div></div>
         <div class="au-tools"><button class="btn sm primary" type="button" id="actClose">Close</button></div></div>
@@ -1237,7 +1244,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     }
     for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
     for (const s of document.querySelectorAll("main > section")) s.hidden = s.id !== "tab-" + tab;
-    if (location.hash.slice(1).split("/")[0] !== tab) history.pushState(null, "", "#" + tab);  // a bookmark opens this tab
+    if (location.hash.slice(1).split("/")[0] !== tab) { history.pushState(null, "", "#" + tab); window.scrollTo(0, 0); }  // a bookmark opens this tab; a new tab opens at its top
     return Promise.resolve(({groups: loadGroups, requests: loadRequests, audit: loadAudit, refused: loadRefused, outbound: loadOutbound, macro: loadMacro, over: loadOver, fix: loadFix, overview: loadState, settings: loadSettings, accounts: loadAccounts, support: loadSupport})[tab]?.())
       .catch((e) => flash(e.message, true));
   }
@@ -2415,17 +2422,15 @@ section.nodata .card:not(.empty-state) { display: none; }
            n("open") ? `<span class="pill" style="--p:var(--high)">${n("open")} open to all</span>` : "",
            !acts.length && !n("open") ? '<span class="pill" style="--p:var(--good)">fine as it is</span>' : ""].join(" ");
       const pend = g.rules.filter((r) => r.state !== "both").length;
-      const isOpen = openGroups.has(g.id);
       void say; void cut;
-      return `<tr class="grow${isOpen ? " is-open" : ""}"><td><b>${esc(g.name)}</b> <code class="muted small">${esc(g.id)}</code>${pend ? ` <span class="pill" style="--p:var(--warn)">${pend} pending</span>` : ""}
+      return `<tr class="grow"><td><b>${esc(g.name)}</b> <code class="muted small">${esc(g.id)}</code>${pend ? ` <span class="pill" style="--p:var(--warn)">${pend} pending</span>` : ""}
           <div class="muted small">${esc(g.vpc)}${g.description ? " · " + esc(g.description) : ""}${g.enis === 0 ? " · <b>on no interface</b>: protects nothing" : ""}</div></td>
         <td class="num">${g.enis == null ? "?" : g.enis}</td><td class="num">${g.rules.length}</td>
-        <td class="act"><button class="btn sm" data-details="${esc(g.id)}" aria-expanded="${isOpen}">${isOpen ? "Hide details" : "Details"}</button></td></tr>
-        ${isOpen ? `<tr class="gdetail"><td colspan="4">${groupDetail(g)}</td></tr>` : ""}`;
+        <td class="act"><button class="btn sm" data-details="${esc(g.id)}" title="Its rules and what to do with each, every source let in, traffic over time, interfaces and changes">View details</button></td></tr>`;
     }).join("") || '<tr><td colspan="4" class="muted">No group matches.</td></tr>';
     pagerAfter($("groupList"), pg.bar);
     for (const b of $("groupList").querySelectorAll("[data-details]")) b.addEventListener("click", () => {
-      const id = b.dataset.details; openGroups.has(id) ? openGroups.delete(id) : openGroups.add(id); drawGroups();
+      openGroupsTabDetail(b.dataset.details);
     });
     for (const b of $("groupList").querySelectorAll("[data-tgroup]")) b.addEventListener("click", () => propose(b, {groups: [b.dataset.tgroup]}, "this group"));
     wirePlan($("groupList"));
@@ -2456,19 +2461,10 @@ section.nodata .card:not(.empty-state) { display: none; }
       <td class="small"><code>${a.ips.slice(0, 3).map(esc).join("<br>")}</code></td>
       <td class="small">${a.groups.map((g, j) => `<code>${esc(g)}</code> ${esc(a.group_names[j])}`).join("<br>")}</td>
       <td class="small">${a.alone ? `<span class="muted" title="${esc(a.alone)}">no: ${esc(a.alone.split(":")[0])}</span>` : '<span class="pill" style="--p:var(--good)">possible</span>'}</td>
-      <td><button class="btn" data-hist="${i}">History</button></td></tr>
-      <tr hidden id="hist-${i}"><td colspan="6"></td></tr>`).slice(ap.a, ap.b).join("") || '<tr><td colspan="6" class="muted">No assets recorded: Refresh from AWS reads them.</td></tr>';
+      <td><button class="btn" data-hist="${i}" title="Every change to this interface's security groups, who made it and from where">History</button></td></tr>`).slice(ap.a, ap.b).join("") || '<tr><td colspan="6" class="muted">No assets recorded: Refresh from AWS reads them.</td></tr>';
     pagerAfter($("assetRows"), ap.bar);
     for (const b of document.querySelectorAll("[data-hist]")) b.addEventListener("click", () => act(b, async () => {
-      const a = rows[+b.dataset.hist], row = $(`hist-${b.dataset.hist}`);
-      if (!row.hidden) { row.hidden = true; return; }
-      const h = await api(`/api/asset-history?eni=${encodeURIComponent(a.eni)}`);
-      row.firstElementChild.innerHTML = h.map((e) => {
-        const d = e.detail || {};
-        const what = d.before ? `${d.before.join(", ")} → ${d.after.join(", ")}` : e.action === "assets-imported" ? "first recorded" : "";
-        return `<div class="small"><b>#${e.seq}</b> ${esc(when(e.at))} <span class="pill" style="--p:${e.origin === "external" ? "var(--bad)" : "var(--accent)"}">${esc(e.origin)}</span> ${esc(e.action)} <code>${esc(what)}</code> · ${who(e.actor)}${e.reason ? " · " + esc(e.reason) : ""}</div>`;
-      }).join("") || '<span class="muted small">Nothing recorded yet.</span>';
-      row.hidden = false;
+      await openAssetHistory(rows[+b.dataset.hist], w);
     }));
   }
   function openPropose({group, op, rule, reason}) {
@@ -2792,6 +2788,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   $("tSave").addEventListener("click", (ev) => act(ev.target, () => savePrefs({max_rules: Number($("tMax").value), tolerance: Number($("tTol").value) / 100, fill: $("tFill").checked, out_rules: Number($("tOut").value)})));
   $("tReset").addEventListener("click", (ev) => act(ev.target, () => savePrefs(tDefaults || {max_rules: 60, tolerance: 0.3, fill: false, out_rules: 10})));
   loadPrefs().catch(() => {});
+  let fixLand = false;
   async function loadFixPlan() {
     watchReread($("xAcct").value).catch(() => {});
     const a = $("xAcct").value;
@@ -2952,9 +2949,41 @@ section.nodata .card:not(.empty-state) { display: none; }
     const exMax = exposed.length ? exposed[0].addresses : 1;
     const exRow = (g) => { const a = after(g); return `<div class="ex-row"><span class="nm" title="${esc(g.name)}">${esc(g.name)}<small>${esc(g.region)} · ${g.enis} interface(s)</small></span>
       <span class="bars"><i style="width:${logW(g.addresses, exMax)}%;background:color-mix(in srgb, var(--bad) 55%, var(--grid))"></i><i style="width:${logW(a, exMax)}%;min-width:3px;background:var(--good)"></i></span>
-      <span class="num2"><span class="ex-was">${fmtN(g.addresses)}</span><span class="ex-to">→</span><span class="ex-now">${a === 0 ? "not needed" : fmtN(a)}</span>${a === 0 ? '<span class="ex-pct">rules removed</span>' : a < g.addresses ? `<span class="ex-pct">−${(100 * (g.addresses - a) / g.addresses) >= 99.95 && a ? "99.9%+" : `${Math.round(100 * (g.addresses - a) / g.addresses)}%`}</span>` : '<span class="ex-pct same">same</span>'}</span></div>`; };
+      <span class="num2"><span class="ex-was">${fmtN(g.addresses)}</span><span class="ex-to">→</span><span class="ex-now">${a === 0 ? "not needed" : fmtN(a)}</span>${a === 0 ? '<span class="ex-pct">rules removed</span>' : a < g.addresses ? `<span class="ex-pct">−${(100 * (g.addresses - a) / g.addresses) >= 99.95 && a ? "99.9%+" : `${Math.round(100 * (g.addresses - a) / g.addresses)}%`}</span>` : '<span class="ex-pct same">same</span>'}</span><button class="btn sm screen-only" type="button" data-xview="${esc(g.id)}" title="Every source let in, the new ranges and who is in each, traffic over time, interfaces and changes">View details</button></div>`; };
+    const nAct = P.groups.filter((g) => g.changes).length;
+    // Start here: the groups to do first, and why. Critical (open to the internet, unused from outside) first,
+    // then open to the internet at all, then the most IPv4 addresses taken away
+    const inet = (g) => g.rules.filter((r) => ["0.0.0.0/0", "::/0"].includes(r.source) && ["tighten", "ports", "remove"].includes(r.action));
+    const focus = P.groups.filter((g) => g.changes).map((g) => ({g, u: g.urgent || 0, i: inet(g).length, cut: g.addresses - g.new_addresses}))
+      .sort((a, b) => b.u - a.u || b.i - a.i || b.cut - a.cut).slice(0, 3);
+    const seen = (g) => g.rules.reduce((n, r) => n + (r.seen || 0), 0);
+    const why = ({g, u, i, cut}) => {
+      const ports = [...new Set(inet(g).map((r) => r.ports || "all ports"))].join(", ");
+      if (u) return `Open to the whole internet on ${ports}, and no internet address used it in the window. Anyone can try it; nobody outside needs it. Narrowing it closes that without touching traffic in use.`;
+      if (i) return `Open to the whole internet on ${ports}. Only ${seen(g).toLocaleString()} source(s) used it: narrowing to them takes away ${fmtN(cut)} IPv4 addresses.`;
+      return `Lets in ${fmtN(g.addresses)} IPv4 addresses on ${g.enis} interface(s), but only ${seen(g).toLocaleString()} source(s) used it. After: ${g.new_addresses ? fmtN(g.new_addresses) : "none (its rules are removed)"}, ${cutPct(g.addresses, g.new_addresses)}: ${focus.find((f) => !f.u && !f.i).g === g ? "the biggest cut in this account" : "the next biggest cut"}.`;
+    };
+    const start = focus.length ? `<h4 id="xStart" style="margin:12px 0 4px;scroll-margin-top:12px">Start here</h4><p class="muted small" style="margin:0 0 6px">The ${focus.length === 1 ? "group" : `${focus.length} groups`} to remediate first, and why. Open <b>View details</b> to check who uses it before proposing.</p>
+      <ol class="small" style="margin:0;padding-left:20px">${focus.map((f) => `<li style="margin:0 0 8px">${f.u ? '<span class="pill crit">Critical</span> ' : f.i ? '<span class="pill" style="--p:var(--high)">Open to the internet</span> ' : ""}<b>${esc(f.g.name)}</b> <code class="muted">${esc(f.g.id)}</code> <span class="muted">${esc(f.g.region)}</span><div>${esc(why(f))}</div>
+        <div class="acts" style="margin:4px 0 0"><button class="btn sm" type="button" data-xview="${esc(f.g.id)}">View details</button><button class="btn sm primary" type="button" data-xp="${esc(f.g.id)}">Propose this group</button></div></li>`).join("")}</ol>` : '<p class="small"><b>Nothing to change:</b> the flow logs support every rule as it is.</p>';
+    const guide = `<div class="card" id="xGuide"><div class="card-head"><div><div class="eyebrow">How to remediate ${esc(P.name || $("xAcct").selectedOptions[0]?.textContent.split(" · ")[0] || "")}</div><h3 style="margin:2px 0 0">What you are looking at, and what to do</h3></div><span class="tools" style="margin:0"><button class="btn sm" type="button" id="xGuideWhy" aria-expanded="false">Explain</button></span></div>
+      <p class="small" style="margin:6px 0">The flow logs from <b>${ymd(P.from)}</b> to <b>${ymd(P.to - 1)}</b> show who actually connected to each security group. Every rule is cut down to what was used: ranges narrowed to the sources seen, unused ports and rules removed. Nothing changes in AWS until a change request is approved and applied.</p>
+      ${start}
+      <h4 style="margin:12px 0 4px">Then, for the whole account</h4>
+      <ol class="small" style="margin:0;padding-left:20px;line-height:1.7">
+        ${T.urgent ? `<li><b>Critical first:</b> ${T.urgent} rule(s) open to the whole internet that nothing outside used (red box below). Propose that group on its own.</li>` : ""}
+        <li><b>Read the totals</b> in <i>Before and after</i>: how many IP addresses and ports the account lets in now, and after.</li>
+        <li><b>Check the groups</b> in <i>IPv4 exposure by group</i>: red is today, green after. <b>View details</b> on a group shows every source that used it, the new ranges and who is in them, and any source the new rules would refuse.</li>
+        <li><b>Untick anything sensitive</b> in <i>The ${nAct} groups this changes</i> (a group you are not sure about stays as it is).</li>
+        <li><b>Propose this remediation</b> (the button at the bottom). A second person approves it under <b>Change requests</b>, then it is applied.</li>
+        <li><b>If something breaks</b> after it is applied, it shows on <b>Rejected traffic</b>, where <b>Fix…</b> lets it in again.</li>
+      </ol>
+      <div class="acts" style="margin-top:8px"><button class="btn sm" type="button" id="xGuideGroups">Go to the groups</button><button class="btn sm primary" type="button" id="xGuideGo">Go to Propose</button></div>
+      <p class="small muted" id="xGuideHelp" hidden>Narrowed means the rule keeps only the source ranges seen in the flow logs, with a little room around them, so a host that moves within its subnet still gets in. A rule nothing used in the window is removed. A rule open to everyone on an internet-facing load balancer's web ports is kept: its users cannot be listed. The fewer days of flow logs read, the more likely something that runs rarely (a monthly job) is missed: read more days with <b>Re-read from AWS</b> above.</p></div>`;
     $("xBody").innerHTML = `
+      ${guide}
       ${short ? `<div class="flash">Only <b>${Math.round(P.have_days)} days</b> of flow logs read between these ${Math.round(P.days)} days: rules are narrowed to the sources seen in it and rules nothing used are removed. Anything that runs less often (a monthly job, a DR test) will be refused: it shows on <b>Rejected traffic</b>, where <b>Fix…</b> lets it in again. A longer read makes that less likely. <button class="btn sm" id="xRead">Re-read ${Math.round(P.days)} days for this account</button></div>` : ""}
+      ${T.urgent ? `<div class="card urgent"><span class="pill crit">Critical</span> <b>${T.urgent} rule${T.urgent === 1 ? "" : "s"} open to the whole internet (0.0.0.0/0) with no internet traffic through ${T.urgent === 1 ? "it" : "them"}</b> between the two dates. Nothing outside uses ${T.urgent === 1 ? "it" : "them"}, so narrowing ${T.urgent === 1 ? "it" : "them"} closes the exposure without touching traffic in use. ${T.urgent === 1 ? "Its group is" : "Their groups are"} listed first below.<div class="acts">${P.groups.filter((g) => g.urgent).map((g) => `<span><b>${esc(g.name)}</b> <code class="muted small">${esc(g.id)}</code></span><button class="btn sm primary" data-xcrit="${esc(g.id)}">Propose this group</button>`).join("")}</div></div>` : ""}
       <div class="fix-top">
         <div class="card"><div class="eyebrow">The tightened account</div><h3 style="margin-top:2px;display:flex;align-items:center;gap:10px">Before and after <button class="btn sm" type="button" id="xAudit" title="Every rule: what it was, what it becomes, and why">Explain</button></h3>
           <div class="evidence"><span class="chip">${Math.round(P.have_days)} ${many(Math.round(P.have_days), "day")} of flow logs used</span><span class="chip">${ymd(P.from)} → ${ymd(P.to - 1)}</span>${P.stored_from != null ? `<span class="chip">read: ${ymd(P.stored_from)} → ${ymd(P.stored_to - 1)}</span>` : ""}</div>
@@ -2968,17 +2997,23 @@ section.nodata .card:not(.empty-state) { display: none; }
           <p class="small muted">${T.narrowed} rule(s) narrowed, ${T.removed} removed as unused, ${P.merges.length} merge(s).${T.open ? ` <b>${T.open} open to everyone on an internet-facing load balancer's web ports</b>: kept, since its users cannot be listed (not counted above).` : ""}${T.wait > 0 ? ` ${T.wait} with too little evidence: left as they are.` : ""}${T.incomplete ? ` <b>${T.incomplete} of these were narrowed on hours cut at 10,000 rows</b>: a source only in the missing rows is not kept; if one is refused it shows on <b>Rejected traffic</b>. Reading the account again fills those hours in (only the cut hours are charged again).` : ""}</p></div>
         <div class="card"><div class="eyebrow">Evidence</div><h3 style="margin-top:2px">Where the traffic comes from</h3><p class="muted small">Connections let in between the two dates, by source.</p>${mixBar(T.mix, true)}</div>
       </div>
-      ${exposed.length ? `<div class="card"><div class="eyebrow">Visualised</div><h3 style="margin-top:2px">IPv4 exposure by group, before and after</h3>
+      ${exposed.length ? `<div class="card"><div class="eyebrow">Visualised</div><h3 style="margin-top:2px">IPv4 exposure by group, before and after</h3><p class="muted small" style="margin:0 0 6px">How many IPv4 addresses each group lets in today (red) and after the remediation (green), most exposed first. The bigger the gap, the more the change takes away. <b>not needed</b>: nothing used its rules, so they are removed. <b>View details</b> shows who uses the group and who the new rules keep.</p>
         <div class="ex-legend"><span><i style="background:color-mix(in srgb, var(--bad) 55%, var(--grid))"></i>Before</span><span><i style="background:var(--good)"></i>After (groups you untick stay as before)</span><span class="muted">Log scale: each step is ten times more addresses. The ${exposed.length} most exposed groups.</span></div>
         ${exposed.map(exRow).join("")}</div>` : ""}
       ${P.merges.length ? `<div class="card"><h3>Groups to merge</h3><p class="muted small">Once tightened, these let in nearly the same traffic: each takes on at most a few more private IP addresses (256 in all), or one more port from sources it already lets in. Never a public IP address, a risky port or everyone. Their interfaces move onto one group; the emptied groups stay, on no interface, to delete later.</p>
         ${P.merges.map((m) => `<label class="merge"><input type="checkbox" data-xmerge="${esc(m.id)}"${fixMergeOff.has(m.id) || m.members.some((x) => fixOff.has(x.id)) ? "" : " checked"}${m.members.some((x) => fixOff.has(x.id)) ? " disabled" : ""}>
           <span>Merge ${m.members.map((x) => `<b>${esc(x.name)}</b>${x.extra.length ? ` <span class="muted small">(gains ${[...x.gain_ports.map((r) => esc(portTxt(r.proto, r.from, r.to))), x.gain_addresses ? `${x.gain_addresses.toLocaleString()} private IP address${x.gain_addresses === 1 ? "" : "es"}` : "", x.gain_v6 ? `${x.gain_v6} IPv6 /64${x.gain_v6 === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ")})</span>` : ""}`).join(" + ")} into <b>${esc(m.target_name)}</b> <span class="muted small">${esc(m.region)} · ${m.enis} interface(s) · ${m.rules} rule(s) after</span></span></label>`).join("")}</div>` : ""}
-      ${T.urgent ? `<div class="card urgent"><span class="pill crit">Critical</span> <b>${T.urgent} rule${T.urgent === 1 ? "" : "s"} open to the whole internet (0.0.0.0/0) with no internet traffic through ${T.urgent === 1 ? "it" : "them"}</b> between the two dates. Nothing outside uses ${T.urgent === 1 ? "it" : "them"}, so narrowing ${T.urgent === 1 ? "it" : "them"} closes the exposure without touching traffic in use. ${T.urgent === 1 ? "Its group is" : "Their groups are"} listed first below.<div class="acts">${P.groups.filter((g) => g.urgent).map((g) => `<span><b>${esc(g.name)}</b> <code class="muted small">${esc(g.id)}</code></span><button class="btn sm primary" data-xcrit="${esc(g.id)}">Propose this group</button>`).join("")}</div></div>` : ""}
       <div class="card"><details id="xGroups"${fixOpen.has("*") ? " open" : ""}><summary>The ${P.groups.filter((g) => g.changes).length} groups this changes, of ${P.groups.length} (untick any that are sensitive)</summary>
         <div class="scroll"><table class="grp"><thead><tr><th><input type="checkbox" id="xAll" aria-label="Every group"${P.groups.every((g) => !g.changes || !fixOff.has(g.id)) ? " checked" : ""}></th><th>Group</th><th class="num">Interfaces</th><th class="num">IPv4 before</th><th class="num">After</th><th class="num">Change</th><th>Traffic from</th><th class="act"></th></tr></thead><tbody id="xRows"></tbody></table></div></details></div>
       <div class="fix-go"><div><b>${chosen.length}</b> group(s), <b>${nChanges}</b> rule change(s)${merges.length ? `, <b>${merges.length}</b> merge(s)` : ""} · IPv4 let in ${fmtN(aBefore)} → <b>${fmtN(aAfter)}</b> <span class="cut">${cutPct(aBefore, aAfter)}</span></div>
         <button class="btn primary" id="xGo"${chosen.length || merges.length ? "" : " disabled"}>Propose this remediation</button></div>`;
+    if (fixLand) { fixLand = false; requestAnimationFrame(() => ($("xStart") || $("xGuide")).scrollIntoView({block: "start"})); }
+    $("xGuideWhy").addEventListener("click", () => { const h = $("xGuideHelp"); h.hidden = !h.hidden; $("xGuideWhy").setAttribute("aria-expanded", String(!h.hidden)); });
+    $("xGuideGroups").addEventListener("click", () => { $("xGroups").open = true; $("xGroups").scrollIntoView({behavior: "smooth", block: "start"}); });
+    $("xGuideGo").addEventListener("click", () => $("xGo").scrollIntoView({behavior: "smooth", block: "center"}));
+    for (const b of $("xGuide").querySelectorAll("[data-xview]")) b.addEventListener("click", () => openFixGroup(b.dataset.xview));
+    for (const b of $("xGuide").querySelectorAll("[data-xp]")) b.addEventListener("click", () => proposeFix(b, [b.dataset.xp], []));
+    for (const b of $("xBody").querySelectorAll(".ex-row [data-xview]")) b.addEventListener("click", () => openFixGroup(b.dataset.xview));
     const rows = P.groups.filter((g) => g.changes || fixOpen.has("all"));
     const pg = page("fix", rows.length, drawFixRows);
     drawFixRows();
@@ -3015,16 +3050,17 @@ section.nodata .card:not(.empty-state) { display: none; }
         <td>${g.urgent ? `<span class="pill crit" title="Open to the whole internet (0.0.0.0/0), yet no internet address was seen in the flow logs">Critical: ${g.urgent} open to all, unused from outside</span> ` : ""}<b>${esc(g.name)}</b> <code class="muted small">${esc(g.id)}</code><div class="muted small">${esc(g.region)} · ${g.changes} rule change(s)${merged[g.id] ? ` · merges into <b>${esc(merged[g.id])}</b>` : ""}${g.open ? ` · ${g.open} open to everyone (yours to decide)` : ""}</div></td>
         <td class="num">${g.enis}</td><td class="num">${fmtN(g.addresses)}</td><td class="num"><b>${fmtN(g.new_addresses)}</b></td><td class="num"><span class="cut">${cutPct(g.addresses, g.new_addresses)}</span></td>
         <td>${mixBar(g.mix)}<div class="muted small">${esc(topCat(g.mix))}</div></td>
-        <td class="act"><button class="btn sm primary" data-xp="${esc(g.id)}" title="Propose only this group's ${g.changes} rule change(s), whatever is ticked. Merges are proposed with the whole remediation">Propose this group</button> <button class="btn sm" data-xd="${esc(g.id)}">${open ? "Hide" : "Old and new rules"}</button></td></tr>
-        ${open ? `<tr class="gdetail"><td colspan="8"><table class="plan-t"><thead><tr><th>Rule now</th><th>The flow logs say</th><th>New rule</th><th>Taken away</th><th>Traffic from</th></tr></thead><tbody>${g.rules.map((r) => `<tr><td><code>${esc(portTxt(r.proto, r.from, r.to))}</code> from <code>${esc(r.source)}</code>${r.desc ? `<div class="muted small">${esc(r.desc)}</div>` : ""}</td>
+        <td class="act"><button class="btn sm primary" data-xp="${esc(g.id)}" title="Propose only this group's ${g.changes} rule change(s), whatever is ticked. Merges are proposed with the whole remediation">Propose this group</button> <button class="btn sm" data-xview="${esc(g.id)}" title="Old and new rules, every source let in, the new ranges and who is in each, traffic over time">View details</button></td></tr>
+        ${false ? `<tr class="gdetail"><td colspan="8"><table class="plan-t"><thead><tr><th>Rule now</th><th>The flow logs say</th><th>New rule</th><th>Taken away</th><th>Traffic from</th></tr></thead><tbody>${g.rules.map((r) => `<tr><td><code>${esc(portTxt(r.proto, r.from, r.to))}</code> from <code>${esc(r.source)}</code>${r.desc ? `<div class="muted small">${esc(r.desc)}</div>` : ""}</td>
           <td>${r.urgent ? '<span class="pill crit">Critical</span> ' : ""}${actPill(r.action)}${r.urgent ? `<div class="small"><b>Open to the whole internet, and no internet address used it.</b>${r.cut ? " (From the busiest connections read: the flow logs hit the row limit. If something outside was missed, Rejected traffic shows it.)" : ""}</div>` : ""}<div class="muted small">${esc(r.note || "")}${r.seen ? ` · ${r.seen.toLocaleString()} source(s) seen` : ""}</div></td><td>${newRule(r)}</td><td class="small">${cutCell(r)}</td><td>${mixBar(r.mix)}</td></tr>`).join("")}</tbody></table></td></tr>` : ""}`;
     }).join("") || '<tr><td colspan="8" class="muted">Nothing to change: the flow logs support every rule as it is.</td></tr>';
     pagerAfter($("xRows"), pg.bar);
     for (const b of $("xRows").querySelectorAll("[data-xg]")) b.addEventListener("change", () => { b.checked ? fixOff.delete(b.dataset.xg) : fixOff.add(b.dataset.xg); drawFix(); });
+    for (const b of $("xRows").querySelectorAll("[data-xview]")) b.addEventListener("click", () => openFixGroup(b.dataset.xview));
     for (const b of $("xRows").querySelectorAll("[data-xp]")) b.addEventListener("click", () => proposeFix(b, [b.dataset.xp], []));
-    for (const b of $("xRows").querySelectorAll("[data-xd]")) b.addEventListener("click", () => { const id = b.dataset.xd; fixOpen.has(id) ? fixOpen.delete(id) : fixOpen.add(id); drawFixRows(); });
+
   }
-  $("xAcct").addEventListener("change", () => { $("xFrom").value = ""; $("xTo").value = ""; loadFixPlan().catch((e) => flash(e.message, true)); });
+  $("xAcct").addEventListener("change", () => { history.pushState(null, "", $("xAcct").value ? `#fix/${encodeURIComponent($("xAcct").value)}` : "#fix"); $("xFrom").value = ""; $("xTo").value = ""; loadFixPlan().catch((e) => flash(e.message, true)); });
   $("xrGo").addEventListener("click", (e) => act(e.target, async () => {
     const a = $("xAcct").value;
     if (!a) return;
@@ -3057,7 +3093,10 @@ section.nodata .card:not(.empty-state) { display: none; }
     if (!b) return;
     $("xAcct").dataset.want = b.dataset.fix; $("xAcct").value = "";
     $("xHide").checked = false;
+    history.pushState(null, "", `#fix/${encodeURIComponent(b.dataset.fix)}`);  // its own page: Back returns to where it was opened
+    fixLand = true;  // once its plan is drawn, go straight to the groups to fix first
     show("fix");
+    window.scrollTo(0, 0);
   });
   // ---- requests
   async function loadRequests() {
@@ -3700,6 +3739,94 @@ section.nodata .card:not(.empty-state) { display: none; }
     const ports = D.ports.length ? `<h3>Ports</h3><p class="muted small" style="margin:0 0 6px">Resets by port. One port taking most of the resets points to one service; resets spread over many ports point to the network path or the source itself.</p><table class="small"><thead><tr><th>Port</th><th class="num">Reset by source</th><th class="num">Reset by your side</th><th class="num">Accepted</th><th class="num">Refused</th></tr></thead><tbody>${D.ports.map((p) => `<tr><td><code>${esc(p.port)}</code></td><td class="num">${n(p.in)}</td><td class="num">${n(p.out)}</td><td class="num">${n(p.accepted)}</td><td class="num">${n(p.refused)}</td></tr>`).join("")}</tbody></table>` : "";
     const evs = `<h3>Security group changes on these interfaces' groups</h3>${D.events.length ? `<div class="scroll" style="max-height:300px"><table class="small"><thead><tr><th>When</th><th>Group</th><th>Change</th><th>By</th><th>Added · removed</th></tr></thead><tbody>${D.events.map((e) => `<tr><td style="white-space:nowrap">${esc(when(e.t))}</td><td>${esc(e.gname)}<div class="muted"><code>${esc(e.group)}</code></div></td><td>${esc(e.event)}</td><td style="overflow-wrap:anywhere">${esc(e.who)}</td><td>${e.added.map((x) => `<code style="color:var(--bad)">+${esc(x)}</code>`).join(" ")} ${e.removed.map((x) => `<code style="color:var(--good)">−${esc(x)}</code>`).join(" ")}</td></tr>`).join("")}</tbody></table></div>` : '<p class="muted small">No change to these groups in the window.</p>'}`;
     $("rdBody").innerHTML = `<div class="facts" style="margin-top:10px">${tiles}</div>${hint}${chart ? `<h3>Resets an hour</h3><p class="muted small" style="margin:0 0 4px">Up the side: connections reset in each hour; along the bottom: the time. An hour with nothing from this source shows as 0.</p>${chart}` : ""}${trail}${where}${ports}${evs}`;
+  }
+  // ---- one popup for details: a security group's audit (Remediate, Security groups) and an interface's history
+  function gdOpen(eye, title, sub, help) {
+    $("gdEye").textContent = eye; $("gdTitle").textContent = title; $("gdSub").textContent = sub;
+    $("gdHelp").innerHTML = help; $("gdHelp").hidden = true; $("gdWhy").setAttribute("aria-expanded", "false");
+    $("gdBody").innerHTML = `<p>${loading("Reading the flow logs…")}</p>`;
+    if (!$("gdDlg").open) $("gdDlg").showModal();
+  }
+  $("gdClose").addEventListener("click", () => $("gdDlg").close());
+  $("gdWhy").addEventListener("click", () => { const h = $("gdHelp"); h.hidden = !h.hidden; $("gdWhy").setAttribute("aria-expanded", String(!h.hidden)); });
+  $("gdPdf").addEventListener("click", () => {
+    let box = $("fixPrint");
+    if (!box) { box = document.createElement("div"); box.id = "fixPrint"; document.body.appendChild(box); }
+    const body = $("gdBody").cloneNode(true);
+    body.querySelectorAll("button, input, select, label").forEach((x) => x.remove());
+    body.querySelectorAll(".scroll").forEach((x) => { x.style.maxHeight = "none"; });
+    box.innerHTML = `<div class="eyebrow">Security Tightener · ${esc($("gdEye").textContent)}</div><h2 style="margin:2px 0 4px">${esc($("gdTitle").textContent)}</h2><p class="muted small">${esc($("gdSub").textContent)} · exported ${esc(when(Date.now() / 1000))}</p>${body.innerHTML}`;
+    const t = document.title;
+    document.title = `Security Tightener - ${$("gdTitle").textContent} - ${new Date().toISOString().slice(0, 10)}`;
+    const done = () => { document.title = t; document.body.classList.remove("print-fix"); box.innerHTML = ""; window.removeEventListener("afterprint", done); };
+    window.addEventListener("afterprint", done);
+    document.body.classList.add("print-fix");
+    window.print();
+  });
+  const GD_HELP = `Everything the flow logs read say about this security group between the two dates, to check its remediation before proposing it. A <b>connection</b> is one flow-log record: one source to one of our addresses and ports, over about a minute. <b>What to do</b> reads the evidence. <b>Rules, now and after</b>: each inbound rule, what the flow logs say about it, and what it becomes. <b>The new ranges</b>: each source range a narrowed rule keeps, its size, and the source IP addresses seen in it (the addresses it will still let in, with room around them). <b>Let in over time</b>: connections and source IP addresses through this group's rules in each period, and connections refused at its interfaces. <b>Every source let in</b>: each IP address that used a rule, who it is, the ports, how much, first and last seen, and whether the new rules still let it in; any the new rules would refuse are listed first. <b>Interfaces</b>: what the group protects, and its other groups (they can let in what this one no longer does). <b>Changes</b>: every change to this group in the window, from CloudTrail. <b>Export PDF</b> prints this page: choose “Save as PDF”.`;
+  async function openGroupDetail(o) {
+    gdOpen("Security group: details", o.name || o.gid, `${o.gid} · ${o.region} · ${acctLabel(o.account)}`, GD_HELP);
+    let D;
+    try { D = await api("/api/group-detail", {account: o.account, region: o.region, group: o.gid, from: o.from, to: o.to, rules: (o.rules || []).map((r) => ({proto: r.proto, from: r.from, to: r.to, source: r.source, action: r.action, new: r.new}))}); }
+    catch (e) { $("gdBody").innerHTML = `${o.top || ""}<div class="flash err"><b>The details could not be read.</b> ${esc(e.message)}</div>`; o.wire?.($("gdBody")); return; }
+    const T = D.total, n = (v) => Number(v || 0).toLocaleString(), per = D.step === 3600 ? "hour" : "day";
+    $("gdSub").textContent = `${o.gid} · ${o.region} · ${D.vpc}${D.description ? " · " + D.description : ""} · ${acctLabel(o.account)} · ${when(D.from)} to ${when(D.to)}`;
+    const tiles = [["Source IP addresses let in", n(T.sources), "used one of its inbound rules"], ["Connections let in", n(T.flows), "through its rules"],
+      ["Would be refused after", n(T.lost), T.lost ? "check each below before applying" : "the new rules keep every one"], ["Interfaces it protects", n(T.enis), `${n(T.other)} other source(s) came in through their other groups`],
+      ["Refused at its interfaces", n(T.refused), "connections turned away"]].map(([k, v, sub]) => `<div><span class="muted small">${k}</span><b>${v}</b><span class="muted small">${esc(sub)}</span></div>`).join("");
+    const hint = `<h3>What to do</h3><ul class="small" style="margin:0;padding-left:18px">${D.hints.map((h) => `<li>${esc(h)}</li>`).join("")}</ul>${o.actions || ""}`;
+    const R = o.rules || [];
+    const rules = R.length ? `<h3>Rules, now and after</h3><p class="muted small" style="margin:0 0 6px">Each inbound rule: what it lets in now, what the flow logs say, and what it becomes. Look at <b>Sources seen</b>: a rule nothing used is removed; a rule a few addresses used is narrowed to them.</p><div class="scroll"><table class="small"><thead><tr><th>Rule now</th><th>The flow logs say</th><th>New rule</th><th class="num">Sources seen</th><th class="num">Connections</th><th>Ports used</th><th>Taken away</th></tr></thead><tbody>${R.map((r, i) => { const d = D.rules[i] || {};
+      return `<tr><td><code>${esc(portTxt(r.proto, r.from, r.to))}</code> from <code>${esc(r.source)}</code>${r.desc ? `<div class="muted">${esc(r.desc)}</div>` : ""}</td><td>${actPill(r.action)}<div class="muted">${esc(r.note || "")}</div></td><td>${newRule(r)}</td><td class="num">${n(d.sources)}</td><td class="num">${n(d.flows)}</td><td>${(d.ports_used || []).map((p) => `<code style="white-space:nowrap">${esc(p)}</code>`).join(" ") || "—"}</td><td>${cutCell(r)}</td></tr>`; }).join("")}</tbody></table></div>` : "";
+    const rng = D.rules.flatMap((d) => (d.ranges || []).map((x) => ({...x, rule: R[d.i]})));
+    const ranges = rng.length ? `<h3>The new ranges, and who is in them</h3><p class="muted small" style="margin:0 0 6px">Each source range the narrowed rules keep. <b>Addresses</b> is how many IP addresses the range lets in; <b>Sources seen</b> are the addresses that actually used it. A /32 is one address. Check each source is one you expect; one you do not recognise is worth asking about before applying.</p><div class="scroll" style="max-height:360px"><table class="small"><thead><tr><th>Range</th><th>Port</th><th>Replaces</th><th class="num">Addresses</th><th class="num">Sources seen</th><th class="num">Connections</th><th>Busiest sources</th></tr></thead><tbody>${rng.map((x) => `<tr><td><code>${esc(x.source)}</code></td><td><code>${esc(portTxt(x.proto, +String(x.ports).split("-")[0], +String(x.ports).split("-").pop()))}</code></td><td><code class="muted">${esc(x.rule?.source || "")}</code></td><td class="num">${n(x.size)}</td><td class="num">${n(x.sources)}</td><td class="num">${n(x.flows)}</td><td>${x.examples.map((e) => `<code>${esc(e)}</code>`).join(" ")}</td></tr>`).join("")}</tbody></table></div>` : "";
+    const tl = D.timeline, ts = tl.map((x) => x.t);
+    const chart = tl.length > 1 ? `<h3>Let in over time</h3><p class="muted small" style="margin:0 0 4px">Connections through this group's rules each ${per} (green), and connections refused at its interfaces (red); along the bottom: the time. Look for gaps and spikes: a source that only appears on some ${per}s needs the window to cover it. A ${per} with nothing shows as 0.</p>${svgLines(ts, tl.map((x) => ({flows: x.flows, refused: x.refused})), ["flows", "refused"], {flows: "var(--good)", refused: "var(--bad)"}, {flows: "Let in", refused: "Refused"}, 170, null, "Connections")}
+      <p class="muted small" style="margin:10px 0 4px">Source IP addresses let in each ${per}: how many different callers use the group.</p>${svgLines(ts, tl.map((x) => ({sources: x.sources})), ["sources"], {sources: "var(--accent)"}, {sources: "Source IP addresses"}, 140, null, "IP addresses")}` : "";
+    const srcs = D.sources.length ? `<h3>Every source let in (${n(D.sources.length)}${T.sources > D.sources.length ? ` of ${n(T.sources)}, busiest` : ""})</h3><p class="muted small" style="margin:0 0 6px">The audit: each IP address that used this group's rules. <b>After</b> says whether the new rules still let it in; any that would be refused come first. <b>${per[0].toUpperCase() + per.slice(1)}s seen</b> shows how regular it is: one that appeared once may be a one-off.</p><div class="scroll" style="max-height:460px"><table class="small"><thead><tr><th>Source</th><th>Who</th><th>After</th><th>Ports</th><th class="num">Connections</th><th class="num">${per[0].toUpperCase() + per.slice(1)}s seen</th><th>First</th><th>Last</th><th>Through rule</th></tr></thead><tbody>${D.sources.map((x) => `<tr><td><code>${esc(x.src)}</code></td><td>${esc(x.name)}<div class="muted">${esc(x.cat_name)}</div></td><td>${x.kept ? '<span class="pill" style="--p:var(--good)">still let in</span>' : '<span class="pill" style="--p:var(--bad)">refused</span>'}</td><td>${x.ports.map((p) => `<code style="white-space:nowrap">${esc(p)}</code>`).join(" ")}</td><td class="num">${n(x.flows)}</td><td class="num">${n(x.active)}</td><td style="white-space:nowrap">${esc(when(x.first))}</td><td style="white-space:nowrap">${esc(when(x.last))}</td><td>${x.rules.map((i) => R[i] ? `<code style="white-space:nowrap">${esc(R[i].source)}</code>` : "").join(" ")}</td></tr>`).join("")}</tbody></table></div>` : "";
+    const enis = D.enis.length ? `<h3>Interfaces it protects</h3><p class="muted small" style="margin:0 0 6px">What sits behind this group, busiest first. <b>Other groups</b> also let traffic in: a source this group stops letting in may still reach the interface through one of them.</p><div class="scroll" style="max-height:320px"><table class="small"><thead><tr><th>Interface</th><th>IP addresses</th><th>Other groups</th><th class="num">Sources</th><th class="num">Connections</th></tr></thead><tbody>${D.enis.map((e) => `<tr><td>${esc(e.name)}<div class="muted"><code>${esc(e.instance || e.eni)}</code> · ${esc(e.kind)} · ${esc(e.subnet)}</div></td><td><code>${e.ips.map(esc).join(" ")}</code></td><td>${e.others.map(esc).join("<br>") || "—"}</td><td class="num">${n(e.sources)}</td><td class="num">${n(e.flows)}</td></tr>`).join("")}</tbody></table></div>` : "";
+    const evs = `<h3>Changes to this group</h3><p class="muted small" style="margin:0 0 6px">Every change to its rules in the window, from CloudTrail: who made it and what it added (red) or removed (green). Compare the dates with the chart above.</p>${D.events.length ? `<div class="scroll" style="max-height:300px"><table class="small"><thead><tr><th>When</th><th>Change</th><th>By</th><th>Added · removed</th></tr></thead><tbody>${D.events.map((e) => `<tr><td style="white-space:nowrap">${esc(when(e.t))}</td><td>${esc(e.event)}</td><td style="overflow-wrap:anywhere">${esc(e.who)}</td><td>${e.added.map((x) => `<code style="color:var(--bad)">+${esc(x)}</code>`).join(" ")} ${e.removed.map((x) => `<code style="color:var(--good)">−${esc(x)}</code>`).join(" ")}</td></tr>`).join("")}</tbody></table></div>` : '<p class="muted small">No change to this group in the window.</p>'}`;
+    const ref = D.refused.length ? `<h3>Refused at its interfaces</h3><p class="muted small" style="margin:0 0 6px">The busiest sources turned away at these interfaces. Usually scans; one you recognise may be something that needs letting in (Rejected traffic, Fix…).</p><table class="small"><thead><tr><th>Source</th><th>Who</th><th class="num">Connections</th></tr></thead><tbody>${D.refused.map((x) => `<tr><td><code>${esc(x.src)}</code></td><td>${esc(x.name)}<div class="muted">${esc(x.cat_name)}</div></td><td class="num">${n(x.flows)}</td></tr>`).join("")}</tbody></table>` : "";
+    $("gdBody").innerHTML = `<div class="facts" style="margin-top:10px">${tiles}</div>${hint}${o.top || ""}${rules}${ranges}${chart}${srcs}${enis}${evs}${ref}`;
+    o.wire?.($("gdBody"));
+  }
+  function openFixGroup(gid) {
+    const P = fixPlan, g = P.groups.find((x) => x.id === gid);
+    if (!g) return;
+    openGroupDetail({account: $("xAcct").value, region: g.region, gid, name: g.name, rules: g.rules, from: P.from, to: P.to,
+      actions: g.changes ? `<div class="acts" style="margin-top:8px"><button class="btn sm primary" type="button" id="gdPropose">Propose this group's ${g.changes} change(s)</button></div>` : "",
+      wire: (root) => { const b = root.querySelector("#gdPropose"); if (b) b.addEventListener("click", () => proposeFix(b, [gid], [])); }}).catch((e) => flash(e.message, true));
+  }
+  function openGroupsTabDetail(gid) {
+    const w = where(), g = groupsCache.find((x) => x.id === gid);
+    if (!g) return;
+    const rules = planFor(gid).filter((r) => r.direction === undefined || r.direction === "in");
+    const top = `<h3>Its rules, and what to do with each</h3><p class="muted small" style="margin:0 0 6px">Every rule, inbound and outbound, with what the flow logs say. <b>Propose</b> sends one rule's change for approval; <b>Remove by hand</b> and <b>Propose a rule by hand</b> open the form below the list.</p>${groupDetail(g)}`;
+    openGroupDetail({account: w.account, region: w.region, gid, name: g.name, rules, top,
+      wire: (root) => {
+        wirePlan(root);
+        for (const b of root.querySelectorAll("[data-add]")) b.addEventListener("click", () => { $("gdDlg").close(); openPropose({group: b.dataset.add, op: "add"}); });
+        for (const b of root.querySelectorAll("[data-rm]")) b.addEventListener("click", () => { const [id, i] = b.dataset.rm.split("|"); $("gdDlg").close(); openPropose({group: id, op: "remove", rule: groupsCache.find((x) => x.id === id).rules[+i]}); });
+      }}).catch((e) => flash(e.message, true));
+  }
+  async function openAssetHistory(a, w) {
+    gdOpen("Interface: history", a.eni, `${a.kind}${a.instance ? " · " + a.instance : ""} · ${w.region} · ${acctLabel(w.account)}`,
+      "Every change recorded to this network interface's security groups, newest first. <b>Origin</b>: <i>console</i> means made here, through a change request; <i>external</i> means made outside this tool (the AWS console, Terraform, a pipeline) and found at a Refresh from AWS. <b>Change</b> shows the groups before → after. <b>Can move alone</b> says whether its groups can be changed for it on its own: interfaces AWS manages (load balancers, endpoints, EFS) or that belong to an auto scaling group, EKS or ECS take their groups from what made them. <b>Export PDF</b> prints this page.");
+    let h;
+    try { h = await api(`/api/asset-history?eni=${encodeURIComponent(a.eni)}`); }
+    catch (e) { $("gdBody").innerHTML = `<div class="flash err"><b>The history could not be read.</b> ${esc(e.message)}</div>`; return; }
+    const ext = h.filter((e) => e.origin === "external").length;
+    const advice = [a.alone ? `Its groups cannot be changed for it alone (${a.alone}): change them where it is defined, or tighten the groups themselves under Security groups.` : "Its groups can be changed for it alone: propose that from Remediate or Security groups.",
+      ext ? `${ext} change(s) were made outside this tool: check each was expected; an unexpected one is worth asking its author about.` : "Every change was made through this console.",
+      a.groups.length > 1 ? `It has ${a.groups.length} security groups: whatever any one of them lets in reaches it, so tighten all of them.` : ""].filter(Boolean);
+    const facts = [["Interface", a.eni, a.kind], ["Instance", a.instance || "—", a.asg || ""], ["IP addresses", a.ips.slice(0, 3).join(", ") || "—", a.ips.length > 3 ? `+${a.ips.length - 3} more` : ""], ["Changes recorded", String(h.length), ext ? `${ext} made outside this tool` : "all through this console"]]
+      .map(([k, v, sub]) => `<div><span class="muted small">${k}</span><b style="font-size:15px;overflow-wrap:anywhere">${esc(v)}</b><span class="muted small">${esc(sub)}</span></div>`).join("");
+    $("gdBody").innerHTML = `<div class="facts" style="margin-top:10px">${facts}</div>
+      <h3>What to do</h3><ul class="small" style="margin:0;padding-left:18px">${advice.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
+      <h3>Its security groups now</h3><p class="muted small" style="margin:0 0 6px">The groups on it today: together they decide what may reach it.</p><table class="small"><tbody>${a.groups.map((g, j) => `<tr><td><code>${esc(g)}</code></td><td>${esc(a.group_names[j] || "")}</td><td><button class="btn sm" type="button" data-gdg="${esc(g)}">View group details</button></td></tr>`).join("")}</tbody></table>
+      <h3>History, newest first</h3><p class="muted small" style="margin:0 0 6px">The audit trail of its groups. Look for <b>external</b> changes: they did not go through approval.</p>${h.length ? `<div class="scroll" style="max-height:420px"><table class="small"><thead><tr><th>#</th><th>When</th><th>Origin</th><th>What happened</th><th>Groups before → after</th><th>By</th><th>Why</th></tr></thead><tbody>${h.map((e) => { const d = e.detail || {};
+        return `<tr><td>${e.seq}</td><td style="white-space:nowrap">${esc(when(e.at))}</td><td><span class="pill" style="--p:${e.origin === "external" ? "var(--bad)" : "var(--accent)"}">${esc(e.origin)}</span></td><td>${esc(e.action === "assets-imported" ? "first recorded" : e.action)}</td><td>${d.before ? `<code>${esc(d.before.join(", "))}</code> → <code>${esc(d.after.join(", "))}</code>` : "—"}</td><td>${who(e.actor)}</td><td>${esc(e.reason || "")}</td></tr>`; }).join("")}</tbody></table></div>` : '<p class="muted small">Nothing recorded yet: Refresh from AWS records its groups.</p>'}`;
+    for (const b of $("gdBody").querySelectorAll("[data-gdg]")) b.addEventListener("click", () => { if (groupsCache.some((x) => x.id === b.dataset.gdg)) openGroupsTabDetail(b.dataset.gdg); else flash("That group is in another region or account: pick it above.", true); });
   }
   document.addEventListener("click", (ev) => { const b = ev.target.closest("[data-rdetail]"); if (b) { ev.preventDefault(); const x = JSON.parse(b.dataset.rdetail); openResetDetail(x.a, x.s).catch((e) => flash(e.message, true)); } });
   $("rdClose").addEventListener("click", () => $("rdDlg").close());
@@ -4499,6 +4626,10 @@ section.nodata .card:not(.empty-state) { display: none; }
       if (arg === "owner" && more.length >= 2) pickOwner(more[0], more[1]);
       else if (arg) pickAccount(arg);
       else { AV.pick = null; $("acAcct").value = ""; $("acOwner").value = ""; }
+    }
+    if (tab === "fix" && (arg || "") !== $("xAcct").value) {
+      $("xAcct").dataset.want = arg || ""; $("xAcct").value = ""; $("xHide").checked = false; if (arg) fixLand = true;
+      if (fixAccts) { drawFixAccounts(); loadFixPlan().catch((e) => flash(e.message, true)); }
     }
     show(tab);
     return true;

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Remediate opens on its own page and goes straight to what to fix**: a "Start here" list names the groups to remediate first (critical, then open to the internet, then the biggest cut), says why for each, and has View details and Propose this group. A guide below explains the page step by step. Back returns to where it was opened.
+- **View details on every security group** (IPv4 exposure rows, the Remediate group table, the Security groups tab): a full audit popup with every source let in, the rules now and after, the new ranges and who is in them, connections over time, the interfaces it protects, CloudTrail changes, sources refused at its interfaces, and advice; Export PDF and Explain.
+- **Details and History open as popups**, not expanded rows. The critical "open to the whole internet" card is at the top of the plan.
 - Tables and charts now say what they show and what to look at first. In the IP lookup, "Answered us" is now "Replied to us" (traffic it sent back on connections our hosts opened), with every column explained.
 
 - **Connection resets: View details** on each source: what the pattern suggests, resets an hour, an hour-by-hour audit trail (resets by each side, connections accepted and refused, ports, what it reached), where it was reset with the security groups, its ports, and the CloudTrail changes to those groups in the window; Export PDF and Explain.

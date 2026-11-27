@@ -481,6 +481,25 @@ class Console:
             raise ConsoleError(404, f"account {account} has not been read yet")
         return {"account": account, **sg_review.reset_detail(doc, src, range_key, sg_review.load_names())}
 
+    def group_detail(self, body: dict) -> dict:
+        """The audit behind one security group's remediation (sg_review.group_detail): ``rules`` are the plan's
+        rules for it, as the page holds them; ``from`` and ``to`` epoch seconds (else the last 90 days read)."""
+        import sg_remediate
+        import sg_review
+
+        account, region, gid = _need(body, "account"), _need(body, "region"), _need(body, "group")
+        doc = sg_review.load(account)
+        if not doc:
+            raise ConsoleError(404, f"account {account} has not been read yet")
+        try:
+            start = float(body["from"]) if body.get("from") is not None else None
+            end = float(body["to"]) if body.get("to") is not None else None
+        except (TypeError, ValueError):
+            raise ConsoleError(400, "from and to are epoch seconds")
+        start, end = sg_remediate.bounds(doc, int(body.get("days") or sg_remediate.DEFAULT_DAYS), start, end)
+        rules = [r for r in body.get("rules") or [] if isinstance(r, dict) and {"proto", "from", "to", "source"} <= set(r)]
+        return {"account": account, **sg_review.group_detail(doc, region, gid, rules, start, end, sg_review.load_names())}
+
     def profile(self, account: str, read: bool = False) -> dict:
         """The account at a glance (sg_profile): kept a day; ``read`` reads it from AWS now."""
         import sg_profile
@@ -3451,7 +3470,7 @@ def make_handler(console: Console, token: str, port: int):
                 return self._json(400, {"error": f"bad JSON: {exc}"})
             if not isinstance(body, dict):
                 return self._json(400, {"error": "bad JSON: an object is expected"})
-            route = {"/api/propose": console.propose, "/api/tighten": console.tighten, "/api/remediate": console.remediate, "/api/merge-apply": console.merge_apply, "/api/block": console.block_propose, "/api/block-apply": console.block_apply, "/api/decide": console.decide, "/api/approvals": console.set_approvals, "/api/apply": console.apply, "/api/apply-preview": console.apply_preview, "/api/refused-fix": console.fix_refused,
+            route = {"/api/propose": console.propose, "/api/tighten": console.tighten, "/api/remediate": console.remediate, "/api/group-detail": console.group_detail, "/api/merge-apply": console.merge_apply, "/api/block": console.block_propose, "/api/block-apply": console.block_apply, "/api/decide": console.decide, "/api/approvals": console.set_approvals, "/api/apply": console.apply, "/api/apply-preview": console.apply_preview, "/api/refused-fix": console.fix_refused,
                      "/api/reconcile": console.reconcile, "/api/adopt": console.adopt, "/api/check": console.check,
                      "/api/profile": lambda body: console.profile(_need(body, "account"), read=True),
                      "/api/asset-apply": console.asset_apply, "/api/asset-revert": console.asset_revert,
@@ -3503,9 +3522,9 @@ PLAN_TIMEOUT = 600  # a request waits this long for a plan; the build carries on
 
 
 SLOW_GET = 20  # seconds: a page answer slower than this is noted in the activity log
-QUIET_POSTS = {"/api/net-check"}  # asked by the page on its own: only a failure is worth a line
+QUIET_POSTS = {"/api/net-check", "/api/group-detail"}  # asked by the page on its own: only a failure is worth a line
 ACTION_NAMES = {
-    "/api/propose": "proposed a change", "/api/tighten": "tighten plan", "/api/remediate": "remediation plan",
+    "/api/propose": "proposed a change", "/api/tighten": "tighten plan", "/api/remediate": "remediation plan", "/api/group-detail": "opened a group's details",
     "/api/merge-apply": "merged and applied", "/api/block": "proposed a block", "/api/block-apply": "applied a block",
     "/api/decide": "decided a change request", "/api/approvals": "two-person approval switched",
     "/api/apply": "applied changes in AWS", "/api/apply-preview": "previewed an apply",

@@ -5960,3 +5960,170 @@ def reset_detail(doc: dict, src: str, range_key: str = "1m", names: list | None 
             "total": {**tot, "resets": resets, "hours": len([h for h in rows if h["in"] + h["out"]])},
             "hours": out_hours[:168], "enis": out_enis[:20], "ports": out_ports[:20], "events": events[:50],
             "hints": hints}  # fmt: skip
+
+
+def group_detail(doc: dict, region: str, gid: str, rules: list, start: float, end: float,
+                 names: list | None = None) -> dict:
+    """The audit behind one security group's remediation, from the flow logs between ``start`` and ``end``:
+    every source let in through each of its inbound rules (with ports, interfaces, first and last seen, and
+    whether the new rules still let it in), the new ranges and who sits in each, its traffic over time, its
+    interfaces, and the CloudTrail changes to it in the window. ``rules`` are the plan's rules for the group
+    ({proto, from, to, source, action, new})."""
+    snap = (doc["regions"].get(region) or {}).get("snapshot") or {}
+    g = (snap.get("groups") or {}).get(gid) or {}
+    enis = {eid: e for eid, e in (snap.get("enis") or {}).items() if gid in (e.get("groups") or [])}
+    eni_ips = {eid: {*e.get("ips", []), *(e.get("ipv6") or [])} for eid, e in enis.items()}
+    pls = snap.get("prefix_lists") or {}
+    lab = Labeller(doc, names=names)
+    step = HOUR if end - start <= 8 * DAY else DAY
+
+    def ivs_of(src: str) -> list:
+        if src.startswith("pl-"):
+            return _iv(pls.get(src, []))
+        return [] if src.startswith("sg-") or ":" in src else _iv([src])
+
+    R = []
+    for i, r in enumerate(rules):
+        new = r.get("new")
+        R.append({"i": i, "rule": {"proto": str(r["proto"]), "from": int(r["from"]), "to": int(r["to"])},
+                  "source": r["source"], "ivs": ivs_of(r["source"]), "action": r.get("action", ""), "new": new,
+                  "new_ivs": [(n, ivs_of(n["source"]), {"proto": str(n["proto"]), "from": int(n["from"]), "to": int(n["to"])})
+                              for n in (new or [])],
+                  "srcs": {}, "flows": 0, "ports": {}})  # fmt: skip
+
+    def keeps(rr, n, src, proto, port) -> bool:
+        if rr["new"] is None:
+            return True
+        return any(port_matches(nr, proto, port) and (
+            (n is not None and any(a <= n <= b for a, b in niv)) or nn["source"] == rr["source"] or nn["source"] in ("0.0.0.0/0", "::/0"))
+            for nn, niv, nr in rr["new_ivs"])  # fmt: skip
+
+    srcs: dict[str, dict] = {}
+    bins: dict[float, dict] = {}
+    per_eni: dict[str, dict] = {}
+    other = {"flows": 0, "srcs": set()}
+    refused: dict[str, int] = {}
+    chunks = [c for c in doc["chunks"] if c["st"] in ("ok", "cut") and c.get("r") == region
+              and c["s"] >= start and c["e"] <= end]  # fmt: skip
+    cut = any(c["st"] == "cut" for c in chunks)
+    for c in chunks:
+        t = c["s"] - c["s"] % step
+        for src, dst, eni, proto, port, action, f in c.get("rows") or []:
+            if eni not in enis or not src or src in eni_ips[eni]:
+                continue
+            proto, f = str(proto), f or 0
+            b = bins.setdefault(t, {"t": t, "flows": 0, "srcs": set(), "lose": 0, "refused": 0})
+            if action != "ACCEPT":
+                if port is not None and port < EPHEMERAL:
+                    b["refused"] += f
+                    refused[src] = refused.get(src, 0) + f
+                continue
+            n = _ip(src)
+            hit = [rr for rr in R if port_matches(rr["rule"], proto, port) and n is not None
+                   and any(a <= n <= b2 for a, b2 in rr["ivs"])]  # fmt: skip
+            if not hit:
+                if port is None or port < EPHEMERAL:
+                    other["flows"] += f
+                    other["srcs"].add(src)
+                continue  # at or above EPHEMERAL: replies to the interface's own connections
+            kept = any(keeps(rr, n, src, proto, port) for rr in hit)
+            pl = f"{ {'6': 'tcp', '17': 'udp', '1': 'icmp'}.get(proto, proto)} {port}"
+            s = srcs.setdefault(src, {"src": src, "flows": 0, "ports": {}, "enis": set(), "first": c["s"], "last": c["e"],
+                                      "bins": set(), "rules": set(), "kept": True})  # fmt: skip
+            s["flows"] += f
+            s["ports"][pl] = s["ports"].get(pl, 0) + f
+            s["enis"].add(eni)
+            s["first"], s["last"] = min(s["first"], c["s"]), max(s["last"], c["e"])
+            s["bins"].add(t)
+            s["kept"] = s["kept"] and kept
+            for rr in hit:
+                s["rules"].add(rr["i"])
+                rr["srcs"][src] = rr["srcs"].get(src, 0) + f
+                rr["flows"] += f
+                rr["ports"][pl] = rr["ports"].get(pl, 0) + f
+            b["flows"] += f
+            b["srcs"].add(src)
+            if not kept:
+                b["lose"] += f
+            e = per_eni.setdefault(eni, {"flows": 0, "srcs": set()})
+            e["flows"] += f
+            e["srcs"].add(src)
+
+    def who(src: str) -> dict:
+        w = lab(src)
+        return {"cat": w.get("cat", ""), "cat_name": CAT_NAME.get(w.get("cat", ""), ""), "name": w.get("name", "")}
+
+    out_src = []
+    for s in sorted(srcs.values(), key=lambda s: -s["flows"])[:500]:
+        out_src.append({"src": s["src"], **who(s["src"]), "flows": s["flows"], "first": s["first"], "last": s["last"],
+                        "active": len(s["bins"]), "kept": s["kept"], "rules": sorted(s["rules"]),
+                        "ports": [p for p, _n in sorted(s["ports"].items(), key=lambda kv: -kv[1])][:6],
+                        "enis": len(s["enis"])})  # fmt: skip
+    out_rules = []
+    for rr in R:
+        ranges = []
+        for nn, niv, _nr in rr["new_ivs"]:
+            inside = [x for x in rr["srcs"] if (n := _ip(x)) is not None and any(a <= n <= b for a, b in niv)]
+            ranges.append({"source": nn["source"], "ports": f"{nn['from']}" if nn["from"] == nn["to"] else f"{nn['from']}-{nn['to']}",
+                           "proto": nn["proto"], "size": sg_ipintel.size(niv) if niv else 0, "sources": len(inside),
+                           "flows": sum(rr["srcs"][x] for x in inside), "examples": sorted(inside, key=lambda x: -rr["srcs"][x])[:8]})  # fmt: skip
+        out_rules.append({"i": rr["i"], "source": rr["source"], "action": rr["action"], "sources": len(rr["srcs"]),
+                          "flows": rr["flows"], "size": sg_ipintel.size(rr["ivs"]) if rr["ivs"] else None,
+                          "ports_used": [p for p, _n in sorted(rr["ports"].items(), key=lambda kv: -kv[1])][:10],
+                          "ranges": ranges})  # fmt: skip
+    first_bin = start - start % step
+    nb = max(1, int(-(-(end - first_bin) // step)))
+    timeline = []
+    for i in range(min(nb, 400)):
+        t = first_bin + i * step
+        b = bins.get(t)
+        timeline.append({"t": t, "flows": b["flows"] if b else 0, "sources": len(b["srcs"]) if b else 0,
+                         "lose": b["lose"] if b else 0, "refused": b["refused"] if b else 0})  # fmt: skip
+    gnames = {k: v.get("name") or k for k, v in (snap.get("groups") or {}).items()}
+    out_enis = sorted(({"eni": eid, "name": lb_of(e).split("/")[1] if lb_of(e) else (e.get("name") or e.get("kind") or eid),
+                        "kind": e.get("kind", ""), "desc": e.get("desc", ""), "instance": e.get("instance", ""),
+                        "ips": list(e.get("ips") or [])[:3], "subnet": e.get("subnet", ""),
+                        "others": [gnames.get(x, x) for x in e.get("groups") or [] if x != gid],
+                        "flows": per_eni.get(eid, {}).get("flows", 0),
+                        "sources": len(per_eni.get(eid, {}).get("srcs", ()))} for eid, e in enis.items()),
+                      key=lambda e: -e["flows"])  # fmt: skip
+    events = []
+    for ev in ((doc["regions"].get(region) or {}).get("history") or {}).get("events") or []:
+        if ev["group"] == gid and start <= ev["t"] <= end:
+            def ent(xs):
+                return [list(a)[3] if isinstance(a, (list, tuple)) and len(a) > 3 else a for a in xs]
+            events.append({"t": ev["t"], "event": ev["name"], "who": ev.get("who", ""), "added": ent(ev["added"]),
+                           "removed": ent(ev["removed"])})  # fmt: skip
+    events.sort(key=lambda e: -e["t"])
+    lost = [s for s in out_src if not s["kept"]]
+    hints = []
+    if srcs:
+        ext = [s for s in out_src if s["cat"] not in ("internal", "datacentre")]
+        hints.append(f"{len(srcs):,} source IP address(es) used this group's rules in the window; "
+                     + ("every one of them is still let in by the new rules." if not lost else
+                        f"{len(lost):,} would be refused by the new rules (listed first below): check each before applying."))
+        if ext:
+            hints.append(f"{len(ext):,} of them are outside your private ranges: check each is a partner or service you expect.")
+        quiet = [s for s in out_src if s["last"] < end - 14 * DAY]
+        if quiet:
+            hints.append(f"{len(quiet):,} have not been seen in the last 14 days: if they were one-off (a migration, a test), "
+                         "the rule could be narrower still.")
+    else:
+        hints.append("Nothing used this group's inbound rules in the window: the rules can be removed. If something "
+                     "runs less often than the window (a monthly job, a DR test), it shows on Rejected traffic, where Fix… lets it in again.")
+    if other["flows"]:
+        hints.append(f"{len(other['srcs']):,} other source(s) reached these interfaces through another of their security "
+                     "groups: they are not affected by this change.")
+    if cut:
+        hints.append("Some hours hit the 10,000-row limit: a source only in the missing rows is not listed. Reading the "
+                     "account again fills those hours in.")
+    if events:
+        hints.append(f"{len(events)} change(s) were made to this group in the window (below): the timeline shows whether traffic moved with them.")
+    return {"group": gid, "name": g.get("name", gid), "region": region, "vpc": g.get("vpc", ""),
+            "description": g.get("description", ""), "from": start, "to": end, "step": step, "cut": cut,
+            "total": {"sources": len(srcs), "flows": sum(s["flows"] for s in srcs.values()), "lost": len(lost),
+                      "other": len(other["srcs"]), "refused": sum(refused.values()), "enis": len(enis)},
+            "timeline": timeline, "sources": sorted(out_src, key=lambda s: (s["kept"], -s["flows"])),
+            "rules": out_rules, "enis": out_enis[:50], "events": events[:50],
+            "refused": [{"src": k, **who(k), "flows": v} for k, v in sorted(refused.items(), key=lambda kv: -kv[1])[:10]],
+            "hints": hints}  # fmt: skip
