@@ -3,6 +3,8 @@ its flow log was created and CloudWatch Logs before, never both."""
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 import sg_athena
@@ -33,6 +35,17 @@ def test_settings_are_checked_and_kept(data):
     assert saved["bucket"] == "org-flow-logs" and sg_athena.load() == saved
     sg_athena.save({**CFG, "on": False})
     assert sg_athena.load() == {} and sg_athena.load(every=True)["bucket"] == "org-flow-logs"
+
+
+def test_a_save_is_read_back_even_when_the_file_keeps_its_mtime(data):
+    """Two saves in one clock tick leave the file's mtime unchanged (most saves back to back on Windows, now and
+    then on Linux): load() must still return what was saved last, not what it read before."""
+    sg_athena.save(CFG)
+    assert sg_athena.load()["on"]
+    before = sg_athena.path().stat().st_mtime_ns
+    sg_athena.save({**CFG, "on": False})
+    os.utime(sg_athena.path(), ns=(before, before))
+    assert sg_athena.load() == {}
 
 
 def test_the_table_uses_partition_projection_over_every_account():

@@ -106,6 +106,8 @@ def save(cfg: dict) -> dict:
     p = path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(clean, indent=2))
+    # same-tick writes keep the mtime; update, never clear (a report thread inside load() must not find it empty)
+    _cache.update(key=(str(p), p.stat().st_mtime_ns), cfg=dict(clean))
     return clean
 
 
