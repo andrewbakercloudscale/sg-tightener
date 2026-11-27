@@ -995,6 +995,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     </div>
     <div class="print-only" id="oPrintHead"></div>
     <p class="small muted" id="oRagNote"></p>
+    <div class="card" id="oRemedCard"><h3 style="margin-top:0">Most remediated accounts over time</h3><div id="oRemed"></div></div>
     <div class="card" id="oTrendCard"><div class="card-head"><h3 style="margin:0">Over-provisioning over time</h3>
       <div class="seg" id="oBy" role="group" aria-label="Break down by"><button data-oby="type" aria-pressed="true">By source type</button><button data-oby="cat" aria-pressed="false">By where it comes from</button></div></div>
       <p class="muted small">IP addresses the security groups let in that never sent a thing in the flow logs, every account added up, at the end of each period. Falling is the goal; a step up is a rule widened or a new group.</p>
@@ -1718,6 +1719,14 @@ section.nodata .card:not(.empty-state) { display: none; }
     if ($("acOwner").value === "" || !x) return;
     AV.pick = {k: "owner", v: x.v, tag: x.tag}; $("acAcct").value = ""; drawAccountView();
   });
+  function pickAccount(v) {
+    const a = (M?.accounts || []).find((x) => x.account === v);
+    AV.pick = {k: "account", v};
+    $("acQ").value = v;
+    if (M) drawAList();
+    $("acAcct").value = v; $("acOwner").value = "";
+    if (!a) $("acAcct").value = "";
+  }
   const aListNow = () => (M ? Promise.resolve() : loadAccounts(true)).then(drawAList).catch((e) => flash(e.message, true));
   $("acQ").addEventListener("input", aListNow);
   $("aWhy").addEventListener("click", () => { const h = $("aHelp"); h.hidden = !h.hidden; $("aWhy").setAttribute("aria-expanded", String(!h.hidden)); });
@@ -1903,7 +1912,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const head = `<h3 style="display:flex;gap:8px;align-items:center">Connection resets ${helpBtn("rsHelp")}</h3>${help}`;
     if (!rs || !rs.read) return head + `<p class="small muted">${rs?.slices ? "Not counted yet: the flow logs read so far were read before resets were counted, or their format has no <code>tcp-flags</code>. The next read (Read more data above) counts them." : "No flow logs read in this window."}</p>${lbmHtml()}`;
     const ts = rs.bins, rows = ts.map((_, i) => ({in: rs.series.in[i] || 0, out: rs.series.out[i] || 0}));
-    const chart = svgLines(ts, rows, ["in", "out"], {in: "var(--bad)", out: "var(--warn)"}, {in: "Reset by the source", out: "Reset by your side"}, 180);
+    const chart = svgLines(ts, rows, ["in", "out"], {in: "var(--bad)", out: "var(--warn)"}, {in: "Reset by the source", out: "Reset by your side"}, 180, null, "Connections reset");
     const lbs = rs.lbs.length ? `<div class="scroll"><table class="small"><thead><tr><th>Load balancer</th><th class="num">Reset by the source</th><th class="num">Reset by it</th><th class="num">Sources</th></tr></thead><tbody>${rs.lbs.map((l) => `<tr><td>${esc(l.name)} <span class="pill" style="--p:var(--accent)">${l.type === "net" ? "network" : l.type === "app" ? "application" : esc(l.type)}</span>${l.public ? ' <span class="pill" style="--p:var(--warn)">internet-facing</span>' : ""}<div class="muted">${esc(l.region)} · ${esc(l.vpc)}</div></td><td class="num">${big(l.in)}</td><td class="num">${big(l.out)}</td><td class="num">${l.srcs.toLocaleString()}</td></tr>`).join("")}</tbody></table></div>` : "";
     const src = rs.sources.length ? `<div class="scroll"><table class="small"><thead><tr><th>Source</th><th>Who</th><th>Where</th><th class="num">Resets (source · your side)</th><th class="num">Share of its connections</th><th>Last seen</th><th>What to do</th></tr></thead><tbody>${rs.sources.map((x) => { const [rc, rb] = rowOf("x:" + x.src); return `<tr${rc}><td>${rb}<code>${esc(x.src)}</code>${x.cc ? ` <span class="muted">${esc(x.cc)}</span>` : ""}</td>
       <td>${esc(x.name && x.name !== x.src ? x.name : "unknown")}${x.type && x.type !== x.cat ? ` <span class="pill" style="--p:${["scanner", "anon", "threat"].includes(x.type) ? "var(--bad)" : "var(--muted)"}">${esc(x.type)}</span>` : ""}</td>
@@ -1990,7 +1999,7 @@ section.nodata .card:not(.empty-state) { display: none; }
       const maxp = Math.max(1, ...peers.map((x) => x.pts));
       const rk = {critical: 0, high: 1, medium: 2};
       const oAll = mine.flatMap((a, ai) => aNext(a, (refusedData?.rows || []).filter((r) => r.account === a.account)).map((x) => ({...x, a, ai}))).sort((x, y) => rk[x.sev] - rk[y.sev] || x.ai - y.ai || x.i - y.i);
-      const oNext = oAll.slice(0, 5), oNum = new Map();
+      const N = AV.nextN || 20, oNext = oAll.slice(0, N), oNum = new Map();
       oNext.forEach((x, i) => { const g = oNum.get(x.a.account) || []; g.push([i + 1, x.sev]); oNum.set(x.a.account, g); });
       const oBtn = (x) => `<button class="btn sm primary" data-aacct="${esc(x.a.account)}">View account</button>`;
       const oList = (xs, num) => `<ol class="next5 small">${xs.map((x, i) => `<li style="--nx:${SEVCOL[x.sev]}">${num ? nxBadge(i + 1, x.sev) : ""}<div class="nx-what"><span class="pill" style="--p:${SEVCOL[x.sev]}">${x.sev}</span> <b>${esc(x.a.name || x.a.account)}</b>: ${x.what}. ${esc(x.how)}.</div>${oBtn(x)}</li>`).join("")}</ol>`;
@@ -1999,11 +2008,16 @@ section.nodata .card:not(.empty-state) { display: none; }
           <div><span class="muted small">Per account</span><b>${Math.round(avg).toLocaleString()}</b><span class="muted small">median owner ${Math.round(med).toLocaleString()}: ${avg > med ? "worse than most" : "better than most"}</span></div>
           <div><span class="muted small">Critical findings</span><b>${me.crit}</b></div><div><span class="muted small">Open to internet, risky ports</span><b>${me.open}</b></div>
           <div><span class="muted small">Never-seen addresses allowed</span><b>${big(me.over)}</b></div></div>
-        <h3>Their next 5</h3><p class="muted small" style="margin:0 0 4px">The five things to do next across their accounts, most urgent first. Their accounts below with the same number and colour are where each one is.</p>${oNext.length ? oList(oNext, true) + (oAll.length > 5 ? `<details class="more-x small"><summary>${oAll.length - 5} more after these</summary>${oList(oAll.slice(5, 40), false)}${oAll.length > 45 ? `<p class="muted">and ${oAll.length - 45} more: open each account.</p>` : ""}</details>` : "") : '<p class="small" style="color:var(--good)">Nothing urgent across these accounts.</p>'}
-        <h3>Against their peers</h3><table class="small"><tbody>${peers.map((x) => `<tr${x.o === owner ? ' style="font-weight:700"' : ""}><td style="width:30%">${esc(x.o)}${x.o === owner ? " ◀" : ""}</td><td style="width:50%"><div class="bar-track" style="margin:0"><div class="bar-fill" style="width:${(100 * x.pts / maxp).toFixed(1)}%;background:${x.o === owner ? "var(--accent)" : "var(--muted)"}"></div></div></td><td class="num">${x.pts.toLocaleString()} pts · ${x.n} acct</td></tr>`).join("")}${peers.some((x) => x.o === owner) ? "" : `<tr style="font-weight:700"><td>${esc(owner)} ◀</td><td></td><td class="num">${me.pts.toLocaleString()} pts · rank ${r}</td></tr>`}</tbody></table>
-        <h3>Their accounts, most risk first</h3><div class="scroll"><table class="small"><thead><tr><th>Account</th><th class="num">Spend a month</th><th class="num">Risk points</th><th class="num">Critical · high</th><th class="num">Open (risky)</th><th class="num">Never-seen allowed</th><th class="num">Rules to tighten</th><th></th></tr></thead><tbody>${mine.map((a) => { const g = oNum.get(a.account) || []; return `<tr${g.length ? nxRow(1, g[0][1]) : ""}><td>${g.map(([n, sv]) => nxBadge(n, sv)).join("")}<b>${esc(a.name || a.account)}</b> <code>${esc(a.account)}</code></td><td class="num">${a.spend == null ? "—" : money(a.spend)}</td><td class="num">${points(a).toLocaleString()}</td><td class="num">${a.attention?.critical || 0} · ${a.attention?.high || 0}</td><td class="num">${a.open || 0} (${a.open_risky || 0})</td><td class="num">${big(a.over_now || 0)}</td><td class="num">${(a.tighten || 0) + (a.unused || 0)}</td><td><button class="btn sm" data-aacct="${esc(a.account)}">Open</button></td></tr>`; }).join("")}</tbody></table></div></div>`;
+        <div class="card-head" style="margin-top:14px"><h3 style="margin:0">Their next ${Math.min(N, oAll.length) || N}</h3><span class="tools" style="margin:0"><label class="small">Show <select id="oNextN" aria-label="How many next things to show">${[20, 50, 100, 200].map((n) => `<option value="${n}"${n === N ? " selected" : ""}>${n}</option>`).join("")}</select></label><button class="btn sm" type="button" data-ahelp="oNextHelp" aria-expanded="false">Explain</button></span></div>
+        <p class="muted small" id="oNextHelp" hidden style="margin:0 0 4px">Every finding across their accounts, most urgent first (critical, then high, then medium; riskier accounts first within each). <b>Show</b> picks how many to list: 20, 50, 100 or 200. Each one is numbered; the <b>Next items</b> column in <i>Their accounts</i> below lists the numbers that sit in each account, so you can work account by account. <b>View account</b> opens the account with the details and the fix.</p>
+        <p class="muted small" style="margin:0 0 4px">The ${Math.min(N, oAll.length) || N} things to do next across their accounts, most urgent first${oAll.length > N ? `, of ${oAll.length.toLocaleString()} in all` : ""}.</p>${oNext.length ? oList(oNext, true) + (oAll.length > N ? `<p class="muted small">${(oAll.length - N).toLocaleString()} more after these${N < 200 ? ": show more above" : ": open each account"}.</p>` : "") : '<p class="small" style="color:var(--good)">Nothing urgent across these accounts.</p>'}
+        <h3>Risk points: ${esc(owner)} against every other ${esc(tag || "owner")}</h3><p class="muted small" style="margin:0 0 4px">Each bar is one person named as <b>${esc(tag || "owner")}</b> on their accounts, with the risk points of all their accounts added up (critical finding 100, high 10, medium 1), most first; the top ${peers.length} of ${all.length} are shown. <b>${esc(owner)}</b> is highlighted: rank <b>${r}</b> of ${all.length}, riskier than ${pctBelow(r, all.length)}% of them.</p><table class="small"><thead><tr><th>${esc(tag || "Owner")}</th><th>Risk points, longest bar = most</th><th class="num">Points · accounts</th></tr></thead><tbody>${peers.map((x) => `<tr${x.o === owner ? ' style="font-weight:700"' : ""}><td style="width:30%">${esc(x.o)}${x.o === owner ? " ◀" : ""}</td><td style="width:50%"><div class="bar-track" style="margin:0"><div class="bar-fill" style="width:${(100 * x.pts / maxp).toFixed(1)}%;background:${x.o === owner ? "var(--accent)" : "var(--muted)"}"></div></div></td><td class="num">${x.pts.toLocaleString()} pts · ${x.n} acct</td></tr>`).join("")}${peers.some((x) => x.o === owner) ? "" : `<tr style="font-weight:700"><td>${esc(owner)} ◀</td><td></td><td class="num">${me.pts.toLocaleString()} pts · rank ${r}</td></tr>`}</tbody></table>
+        <h3>Remediation over time, their accounts</h3>${remedHtml(mine, 10, "their accounts")}
+        <h3>Their accounts, most risk first</h3><p class="muted small" style="margin:0 0 4px"><b>Next items</b>: the numbers of the next things to do above that are in this account.</p><div class="scroll"><table class="small"><thead><tr><th>Account</th><th>Next items</th><th class="num">Spend a month</th><th class="num">Risk points</th><th class="num">Critical · high</th><th class="num">Open (risky)</th><th class="num">Never-seen allowed</th><th class="num">Rules to tighten</th><th></th></tr></thead><tbody>${mine.map((a) => { const g = oNum.get(a.account) || []; const nums = g.map(([n]) => n), tip = nums.length ? `Next things to do numbered ${nums.join(", ")} in the list above are in this account` : "None of the next things to do listed above is in this account";
+          return `<tr${g.length ? nxRow(1, g[0][1]) : ""}><td><b>${esc(a.name || a.account)}</b> <code>${esc(a.account)}</code></td><td title="${esc(tip)}">${nums.length ? `<span class="pill" style="--p:${SEVCOL[g[0][1]]}">${nums.length} item${nums.length === 1 ? "" : "s"}</span> <span class="muted">#${nums.slice(0, 6).join(", #")}${nums.length > 6 ? ` +${nums.length - 6}` : ""}</span>` : '<span class="muted">—</span>'}</td><td class="num">${a.spend == null ? "—" : money(a.spend)}</td><td class="num">${points(a).toLocaleString()}</td><td class="num">${a.attention?.critical || 0} · ${a.attention?.high || 0}</td><td class="num">${a.open || 0} (${a.open_risky || 0})</td><td class="num">${big(a.over_now || 0)}</td><td class="num">${(a.tighten || 0) + (a.unused || 0)}</td><td><button class="btn sm" data-aacct="${esc(a.account)}">Open</button></td></tr>`; }).join("")}</tbody></table></div></div>`;
     }
-    for (const b of $("aBody").querySelectorAll("[data-aacct]")) b.addEventListener("click", () => { AV.pick = {k: "account", v: b.dataset.aacct}; $("acAcct").value = b.dataset.aacct; $("acOwner").value = ""; drawAccountView(); window.scrollTo({top: 0, behavior: "smooth"}); });
+    for (const b of $("aBody").querySelectorAll("[data-aacct]")) b.addEventListener("click", () => { pickAccount(b.dataset.aacct); drawAccountView(); window.scrollTo({top: 0, behavior: "smooth"}); });
+    $("oNextN")?.addEventListener("change", () => { AV.nextN = +$("oNextN").value; drawAccountView(); });
     for (const b of $("aBody").querySelectorAll("[data-arule]")) b.addEventListener("click", () => { const x = JSON.parse(b.dataset.arule); openAct(AV.pick.v, (r) => r.gname === x.g && r.region === x.r && r.source === x.s && r.ports === x.p, "this rule"); });
     for (const b of $("aBody").querySelectorAll("[data-aact]")) b.addEventListener("click", () => openAct(AV.pick.v, b.dataset.aact === "open" ? (r) => ["0.0.0.0/0", "::/0"].includes(r.source) : () => true, b.dataset.aact === "open" ? "the rules open to the internet" : "every rule the flow logs say to change"));
     for (const b of $("aBody").querySelectorAll("[data-aresolve]")) b.addEventListener("click", async () => { await show("refused"); openResolve(b.dataset.aresolve); });
@@ -3341,10 +3355,10 @@ section.nodata .card:not(.empty-state) { display: none; }
   }
   // A line per key over time, with its total now in the legend and a dot on its last point.
   // With ``win`` ({from, to}, seconds) points sit at their time inside that window and the axis is labelled in time.
-  function svgLines(ts, rows, keys, COL, NAMES, h = 240, win = null) {
+  function svgLines(ts, rows, keys, COL, NAMES, h = 240, win = null, ylab = "IP addresses") {
     if (win) { const keep = ts.map((t, i) => t >= win.from && t <= win.to ? i : -1).filter((i) => i >= 0); ts = keep.map((i) => ts[i]); rows = keep.map((i) => rows[i]); }
     if (!ts.length) return '<p class="muted">No data in this window.</p>';
-    const W = 1000, P = {l: 56, r: 14, t: 12, b: 26}, iw = W - P.l - P.r, ih = h - P.t - P.b;
+    const W = 1000, P = {l: 76, r: 14, t: 12, b: 26}, iw = W - P.l - P.r, ih = h - P.t - P.b;
     const max = Math.max(1, ...rows.flatMap((r) => keys.map((k) => r[k] || 0)));
     const step = ts.length > 1 ? ts[1] - ts[0] : 3600, lo = win ? win.from : ts[0], hi = win ? win.to - step : ts[ts.length - 1];
     const x = (i) => P.l + (hi <= lo ? iw / 2 : ((ts[i] - lo) / (hi - lo)) * iw), y = (v) => P.t + ih - (v / max) * ih;
@@ -3353,8 +3367,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const lab = (t) => { const z = new Date(t * 1000); return short ? `${two(z.getHours())}:00` + (z.getHours() < 3 ? ` ${z.getDate()} ${MON[z.getMonth()]}` : "") : `${z.getDate()} ${MON[z.getMonth()]}`; };
     const ticks = Array.from({length: 7}, (_, j) => lo + (j / 6) * (hi - lo));
     const d = (t) => localDay(new Date(t * 1000));
-    const grid = [0.25, 0.5, 0.75, 1].map((f) => `<line x1="${P.l}" x2="${W - P.r}" y1="${y(max * f).toFixed(1)}" y2="${y(max * f).toFixed(1)}" style="stroke:var(--grid)" stroke-dasharray="3 4"/>`).join("");
-    const axis = `<line x1="${P.l}" y1="${P.t + ih}" x2="${W - P.r}" y2="${P.t + ih}" style="stroke:var(--grid)"/><text x="${P.l - 6}" y="${P.t + 10}" text-anchor="end">${big(max)}</text><text x="${P.l - 6}" y="${P.t + ih}" text-anchor="end">0</text>${win ? ticks.map((t, j) => `<line x1="${xt(t).toFixed(1)}" x2="${xt(t).toFixed(1)}" y1="${P.t + ih}" y2="${P.t + ih + 4}" style="stroke:var(--grid)"/><text x="${xt(t).toFixed(1)}" y="${h - 6}" text-anchor="${j === 0 ? "start" : j === 6 ? "end" : "middle"}">${lab(t)}</text>`).join("") : `<text x="${P.l}" y="${h - 6}">${d(ts[0])}</text><text x="${W - P.r}" y="${h - 6}" text-anchor="end">${d(ts[ts.length - 1])}</text>`}`;
+    const grid = "", axis = chartAxes({W, h, P, ih, max, lo, hi, ylab});
     const order = [...keys].sort((p, q) => Math.max(...rows.map((r) => r[q] || 0)) - Math.max(...rows.map((r) => r[p] || 0)));
     const lines = order.map((k) => {
       const pts = rows.map((r, i) => `${x(i).toFixed(1)},${y(r[k] || 0).toFixed(1)}`).join(" ");
@@ -3904,7 +3917,20 @@ section.nodata .card:not(.empty-state) { display: none; }
   const mv = {by: "cat", scale: "abs"};
   const KCOL = {internal: "#2a78d6", datacentre: "#7357c9", aws: "#e8a317", saas: "#2f9e5b", internet: "#d03b3b"};
   const TCOL = {internal: "#2a78d6", datacentre: "#7357c9", aws: "#e8a317", cdn: "#4fa3a5", security: "#0f9d9a", saas: "#2f9e5b", partner: "#8bc34a", hosting: "#b1afa6", scanner: "#e0673a", anon: "#8a5a2b", threat: "#9b1c1c", other: "#d03b3b"};
-  const big = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : Number(n || 0).toLocaleString();
+  const unit = (v) => v >= 100 ? Math.round(v).toLocaleString() : v.toFixed(1).replace(/\.0$/, "");
+  const big = (n) => n >= 1e9 ? `${unit(n / 1e9)}B` : n >= 1e6 ? `${unit(n / 1e6)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : Number(n || 0).toLocaleString();
+  // Chart axes: volumes up the side (0, a quarter, half, three quarters, the top) with dashed lines, and dates
+  // (or hours, for two days or less) along the bottom, so every chart can be read on its own
+  function chartAxes({W, h, P, ih, max, lo, hi, ylab = "", xs = null}) {
+    const y = (v) => P.t + ih - (v / max) * ih;
+    const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], short = hi - lo <= 2 * 86400;
+    const lab = (t) => { const z = new Date(t * 1000); return short ? `${two(z.getHours())}:00 ${z.getDate()} ${MON[z.getMonth()]}` : `${z.getDate()} ${MON[z.getMonth()]}`; };
+    const xp = xs || ((t) => P.l + (hi <= lo ? (W - P.l - P.r) / 2 : ((t - lo) / (hi - lo)) * (W - P.l - P.r)));
+    const yt = [0, 0.25, 0.5, 0.75, 1].map((f) => `<line x1="${P.l}" x2="${W - P.r}" y1="${y(max * f).toFixed(1)}" y2="${y(max * f).toFixed(1)}" style="stroke:var(--grid)"${f ? ' stroke-dasharray="3 4"' : ""}/><text x="${P.l - 6}" y="${(y(max * f) + 4).toFixed(1)}" text-anchor="end">${big(Math.round(max * f))}</text>`).join("");
+    const n = hi > lo ? 6 : 0, xt = Array.from({length: n + 1}, (_, j) => (n ? lo + (j / n) * (hi - lo) : lo)).map((t, j) => `<line x1="${xp(t).toFixed(1)}" x2="${xp(t).toFixed(1)}" y1="${P.t + ih}" y2="${P.t + ih + 4}" style="stroke:var(--grid)"/><text x="${xp(t).toFixed(1)}" y="${h - 6}" text-anchor="${!n ? "middle" : j === 0 ? "start" : j === n ? "end" : "middle"}">${lab(t)}</text>`).join("");
+    const yl = ylab ? `<text x="12" y="${(P.t + ih / 2).toFixed(1)}" text-anchor="middle" transform="rotate(-90 12 ${(P.t + ih / 2).toFixed(1)})">${esc(ylab)}</text>` : "";
+    return yt + xt + yl;
+  }
   const nm = (a) => a.name ? `${esc(a.name)} <span class="muted small">${esc(a.account)}</span>` : esc(a.account);
   const acctLink = (a) => `<a href="/review?account=${encodeURIComponent(a.account)}" target="_blank" rel="noopener">${nm(a)}</a>`;
   const sum = (xs, f) => xs.reduce((t, x) => t + (f(x) || 0), 0);
@@ -4162,15 +4188,15 @@ section.nodata .card:not(.empty-state) { display: none; }
     const ts = [...at.keys()].sort((p, q) => p - q);
     return {ts, rows: ts.map((t) => at.get(t))};
   }
-  function svgStack(ts, rows, keys, COL, NAMES, h = 200) {
+  function svgStack(ts, rows, keys, COL, NAMES, h = 200, ylab = "IP addresses") {
     if (!ts.length) return '<p class="muted">No data in this window.</p>';
-    const W = 1000, P = {l: 56, r: 10, t: 10, b: 24}, iw = W - P.l - P.r, ih = h - P.t - P.b;
+    const W = 1000, P = {l: 76, r: 10, t: 10, b: 24}, iw = W - P.l - P.r, ih = h - P.t - P.b;
     const tot = rows.map((r) => sum(keys, (k) => r[k]));
     const max = Math.max(1, ...tot), bw = iw / ts.length;
     let out = "";
     rows.forEach((r, i) => { let y = P.t + ih; for (const k of keys) { const v = r[k] || 0; if (!v) continue; const hh = (v / max) * ih; y -= hh; out += `<rect x="${(P.l + i * bw).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${hh.toFixed(1)}" fill="${COL[k] || "#8f8d86"}"><title>${esc(new Date(ts[i] * 1000).toISOString().slice(0, 10))} ${esc(NAMES[k] || k)}: ${big(v)}</title></rect>`; } });
-    const d = (t) => localDay(new Date(t * 1000));
-    const axis = `<line x1="${P.l}" y1="${P.t + ih}" x2="${W - P.r}" y2="${P.t + ih}" style="stroke:var(--grid)"/><text x="${P.l - 6}" y="${P.t + 10}" text-anchor="end">${big(max)}</text><text x="${P.l - 6}" y="${P.t + ih}" text-anchor="end">0</text><text x="${P.l}" y="${h - 6}">${d(ts[0])}</text><text x="${W - P.r}" y="${h - 6}" text-anchor="end">${d(ts[ts.length - 1])}</text>`;
+    const bx = (t) => { const i = ts.length > 1 ? (t - ts[0]) / (ts[1] - ts[0]) : 0; return P.l + (i + 0.5) * bw; };
+    const axis = chartAxes({W, h, P, ih, max, lo: ts[0], hi: ts[ts.length - 1], ylab, xs: bx});
     const legend = keys.length > 1 ? `<div class="legend">${keys.map((k) => `<span><i style="background:${COL[k] || "#8f8d86"}"></i>${esc(NAMES[k] || k)}</span>`).join("")}</div>` : "";
     return `${legend}<svg class="tl" viewBox="0 0 ${W} ${h}" role="img" aria-label="Stacked bars over time">${axis}${out}</svg>`;
   }
@@ -4179,7 +4205,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     const o = aligned(A, (a, i) => Object.fromEntries(keys.map((k) => [k, (a.over_series[k] || [])[i] || 0])));
     $("mOverTime").innerHTML = svgStack(o.ts, o.rows, keys.filter((k) => o.rows.some((r) => r[k])), KCOL, M.kinds);
     const hi = aligned(A, (a, i) => ({high: a.high_series[i] || 0}));
-    $("mHighTime").innerHTML = hi.rows.some((r) => r.high) ? svgStack(hi.ts, hi.rows, ["high"], {high: "#d03b3b"}, {high: "High-risk sources"}, 150) : '<p class="muted">No high-risk source was refused in this window.</p>';
+    $("mHighTime").innerHTML = hi.rows.some((r) => r.high) ? svgStack(hi.ts, hi.rows, ["high"], {high: "#d03b3b"}, {high: "High-risk sources"}, 150, "Sources") : '<p class="muted">No high-risk source was refused in this window.</p>';
   }
   $("mRange").addEventListener("change", () => act(null, loadMacro));
   for (const F of [FOCUS, OWN]) $(F.id + "Lens").addEventListener("click", (e) => { const b = e.target.closest("[data-lens]"); if (!b || !M) return; F.lens = b.dataset.lens; F.pick = null; drawFocus(M.accounts, F); });
@@ -4190,6 +4216,30 @@ section.nodata .card:not(.empty-state) { display: none; }
 
   // ---- Over-provisioning: RAG per asset, per account, and the trend
   let O = null, oBy = "type";
+  // Remediation over time: never-seen IP addresses each account stopped letting in, period by period (every step
+  // down in its own total). A period with no figures for the account (not read) is never counted as a fix.
+  const RCOL = ["#2e7d32", "#3b6fd1", "#7a5bc7", "#d08a1d", "#1f9e8f", "#c2477a", "#6b8e23", "#8f5a3c"];
+  function remedOf(a) {
+    const s = (a.bins || []).map((_, i) => sum(Object.keys(a.over_series || {}), (k) => (a.over_series[k] || [])[i] || 0));
+    const down = s.map((v, i) => (i && v && s[i - 1] > v ? s[i - 1] - v : 0));
+    const peak = Math.max(0, ...s), now = [...s].reverse().find(Boolean) || 0;
+    return {a, s, down, fixed: sum(down, (x) => x), peak, now, steps: down.filter(Boolean).length};
+  }
+  function remedHtml(A, top = 10, who = "every account") {
+    const R = A.map(remedOf).filter((r) => r.fixed > 0).sort((p, q) => q.fixed - p.fixed);
+    if (!R.length) return `<p class="muted small">No account has cut its never-seen IP addresses in this window yet: a fix applied from <b>Remediate</b> shows here at the next read.</p>`;
+    const best = R.slice(0, 8), key = (r) => r.a.account;
+    const COL = Object.fromEntries(best.map((r, i) => [key(r), RCOL[i]])), NAMES = Object.fromEntries(best.map((r) => [key(r), r.a.name || r.a.account]));
+    if (R.length > 8) { COL.other = "#8f8d86"; NAMES.other = `${R.length - 8} other account(s)`; }
+    const o = aligned(R.map((r) => r.a), (a, i) => { const r = R.find((x) => x.a === a), k = best.includes(r) ? key(r) : "other"; return {[k]: r.down[i] || 0}; });
+    const keys = [...best.map(key), ...(R.length > 8 ? ["other"] : [])];
+    const total = sum(R, (r) => r.fixed), maxf = R[0].fixed;
+    const list = `<table class="small"><thead><tr><th>Account</th><th style="width:40%">Never-seen IP addresses removed</th><th class="num">Removed</th><th class="num">Fixes</th><th class="num">Peak → now</th></tr></thead><tbody>${R.slice(0, top).map((r, i) => `<tr><td><b>${i + 1}.</b> ${esc(r.a.name || r.a.account)} <code>${esc(r.a.account)}</code>${ownerLine(r.a.account)}</td><td><div class="bar-track" style="margin:0"><div class="bar-fill" style="width:${((100 * r.fixed) / maxf).toFixed(1)}%;background:${COL[key(r)] || "var(--good)"}"></div></div></td><td class="num"><b style="color:var(--good)">${big(r.fixed)}</b></td><td class="num" title="Periods in which its figure went down">${r.steps}</td><td class="num">${big(r.peak)} → ${big(r.now)}${r.peak ? ` <span class="muted">(−${(100 * (r.peak - r.now)) / r.peak < 1 ? "<1" : Math.round((100 * (r.peak - r.now)) / r.peak)}%)</span>` : ""}</td></tr>`).join("")}</tbody></table>${R.length > top ? `<p class="muted small">and ${R.length - top} more account(s) that removed some.</p>` : ""}`;
+    return `<div class="trend-now"><b style="color:var(--good)">${big(total)}</b> never-seen IP addresses removed by ${R.length} account(s) of ${who} in this window</div>
+      <p class="muted small" style="margin:2px 0 6px">Each bar: the never-seen IP addresses an account stopped letting in during that period (its rules narrowed or removed), coloured by account. Up the side: IP addresses removed; along the bottom: the date each period ends.</p>
+      ${svgStack(o.ts, o.rows, keys, COL, NAMES, 200, "IP addresses removed")}
+      <h4 style="margin:14px 0 4px">Most remediated accounts</h4><p class="muted small" style="margin:0 0 4px">Ranked by never-seen IP addresses removed in this window. <b>Fixes</b>: periods in which its figure went down. <b>Peak → now</b>: its highest figure in the window, and today's.</p>${list}`;
+  }
   function drawOverTrend(A) {
     const cat = oBy === "cat", NAMES = cat ? O.kinds : O.types, COL = cat ? KCOL : TCOL;
     const pick = (a) => (cat ? a.over_series : a.over_type_series) || {};
@@ -4243,13 +4293,14 @@ section.nodata .card:not(.empty-state) { display: none; }
     $("oNote").textContent = A.length ? `${A.length} account${A.length === 1 ? "" : "s"} read` : "";
     $("oRagNote").innerHTML = `${ragPill("green")} up to ${big(O.rag.green_max)} never-seen IP addresses can reach the asset (a /24) · ${ragPill("amber")} up to ${big(O.rag.amber_max)} (a /16) · ${ragPill("red")} more, or open to the internet on a remote admin, database, Windows or container port. IPv4; rules open to the whole internet on other ports are listed but not counted.`;
     if (!A.length) {
-      for (const id of ["oTiles", "oRagTime", "oAccounts", "oWins", "oAssets"]) $(id).innerHTML = "";
+      for (const id of ["oTiles", "oRagTime", "oAccounts", "oWins", "oAssets", "oRemed"]) $(id).innerHTML = "";
       $("oTiles").innerHTML = noFlowLogs(O.no_flow_logs_read || 0);
       $("tab-over").classList.add("nodata");
       return;
     }
     $("tab-over").classList.remove("nodata");
     drawOverTrend(A);
+    $("oRemed").innerHTML = remedHtml(A, 10);
     const tot = (k) => sum(A, (a) => a.asset_rag[k]), tot0 = (k) => sum(A, (a) => a.asset_rag_start[k]);
     const assets = sum(A, (a) => a.assets_total), green = tot("green"), red = tot("red"), amber = tot("amber");
     const over = sum(A, (a) => a.over_now), over0 = sum(A, (a) => a.over_start);
@@ -4270,7 +4321,7 @@ section.nodata .card:not(.empty-state) { display: none; }
     ].join("");
     drawExternal(A);
     const r = aligned(A, (a, i) => ({red: a.asset_rag_series.red[i] || 0, amber: a.asset_rag_series.amber[i] || 0, green: a.asset_rag_series.green[i] || 0}));
-    $("oRagTime").innerHTML = svgStack(r.ts, r.rows, ["red", "amber", "green"], RAGC, RAGN, 180);
+    $("oRagTime").innerHTML = svgStack(r.ts, r.rows, ["red", "amber", "green"], RAGC, RAGN, 180, "Assets");
     $("oAccounts").innerHTML = `<table class="small"><thead><tr><th>Rating</th><th>Account</th><th>Assets: red, amber, green</th><th>Right-sized</th><th class="num">Over-provisioned</th><th>Change in window</th><th>Trend</th><th class="num">Average per asset</th><th>Worst asset</th><th></th></tr></thead><tbody>${A.map((a) => {
       const n = a.assets_total, w = a.assets[0];
       const stack = n ? `<div class="stack" style="min-width:120px">${["red", "amber", "green"].filter((k) => a.asset_rag[k]).map((k) => `<span style="width:${(a.asset_rag[k] / n) * 100}%;background:${RAGC[k]}" title="${RAGN[k]}: ${a.asset_rag[k]}"></span>`).join("")}</div><div class="muted">${a.asset_rag.red} / ${a.asset_rag.amber} / ${a.asset_rag.green}${a.assets_unlogged ? ` · ${a.assets_unlogged} not logged` : ""}</div>` : '<span class="muted">no logged assets</span>';
@@ -4350,7 +4401,7 @@ section.nodata .card:not(.empty-state) { display: none; }
   function fromHash() {
     const [tab, arg] = decodeURIComponent(location.hash.slice(1)).split("/");
     if (!TABS.includes(tab)) return false;
-    if (tab === "accounts" && arg) AV.pick = {k: "account", v: arg};
+    if (tab === "accounts" && arg) pickAccount(arg);
     show(tab);
     return true;
   }

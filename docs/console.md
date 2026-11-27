@@ -304,7 +304,14 @@ The same data is at `GET /api/macro?range=1m` (`24h`, `1w`, `1m`, `3m`, `6m`, `1
 
 ## Over-provisioning: by account and asset
 
-It opens with **over-provisioning over time**: the addresses let in that never sent anything, every account added
+It opens with **most remediated accounts over time**: each bar is the never-seen IP addresses an account stopped
+letting in during that period (its rules narrowed or removed), coloured by account, then the accounts ranked by
+addresses removed, with how many periods went down and peak → now. A period an account was not read is never counted
+as a fix. Each owner's view on Accounts shows the same for their accounts.
+
+Every time chart has volumes up the side and dates (or hours, for two days or less) along the bottom.
+
+Then comes **over-provisioning over time**: the addresses let in that never sent anything, every account added
 up, at the end of each period, by **source type** or by **where it comes from**, with the total now and its change.
 It needs flow logs: accounts read for their groups only are counted and the page says how to read their flow logs.
 

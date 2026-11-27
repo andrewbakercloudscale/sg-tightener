@@ -273,6 +273,7 @@ are listed in the plan under `skipped_groups` with the reason.
 
 | Version | Highlights |
 |---|---|
+| **5.59.0** | **Outbound View fixes**: each too-wide rule with its group, assets, why it is bad and what it should be; PDF and top 10 on Resolve rejected traffic; owners on refused sources; most remediated accounts over time; chart axes with volumes and dates; owner view next 20–200; faster console under load |
 | **5.58.0** | **Support** tab: health checks with what to do, an activity log of every action and error, a support bundle with secrets removed; `doctor` and `support` commands; **flow logs in S3** read through Athena |
 | **5.57.0** | **Outbound** tab: rules leaving the account by risk class (internet, SaaS, on-premises, other accounts), too-wide flagged; **connection resets** from flow-log TCP flags with **Block** at the network ACL; Zscaler check before SSO sign-in; **Data use** settings: read only on Wi-Fi, keep prices across restarts |
 | **5.23.0** | Rules tightened on whatever was read (no 30-day wait); Rejected traffic and Propose allowing undo a premature change |

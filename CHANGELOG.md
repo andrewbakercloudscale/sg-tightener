@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.59.0 - 2026-11-27
+
+- **Outbound: View fixes** per account (Outbound tab, the account's Outbound section and its next 5): every too-wide rule by security group, the assets using it, the rule today, why it is bad, what it should be (from outbound flow logs when read) and the commands; Export PDF. Figures read "N of M rules" with why they are too wide and how many are AWS's allow-all default.
+- **Resolve rejected traffic**: Export PDF; top 10 in every panel. The account owner's name shows on refused sources.
+- **Remediate** no longer picks the first account: blank until one is chosen.
+- **Support**: database version, size, CPU, memory and disk use; the console's CPU, memory and threads; Copy to clipboard in the activity log.
+- **Faster under load**: AWS clients created about 5× faster (one shared botocore loader), the audit check cached until the trail changes, schema set up once per version (fixes a deadlock at restart), longer database connect timeout. A confirmed read of every account carries on after a restart without asking again.
+- IPs of interest lists stay open across redraws.
+- **Charts read on their own**: volumes up the side (five gridlines) and dates or hours along the bottom on every time chart; whole numbers once a figure reaches 100 (1,529B, not 1529.0B), no trailing .0.
+- **Most remediated accounts over time** at the top of Over-provisioning: never-seen IP addresses each account removed per period, coloured by account, and the ranking with peak → now; also in each owner's view.
+- **Owner view**: "Their next 20" with a 20 / 50 / 100 / 200 picker and Explain; the peer chart is titled and captioned (risk points of every owner under the same tag, rank shown); a **Next items** column says which numbered items sit in each account.
+- **View account** sets the search box and Matching accounts to that account and clears Matching owners, so the filter agrees with the page.
+
 ## 5.58.0 - 2026-11-26
 
 - **Support tab**: health checks (version, database, audit, sign-in, network, reads, schedule, reports, service, disk, recent errors, log) each with what to do; **Copy summary**; a **support bundle** (zip) with secrets taken out.
