@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Connection resets: View details** on each source: what the pattern suggests, resets an hour, an hour-by-hour audit trail (resets by each side, connections accepted and refused, ports, what it reached), where it was reset with the security groups, its ports, and the CloudTrail changes to those groups in the window; Export PDF and Explain.
+- **Rejected traffic charts: Sources or Flows**, with Explain: distinct addresses refused, or every refused connection attempt.
+- **Remediated** now means a security group rule removed or narrowed (CloudTrail, group by group); a deleted asset or traffic seen later is not counted.
+- **Biggest rules to tighten** give numbers: sources seen, flows, addresses allowed, the ranges to keep and the addresses cut.
+- **Chart scales** are round numbers (0, 2, 4, 6, 8, not 0, 0, 1, 1); a week or less shows hours on the time axis.
+- **Back works in Accounts**: each account and owner opened is its own address.
+- **View fixes** (and every dialog) opens from any tab; it used to freeze the page outside the Rejected traffic tab.
+- Outbound tables no longer squeeze group names: the asset list wraps under the interface count.
+
 ## 5.59.0 - 2026-11-27
 
 - **Outbound: View fixes** per account (Outbound tab, the account's Outbound section and its next 5): every too-wide rule by security group, the assets using it, the rule today, why it is bad, what it should be (from outbound flow logs when read) and the commands; Export PDF. Figures read "N of M rules" with why they are too wide and how many are AWS's allow-all default.

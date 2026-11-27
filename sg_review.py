@@ -1875,7 +1875,8 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
     }
     net_series = {"refused": _net_series(rej, lab, nbins), "active": _net_series(act, lab, nbins)}
     networks = _networks(act, rej, lab, enis)
-    group_series = {"refused": _group_series(rej, lab, nbins), "active": _group_series(act, lab, nbins)}
+    group_series = {"refused": _group_series(rej, lab, nbins), "active": _group_series(act, lab, nbins),
+                    "refused_flows": _group_flows(rej, lab, nbins)}
     ports = []
     for (proto, port), use in port_use.items():
         pc = port_class(proto, port)
@@ -1914,6 +1915,10 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
     asset_enis = [e for e, x in enis.items() if x["groups"]] if assets else []
     asset_over: dict[str, list] = {e: [0] * nbins for e in asset_enis}
     asset_memo: dict[tuple, int] = {}
+    # Remediated: in each period, the never-seen addresses taken away by rule changes that removed or narrowed
+    # entries (CloudTrail), group by group, so a widening elsewhere does not hide a fix and nothing else counts
+    fixed_series, fixed_groups = [0] * nbins, [0] * nbins
+    prev_group: dict[str, int] = {}
     for i, t0 in enumerate(bins):
         t = min(t0 + step, end)
         total = [0] * len(CATS)
@@ -1930,6 +1935,12 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
                 memo[key] = ([sg_ipintel.size(sg_ipintel.intersect(over, lab.cat_iv[k])) for k in CATS],
                              _over_attr(over, lab))
             total = [a + b for a, b in zip(total, memo[key][0])]
+            g_now = sum(memo[key][0])
+            if i and g["id"] in prev_group and g_now < prev_group[g["id"]] and any(
+                    ev["removed"] and not ev["unknown"] and t0 < ev["t"] <= t for ev in ev_by_group.get(g["id"], [])):
+                fixed_series[i] += prev_group[g["id"]] - g_now
+                fixed_groups[i] += 1
+            prev_group[g["id"]] = g_now
             for nk, n in memo[key][1].items():
                 over_attr.setdefault(nk, [0] * nbins)[i] += n
         for k, n in zip(CATS, total):
@@ -2056,7 +2067,7 @@ def build(doc: dict, range_key: str = "1m", onprem: str = "", internal: str = ""
         "covered": covered,
         "end": end,
         "categories": [{"key": k, "name": CAT_NAME[k]} for k in CATS],
-        "series": {"refused": rej_series, "over": over_series, "active_today": act_today, "active_older": act_older,
+        "series": {"refused": rej_series, "over": over_series, "fixed": fixed_series, "fixed_groups": fixed_groups, "active_today": act_today, "active_older": act_older,
                    "by_class": class_series, "by_net": net_series,
                    "by_group": group_series, **_over_by(over_attr, nbins)},
         "ports": ports[:60],
@@ -2336,6 +2347,16 @@ def _group_series(srcs: dict, lab, nbins: int) -> dict[str, list[int]]:
     return {g: out[g] for g in SOURCE_TYPES if g in out}
 
 
+def _group_flows(srcs: dict, lab, nbins: int) -> dict[str, list[int]]:
+    """Refused flows (connection attempts) per period for each source type."""
+    out: dict[str, list[int]] = {}
+    for src, x in srcs.items():
+        for b, n in (x.get("bf") or {}).items():
+            if 0 <= b < nbins:
+                out.setdefault(lab(src)["group"], [0] * nbins)[b] += n
+    return {g: out[g] for g in SOURCE_TYPES if g in out}
+
+
 def _in(ip: str, cidr: str) -> bool:
     if is_v6(ip):
         return _in6(ip, cidr)
@@ -2354,6 +2375,8 @@ def _refused(rej: dict, src: str, b: int, c: dict, flows: int, target: tuple) ->
     r = rej.setdefault(src, {"bins": set(), "flows": 0, "first": c["s"], "last": c["e"], "targets": {}, "tt": {}})
     r["bins"].add(b)
     r["flows"] += flows
+    bf = r.setdefault("bf", {})
+    bf[b] = bf.get(b, 0) + flows
     r["first"], r["last"] = min(r["first"], c["s"]), max(r["last"], c["e"])
     r["targets"][target] = r["targets"].get(target, 0) + flows
     tt = r["tt"].get(target)
@@ -4953,7 +4976,8 @@ def report_row(kind: str, account: str, name: str, range_key: str):
                         "attention": rep["summary"]["attention"], "end": rep.get("end"),
                         "first": _evidence(doc)[0],
                         "covered": round(sum(cov) / len(cov), 2), "bins": rep.get("bins") or [],
-                        "by_type": ((rep.get("series") or {}).get("by_group") or {}).get("refused") or {}}}  # fmt: skip
+                        "by_type": ((rep.get("series") or {}).get("by_group") or {}).get("refused") or {},
+                        "by_type_flows": ((rep.get("series") or {}).get("by_group") or {}).get("refused_flows") or {}}}  # fmt: skip
 
 
 def permitted_ips(rules: list) -> int:
@@ -5418,6 +5442,7 @@ def macro_row(account: str, name: str, rep: dict, mode: str = "") -> dict:
         "over_by_type": {k: (v[-1] if v else 0) for k, v in (se.get("over_by_group") or {}).items()},
         "over_series": {k: list(v) for k, v in (se.get("over") or {}).items()},
         "over_type_series": {k: list(v) for k, v in (se.get("over_by_group") or {}).items()},
+        "fixed_series": list(se.get("fixed") or []), "fixed_groups": list(se.get("fixed_groups") or []),
         "refused_series": {k: list(v) for k, v in (se.get("refused") or {}).items()},
         "high_series": hi_series,
         "rules": len(rules), "tighten": s.get("tighten", 0), "unused": s.get("unused", 0),
@@ -5428,7 +5453,9 @@ def macro_row(account: str, name: str, rep: dict, mode: str = "") -> dict:
         "open_classes": classes,
         "top_rules": [{"group": r.get("gname") or r.get("group"), "ports": r.get("ports"), "source": r.get("source"),
                        "never": r.get("never", 0), "status": r.get("status"), "region": r.get("region"),
-                       "enis": r.get("enis", 0)} for r in top],
+                       "enis": r.get("enis", 0), "allowed": r.get("allowed", 0), "here": r.get("here", 0),
+                       "flows": r.get("flows", 0), "suggest_n": len(r.get("suggest") or []),
+                       "suggest_size": r.get("suggest_size")} for r in top],
         "over_start": over_series_tot[0] if over_series_tot else 0, "over_total_series": over_series_tot,
         "assets_total": len(assets), "assets_unlogged": len(rep.get("assets") or []) - len(assets),
         "asset_rag": rag, "asset_rag_start": rag_start, "asset_rag_series": rag_series,
@@ -5812,3 +5839,124 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def reset_detail(doc: dict, src: str, range_key: str = "1m", names: list | None = None) -> dict:
+    """Everything the flow logs say about one source reset in the window, hour by hour, for working out why: the
+    resets (sent by it, or by your side), its connections accepted and refused, the ports and interfaces it reached
+    (load balancer, pod, database …), and the security group changes on those interfaces' groups in the window."""
+    span, _step = RANGES.get(range_key, RANGES["1m"])
+    chunks = [c for c in doc["chunks"] if c["st"] in ("ok", "cut")]
+    if not chunks:
+        return {"src": src, "hours": [], "enis": [], "ports": [], "events": [], "total": {}}
+    end = max(c["e"] for c in chunks)
+    start = end - span
+    enis = {}
+    for region, x in doc["regions"].items():
+        for eid, e in ((x.get("snapshot") or {}).get("enis") or {}).items():
+            enis[eid] = {**e, "region": region}
+    groups = {}
+    for region, x in doc["regions"].items():
+        for gid, g in ((x.get("snapshot") or {}).get("groups") or {}).items():
+            groups[gid] = g.get("name") or gid
+    hours: dict[float, dict] = {}
+    per_eni: dict[str, dict] = {}
+    ports: dict[tuple, dict] = {}
+    tot = {"in": 0, "out": 0, "accepted": 0, "refused": 0}
+
+    def hour(t):
+        return hours.setdefault(t, {"t": t, "in": 0, "out": 0, "accepted": 0, "refused": 0, "ports": set(), "enis": set(),
+                                    "dsts": set()})  # fmt: skip
+
+    def eni_of(eni):
+        return per_eni.setdefault(eni, {"eni": eni, "in": 0, "out": 0, "accepted": 0, "refused": 0, "dsts": set()})
+
+    for c in chunks:
+        if c["e"] <= start:
+            continue
+        for s, own, eni, proto, port, n, way in c.get("rst") or []:
+            if s != src or not n:
+                continue
+            h, e = hour(c["s"]), eni_of(eni)
+            h[way] += n
+            e[way] += n
+            tot[way] += n
+            h["enis"].add(eni)
+            if own:
+                h["dsts"].add(own)
+                e["dsts"].add(own)
+            if port is not None:
+                h["ports"].add((str(proto), port))
+                p = ports.setdefault((str(proto), port), {"in": 0, "out": 0, "accepted": 0, "refused": 0})
+                p[way] += n
+        for s, dst, eni, proto, port, action, f in c.get("rows") or []:
+            if s != src:
+                continue
+            k = "accepted" if action == "ACCEPT" else "refused"
+            h, e = hour(c["s"]), eni_of(eni)
+            h[k] += f or 0
+            e[k] += f or 0
+            tot[k] += f or 0
+            h["enis"].add(eni)
+            if dst:
+                h["dsts"].add(dst)
+                e["dsts"].add(dst)
+            if port is not None:
+                h["ports"].add((str(proto), port))
+                p = ports.setdefault((str(proto), port), {"in": 0, "out": 0, "accepted": 0, "refused": 0})
+                p[k] += f or 0
+
+    def plabel(pp):
+        return f"{ {'6': 'tcp', '17': 'udp', '1': 'icmp'}.get(pp[0], pp[0])} {pp[1]}"
+
+    def ename(eni):
+        e = enis.get(eni) or {}
+        return lb_of(e).split("/")[1] if lb_of(e) else (e.get("kind") or e.get("desc") or eni)
+
+    gids = {g for eni in per_eni for g in (enis.get(eni) or {}).get("groups") or []}
+    events = []
+    for x in doc["regions"].values():
+        for ev in (x.get("history") or {}).get("events") or []:
+            if ev["group"] in gids and start <= ev["t"] <= end:
+                events.append({"t": ev["t"], "group": ev["group"], "gname": groups.get(ev["group"], ev["group"]),
+                               "event": ev["name"], "who": ev.get("who", ""),
+                               "added": [list(a)[3] if isinstance(a, (list, tuple)) and len(a) > 3 else a for a in ev["added"]],
+                               "removed": [list(a)[3] if isinstance(a, (list, tuple)) and len(a) > 3 else a for a in ev["removed"]]})  # fmt: skip
+    events.sort(key=lambda e: -e["t"])
+    rows = sorted(hours.values(), key=lambda h: -h["t"])
+    out_hours = [{"t": h["t"], "in": h["in"], "out": h["out"], "accepted": h["accepted"], "refused": h["refused"],
+                  "ports": sorted(plabel(p) for p in h["ports"])[:6], "to": sorted({ename(e) for e in h["enis"]})[:4],
+                  "dsts": sorted(h["dsts"])[:4]} for h in rows]  # fmt: skip
+    out_enis = sorted(({"eni": e["eni"], "name": ename(e["eni"]), "kind": (enis.get(e["eni"]) or {}).get("kind", ""),
+                        "lb": lb_of(enis.get(e["eni"]) or {}), "subnet": (enis.get(e["eni"]) or {}).get("subnet", ""),
+                        "region": (enis.get(e["eni"]) or {}).get("region", ""),
+                        "groups": [groups.get(g, g) for g in (enis.get(e["eni"]) or {}).get("groups") or []],
+                        "in": e["in"], "out": e["out"], "accepted": e["accepted"], "refused": e["refused"],
+                        "dsts": sorted(e["dsts"])[:6]} for e in per_eni.values()),
+                      key=lambda e: -(e["in"] + e["out"]))  # fmt: skip
+    out_ports = sorted(({"port": plabel(k), **v} for k, v in ports.items()), key=lambda p: -(p["in"] + p["out"] + p["accepted"]))
+    resets = tot["in"] + tot["out"]
+    hints = []
+    if resets:
+        if tot["out"] > tot["in"]:
+            hints.append("Most resets come from your side: the service refused or dropped these connections. Check the "
+                         "target is listening and healthy on that port, its idle timeout, and connection limits.")
+        else:
+            hints.append("Most resets come from the source: the caller is ending its own connections. Usually a client "
+                         "timeout, a health check or a retry loop on the caller; find it by its address.")
+        busy = [h for h in rows if h["in"] + h["out"]]
+        if len(busy) >= max(6, len(rows) * 0.8):
+            hints.append(f"Resets in {len(busy)} of {len(rows)} hours: steady, so something scheduled or always on "
+                         "(a health check, keep-alive or poller), not a one-off.")
+        if any(p[1] and p[1] >= 30000 for p in ports):
+            hints.append("Ports 30000 and up on a load balancer or node are usually Kubernetes NodePorts: look at the "
+                         "service and its pods behind that port.")
+        if tot["accepted"] and resets / max(1, tot["accepted"]) < 0.05:
+            hints.append(f"Only {round(100 * resets / tot['accepted'], 1)}% of its connections are reset: normal churn for a busy client.")
+    if events:
+        hints.append(f"{len(events)} security group change(s) on these interfaces' groups in the window: check whether "
+                     "a change lines up with when the resets started.")
+    return {"src": src, "who": Labeller(doc, names=names)(src), "since": start, "end": end,
+            "total": {**tot, "resets": resets, "hours": len([h for h in rows if h["in"] + h["out"]])},
+            "hours": out_hours[:168], "enis": out_enis[:20], "ports": out_ports[:20], "events": events[:50],
+            "hints": hints}  # fmt: skip

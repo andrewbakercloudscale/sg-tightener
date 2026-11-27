@@ -309,7 +309,9 @@ letting in during that period (its rules narrowed or removed), coloured by accou
 addresses removed, with how many periods went down and peak → now. A period an account was not read is never counted
 as a fix. Each owner's view on Accounts shows the same for their accounts.
 
-Every time chart has volumes up the side and dates (or hours, for two days or less) along the bottom.
+Every time chart has round volumes up the side and dates (or hours, for a week or less) along the bottom.
+Remediated counts only security group rules removed or narrowed (from CloudTrail, group by group): a deleted asset, or
+addresses that later show up in the flow logs, is not a fix.
 
 Then comes **over-provisioning over time**: the addresses let in that never sent anything, every account added
 up, at the end of each period, by **source type** or by **where it comes from**, with the total now and its change.
@@ -398,6 +400,12 @@ every too-wide rule of that account, grouped by security group, worst first:
 ![The same rules on an account](images/sg-console-outbound-account.png)
 
 ## Connection resets
+
+**View details** on a source opens its audit trail: what the pattern suggests (your side or the caller resetting,
+steady or one-off, Kubernetes NodePorts), resets an hour, every hour newest first with resets by each side,
+connections accepted and refused, the ports and what it reached, the interfaces it was reset on with their security
+groups, and every CloudTrail change to those groups in the window. A **connection** (or flow) is one flow-log record:
+one source to one address and port over about a minute.
 
 Flow logs record the TCP flags of each flow, so the same read counts the connections that were
 **reset** (RST): by the source, or by your side. Each account shows them over time, each load balancer's

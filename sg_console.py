@@ -79,7 +79,7 @@ REPORT_PROCS = int(os.environ.get("SG_REPORT_PROCS") or _report_procs())
 REPORT_GATE = threading.BoundedSemaphore(1)  # one parallel report build at a time, whichever report asks
 # A report kind whose rows changed shape since REPORT_CACHE_VERSION: only that kind is rebuilt (a single global bump
 # rebuilt every report of every account at once). 9: own interfaces carry launch time, image and VPC.
-KIND_VERSIONS = {"seen": 9, "macro": 11}  # macro 9: connection resets; 10: outbound rules by class
+KIND_VERSIONS = {"seen": 9, "macro": 12}  # macro 9: connection resets; 10: outbound rules by class; 12: remediated series
 
 
 def _kind_version(kind: str) -> int:
@@ -87,7 +87,7 @@ def _kind_version(kind: str) -> int:
 
 
 SHOW_OLD = ("refused", "macro")  # reports whose rows from an earlier version are shown while being rebuilt
-REPORT_CACHE_VERSION = 8  # 5: refused rows carry every target and the verdict; 6, 7: one service is not a scan; 8: the day before
+REPORT_CACHE_VERSION = 9  # 9: refused flows per period; 5: refused rows carry every target and the verdict; 6, 7: one service is not a scan; 8: the day before
 # a page asking for a report some accounts have no row in yet gets the rows there are at once, and the rest are
 # built in the background (it asks again); tests set SG_NO_WARM and get every row before the answer
 REPORTS_WAIT = os.environ.get("SG_NO_WARM") == "1"
@@ -471,6 +471,15 @@ class Console:
         out = sg_review.egress_fixes(doc, sg_review.load_names())
         _OUT_FIXES[account] = (time.time(), out)
         return out
+
+    def reset_detail(self, account: str, src: str, range_key: str = "1m") -> dict:
+        """One source's resets, connections and the group changes around them, hour by hour (sg_review.reset_detail)."""
+        import sg_review
+
+        doc = sg_review.load(account)
+        if not doc:
+            raise ConsoleError(404, f"account {account} has not been read yet")
+        return {"account": account, **sg_review.reset_detail(doc, src, range_key, sg_review.load_names())}
 
     def profile(self, account: str, read: bool = False) -> dict:
         """The account at a glance (sg_profile): kept a day; ``read`` reads it from AWS now."""
@@ -3367,6 +3376,8 @@ def make_handler(console: Console, token: str, port: int):
                     return self._json(200, console.assets(_need(q, "account"), _need(q, "region")))
                 if url.path == "/api/asset-history":
                     return self._json(200, console.asset_history(_need(q, "eni")))
+                if url.path == "/api/reset-detail":
+                    return self._json(200, console.reset_detail(_need(q, "account"), _need(q, "src"), (q.get("range") or ["1m"])[0]))
                 if url.path == "/api/outbound-fixes":
                     return self._json(200, console.outbound_fixes(_need(q, "account")))
                 if url.path == "/api/profile":
