@@ -369,6 +369,23 @@ transit gateway interfaces and groups no interface uses. The default **all traff
 changes it (a database group allowed everywhere, all of `100.0.0.0/8` when `100.64.0.0/10` was meant) is
 always shown. **Explain** says how each number is worked out.
 
+Each account's figures read **N of M rules**: N of its M outbound security group rules to that class are
+too wide. The tiles add up why (all traffic, a port range, too many addresses, several accounts) and how many
+are the allow-all rule AWS puts on every new group.
+
+**View fixes** (on each account row, on the account's own Outbound section and its **Your next 5**) opens
+every too-wide rule of that account, grouped by security group, worst first:
+
+- **The group** (name, id, region, VPC) and **the assets that use it**: instance or interface, kind and address.
+- **Today**: the rule as it is (ports and destination).
+- **Why it is bad**: what makes it too wide and what that risks.
+- **What it should be**: when the account's outbound flow logs were read (`read --egress`), the exact rules
+  it used, per port and destination block (**Narrow it**), or **Remove it** when nothing used it; otherwise
+  **Read outbound first**, with what to allow meanwhile.
+- **Commands**: the authorize and revoke commands, run through the database so they are recorded.
+
+**Export PDF** prints the list.
+
 ![Outbound: rules leaving the account by risk class, too wide only](images/sg-console-outbound.png)
 
 ![The same rules on an account](images/sg-console-outbound-account.png)
