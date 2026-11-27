@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Tables and charts now say what they show and what to look at first. In the IP lookup, "Answered us" is now "Replied to us" (traffic it sent back on connections our hosts opened), with every column explained.
+
 - **Connection resets: View details** on each source: what the pattern suggests, resets an hour, an hour-by-hour audit trail (resets by each side, connections accepted and refused, ports, what it reached), where it was reset with the security groups, its ports, and the CloudTrail changes to those groups in the window; Export PDF and Explain.
 - **Rejected traffic charts: Sources or Flows**, with Explain: distinct addresses refused, or every refused connection attempt.
 - **Remediated** now means a security group rule removed or narrowed (CloudTrail, group by group); a deleted asset or traffic seen later is not counted.
