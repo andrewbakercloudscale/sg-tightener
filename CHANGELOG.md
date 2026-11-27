@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 5.60.0 - 2026-11-27
 
 - **Remediate opens on its own page and goes straight to what to fix**: a "Start here" list names the groups to remediate first (critical, then open to the internet, then the biggest cut), says why for each, and has View details and Propose this group. A guide below explains the page step by step. Back returns to where it was opened.
 - **View details on every security group** (IPv4 exposure rows, the Remediate group table, the Security groups tab): a full audit popup with every source let in, the rules now and after, the new ranges and who is in them, connections over time, the interfaces it protects, CloudTrail changes, sources refused at its interfaces, and advice; Export PDF and Explain.
